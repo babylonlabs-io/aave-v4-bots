@@ -1,0 +1,75 @@
+"""
+The `JSON` scalar type represents JSON values as specified by [ECMA-404](http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf).
+"""
+scalar JSON
+
+scalar BigInt
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type Meta {
+  status: JSON
+}
+
+type Query {
+  position(proxyAddress: String!): position
+  positions(where: positionFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): positionPage!
+  _meta: Meta
+}
+
+type position {
+  proxyAddress: String!
+  suppliedShares: BigInt!
+  createdAt: BigInt!
+  updatedAt: BigInt!
+}
+
+type positionPage {
+  items: [position!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input positionFilter {
+  AND: [positionFilter]
+  OR: [positionFilter]
+  proxyAddress: String
+  proxyAddress_not: String
+  proxyAddress_in: [String]
+  proxyAddress_not_in: [String]
+  proxyAddress_contains: String
+  proxyAddress_not_contains: String
+  proxyAddress_starts_with: String
+  proxyAddress_ends_with: String
+  proxyAddress_not_starts_with: String
+  proxyAddress_not_ends_with: String
+  suppliedShares: BigInt
+  suppliedShares_not: BigInt
+  suppliedShares_in: [BigInt]
+  suppliedShares_not_in: [BigInt]
+  suppliedShares_gt: BigInt
+  suppliedShares_lt: BigInt
+  suppliedShares_gte: BigInt
+  suppliedShares_lte: BigInt
+  createdAt: BigInt
+  createdAt_not: BigInt
+  createdAt_in: [BigInt]
+  createdAt_not_in: [BigInt]
+  createdAt_gt: BigInt
+  createdAt_lt: BigInt
+  createdAt_gte: BigInt
+  createdAt_lte: BigInt
+  updatedAt: BigInt
+  updatedAt_not: BigInt
+  updatedAt_in: [BigInt]
+  updatedAt_not_in: [BigInt]
+  updatedAt_gt: BigInt
+  updatedAt_lt: BigInt
+  updatedAt_gte: BigInt
+  updatedAt_lte: BigInt
+}
