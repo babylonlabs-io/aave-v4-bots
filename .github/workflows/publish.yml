@@ -1,0 +1,29 @@
+name: docker_publish
+
+on:
+  push:
+    branches:
+    - '*'
+    tags:
+    - '*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker_indexer_pipeline:
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@591b761a5213f343c424b3e63fd9b097b930db96 # v0.14.2
+    secrets: inherit
+    with:
+      publish: true
+      dockerfile: ./contrib/images/aave-v4-liquidation-bot/Dockerfile
+      repoName: liquidation-aave-indexer
+
+  docker_liquidate_pipeline:
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@591b761a5213f343c424b3e63fd9b097b930db96 # v0.14.2
+    secrets: inherit
+    with:
+      publish: true
+      dockerfile: ./contrib/images/aave-v4-liquidation-bot/Dockerfile
+      repoName: liquidation-aave-client
