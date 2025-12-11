@@ -17,7 +17,7 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./contrib/images/aave-v4-liquidation-bot/Dockerfile
+      dockerfile: ./contrib/images/liquidation-aave-client/Dockerfile
       repoName: liquidation-aave-indexer
 
   docker_liquidate_pipeline:
@@ -25,5 +25,5 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./contrib/images/aave-v4-liquidation-bot/Dockerfile
+      dockerfile: ./contrib/images/liquidation-aave-indexer/Dockerfile
       repoName: liquidation-aave-client
