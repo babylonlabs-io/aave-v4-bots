@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   docker_indexer_pipeline:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@591b761a5213f343c424b3e63fd9b097b930db96 # v0.14.2
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@5237008234bd9c3b62968a1fbe6ab543b2256f60 # v0.14.3
     secrets: inherit
     with:
       publish: true
@@ -21,7 +21,7 @@ jobs:
       repoName: liquidation-aave-indexer
 
   docker_liquidate_pipeline:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@591b761a5213f343c424b3e63fd9b097b930db96 # v0.14.2
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@5237008234bd9c3b62968a1fbe6ab543b2256f60 # v0.14.3
     secrets: inherit
     with:
       publish: true
