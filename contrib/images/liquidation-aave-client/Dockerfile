@@ -9,7 +9,6 @@ RUN npm install -g pnpm
 # Copy project files and install dependencies
 COPY . .
 RUN pnpm install --fetch-retries 5
-RUN pnpm build:config
 
 # Change ownership to node user
 RUN chown -R node:node /home/liquidation-aave-client

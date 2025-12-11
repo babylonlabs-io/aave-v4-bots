@@ -11,7 +11,6 @@ COPY . .
 
 # Install dependencies
 RUN pnpm install --fetch-retries 5
-RUN pnpm build:config
 
 # Change ownership to node user
 RUN chown -R node:node /home/liquidation-aave-indexer
