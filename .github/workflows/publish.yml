@@ -17,13 +17,13 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./contrib/images/liquidation-aave-client/Dockerfile
+      dockerfile: ./contrib/images/liquidation-aave-indexer/Dockerfile
       repoName: liquidation-aave-indexer
 
-  docker_liquidate_pipeline:
+  docker_client_pipeline:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@5237008234bd9c3b62968a1fbe6ab543b2256f60 # v0.14.3
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./contrib/images/liquidation-aave-indexer/Dockerfile
+      dockerfile: ./contrib/images/liquidation-aave-client/Dockerfile
       repoName: liquidation-aave-client
