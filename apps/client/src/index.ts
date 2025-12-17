@@ -24,6 +24,7 @@ function loadConfig(): Config {
     "RPC_URL",
     "CONTROLLER_ADDRESS",
     "DEBT_TOKEN_ADDRESS",
+    "WBTC_ADDRESS",
   ];
 
   for (const envVar of requiredEnvVars) {
@@ -39,6 +40,7 @@ function loadConfig(): Config {
     rpcUrl: process.env.RPC_URL!,
     controllerAddress: process.env.CONTROLLER_ADDRESS as Address,
     debtTokenAddress: process.env.DEBT_TOKEN_ADDRESS as Address,
+    wbtcAddress: process.env.WBTC_ADDRESS as Address,
   };
 }
 
@@ -83,6 +85,7 @@ async function main() {
     publicClient,
     controllerAddress: config.controllerAddress,
     debtTokenAddress: config.debtTokenAddress,
+    wbtcAddress: config.wbtcAddress,
     ponderUrl: config.ponderUrl,
   });
 
