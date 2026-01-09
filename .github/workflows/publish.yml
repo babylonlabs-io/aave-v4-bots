@@ -13,17 +13,31 @@ permissions:
 
 jobs:
   docker_indexer_pipeline:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@847cd8a6ff9c64e401ce922d12532979d9ac5e93 # v0.14.5
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@22ae8ed7a2ea5c80331758914c4e0ea732eea1ad # v0.15.0
     secrets: inherit
     with:
       publish: true
       dockerfile: ./contrib/images/liquidation-aave-indexer/Dockerfile
       repoName: liquidation-aave-indexer
+    permissions:
+      contents: read        # REQUIRED by reusable workflow
+      id-token: write       # REQUIRED for AWS OIDC
+      # required for all workflows
+      security-events: write
+      # required to fetch internal or private CodeQL packs
+      packages: read
 
   docker_client_pipeline:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@847cd8a6ff9c64e401ce922d12532979d9ac5e93 # v0.14.5
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@22ae8ed7a2ea5c80331758914c4e0ea732eea1ad # v0.15.0
     secrets: inherit
     with:
       publish: true
       dockerfile: ./contrib/images/liquidation-aave-client/Dockerfile
       repoName: liquidation-aave-client
+    permissions:
+      contents: read        # REQUIRED by reusable workflow
+      id-token: write       # REQUIRED for AWS OIDC
+      # required for all workflows
+      security-events: write
+      # required to fetch internal or private CodeQL packs
+      packages: read
