@@ -28,5 +28,6 @@ export interface Config {
   // Contract addresses
   controllerAddress: Address;
   debtTokenAddress: Address;
+  wbtcAddress: Address;
 }
 
