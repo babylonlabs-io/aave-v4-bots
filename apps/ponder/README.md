@@ -25,6 +25,9 @@ PONDER_POLLING_INTERVAL=1000
 
 # PostgreSQL connection
 DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder
+
+# Database schema for Ponder (required when using PostgreSQL)
+DATABASE_SCHEMA=public
 ```
 
 ## API Endpoints
