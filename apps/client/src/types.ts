@@ -17,17 +17,17 @@ export interface PonderResponse {
 export interface Config {
   // Liquidator
   liquidatorPrivateKey: Hex;
-  
+
   // Polling
   pollingIntervalMs: number;
-  
+
   // URLs
   ponderUrl: string;
   rpcUrl: string;
-  
+
   // Contract addresses
   controllerAddress: Address;
+  vaultSwapAddress: Address;
   debtTokenAddress: Address;
   wbtcAddress: Address;
 }
-

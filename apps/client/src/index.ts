@@ -23,6 +23,7 @@ function loadConfig(): Config {
     "PONDER_URL",
     "RPC_URL",
     "CONTROLLER_ADDRESS",
+    "VAULT_SWAP_ADDRESS",
     "DEBT_TOKEN_ADDRESS",
     "WBTC_ADDRESS",
   ];
@@ -39,6 +40,7 @@ function loadConfig(): Config {
     ponderUrl: process.env.PONDER_URL!,
     rpcUrl: process.env.RPC_URL!,
     controllerAddress: process.env.CONTROLLER_ADDRESS as Address,
+    vaultSwapAddress: process.env.VAULT_SWAP_ADDRESS as Address,
     debtTokenAddress: process.env.DEBT_TOKEN_ADDRESS as Address,
     wbtcAddress: process.env.WBTC_ADDRESS as Address,
   };
@@ -84,6 +86,7 @@ async function main() {
     walletClient,
     publicClient,
     controllerAddress: config.controllerAddress,
+    vaultSwapAddress: config.vaultSwapAddress,
     debtTokenAddress: config.debtTokenAddress,
     wbtcAddress: config.wbtcAddress,
     ponderUrl: config.ponderUrl,
@@ -112,4 +115,3 @@ main().catch((error) => {
   console.error("Fatal error:", error);
   process.exit(1);
 });
-
