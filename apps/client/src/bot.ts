@@ -13,6 +13,7 @@ import {
 } from "viem";
 
 import { aaveIntegrationControllerAbi, erc20Abi } from "./abis/AaveIntegrationController";
+import { vaultSwapAbi } from "./abis/VaultSwap";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 // Event for parsing vault transfers from liquidation logs
@@ -25,6 +26,7 @@ export interface LiquidationBotConfig {
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   controllerAddress: Address;
+  vaultSwapAddress: Address;
   debtTokenAddress: Address;
   wbtcAddress: Address;
   ponderUrl: string;
@@ -35,6 +37,7 @@ export class LiquidationBot {
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private controllerAddress: Address;
+  private vaultSwapAddress: Address;
   private debtTokenAddress: Address;
   private wbtcAddress: Address;
   private ponderUrl: string;
@@ -44,6 +47,7 @@ export class LiquidationBot {
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.controllerAddress = config.controllerAddress;
+    this.vaultSwapAddress = config.vaultSwapAddress;
     this.debtTokenAddress = config.debtTokenAddress;
     this.wbtcAddress = config.wbtcAddress;
     this.ponderUrl = config.ponderUrl;
@@ -79,7 +83,7 @@ export class LiquidationBot {
   private async fetchLiquidatablePositions(): Promise<LiquidatablePosition[]> {
     try {
       const response = await fetch(`${this.ponderUrl}/liquidatable-positions`);
-      
+
       if (!response.ok) {
         throw new Error(`Ponder API error: ${response.status}`);
       }
@@ -120,23 +124,23 @@ export class LiquidationBot {
 
       // Wait for confirmation
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
-      
+
       if (receipt.status === "success") {
         console.log(`${this.logTag}✅ Liquidation confirmed in block ${receipt.blockNumber}`);
-        
+
         // Parse logs to find which vault IDs were transferred to liquidator
         const seizedVaultIds = this.parseSeizedVaultIds(receipt.logs);
         console.log(`${this.logTag}Seized ${seizedVaultIds.length} vault(s)`);
-        
+
         // Now swap each seized vault for WBTC
         await this.swapSeizedVaultsForWbtc(seizedVaultIds);
-        
+
         return true;
       } else {
         console.error(`${this.logTag}❌ Liquidation transaction reverted`);
         console.error(`   TX Hash: ${hash}`);
         console.error(`   Block: ${receipt.blockNumber}`);
-        
+
         // Try to get the revert reason by simulating the call
         try {
           await this.publicClient.simulateContract({
@@ -153,7 +157,7 @@ export class LiquidationBot {
             console.error(`   Simulation error: ${simError.message}`);
           }
         }
-        
+
         return false;
       }
     } catch (error) {
@@ -211,7 +215,7 @@ export class LiquidationBot {
     }
 
     const liquidator = this.walletClient.account.address;
-    
+
     // Get WBTC balance before swaps
     const wbtcBalanceBefore = await this.publicClient.readContract({
       address: this.wbtcAddress,
@@ -228,16 +232,16 @@ export class LiquidationBot {
     for (const vaultId of vaultIds) {
       try {
         console.log(`${this.logTag}   Swapping vault ${vaultId}...`);
-        
+
         const hash = await this.walletClient.writeContract({
-          address: this.controllerAddress,
-          abi: aaveIntegrationControllerAbi,
+          address: this.vaultSwapAddress,
+          abi: vaultSwapAbi,
           functionName: "swapVaultForWbtc",
           args: [vaultId],
         });
 
         const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
-        
+
         if (receipt.status === "success") {
           console.log(`${this.logTag}   ✅ Vault ${vaultId} swapped successfully`);
         } else {
@@ -285,10 +289,10 @@ export class LiquidationBot {
 
     // If allowance is low, approve max
     const maxApproval = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
-    
+
     if (allowance < maxApproval / 2n) {
       console.log(`${this.logTag}Approving debt token for Controller...`);
-      
+
       const hash = await this.walletClient.writeContract({
         address: this.debtTokenAddress,
         abi: erc20Abi,
@@ -333,4 +337,3 @@ export class LiquidationBot {
     console.log(`${this.logTag}Liquidator balance: ${formattedBalance} ${symbol}`);
   }
 }
-
