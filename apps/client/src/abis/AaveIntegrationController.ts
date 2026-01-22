@@ -1,4 +1,4 @@
-// Contract commit: 6a83427a55774f08722e388989ebc12ccfb7e1d0
+// Contract commit: e15b91a48f8265a94a058bb9821bb3eb5575806e
 
 export const aaveIntegrationControllerAbi = [
   {
@@ -35,12 +35,38 @@ export const aaveIntegrationControllerAbi = [
         "internalType": "uint256"
       },
       {
-        "name": "admin_",
+        "name": "protocolParams_",
         "type": "address",
         "internalType": "address"
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "APPLICATION_ADMIN",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "APPLICATION_PAUSING_GUARDIAN",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
   },
   {
     "type": "function",
@@ -103,6 +129,58 @@ export const aaveIntegrationControllerAbi = [
         "name": "",
         "type": "address",
         "internalType": "contract IBTCVaultsManager"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "DEFAULT_ADMIN_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "PROTOCOL_PARAMS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IProtocolParams"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "TIMELOCK_UPGRADER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "UPGRADE_INTERFACE_VERSION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string",
+        "internalType": "string"
       }
     ],
     "stateMutability": "view"
@@ -266,6 +344,37 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
+    "name": "fullPause",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "getLiquidationFees",
+    "inputs": [
+      {
+        "name": "borrowerProxy",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "fairnessPayment",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "protocolFee",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getPosition",
     "inputs": [
       {
@@ -298,24 +407,19 @@ export const aaveIntegrationControllerAbi = [
             ]
           },
           {
-            "name": "reserveId",
-            "type": "uint256",
-            "internalType": "uint256"
-          },
-          {
-            "name": "proxyContract",
-            "type": "address",
-            "internalType": "address"
-          },
-          {
             "name": "vaultIds",
             "type": "bytes32[]",
             "internalType": "bytes32[]"
           },
           {
-            "name": "totalCollateral",
-            "type": "uint256",
-            "internalType": "uint256"
+            "name": "reserveId",
+            "type": "uint96",
+            "internalType": "uint96"
+          },
+          {
+            "name": "proxyContract",
+            "type": "address",
+            "internalType": "address"
           }
         ]
       }
@@ -343,19 +447,19 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
-    "name": "getUserPositions",
+    "name": "getRoleAdmin",
     "inputs": [
       {
-        "name": "user",
-        "type": "address",
-        "internalType": "address"
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "outputs": [
       {
-        "name": "positionIds",
-        "type": "bytes32[]",
-        "internalType": "bytes32[]"
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -397,6 +501,61 @@ export const aaveIntegrationControllerAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "grantRole",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "hasRole",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "initialize",
+    "inputs": [
+      {
+        "name": "initialTBVAdmin",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -457,33 +616,13 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
-    "name": "owner",
+    "name": "pauseState",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "pause",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "paused",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bool",
-        "internalType": "bool"
+        "type": "uint8",
+        "internalType": "enum ITBVPausable.PauseState"
       }
     ],
     "stateMutability": "view"
@@ -518,18 +657,26 @@ export const aaveIntegrationControllerAbi = [
       },
       {
         "name": "reserveId",
-        "type": "uint256",
-        "internalType": "uint256"
+        "type": "uint96",
+        "internalType": "uint96"
       },
       {
         "name": "proxyContract",
         "type": "address",
         "internalType": "address"
-      },
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proxiableUUID",
+    "inputs": [],
+    "outputs": [
       {
-        "name": "totalCollateral",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -554,8 +701,19 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
-    "name": "renounceOwnership",
-    "inputs": [],
+    "name": "renounceRole",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -595,10 +753,15 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
-    "name": "setFairnessPaymentToken",
+    "name": "revokeRole",
     "inputs": [
       {
-        "name": "token",
+        "name": "role",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
         "type": "address",
         "internalType": "address"
       }
@@ -608,10 +771,10 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
-    "name": "setVaultParams",
+    "name": "setFairnessPaymentToken",
     "inputs": [
       {
-        "name": "vaultParams_",
+        "name": "token",
         "type": "address",
         "internalType": "address"
       }
@@ -634,16 +797,29 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
-    "name": "transferOwnership",
-    "inputs": [
-      {
-        "name": "newOwner",
-        "type": "address",
-        "internalType": "address"
-      }
-    ],
+    "name": "softPause",
+    "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "supportsInterface",
+    "inputs": [
+      {
+        "name": "interfaceId",
+        "type": "bytes4",
+        "internalType": "bytes4"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -654,27 +830,21 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
-    "name": "userPositions",
+    "name": "upgradeToAndCall",
     "inputs": [
       {
-        "name": "",
+        "name": "newImplementation",
         "type": "address",
         "internalType": "address"
       },
       {
-        "name": "",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "data",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "stateMutability": "view"
+    "outputs": [],
+    "stateMutability": "payable"
   },
   {
     "type": "function",
@@ -715,19 +885,6 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "function",
-    "name": "vaultParams",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IVaultParams"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "vaultSwap",
     "inputs": [],
     "outputs": [
@@ -757,37 +914,6 @@ export const aaveIntegrationControllerAbi = [
       }
     ],
     "stateMutability": "nonpayable"
-  },
-  {
-    "type": "event",
-    "name": "AllCollateralWithdrawn",
-    "inputs": [
-      {
-        "name": "positionId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "depositor",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "pegInTxHashes",
-        "type": "bytes32[]",
-        "indexed": false,
-        "internalType": "bytes32[]"
-      },
-      {
-        "name": "withdrawnAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
   },
   {
     "type": "event",
@@ -871,37 +997,6 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "event",
-    "name": "CollateralAdded",
-    "inputs": [
-      {
-        "name": "positionId",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      },
-      {
-        "name": "depositor",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "pegInTxHashes",
-        "type": "bytes32[]",
-        "indexed": false,
-        "internalType": "bytes32[]"
-      },
-      {
-        "name": "totalCollateralAdded",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "FairnessPaymentPaid",
     "inputs": [
       {
@@ -946,31 +1041,31 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "event",
-    "name": "OwnershipTransferred",
+    "name": "Initialized",
     "inputs": [
       {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "newOwner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
+        "name": "version",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
       }
     ],
     "anonymous": false
   },
   {
     "type": "event",
-    "name": "Paused",
+    "name": "PausedWith",
     "inputs": [
       {
-        "name": "account",
+        "name": "state",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "enum ITBVPausable.PauseState"
+      },
+      {
+        "name": "pauser",
         "type": "address",
-        "indexed": false,
+        "indexed": true,
         "internalType": "address"
       }
     ],
@@ -1009,12 +1104,100 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "event",
-    "name": "Unpaused",
+    "name": "RoleAdminChanged",
     "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "previousAdminRole",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "newAdminRole",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RoleGranted",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
       {
         "name": "account",
         "type": "address",
-        "indexed": false,
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "sender",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "RoleRevoked",
+    "inputs": [
+      {
+        "name": "role",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "sender",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Unpaused",
+    "inputs": [
+      {
+        "name": "pauser",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Upgraded",
+    "inputs": [
+      {
+        "name": "implementation",
+        "type": "address",
+        "indexed": true,
         "internalType": "address"
       }
     ],
@@ -1047,25 +1230,6 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "event",
-    "name": "VaultParamsUpdated",
-    "inputs": [
-      {
-        "name": "oldVaultParams",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "newVaultParams",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "VaultSwapUpdated",
     "inputs": [
       {
@@ -1079,17 +1243,39 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "error",
+    "name": "AddressEmptyCode",
+    "inputs": [
+      {
+        "name": "target",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "BTCVaultNotFound",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "EnforcedPause",
+    "name": "ERC1967InvalidImplementation",
+    "inputs": [
+      {
+        "name": "implementation",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ERC1967NonPayable",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "ExpectedPause",
+    "name": "FailedCall",
     "inputs": []
   },
   {
@@ -1107,11 +1293,6 @@ export const aaveIntegrationControllerAbi = [
         "internalType": "uint256"
       }
     ]
-  },
-  {
-    "type": "error",
-    "name": "InvalidAmount",
-    "inputs": []
   },
   {
     "type": "error",
@@ -1145,34 +1326,7 @@ export const aaveIntegrationControllerAbi = [
   },
   {
     "type": "error",
-    "name": "OwnableInvalidOwner",
-    "inputs": [
-      {
-        "name": "owner",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "OwnableUnauthorizedAccount",
-    "inputs": [
-      {
-        "name": "account",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "ProxyMismatch",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ReentrancyGuardReentrantCall",
     "inputs": []
   },
   {
@@ -1183,6 +1337,42 @@ export const aaveIntegrationControllerAbi = [
         "name": "token",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TBV_AlreadyPaused",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TBV_NotPaused",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TBV_Paused",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TBV_Unauthorized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UUPSUnauthorizedCallContext",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UUPSUnsupportedProxiableUUID",
+    "inputs": [
+      {
+        "name": "slot",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ]
   },
