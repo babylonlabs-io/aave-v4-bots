@@ -27,7 +27,7 @@ export interface LiquidationBotConfig {
   publicClient: PublicClient;
   controllerAddress: Address;
   vaultSwapAddress: Address;
-  debtTokenAddress: Address;
+  debtTokenAddresses: Address[];
   wbtcAddress: Address;
   ponderUrl: string;
 }
@@ -38,7 +38,7 @@ export class LiquidationBot {
   private publicClient: PublicClient;
   private controllerAddress: Address;
   private vaultSwapAddress: Address;
-  private debtTokenAddress: Address;
+  private debtTokenAddresses: Address[];
   private wbtcAddress: Address;
   private ponderUrl: string;
 
@@ -48,7 +48,7 @@ export class LiquidationBot {
     this.publicClient = config.publicClient;
     this.controllerAddress = config.controllerAddress;
     this.vaultSwapAddress = config.vaultSwapAddress;
-    this.debtTokenAddress = config.debtTokenAddress;
+    this.debtTokenAddresses = config.debtTokenAddresses;
     this.wbtcAddress = config.wbtcAddress;
     this.ponderUrl = config.ponderUrl;
   }
@@ -274,66 +274,78 @@ export class LiquidationBot {
   }
 
   /**
-   * Ensure liquidator has approved Controller to spend debt tokens
+   * Ensure liquidator has approved Controller to spend all debt tokens
    */
   private async ensureApproval(): Promise<void> {
     const liquidator = this.walletClient.account.address;
+    const maxApproval = BigInt(
+      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    );
 
-    // Check current allowance
-    const allowance = await this.publicClient.readContract({
-      address: this.debtTokenAddress,
-      abi: erc20Abi,
-      functionName: "allowance",
-      args: [liquidator, this.controllerAddress],
-    });
-
-    // If allowance is low, approve max
-    const maxApproval = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
-
-    if (allowance < maxApproval / 2n) {
-      console.log(`${this.logTag}Approving debt token for Controller...`);
-
-      const hash = await this.walletClient.writeContract({
-        address: this.debtTokenAddress,
+    for (const tokenAddress of this.debtTokenAddresses) {
+      const allowance = await this.publicClient.readContract({
+        address: tokenAddress,
         abi: erc20Abi,
-        functionName: "approve",
-        args: [this.controllerAddress, maxApproval],
+        functionName: "allowance",
+        args: [liquidator, this.controllerAddress],
       });
 
-      await this.publicClient.waitForTransactionReceipt({ hash });
-      console.log(`${this.logTag}✅ Approval confirmed`);
+      if (allowance < maxApproval / 2n) {
+        const symbol = await this.publicClient.readContract({
+          address: tokenAddress,
+          abi: erc20Abi,
+          functionName: "symbol",
+          args: [],
+        });
+
+        console.log(`${this.logTag}Approving ${symbol} for Controller...`);
+
+        const hash = await this.walletClient.writeContract({
+          address: tokenAddress,
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [this.controllerAddress, maxApproval],
+        });
+
+        await this.publicClient.waitForTransactionReceipt({ hash });
+        console.log(`${this.logTag}Approved ${symbol}`);
+      }
     }
   }
 
 
   /**
-   * Log liquidator's debt token balance
+   * Log liquidator's debt token balances for all configured tokens
    */
-  async logBalance(): Promise<void> {
+  async logBalances(): Promise<void> {
     const liquidator = this.walletClient.account.address;
 
-    const [balance, symbol, decimals] = await Promise.all([
-      this.publicClient.readContract({
-        address: this.debtTokenAddress,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [liquidator],
-      }),
-      this.publicClient.readContract({
-        address: this.debtTokenAddress,
-        abi: erc20Abi,
-        functionName: "symbol",
-        args: [],
-      }),
-      this.publicClient.readContract({
-        address: this.debtTokenAddress,
-        abi: erc20Abi,
-        functionName: "decimals",
-        args: [],
-      }),
-    ]);
+    console.log(`${this.logTag}Debt token balances:`);
 
-    const formattedBalance = formatUnits(balance, decimals);
-    console.log(`${this.logTag}Liquidator balance: ${formattedBalance} ${symbol}`);
+    for (const tokenAddress of this.debtTokenAddresses) {
+      const [balance, symbol, decimals] = await Promise.all([
+        this.publicClient.readContract({
+          address: tokenAddress,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [liquidator],
+        }),
+        this.publicClient.readContract({
+          address: tokenAddress,
+          abi: erc20Abi,
+          functionName: "symbol",
+          args: [],
+        }),
+        this.publicClient.readContract({
+          address: tokenAddress,
+          abi: erc20Abi,
+          functionName: "decimals",
+          args: [],
+        }),
+      ]);
+
+      const formattedBalance = formatUnits(balance, decimals);
+      console.log(`   ${symbol}: ${formattedBalance}`);
+    }
   }
 }
