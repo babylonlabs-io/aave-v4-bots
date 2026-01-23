@@ -24,7 +24,6 @@ function loadConfig(): Config {
     "RPC_URL",
     "CONTROLLER_ADDRESS",
     "VAULT_SWAP_ADDRESS",
-    "DEBT_TOKEN_ADDRESS",
     "WBTC_ADDRESS",
   ];
 
@@ -34,6 +33,29 @@ function loadConfig(): Config {
     }
   }
 
+  // Support both new (DEBT_TOKEN_ADDRESSES) and legacy (DEBT_TOKEN_ADDRESS) formats
+  let debtTokenAddresses: Address[];
+
+  if (process.env.DEBT_TOKEN_ADDRESSES) {
+    debtTokenAddresses = process.env.DEBT_TOKEN_ADDRESSES
+      .split(",")
+      .map((addr) => addr.trim() as Address)
+      .filter((addr) => addr.length > 0);
+  } else if (process.env.DEBT_TOKEN_ADDRESS) {
+    console.warn(
+      "DEBT_TOKEN_ADDRESS is deprecated. Use DEBT_TOKEN_ADDRESSES instead."
+    );
+    debtTokenAddresses = [process.env.DEBT_TOKEN_ADDRESS as Address];
+  } else {
+    throw new Error(
+      "DEBT_TOKEN_ADDRESSES environment variable is required (comma-separated list of addresses)"
+    );
+  }
+
+  if (debtTokenAddresses.length === 0) {
+    throw new Error("At least one debt token address is required");
+  }
+
   return {
     liquidatorPrivateKey: process.env.LIQUIDATOR_PRIVATE_KEY as Hex,
     pollingIntervalMs: parseInt(process.env.POLLING_INTERVAL_MS || "10000", 10),
@@ -41,7 +63,7 @@ function loadConfig(): Config {
     rpcUrl: process.env.RPC_URL!,
     controllerAddress: process.env.CONTROLLER_ADDRESS as Address,
     vaultSwapAddress: process.env.VAULT_SWAP_ADDRESS as Address,
-    debtTokenAddress: process.env.DEBT_TOKEN_ADDRESS as Address,
+    debtTokenAddresses,
     wbtcAddress: process.env.WBTC_ADDRESS as Address,
   };
 }
@@ -87,12 +109,12 @@ async function main() {
     publicClient,
     controllerAddress: config.controllerAddress,
     vaultSwapAddress: config.vaultSwapAddress,
-    debtTokenAddress: config.debtTokenAddress,
+    debtTokenAddresses: config.debtTokenAddresses,
     wbtcAddress: config.wbtcAddress,
     ponderUrl: config.ponderUrl,
   });
 
-  await bot.logBalance();
+  await bot.logBalances();
 
   console.log(`Polling every ${config.pollingIntervalMs / 1000}s...`);
   console.log("---");
