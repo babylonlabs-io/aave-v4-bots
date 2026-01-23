@@ -28,6 +28,6 @@ export interface Config {
   // Contract addresses
   controllerAddress: Address;
   vaultSwapAddress: Address;
-  debtTokenAddress: Address;
+  debtTokenAddresses: Address[];
   wbtcAddress: Address;
 }
