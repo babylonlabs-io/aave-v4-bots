@@ -31,8 +31,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Checkout submodules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
