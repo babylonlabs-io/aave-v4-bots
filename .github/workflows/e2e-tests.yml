@@ -1,0 +1,126 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ponder
+          POSTGRES_PASSWORD: ponder
+          POSTGRES_DB: ponder
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl python3-pip
+
+      - name: Install Python dependencies
+        run: |
+          pip3 install --user base58 coincurve
+
+      - name: Start Bitcoin regtest
+        run: docker compose -f contracts/docker-compose.e2e.yml up -d bitcoin-regtest
+
+      - name: Wait for Bitcoin node
+        run: |
+          chmod +x contracts/test/e2e/scripts/btc-helper.sh
+          for i in {1..30}; do
+            if USE_DOCKER=true contracts/test/e2e/scripts/btc-helper.sh wait; then
+              echo "✓ Bitcoin node is ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "✗ Bitcoin node failed to start"
+              docker compose -f contracts/docker-compose.e2e.yml logs bitcoin-regtest
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Initialize Bitcoin environment
+        env:
+          USE_DOCKER: "true"
+        run: |
+          cd contracts
+          ./test/e2e/scripts/btc-helper.sh wallet test_wallet
+          ./test/e2e/scripts/btc-helper.sh mine 2020
+          ./test/e2e/scripts/btc-helper.sh info
+
+      - name: Start Anvil
+        run: anvil --silent &
+
+      - name: Deploy contracts to Anvil
+        env:
+          FOUNDRY_PROFILE: e2e
+          DEPLOYER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          ADMIN_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          BTC_INIT_BLOCK_HEIGHT: "2017"
+          BTC_INIT_EXPECTED_TARGET: "0x207fffff"
+          BTC_NETWORK_TYPE: "regtest"
+          BTC_ADMIN: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+        run: |
+          cd contracts
+          forge script script/deployment/DeployAll.s.sol \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --private-key $PRIVATE_KEY \
+            --skip-simulation \
+            --slow
+
+      - name: Run E2E tests
+        env:
+          FOUNDRY_PROFILE: e2e
+          BTC_RPC_URL: http://localhost:18443
+          BTC_RPC_USER: btcuser
+          BTC_RPC_PASSWORD: btcpassword
+          USE_DOCKER: "true"
+          DEPLOYER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          ADMIN_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+        run: forge test --match-path 'test/e2e/**/*.sol' -vvv
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Bot logs ==="
+          cat /tmp/bot.log || true
+          echo "=== Ponder logs ==="
+          cat /tmp/ponder.log || true
+          echo "=== Bitcoin logs ==="
+          docker compose -f contracts/docker-compose.e2e.yml logs bitcoin-regtest

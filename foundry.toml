@@ -1,0 +1,42 @@
+[profile.default]
+src = "contracts/src"
+out = "out"
+libs = ["contracts/lib"]
+test = "test"
+solc_version = "0.8.28"
+
+# Compiler optimizations to match contracts repo
+optimizer = true
+optimizer_runs = 200
+via_ir = true  # Use IR-based code generator to avoid stack too deep errors
+
+# Remappings to import from contracts submodule
+remappings = [
+    "forge-std/=contracts/lib/forge-std/src/",
+    "vault-contracts/=contracts/src/",
+    "aave-v4/=contracts/lib/aave-v4/src/",
+    "@openzeppelin/contracts-upgradeable/=contracts/lib/openzeppelin-contracts-upgradeable/contracts/",
+    "@openzeppelin/contracts/=contracts/lib/openzeppelin-contracts/contracts/",
+    "src/spoke/=contracts/lib/aave-v4/src/spoke/",
+    "src/libraries/=contracts/lib/aave-v4/src/libraries/",
+    "src/hub/=contracts/lib/aave-v4/src/hub/",
+    "src/dependencies/=contracts/lib/aave-v4/src/dependencies/",
+    "src/utils/=contracts/lib/aave-v4/src/utils/",
+    "src/interfaces/INoncesKeyed.sol=contracts/lib/aave-v4/src/interfaces/INoncesKeyed.sol",
+    "src/interfaces/IMulticall.sol=contracts/lib/aave-v4/src/interfaces/IMulticall.sol",
+    "src/access/=contracts/lib/aave-v4/src/access/",
+    "script/utils/=contracts/script/utils/",
+    "lib/aave-v4/=contracts/lib/aave-v4/"
+]
+
+# E2E test profile - requires Bitcoin regtest and Postgres running
+# Run with: FOUNDRY_PROFILE=e2e forge test --match-path 'test/e2e/**/*.sol'
+[profile.e2e]
+ffi = true  # Enable FFI for bot/ponder process management and Bitcoin CLI
+fs_permissions = [
+    { access = "read-write", path = "./contracts/test/data" },
+    { access = "read-write", path = "./test/e2e/data" },
+    { access = "read-write", path = "./contracts/deployments" }
+]
+gas_snapshot_check = false
+gas_limit = "max"
