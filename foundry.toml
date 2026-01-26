@@ -36,7 +36,8 @@ ffi = true  # Enable FFI for bot/ponder process management and Bitcoin CLI
 fs_permissions = [
     { access = "read-write", path = "./contracts/test/data" },
     { access = "read-write", path = "./test/e2e/data" },
-    { access = "read-write", path = "./contracts/deployments" }
+    { access = "read-write", path = "./contracts/deployments" },
+    { access = "read-write", path = "./" }  # Allow creating .env file in root
 ]
 gas_snapshot_check = false
 gas_limit = "max"
