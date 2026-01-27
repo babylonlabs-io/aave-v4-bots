@@ -345,7 +345,7 @@ export class LiquidationBot {
       ]);
 
       const formattedBalance = formatUnits(balance, decimals);
-      console.log(`   ${symbol}: ${formattedBalance}`);
+      console.log(`   ${symbol}: ${formattedBalance} (${tokenAddress})`);
     }
   }
 }
