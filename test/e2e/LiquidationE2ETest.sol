@@ -24,7 +24,7 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
         // Wait for Ponder to be ready (listening on port 42069)
         console.log("Waiting for Ponder to start...");
-        // _waitForPonderReady();
+        _waitForPonderReady();
         console.log("Ponder is ready!");
 
         // Start liquidation bot (uses existing `pnpm liquidate` script)
@@ -224,27 +224,26 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
     function _waitForPonderReady() internal {
         // Poll Ponder health endpoint until ready (max 30 seconds)
+        // Returns 0 if ready, 1 if timeout
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
         inputs[2] = string.concat(
             "for i in {1..30}; do ",
             "if curl -s http://localhost:42069/health > /dev/null 2>&1; then ",
-            "echo 'ready'; exit 0; ",
+            "echo 0; exit 0; ",
             "fi; ",
             "sleep 1; ",
             "done; ",
-            "echo 'timeout'; exit 1"
+            "echo 1"
         );
 
         bytes memory result = vm.ffi(inputs);
-        string memory status = string(result);
 
-        // Check if we got "ready" or "timeout"
-        require(
-            keccak256(abi.encodePacked(status)) != keccak256(abi.encodePacked("timeout")),
-            "Ponder failed to start within 30 seconds"
-        );
+        // Convert result to uint - should be 0 (success) or 1 (timeout)
+        uint256 exitCode = BtcHelpers.convertToUint256(result);
+
+        require(exitCode == 0, "Ponder failed to start within 30 seconds");
     }
 
     function _killProcess(string memory pid) internal {
