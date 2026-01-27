@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity 0.8.28;
 
-import {BaseE2ETest} from "../../contracts/test/e2e/base/BaseE2ETest.sol";
+import {ActionE2EPegIn} from "../../contracts/test/e2e/action/ActionE2EPegIn.sol";
+import {ActionE2EApplication} from "../../contracts/test/e2e/action/ActionE2EApplication.sol";
 import {BtcHelpers} from "../../contracts/test/utils/BtcHelpers.sol";
+import {PopSignatures} from "../../contracts/test/utils/PopSignatures.sol";
 import {console} from "forge-std/console.sol";
+import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
 
-contract LiquidationE2ETest is BaseE2ETest {
+contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
     // Bot process management
     string public botProcessId;
     string public ponderProcessId;
@@ -30,6 +33,96 @@ contract LiquidationE2ETest is BaseE2ETest {
 
         assertTrue(bytes(botProcessId).length > 0, "Bot should have started");
         assertTrue(bytes(ponderProcessId).length > 0, "Ponder should have started");
+    }
+
+    function test_E2E_Liquidation_UnhealthyPosition() public {
+        console.log("\n=== Starting E2E Liquidation Test ===\n");
+
+        // 1. Setup: Create a borrower with funds and liquidity
+        address borrower = vm.addr(12);
+        vm.deal(borrower, 10 ether);
+        console.log("Borrower address:", borrower);
+
+        // 2. Pegin BTC (using helper from ActionE2EPegIn)
+        console.log("\n--- Step 1: Pegin BTC ---");
+        uint64 peginAmount = 1 * uint64(ONE_BTC); // 1 BTC
+        bytes32 depositorBtcPubKey = PopSignatures.TEST_DEPOSITOR_BTC_PUBKEY;
+        bytes32 vaultId = _doPegIn(borrower, depositorBtcPubKey, peginAmount);
+        console.log("Pegin completed, vaultId:", vm.toString(vaultId));
+
+        // 3. Add vault as collateral to Aave position
+        console.log("\n--- Step 2: Add Collateral ---");
+        bytes32[] memory vaultIds = new bytes32[](1);
+        vaultIds[0] = vaultId;
+        _addVaultToPosition(borrower, vaultIds);
+        console.log("Added vault to Aave position as collateral");
+
+        // Setup borrow liquidity (so borrower can borrow USDC)
+        _setUpBorrowLiquidity();
+
+        // 4. Borrow USDC against the collateral
+        console.log("\n--- Step 3: Borrow USDC ---");
+        uint256 borrowAmount = 40000 * ONE_USDC; // $40k USDC (80% LTV at $50k BTC price)
+        _borrowFromPosition(borrower, borrowAmount, borrower);
+        console.log("Borrowed USDC:", borrowAmount / ONE_USDC, "USDC");
+
+        // Check position is healthy
+        (uint256 collateralBefore, uint256 debtBefore, uint256 healthFactorBefore) = _getPositionInfo(borrower);
+        console.log("\n--- Position Before Price Drop ---");
+        console.log("Collateral value:", collateralBefore);
+        console.log("Debt value:", debtBefore);
+        console.log("Health Factor:", healthFactorBefore / 1e16, "/ 100"); // Display as percentage
+        assertTrue(healthFactorBefore > 1e18, "Position should be healthy initially");
+
+        // Get liquidator address from the private key used in .env
+        // This is Anvil test account #1
+        address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
+        address borrowerProxy = _getUserProxyAddress(borrower);
+        uint256 liquidatorUsdcBefore = usdc.balanceOf(liquidator);
+        console.log("\n--- Step 4: Wait for Bot to Liquidate ---");
+        console.log("Liquidator address:", liquidator);
+        console.log("Borrower proxy address:", borrowerProxy);
+        console.log("Liquidator USDC balance before:", liquidatorUsdcBefore / ONE_USDC);
+
+        // 4. Simulate price drop to make position unhealthy
+        console.log("\n--- Step 3: Price Drop ---");
+        vm.prank(admin);
+        btcPriceFeed.simulatePriceDrop(40); // 40% price drop ($50k -> $30k)
+        console.log("BTC price dropped by 40% ($50k -> $30k)");
+
+        // Verify position is now unhealthy
+        (,, uint256 healthFactorAfterDrop) = _getPositionInfo(borrower);
+        console.log("Health Factor after drop:", healthFactorAfterDrop / 1e16, "/ 100");
+        assertTrue(healthFactorAfterDrop < 1e18, "Position should be unhealthy after price drop");
+
+        // 5. Wait for indexer to sync and bot to liquidate
+        // The bot polls the Ponder API and should liquidate within a few seconds
+        console.log("Waiting 10 seconds for indexer sync + bot liquidation...");
+        vm.sleep(10000); // 10 seconds for indexer sync + bot action
+
+        // 6. Verify position was liquidated by checking on-chain state
+        console.log("\n--- Step 5: Verify Liquidation ---");
+        (uint256 collateralAfter, uint256 debtAfter, uint256 healthFactorAfter) = _getPositionInfo(borrower);
+        console.log("Collateral value after:", collateralAfter);
+        console.log("Debt value after:", debtAfter);
+        console.log("Health Factor after:", healthFactorAfter / 1e16, "/ 100");
+
+        // Verify debt was reduced (position was liquidated)
+        assertTrue(debtAfter < debtBefore, "Debt should decrease after liquidation");
+        console.log("Debt reduced by:", (debtBefore - debtAfter) / 1e26, "USD");
+
+        // Verify collateral was reduced (collateral was seized)
+        assertTrue(collateralAfter < collateralBefore, "Collateral should decrease after liquidation");
+        console.log("Collateral reduced by:", (collateralBefore - collateralAfter) / 1e26, "USD");
+
+        // 7. Verify liquidation keeper received fairness payment
+        uint256 liquidatorUsdcAfter = usdc.balanceOf(liquidator);
+        console.log("\n--- Step 6: Verify Keeper Payment ---");
+        console.log("Liquidator USDC balance after:", liquidatorUsdcAfter / ONE_USDC);
+        assertTrue(liquidatorUsdcAfter > liquidatorUsdcBefore, "Keeper should receive fairness payment");
+        console.log("Keeper received:", (liquidatorUsdcAfter - liquidatorUsdcBefore) / ONE_USDC, "USDC");
+
+        console.log("\n=== E2E Liquidation Test PASSED ===\n");
     }
 
     // ============ Helper Functions ============
@@ -101,10 +194,18 @@ contract LiquidationE2ETest is BaseE2ETest {
         return pid;
     }
 
-    function _getPositionInfo(address user) internal view returns (uint256 supplied, uint256 borrowed) {
-        // Query Aave spoke for user position
-        // TODO: Implement actual position query
-        return (0, 0);
+    function _getPositionInfo(address user)
+        internal
+        view
+        returns (uint256 totalCollateral, uint256 totalDebt, uint256 healthFactor)
+    {
+        // Get user's proxy address (Aave positions use proxy contracts)
+        address proxy = _getUserProxyAddress(user);
+
+        // Query Aave spoke for user's complete account data
+        ISpoke.UserAccountData memory accountData = aaveSpoke.getUserAccountData(proxy);
+
+        return (accountData.totalCollateralValue, accountData.totalDebtValue, accountData.healthFactor);
     }
 
     function tearDown() public {
