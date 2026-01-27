@@ -72,11 +72,20 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         // This is Anvil test account #1
         address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
         address borrowerProxy = _getUserProxyAddress(borrower);
+
+        // Fund liquidator with sufficient USDC and WBTC for liquidation
+        // Liquidator needs: debt (3 USDC) + fairness payment + protocol fee + WBTC for swap
+        vm.startPrank(admin);
+        usdc.mint(liquidator, 1000 * ONE_USDC); // Give plenty of USDC
+        wbtc.mint(liquidator, 1 * uint256(ONE_BTC)); // Give 1 WBTC for swaps
+        vm.stopPrank();
+
         uint256 liquidatorUsdcBefore = usdc.balanceOf(liquidator);
-        console.log("\n--- Step 4: Wait for Bot to Liquidate ---");
+        console.log("\n--- Step 4: Fund Liquidator ---");
         console.log("Liquidator address:", liquidator);
         console.log("Borrower proxy address:", borrowerProxy);
-        console.log("Liquidator USDC balance before:", liquidatorUsdcBefore / ONE_USDC);
+        console.log("Liquidator USDC balance:", liquidatorUsdcBefore / ONE_USDC);
+        console.log("Liquidator WBTC balance:", wbtc.balanceOf(liquidator) / ONE_BTC);
 
         // 4. Simulate price drop to make position unhealthy
         console.log("\n--- Step 3: Price Drop ---");
