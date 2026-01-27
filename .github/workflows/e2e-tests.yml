@@ -129,7 +129,7 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
-          echo "=== Bot logs ==="
-          cat /tmp/bot.log || true
           echo "=== Ponder logs ==="
           cat /tmp/ponder.log || true
+          echo "=== Bot logs ==="
+          cat /tmp/bot.log || true
