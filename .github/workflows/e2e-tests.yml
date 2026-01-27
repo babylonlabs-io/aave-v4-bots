@@ -33,7 +33,7 @@ jobs:
 
       - name: Checkout submodules (private repo)
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.VAULT_REPOS_RO }}
         run: |
           git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
           git submodule update --init --recursive
