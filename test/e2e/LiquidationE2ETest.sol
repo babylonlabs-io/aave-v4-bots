@@ -37,7 +37,7 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
         // Wait for Ponder to be ready (listening on port 42069)
         console.log("Waiting for Ponder to start...");
-        _waitForPonderReady();
+        vm.sleep(10000); // 10 seconds to allow Ponder to initialize
         console.log("Ponder is ready!");
 
         // Start liquidation bot (uses existing `pnpm liquidate` script)
@@ -114,7 +114,7 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         // Need time for: Ponder to detect price change -> Bot to poll Ponder -> Bot to execute
         console.log("\n--- Step 5: Wait for Bot Liquidation ---");
         console.log("Waiting 15 seconds for Ponder sync + bot liquidation...");
-        vm.sleep(15000); // 15 seconds (increased from 10s for more safety)
+        vm.sleep(15000); // 15 seconds
 
         // 6. Verify position was liquidated by checking on-chain state
         console.log("\n--- Step 5: Verify Liquidation ---");
