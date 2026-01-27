@@ -22,10 +22,14 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         // Start Ponder indexer (uses existing `pnpm indexer` script)
         ponderProcessId = _startPonder();
 
+        // Wait for Ponder to be ready (listening on port 42069)
+        console.log("Waiting for Ponder to start...");
+        _waitForPonderReady();
+        console.log("Ponder is ready!");
+
         // Start liquidation bot (uses existing `pnpm liquidate` script)
         botProcessId = _startBot();
     }
-
 
     function test_E2E_Liquidation_UnhealthyPosition() public {
         console.log("\n=== Starting E2E Liquidation Test ===\n");
@@ -170,10 +174,11 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
     function _startPonder() internal returns (string memory) {
         // Use existing pnpm script from package.json
+        // Source .env file before starting to ensure env vars are loaded
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
-        inputs[2] = "pnpm indexer > /tmp/ponder.log 2>&1 & echo $!";
+        inputs[2] = "set -a && source .env && set +a && pnpm indexer > /tmp/ponder.log 2>&1 & echo $!";
         bytes memory result = vm.ffi(inputs);
 
         // Convert PID from FFI bytes to string
@@ -185,10 +190,11 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
     function _startBot() internal returns (string memory) {
         // Use existing pnpm script from package.json
+        // Source .env file before starting to ensure env vars are loaded
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
-        inputs[2] = "pnpm liquidate > /tmp/bot.log 2>&1 & echo $!";
+        inputs[2] = "set -a && source .env && set +a && pnpm liquidate > /tmp/bot.log 2>&1 & echo $!";
         bytes memory result = vm.ffi(inputs);
 
         // Convert PID from FFI bytes to string using BtcHelpers utility
@@ -215,6 +221,31 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         // Kill bot and ponder processes
         _killProcess(botProcessId);
         _killProcess(ponderProcessId);
+    }
+
+    function _waitForPonderReady() internal {
+        // Poll Ponder health endpoint until ready (max 30 seconds)
+        string[] memory inputs = new string[](3);
+        inputs[0] = "bash";
+        inputs[1] = "-c";
+        inputs[2] = string.concat(
+            "for i in {1..30}; do ",
+            "if curl -s http://localhost:42069/health > /dev/null 2>&1; then ",
+            "echo 'ready'; exit 0; ",
+            "fi; ",
+            "sleep 1; ",
+            "done; ",
+            "echo 'timeout'; exit 1"
+        );
+
+        bytes memory result = vm.ffi(inputs);
+        string memory status = string(result);
+
+        // Check if we got "ready" or "timeout"
+        require(
+            keccak256(abi.encodePacked(status)) != keccak256(abi.encodePacked("timeout")),
+            "Ponder failed to start within 30 seconds"
+        );
     }
 
     function _killProcess(string memory pid) internal {
