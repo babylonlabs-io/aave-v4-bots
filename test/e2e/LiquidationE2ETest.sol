@@ -16,10 +16,23 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
     function setUp() public override {
         super.setUp(); // Load deployed contracts from DeploymentState
 
+        console.log("\n=== E2E Test Setup ===");
+
         // Create .env file with deployed contract addresses
+        console.log("Creating .env file...");
         _createEnvFile();
 
+        // Fund liquidator BEFORE starting bot (so bot has funds available)
+        address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
+        console.log("Funding liquidator:", liquidator);
+        vm.startPrank(admin);
+        usdc.mint(liquidator, 1000 * ONE_USDC);
+        wbtc.mint(liquidator, 1 * uint256(ONE_BTC));
+        vm.stopPrank();
+        console.log("Liquidator funded with 1000 USDC and 1 WBTC");
+
         // Start Ponder indexer (uses existing `pnpm indexer` script)
+        console.log("Starting Ponder indexer...");
         ponderProcessId = _startPonder();
 
         // Wait for Ponder to be ready (listening on port 42069)
@@ -28,7 +41,9 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         console.log("Ponder is ready!");
 
         // Start liquidation bot (uses existing `pnpm liquidate` script)
+        console.log("Starting liquidation bot...");
         botProcessId = _startBot();
+        console.log("=== Setup Complete ===\n");
     }
 
     function test_E2E_Liquidation_UnhealthyPosition() public {
@@ -72,20 +87,12 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         console.log("Health Factor:", healthFactorBefore / 1e16, "/ 100"); // Display as percentage
         assertTrue(healthFactorBefore > 1e18, "Position should be healthy initially");
 
-        // Get liquidator address from the private key used in .env
-        // This is Anvil test account #1
+        // Get liquidator and borrower info
         address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
         address borrowerProxy = _getUserProxyAddress(borrower);
-
-        // Fund liquidator with sufficient USDC and WBTC for liquidation
-        // Liquidator needs: debt (3 USDC) + fairness payment + protocol fee + WBTC for swap
-        vm.startPrank(admin);
-        usdc.mint(liquidator, 1000 * ONE_USDC); // Give plenty of USDC
-        wbtc.mint(liquidator, 1 * uint256(ONE_BTC)); // Give 1 WBTC for swaps
-        vm.stopPrank();
-
         uint256 liquidatorUsdcBefore = usdc.balanceOf(liquidator);
-        console.log("\n--- Step 4: Fund Liquidator ---");
+
+        console.log("\n--- Step 4: Check Liquidator Balances ---");
         console.log("Liquidator address:", liquidator);
         console.log("Borrower proxy address:", borrowerProxy);
         console.log("Liquidator USDC balance:", liquidatorUsdcBefore / ONE_USDC);
@@ -102,10 +109,12 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         console.log("Health Factor after drop:", healthFactorAfterDrop / 1e16, "/ 100");
         assertTrue(healthFactorAfterDrop < 1e18, "Position should be unhealthy after price drop");
 
-        // 5. Wait for indexer to sync and bot to liquidate
-        // The bot polls the Ponder API and should liquidate within a few seconds
-        console.log("Waiting 10 seconds for indexer sync + bot liquidation...");
-        vm.sleep(10000); // 10 seconds for indexer sync + bot action
+        // 5. Wait for Ponder to index the position changes, then wait for bot to liquidate
+        // Ponder polling: 1s, Bot polling: 1s
+        // Need time for: Ponder to detect price change -> Bot to poll Ponder -> Bot to execute
+        console.log("\n--- Step 5: Wait for Bot Liquidation ---");
+        console.log("Waiting 15 seconds for Ponder sync + bot liquidation...");
+        vm.sleep(15000); // 15 seconds (increased from 10s for more safety)
 
         // 6. Verify position was liquidated by checking on-chain state
         console.log("\n--- Step 5: Verify Liquidation ---");
@@ -223,14 +232,14 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
     }
 
     function _waitForPonderReady() internal {
-        // Poll Ponder health endpoint until ready (max 30 seconds)
+        // Poll Ponder /positions endpoint until ready (max 30 seconds)
         // Returns 0 if ready, 1 if timeout
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
         inputs[2] = string.concat(
             "for i in {1..30}; do ",
-            "if curl -s http://localhost:42069/health > /dev/null 2>&1; then ",
+            "if curl -s http://localhost:42069/positions > /dev/null 2>&1; then ",
             "echo 0; exit 0; ",
             "fi; ",
             "sleep 1; ",
