@@ -45,7 +45,7 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
         // 2. Pegin BTC (using helper from ActionE2EPegIn)
         console.log("\n--- Step 1: Pegin BTC ---");
-        uint64 peginAmount = 1 * uint64(ONE_BTC); // 1 BTC
+        uint64 peginAmount = 10_000; // 0.0001 BTC
         bytes32 depositorBtcPubKey = PopSignatures.TEST_DEPOSITOR_BTC_PUBKEY;
         bytes32 vaultId = _doPegIn(borrower, depositorBtcPubKey, peginAmount);
         console.log("Pegin completed, vaultId:", vm.toString(vaultId));
@@ -62,9 +62,9 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
         // 4. Borrow USDC against the collateral
         console.log("\n--- Step 3: Borrow USDC ---");
-        uint256 borrowAmount = 40000 * ONE_USDC; // $40k USDC (80% LTV at $50k BTC price)
+        uint256 borrowAmount = ONE_USDC / 10; // 0.1 USDC
         _borrowFromPosition(borrower, borrowAmount, borrower);
-        console.log("Borrowed USDC:", borrowAmount / ONE_USDC, "USDC");
+        console.log("Borrowed USDC:", borrowAmount, "wei (0.1 USDC)");
 
         // Check position is healthy
         (uint256 collateralBefore, uint256 debtBefore, uint256 healthFactorBefore) = _getPositionInfo(borrower);
