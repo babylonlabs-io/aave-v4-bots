@@ -22,27 +22,30 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         console.log("Creating .env file...");
         _createEnvFile();
 
-        // Fund liquidator BEFORE starting bot (so bot has funds available)
-        // Use vm.prank instead of vm.startPrank to ensure state changes are visible to RPC
-        address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
+        // Liquidator private key from .env (Anvil account #1: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8)
+        uint256 liquidatorPrivateKey = 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d;
+        address liquidator = vm.addr(liquidatorPrivateKey);
         console.log("Funding liquidator:", liquidator);
-        vm.prank(admin);
+
+        // Use broadcast to send REAL transactions visible to external RPC clients (bot)
+        // MockUSDC.mint() has no access control, so liquidator can mint for themselves
+        vm.startBroadcast(liquidatorPrivateKey);
         usdc.mint(liquidator, 1000 * ONE_USDC);
-        vm.prank(admin);
         wbtc.mint(liquidator, 1 * uint256(ONE_BTC));
+        vm.stopBroadcast();
+
         console.log("Liquidator funded with 1000 USDC and 1 WBTC");
 
         // Verify the mint worked by checking balance
         uint256 liquidatorUsdcBalance = usdc.balanceOf(liquidator);
-        console.log("Liquidator USDC balance after mint:", liquidatorUsdcBalance / ONE_USDC);
+        uint256 liquidatorWbtcBalance = wbtc.balanceOf(liquidator);
+        console.log("Liquidator USDC balance after broadcast mint:", liquidatorUsdcBalance / ONE_USDC);
+        console.log("Liquidator WBTC balance after broadcast mint:", liquidatorWbtcBalance / ONE_BTC);
         require(liquidatorUsdcBalance == 1000 * ONE_USDC, "Liquidator should have 1000 USDC");
+        require(liquidatorWbtcBalance == 1 * uint256(ONE_BTC), "Liquidator should have 1 WBTC");
 
-        // Force a new block to be mined to ensure state is committed to Anvil
-        vm.roll(block.number + 1);
-        vm.warp(block.timestamp + 12);
-
-        // Give Anvil a moment to commit state
-        vm.sleep(2000);
+        // Brief pause to ensure transactions are fully processed
+        vm.sleep(1000);
 
         // Start Ponder indexer (uses existing `pnpm indexer` script)
         console.log("Starting Ponder indexer...");
