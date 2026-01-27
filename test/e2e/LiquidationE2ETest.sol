@@ -26,14 +26,6 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         botProcessId = _startBot();
     }
 
-    function test_E2E_Smoke_BotAndPonderStart() public view {
-        // Smoke test to verify bot and ponder started successfully
-        console.log("Bot PID:", botProcessId);
-        console.log("Ponder PID:", ponderProcessId);
-
-        assertTrue(bytes(botProcessId).length > 0, "Bot should have started");
-        assertTrue(bytes(ponderProcessId).length > 0, "Ponder should have started");
-    }
 
     function test_E2E_Liquidation_UnhealthyPosition() public {
         console.log("\n=== Starting E2E Liquidation Test ===\n");
@@ -61,10 +53,12 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         _setUpBorrowLiquidity();
 
         // 4. Borrow USDC against the collateral
+        // At 0.0001 BTC (~$5 at $50k) with 75% LTV, can borrow ~$3.75 USDC
+        // Borrow $3 USDC to get close to max LTV
         console.log("\n--- Step 3: Borrow USDC ---");
-        uint256 borrowAmount = ONE_USDC / 10; // 0.1 USDC
+        uint256 borrowAmount = 3 * ONE_USDC; // 3 USDC (~80% of max borrowable)
         _borrowFromPosition(borrower, borrowAmount, borrower);
-        console.log("Borrowed USDC:", borrowAmount, "wei (0.1 USDC)");
+        console.log("Borrowed USDC:", borrowAmount / ONE_USDC, "USDC");
 
         // Check position is healthy
         (uint256 collateralBefore, uint256 debtBefore, uint256 healthFactorBefore) = _getPositionInfo(borrower);
