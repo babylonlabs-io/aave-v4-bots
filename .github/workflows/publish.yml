@@ -19,6 +19,7 @@ jobs:
       publish: true
       dockerfile: ./contrib/images/liquidation-aave-indexer/Dockerfile
       repoName: liquidation-aave-indexer
+      push_to_dockerhub: false
     permissions:
       contents: read        # REQUIRED by reusable workflow
       id-token: write       # REQUIRED for AWS OIDC
@@ -34,6 +35,7 @@ jobs:
       publish: true
       dockerfile: ./contrib/images/liquidation-aave-client/Dockerfile
       repoName: liquidation-aave-client
+      push_to_dockerhub: false
     permissions:
       contents: read        # REQUIRED by reusable workflow
       id-token: write       # REQUIRED for AWS OIDC
