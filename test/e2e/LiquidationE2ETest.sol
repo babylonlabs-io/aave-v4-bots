@@ -22,14 +22,15 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
         console.log("Creating .env file...");
         _createEnvFile();
 
-        // Liquidator private key from .env (Anvil account #1: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8)
-        uint256 liquidatorPrivateKey = 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d;
-        address liquidator = vm.addr(liquidatorPrivateKey);
+        // Fund liquidator BEFORE starting bot (so bot has funds available)
+        address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
         console.log("Funding liquidator:", liquidator);
 
-        // Use broadcast to send REAL transactions visible to external RPC clients (bot)
-        // MockUSDC.mint() has no access control, so liquidator can mint for themselves
-        vm.startBroadcast(liquidatorPrivateKey);
+        // Use broadcast with admin to send REAL transactions visible to external RPC clients (bot)
+        // Get admin's private key from environment
+        uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVATE_KEY");
+
+        vm.startBroadcast(adminPrivateKey);
         usdc.mint(liquidator, 1000 * ONE_USDC);
         wbtc.mint(liquidator, 1 * uint256(ONE_BTC));
         vm.stopBroadcast();
