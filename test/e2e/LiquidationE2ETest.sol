@@ -173,28 +173,27 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
     }
 
     function _startPonder() internal returns (string memory) {
-        // Use existing pnpm script from package.json
-        // Source .env file before starting to ensure env vars are loaded
+        // Start Ponder with explicit env vars from .env file
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
-        inputs[2] = "set -a && source .env && set +a && pnpm indexer > /tmp/ponder.log 2>&1 & echo $!";
+        // Use subshell to ensure proper backgrounding and PID capture
+        inputs[2] = "{ set -a; [ -f .env ] && . .env; set +a; pnpm indexer > /tmp/ponder.log 2>&1 & echo $!; }";
         bytes memory result = vm.ffi(inputs);
 
         // Convert PID from FFI bytes to string
-        // FFI returns decimal numbers as hex bytes, use BtcHelpers.convertToUint256
         string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
         console.log("Ponder started with PID:", pid);
         return pid;
     }
 
     function _startBot() internal returns (string memory) {
-        // Use existing pnpm script from package.json
-        // Source .env file before starting to ensure env vars are loaded
+        // Start bot with explicit env vars from .env file
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
-        inputs[2] = "set -a && source .env && set +a && pnpm liquidate > /tmp/bot.log 2>&1 & echo $!";
+        // Use subshell to ensure proper backgrounding and PID capture
+        inputs[2] = "{ set -a; [ -f .env ] && . .env; set +a; pnpm liquidate > /tmp/bot.log 2>&1 & echo $!; }";
         bytes memory result = vm.ffi(inputs);
 
         // Convert PID from FFI bytes to string using BtcHelpers utility
