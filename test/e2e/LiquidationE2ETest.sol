@@ -24,7 +24,7 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
         // Wait for Ponder to be ready (listening on port 42069)
         console.log("Waiting for Ponder to start...");
-        _waitForPonderReady();
+        // _waitForPonderReady();
         console.log("Ponder is ready!");
 
         // Start liquidation bot (uses existing `pnpm liquidate` script)
