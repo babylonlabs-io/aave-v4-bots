@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "ponder dev",
-    "start": "ponder start",
+    "dev": "ponder dev --port 42069",
+    "start": "ponder start --port 42069",
     "codegen": "ponder codegen"
   },
   "dependencies": {
