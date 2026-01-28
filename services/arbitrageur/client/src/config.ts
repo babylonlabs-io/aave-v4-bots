@@ -49,7 +49,7 @@ const envSchema = z.object({
   VAULT_PROCESSING_DELAY_MS: nonNegativeIntSchema.optional().default("5000"),
   MAX_SLIPPAGE_BPS: nonNegativeIntSchema.optional().default("100"),
   AUTO_REDEEM: z.string().optional().default("true"),
-  METRICS_PORT: positiveIntSchema.optional().default("9090"),
+  METRICS_PORT: positiveIntSchema.optional().default("9091"),
 
   // Retry configuration (optional)
   RETRY_MAX_ATTEMPTS: positiveIntSchema.optional().default("3"),
