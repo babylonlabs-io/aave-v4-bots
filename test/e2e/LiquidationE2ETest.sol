@@ -28,7 +28,7 @@ contract LiquidationE2ETest is ActionE2EPegIn, ActionE2EApplication {
 
         // Use broadcast with admin to send REAL transactions visible to external RPC clients (bot)
         // Get admin's private key from environment
-        uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVATE_KEY");
+        uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVKEY");
 
         vm.startBroadcast(adminPrivateKey);
         usdc.mint(liquidator, 1000 * ONE_USDC);
