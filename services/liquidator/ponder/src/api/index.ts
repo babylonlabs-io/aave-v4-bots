@@ -7,7 +7,7 @@ import type { Address, PublicClient } from "viem";
 import { spokeAbi } from "../../abis/Spoke";
 
 function replaceBigInts<T>(value: T) {
-  return replaceBigIntsBase(value, (x) => `${String(x)}n`);
+  return replaceBigIntsBase(value, (x) => String(x));
 }
 
 const app = new Hono();
