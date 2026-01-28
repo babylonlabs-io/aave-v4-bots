@@ -39,8 +39,9 @@
       "dist",
       "*.md",
       "pnpm-lock.yaml",
-      "apps/ponder/generated",
-      "apps/ponder/.ponder"
+      "services/*/ponder/generated",
+      "services/*/ponder/.ponder",
+      "external"
     ]
   }
 }

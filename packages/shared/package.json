@@ -1,16 +1,16 @@
 {
-  "name": "@aave-v4-liquidation-bot/ponder",
+  "name": "@repo/shared",
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "dev": "ponder dev",
-    "start": "ponder start",
-    "codegen": "ponder codegen"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "ponder": "^0.13.6",
-    "hono": "^4.5.0",
+    "prom-client": "^15.1.3",
     "viem": "^2.37.0"
   },
   "devDependencies": {

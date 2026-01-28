@@ -20,6 +20,7 @@ describe("health checks", () => {
 
       const deps: HealthCheckDependencies = {
         ponderUrl: "http://localhost:42069",
+        ponderHealthEndpoint: "/positions",
         publicClient: mockPublicClient as unknown as HealthCheckDependencies["publicClient"],
       };
 
@@ -41,6 +42,7 @@ describe("health checks", () => {
 
       const deps: HealthCheckDependencies = {
         ponderUrl: "http://localhost:42069",
+        ponderHealthEndpoint: "/positions",
         publicClient: mockPublicClient as unknown as HealthCheckDependencies["publicClient"],
       };
 
@@ -61,6 +63,7 @@ describe("health checks", () => {
 
       const deps: HealthCheckDependencies = {
         ponderUrl: "http://localhost:42069",
+        ponderHealthEndpoint: "/positions",
         publicClient: mockPublicClient as unknown as HealthCheckDependencies["publicClient"],
       };
 
@@ -80,6 +83,7 @@ describe("health checks", () => {
 
       const deps: HealthCheckDependencies = {
         ponderUrl: "http://localhost:42069",
+        ponderHealthEndpoint: "/positions",
         publicClient: mockPublicClient as unknown as HealthCheckDependencies["publicClient"],
       };
 
@@ -95,6 +99,7 @@ describe("health checks", () => {
 
       const deps: HealthCheckDependencies = {
         ponderUrl: "http://localhost:42069",
+        ponderHealthEndpoint: "/positions",
         publicClient: null,
       };
 
@@ -117,6 +122,7 @@ describe("health checks", () => {
 
       const deps: HealthCheckDependencies = {
         ponderUrl: "http://localhost:42069",
+        ponderHealthEndpoint: "/positions",
         publicClient: mockPublicClient as unknown as HealthCheckDependencies["publicClient"],
       };
 
@@ -137,6 +143,7 @@ describe("health checks", () => {
 
       const deps: HealthCheckDependencies = {
         ponderUrl: "http://localhost:42069",
+        ponderHealthEndpoint: "/positions",
         publicClient: mockPublicClient as unknown as HealthCheckDependencies["publicClient"],
       };
 
@@ -158,6 +165,7 @@ describe("health checks", () => {
 
       const deps: HealthCheckDependencies = {
         ponderUrl: "http://localhost:42069",
+        ponderHealthEndpoint: "/positions",
         publicClient: mockPublicClient as unknown as HealthCheckDependencies["publicClient"],
       };
 

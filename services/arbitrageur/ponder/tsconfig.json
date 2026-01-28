@@ -3,14 +3,15 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "esModuleInterop": true,
     "strict": true,
+    "esModuleInterop": true,
     "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "outDir": "dist"
+    "noEmit": true
   },
-  "exclude": ["node_modules", "dist", "external"]
+  "include": ["src/**/*.ts", "ponder.config.ts", "ponder.schema.ts", "abis/**/*.ts"]
 }

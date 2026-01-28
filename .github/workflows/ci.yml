@@ -30,8 +30,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # Ponder uses virtual modules (ponder:registry, ponder:api) that cannot
-      # be resolved by standalone tsc, so we only typecheck the client app.
-      - run: pnpm typecheck
+      # be resolved by standalone tsc, so we only typecheck client apps and shared.
+      - run: pnpm typecheck:shared
+      - run: pnpm typecheck:liquidator
+      - run: pnpm typecheck:arbitrageur
 
   test:
     runs-on: ubuntu-latest

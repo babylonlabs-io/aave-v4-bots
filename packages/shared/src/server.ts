@@ -2,15 +2,18 @@ import { type IncomingMessage, type ServerResponse, createServer } from "node:ht
 import type { PublicClient } from "viem";
 
 import { type HealthCheckDependencies, runHealthChecks } from "./health";
-import { getMetrics, getMetricsContentType } from "./metrics";
 
 export interface MetricsServerConfig {
   port: number;
   ponderUrl: string;
+  ponderHealthEndpoint: string;
+  getMetrics: () => Promise<string>;
+  getMetricsContentType: () => string;
 }
 
 const healthCheckDeps: HealthCheckDependencies = {
   ponderUrl: "",
+  ponderHealthEndpoint: "",
   publicClient: null,
 };
 
@@ -26,6 +29,7 @@ export function setPublicClient(client: PublicClient): void {
  */
 export function startMetricsServer(config: MetricsServerConfig): void {
   healthCheckDeps.ponderUrl = config.ponderUrl;
+  healthCheckDeps.ponderHealthEndpoint = config.ponderHealthEndpoint;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url || "/";
@@ -40,8 +44,8 @@ export function startMetricsServer(config: MetricsServerConfig): void {
         res.writeHead(statusCode, { "Content-Type": "application/json" });
         res.end(JSON.stringify(health, null, 2));
       } else if (url === "/metrics") {
-        const metrics = await getMetrics();
-        res.writeHead(200, { "Content-Type": getMetricsContentType() });
+        const metrics = await config.getMetrics();
+        res.writeHead(200, { "Content-Type": config.getMetricsContentType() });
         res.end(metrics);
       } else if (url === "/ready" || url === "/readyz") {
         const health = await runHealthChecks(healthCheckDeps);

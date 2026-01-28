@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
 import { config as dotenvConfig } from "dotenv";
 
-// Load .env from root directory
-dotenvConfig({ path: resolve(process.cwd(), ".env") });
+// Load .env.liquidator from root directory
+dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
 import { http, type Chain, type Hex, createPublicClient, createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
