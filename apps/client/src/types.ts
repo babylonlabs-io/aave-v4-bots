@@ -28,6 +28,14 @@ export interface Config {
   // Contract addresses
   controllerAddress: Address;
   vaultSwapAddress: Address;
-  debtTokenAddresses: Address[];
   wbtcAddress: Address;
+
+  // Optional: override auto-discovered debt tokens from Spoke
+  debtTokenAddresses?: Address[];
+
+  // Auto-swap seized vaults for WBTC (default: true)
+  autoSwap: boolean;
+
+  // Monitoring
+  metricsPort: number;
 }

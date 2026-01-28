@@ -28,30 +28,38 @@ ponder.on("Spoke:Supply", async ({ event, context }) => {
 /**
  * Withdraw event handler
  * - Subtract withdrawnShares from position
+ * - Skip if position doesn't exist (e.g. START_BLOCK is after the Supply event)
  */
 ponder.on("Spoke:Withdraw", async ({ event, context }) => {
   const proxyAddress = event.args.user;
   const withdrawnShares = event.args.withdrawnShares;
   const timestamp = event.block.timestamp;
 
-  // Update position - subtract withdrawn shares
-  // Note: If this results in 0 shares, position stays but with 0 shares
-  // The API will filter out positions with 0 collateral anyway
-  await context.db
-    .update(position, { proxyAddress })
-    .set((row) => ({
-      suppliedShares: row.suppliedShares - withdrawnShares,
+  const existingRecord = await context.db.find(position, { proxyAddress });
+  if (!existingRecord) return;
+
+  const newShares = existingRecord.suppliedShares - withdrawnShares;
+
+  if (newShares <= 0n) {
+    await context.db.delete(position, { proxyAddress });
+  } else {
+    await context.db.update(position, { proxyAddress }).set({
+      suppliedShares: newShares,
       updatedAt: timestamp,
-    }));
+    });
+  }
 });
 
 /**
  * LiquidationCall event handler
  * - Full liquidation: delete position
+ * - Skip if position doesn't exist (e.g. START_BLOCK is after the Supply event)
  */
 ponder.on("Spoke:LiquidationCall", async ({ event, context }) => {
   const proxyAddress = event.args.user;
 
-  // Full liquidation - remove position
+  const existingRecord = await context.db.find(position, { proxyAddress });
+  if (!existingRecord) return;
+
   await context.db.delete(position, { proxyAddress });
 });
