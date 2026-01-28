@@ -4,14 +4,26 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "db:up": "docker compose up -d",
-    "db:down": "docker compose down -v",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down -v postgres",
     "db:logs": "docker compose logs -f postgres",
     "indexer": "pnpm --filter @aave-v4-liquidation-bot/ponder dev",
     "indexer:start": "pnpm --filter @aave-v4-liquidation-bot/ponder start",
-    "liquidate": "tsx apps/client/src/index.ts"
+    "liquidate": "tsx apps/client/src/index.ts",
+    "liquidate:list-owned": "tsx apps/client/src/index.ts list-owned",
+    "liquidate:swap": "tsx apps/client/src/index.ts swap",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "biome format --write .",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "typecheck": "pnpm --filter @aave-v4-liquidation-bot/client typecheck",
+    "test": "pnpm --filter @aave-v4-liquidation-bot/client test",
+    "test:watch": "pnpm --filter @aave-v4-liquidation-bot/client test:watch",
+    "test:coverage": "pnpm --filter @aave-v4-liquidation-bot/client test:coverage"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.0",
     "@types/node": "^22.13.14",
     "typescript": "^5.7.3",
     "tsx": "^4.19.3"
@@ -21,4 +33,3 @@
   },
   "packageManager": "pnpm@9.13.2"
 }
-

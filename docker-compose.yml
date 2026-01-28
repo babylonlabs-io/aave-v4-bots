@@ -1,10 +1,10 @@
-version: "3.8"
-
 services:
+  # ============================================
+  # PostgreSQL Database
+  # ============================================
   postgres:
-    image: postgres:17
-    container_name: aave_v4_liquidation_bot_postgres
-    restart: unless-stopped
+    image: postgres:17-alpine
+    container_name: liquidation-postgres
     environment:
       POSTGRES_USER: ponder
       POSTGRES_PASSWORD: ponder
@@ -12,8 +12,80 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - aave_v4_liquidation_bot_postgres:/var/lib/postgresql/data
+      - liquidation_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ponder"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - liquidation-network
+
+  # ============================================
+  # Ponder Indexer
+  # ============================================
+  ponder:
+    build:
+      context: .
+      dockerfile: docker/ponder.Dockerfile
+    container_name: liquidation-ponder
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL to use internal Docker network
+      DATABASE_URL: postgresql://ponder:ponder@postgres:5432/ponder
+      # Database schema name (required for Ponder v0.13+ with PostgreSQL)
+      DATABASE_SCHEMA: public
+      # Ponder port (internal)
+      PONDER_PORT: 42069
+    ports:
+      - "${PONDER_PORT:-42069}:42069"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:42069/positions"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    networks:
+      - liquidation-network
+    restart: unless-stopped
+
+  # ============================================
+  # Liquidation Client Bot
+  # ============================================
+  client:
+    build:
+      context: .
+      dockerfile: docker/client.Dockerfile
+    container_name: liquidation-client
+    env_file:
+      - .env
+    environment:
+      # Override PONDER_URL to use internal Docker network
+      PONDER_URL: http://ponder:42069
+      # Metrics port
+      METRICS_PORT: 9090
+    ports:
+      - "${METRICS_PORT:-9090}:9090"
+    depends_on:
+      ponder:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - liquidation-network
+    restart: unless-stopped
 
 volumes:
-  aave_v4_liquidation_bot_postgres:
+  liquidation_postgres_data:
 
+networks:
+  liquidation-network:
+    driver: bridge

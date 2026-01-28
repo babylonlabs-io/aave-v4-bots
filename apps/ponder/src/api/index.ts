@@ -1,8 +1,8 @@
-import { Hono } from "hono";
-import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
 import { db, publicClients } from "ponder:api";
 import schema from "ponder:schema";
-import { type Address } from "viem";
+import { Hono } from "hono";
+import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
+import type { Address, PublicClient } from "viem";
 
 import { spokeAbi } from "../../abis/Spoke";
 
@@ -31,7 +31,7 @@ const HEALTH_FACTOR_THRESHOLD = BigInt(1e18);
  */
 app.get("/liquidatable-positions", async (c) => {
   // Get the public client for the network
-  const publicClient = Object.values(publicClients)[0];
+  const publicClient = Object.values(publicClients)[0] as PublicClient | undefined;
 
   if (!publicClient) {
     return c.json({ error: "No public client configured" }, 500);
@@ -50,7 +50,18 @@ app.get("/liquidatable-positions", async (c) => {
     return c.json({ liquidatable: [], total: 0, checked: 0 });
   }
 
-  // Fetch account data for each position (individual calls - works on any chain)
+  // Fetch account data for all positions in parallel
+  const results = await Promise.allSettled(
+    positions.map((p) =>
+      publicClient.readContract({
+        address: spokeAddress,
+        abi: spokeAbi,
+        functionName: "getUserAccountData",
+        args: [p.proxyAddress],
+      })
+    )
+  );
+
   const liquidatable: Array<{
     proxyAddress: string;
     healthFactor: string;
@@ -59,42 +70,38 @@ app.get("/liquidatable-positions", async (c) => {
     suppliedShares: string;
   }> = [];
 
-  for (const p of positions) {
-    try {
-      const accountData = await publicClient.readContract({
-        address: spokeAddress,
-        abi: spokeAbi,
-        functionName: "getUserAccountData",
-        args: [p.proxyAddress],
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const p = positions[i];
+
+    if (result.status === "rejected") {
+      console.error(`Failed to fetch account data for ${p.proxyAddress}:`, result.reason);
+      continue;
+    }
+
+    const accountData = result.value;
+    const healthFactor = accountData.healthFactor;
+    const totalDebtValue = accountData.totalDebtValue;
+
+    // Liquidatable if: health factor < 1.0 AND has debt
+    if (healthFactor < HEALTH_FACTOR_THRESHOLD && totalDebtValue > 0n) {
+      liquidatable.push({
+        proxyAddress: p.proxyAddress,
+        healthFactor: healthFactor.toString(),
+        totalCollateralValue: accountData.totalCollateralValue.toString(),
+        totalDebtValue: totalDebtValue.toString(),
+        suppliedShares: p.suppliedShares.toString(),
       });
-
-      const healthFactor = accountData.healthFactor;
-      const totalDebtValue = accountData.totalDebtValue;
-
-      // Liquidatable if: health factor < 1.0 AND has debt
-      const isLiquidatable =
-        healthFactor < HEALTH_FACTOR_THRESHOLD && totalDebtValue > 0n;
-
-      if (isLiquidatable) {
-        liquidatable.push({
-          proxyAddress: p.proxyAddress,
-          healthFactor: healthFactor.toString(),
-          totalCollateralValue: accountData.totalCollateralValue.toString(),
-          totalDebtValue: totalDebtValue.toString(),
-          suppliedShares: p.suppliedShares.toString(),
-        });
-      }
-    } catch (error) {
-      // Skip positions that fail to fetch
-      console.error(`Failed to fetch account data for ${p.proxyAddress}:`, error);
     }
   }
 
-  return c.json(replaceBigInts({
-    liquidatable,
-    total: liquidatable.length,
-    checked: positions.length,
-  }));
+  return c.json(
+    replaceBigInts({
+      liquidatable,
+      total: liquidatable.length,
+      checked: positions.length,
+    })
+  );
 });
 
 /**
@@ -105,15 +112,17 @@ app.get("/liquidatable-positions", async (c) => {
 app.get("/positions", async (c) => {
   const positions = await db.query.position.findMany();
 
-  return c.json(replaceBigInts({
-    positions: positions.map((p) => ({
-      proxyAddress: p.proxyAddress,
-      suppliedShares: p.suppliedShares,
-      createdAt: p.createdAt,
-      updatedAt: p.updatedAt,
-    })),
-    total: positions.length,
-  }));
+  return c.json(
+    replaceBigInts({
+      positions: positions.map((p) => ({
+        proxyAddress: p.proxyAddress,
+        suppliedShares: p.suppliedShares,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+      })),
+      total: positions.length,
+    })
+  );
 });
 
 /**
@@ -122,7 +131,7 @@ app.get("/positions", async (c) => {
  * Returns all positions with their health factors (for debugging)
  */
 app.get("/positions-health", async (c) => {
-  const publicClient = Object.values(publicClients)[0];
+  const publicClient = Object.values(publicClients)[0] as PublicClient | undefined;
 
   if (!publicClient) {
     return c.json({ error: "No public client configured" }, 500);
@@ -139,43 +148,86 @@ app.get("/positions-health", async (c) => {
     return c.json({ positions: [], total: 0 });
   }
 
-  // Fetch account data for each position (individual calls - works on any chain)
-  const positionsWithHealth = [];
-
+  // Fetch account data for all positions in parallel
+  const accountDataCalls = [];
   for (const p of positions) {
-    try {
-      const accountData = await publicClient.readContract({
+    accountDataCalls.push(
+      publicClient.readContract({
         address: spokeAddress,
         abi: spokeAbi,
         functionName: "getUserAccountData",
         args: [p.proxyAddress],
-      });
+      })
+    );
+  }
+  const results = await Promise.allSettled(accountDataCalls);
 
-      const healthFactorWad = accountData.healthFactor;
-      const healthFactorFormatted = Number(healthFactorWad) / 1e18;
+  const positionsWithHealth = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    const p = positions[i];
 
-      positionsWithHealth.push({
-        proxyAddress: p.proxyAddress,
-        healthFactor: healthFactorWad.toString(),
-        healthFactorFormatted,
-        totalCollateralValue: accountData.totalCollateralValue.toString(),
-        totalDebtValue: accountData.totalDebtValue.toString(),
-        isLiquidatable: healthFactorWad < HEALTH_FACTOR_THRESHOLD && accountData.totalDebtValue > 0n,
-        threshold: HEALTH_FACTOR_THRESHOLD.toString(),
-      });
-    } catch (error) {
+    if (result.status === "rejected") {
       positionsWithHealth.push({
         proxyAddress: p.proxyAddress,
         error: "Failed to fetch account data",
-        errorDetails: (error as Error).message || "Unknown error",
+        errorDetails: result.reason instanceof Error ? result.reason.message : "Unknown error",
       });
+      continue;
     }
+
+    const accountData = result.value;
+    const healthFactorWad = accountData.healthFactor;
+    const healthFactorFormatted = Number(healthFactorWad) / 1e18;
+
+    positionsWithHealth.push({
+      proxyAddress: p.proxyAddress,
+      healthFactor: healthFactorWad.toString(),
+      healthFactorFormatted,
+      totalCollateralValue: accountData.totalCollateralValue.toString(),
+      totalDebtValue: accountData.totalDebtValue.toString(),
+      isLiquidatable: healthFactorWad < HEALTH_FACTOR_THRESHOLD && accountData.totalDebtValue > 0n,
+      threshold: HEALTH_FACTOR_THRESHOLD.toString(),
+    });
   }
 
-  return c.json(replaceBigInts({
-    positions: positionsWithHealth,
-    total: positions.length,
-  }));
+  return c.json(
+    replaceBigInts({
+      positions: positionsWithHealth,
+      total: positions.length,
+    })
+  );
+});
+
+/**
+ * GET /owned-vaults?owner=0x...
+ *
+ * Returns all vaults owned by the given address
+ */
+app.get("/owned-vaults", async (c) => {
+  const owner = c.req.query("owner");
+
+  if (!owner) {
+    return c.json({ error: "Missing required query parameter: owner" }, 400);
+  }
+
+  const ownerLower = owner.toLowerCase() as `0x${string}`;
+
+  const vaults = await db.query.vault.findMany({
+    where: (fields, { eq }) => eq(fields.owner, ownerLower),
+  });
+
+  return c.json(
+    replaceBigInts({
+      vaults: vaults.map((v) => ({
+        vaultId: v.vaultId,
+        owner: v.owner,
+        previousOwner: v.previousOwner,
+        updatedAt: v.updatedAt,
+      })),
+      total: vaults.length,
+    })
+  );
 });
 
 export default app;

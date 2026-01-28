@@ -1,0 +1,48 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment files (loaded via env_file in docker-compose)
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+dist
+**/dist
+*.tsbuildinfo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test files
+coverage
+.nyc_output
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Ponder generated files (will be regenerated)
+apps/ponder/generated
+apps/ponder/.ponder
+
+# Documentation
+*.md
+!README.md
+
+# Docker directory (not needed inside container)
+docker/
