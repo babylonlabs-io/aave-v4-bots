@@ -137,7 +137,7 @@ describe("config validation", () => {
       expect(config.vaultProcessingDelayMs).toBe(5000);
       expect(config.maxSlippageBps).toBe(100);
       expect(config.autoRedeem).toBe(true);
-      expect(config.metricsPort).toBe(9090);
+      expect(config.metricsPort).toBe(9091);
       expect(config.retryMaxAttempts).toBe(3);
       expect(config.retryInitialDelayMs).toBe(1000);
       expect(config.retryMaxDelayMs).toBe(30000);
