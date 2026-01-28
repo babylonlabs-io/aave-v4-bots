@@ -17,3 +17,13 @@ export const position = onchainTable("position", (t) => ({
   updatedAt: t.bigint().notNull(),
 }));
 
+/**
+ * Tracks vault ownership via VaultOwnershipTransferred events from Controller.
+ * - Upserted on every ownership transfer (liquidation, escrow, release, emergency repay)
+ */
+export const vault = onchainTable("vault", (t) => ({
+  vaultId: t.hex().primaryKey(),
+  owner: t.hex().notNull(),
+  previousOwner: t.hex().notNull(),
+  updatedAt: t.bigint().notNull(),
+}));
