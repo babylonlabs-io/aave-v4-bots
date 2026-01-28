@@ -3,14 +3,16 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "esModuleInterop": true,
     "strict": true,
+    "esModuleInterop": true,
     "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "noEmit": true
   },
-  "exclude": ["node_modules", "dist", "external"]
+  "include": ["src/**/*.ts"]
 }

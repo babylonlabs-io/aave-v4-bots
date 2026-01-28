@@ -11,6 +11,7 @@ export interface HealthCheckResult {
 
 export interface HealthCheckDependencies {
   ponderUrl: string;
+  ponderHealthEndpoint: string;
   publicClient: PublicClient | null;
 }
 
@@ -28,14 +29,21 @@ export function updateLastPollTime(): void {
 }
 
 /**
+ * Get the last poll timestamp
+ */
+export function getLastPollTime(): Date | null {
+  return lastPollTime;
+}
+
+/**
  * Check if Ponder API is reachable
  */
-async function checkPonderHealth(ponderUrl: string): Promise<boolean> {
+async function checkPonderHealth(ponderUrl: string, healthEndpoint: string): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
 
-    const response = await fetch(`${ponderUrl}/positions`, {
+    const response = await fetch(`${ponderUrl}${healthEndpoint}`, {
       signal: controller.signal,
     });
 
@@ -72,7 +80,7 @@ async function checkRpcHealth(publicClient: PublicClient | null): Promise<RpcHea
  */
 export async function runHealthChecks(deps: HealthCheckDependencies): Promise<HealthCheckResult> {
   const [ponderReachable, rpcHealth] = await Promise.all([
-    checkPonderHealth(deps.ponderUrl),
+    checkPonderHealth(deps.ponderUrl, deps.ponderHealthEndpoint),
     checkRpcHealth(deps.publicClient),
   ]);
 

@@ -12,34 +12,60 @@ permissions:
   contents: read
 
 jobs:
-  docker_indexer_pipeline:
+  # Liquidator Service
+  docker_liquidator_indexer:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@22ae8ed7a2ea5c80331758914c4e0ea732eea1ad # v0.15.0
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/ponder.Dockerfile
+      dockerfile: ./docker/liquidator-ponder.Dockerfile
       repoName: liquidation-aave-indexer
       push_to_dockerhub: false
     permissions:
-      contents: read        # REQUIRED by reusable workflow
-      id-token: write       # REQUIRED for AWS OIDC
-      # required for all workflows
+      contents: read
+      id-token: write
       security-events: write
-      # required to fetch internal or private CodeQL packs
       packages: read
 
-  docker_client_pipeline:
+  docker_liquidator_client:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@22ae8ed7a2ea5c80331758914c4e0ea732eea1ad # v0.15.0
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/client.Dockerfile
+      dockerfile: ./docker/liquidator-client.Dockerfile
       repoName: liquidation-aave-client
       push_to_dockerhub: false
     permissions:
-      contents: read        # REQUIRED by reusable workflow
-      id-token: write       # REQUIRED for AWS OIDC
-      # required for all workflows
+      contents: read
+      id-token: write
       security-events: write
-      # required to fetch internal or private CodeQL packs
+      packages: read
+
+  # Arbitrageur Service
+  docker_arbitrageur_indexer:
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@22ae8ed7a2ea5c80331758914c4e0ea732eea1ad # v0.15.0
+    secrets: inherit
+    with:
+      publish: true
+      dockerfile: ./docker/arbitrageur-ponder.Dockerfile
+      repoName: arbitrageur-aave-indexer
+      push_to_dockerhub: false
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+      packages: read
+
+  docker_arbitrageur_client:
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@22ae8ed7a2ea5c80331758914c4e0ea732eea1ad # v0.15.0
+    secrets: inherit
+    with:
+      publish: true
+      dockerfile: ./docker/arbitrageur-client.Dockerfile
+      repoName: arbitrageur-aave-client
+      push_to_dockerhub: false
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
       packages: read

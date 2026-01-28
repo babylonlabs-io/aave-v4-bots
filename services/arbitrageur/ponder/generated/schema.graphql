@@ -1,0 +1,142 @@
+"""
+The `JSON` scalar type represents JSON values as specified by [ECMA-404](http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf).
+"""
+scalar JSON
+
+scalar BigInt
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type Meta {
+  status: JSON
+}
+
+type Query {
+  escrowedVault(vaultId: String!): escrowedVault
+  escrowedVaults(where: escrowedVaultFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): escrowedVaultPage!
+  ownedVault(vaultId: String!): ownedVault
+  ownedVaults(where: ownedVaultFilter, orderBy: String, orderDirection: String, before: String, after: String, limit: Int): ownedVaultPage!
+  _meta: Meta
+}
+
+type escrowedVault {
+  vaultId: String!
+  seller: String!
+  btcAmount: BigInt!
+  createdAt: BigInt!
+}
+
+type escrowedVaultPage {
+  items: [escrowedVault!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input escrowedVaultFilter {
+  AND: [escrowedVaultFilter]
+  OR: [escrowedVaultFilter]
+  vaultId: String
+  vaultId_not: String
+  vaultId_in: [String]
+  vaultId_not_in: [String]
+  vaultId_contains: String
+  vaultId_not_contains: String
+  vaultId_starts_with: String
+  vaultId_ends_with: String
+  vaultId_not_starts_with: String
+  vaultId_not_ends_with: String
+  seller: String
+  seller_not: String
+  seller_in: [String]
+  seller_not_in: [String]
+  seller_contains: String
+  seller_not_contains: String
+  seller_starts_with: String
+  seller_ends_with: String
+  seller_not_starts_with: String
+  seller_not_ends_with: String
+  btcAmount: BigInt
+  btcAmount_not: BigInt
+  btcAmount_in: [BigInt]
+  btcAmount_not_in: [BigInt]
+  btcAmount_gt: BigInt
+  btcAmount_lt: BigInt
+  btcAmount_gte: BigInt
+  btcAmount_lte: BigInt
+  createdAt: BigInt
+  createdAt_not: BigInt
+  createdAt_in: [BigInt]
+  createdAt_not_in: [BigInt]
+  createdAt_gt: BigInt
+  createdAt_lt: BigInt
+  createdAt_gte: BigInt
+  createdAt_lte: BigInt
+}
+
+type ownedVault {
+  vaultId: String!
+  owner: String!
+  btcAmount: BigInt!
+  wbtcPaid: BigInt!
+  acquiredAt: BigInt!
+}
+
+type ownedVaultPage {
+  items: [ownedVault!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+input ownedVaultFilter {
+  AND: [ownedVaultFilter]
+  OR: [ownedVaultFilter]
+  vaultId: String
+  vaultId_not: String
+  vaultId_in: [String]
+  vaultId_not_in: [String]
+  vaultId_contains: String
+  vaultId_not_contains: String
+  vaultId_starts_with: String
+  vaultId_ends_with: String
+  vaultId_not_starts_with: String
+  vaultId_not_ends_with: String
+  owner: String
+  owner_not: String
+  owner_in: [String]
+  owner_not_in: [String]
+  owner_contains: String
+  owner_not_contains: String
+  owner_starts_with: String
+  owner_ends_with: String
+  owner_not_starts_with: String
+  owner_not_ends_with: String
+  btcAmount: BigInt
+  btcAmount_not: BigInt
+  btcAmount_in: [BigInt]
+  btcAmount_not_in: [BigInt]
+  btcAmount_gt: BigInt
+  btcAmount_lt: BigInt
+  btcAmount_gte: BigInt
+  btcAmount_lte: BigInt
+  wbtcPaid: BigInt
+  wbtcPaid_not: BigInt
+  wbtcPaid_in: [BigInt]
+  wbtcPaid_not_in: [BigInt]
+  wbtcPaid_gt: BigInt
+  wbtcPaid_lt: BigInt
+  wbtcPaid_gte: BigInt
+  wbtcPaid_lte: BigInt
+  acquiredAt: BigInt
+  acquiredAt_not: BigInt
+  acquiredAt_in: [BigInt]
+  acquiredAt_not_in: [BigInt]
+  acquiredAt_gt: BigInt
+  acquiredAt_lt: BigInt
+  acquiredAt_gte: BigInt
+  acquiredAt_lte: BigInt
+}

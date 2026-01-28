@@ -1,5 +1,5 @@
 # ============================================
-# Liquidation Client - Multi-stage Dockerfile
+# Liquidator Ponder Indexer - Multi-stage Dockerfile
 # ============================================
 
 # Stage 1: Build dependencies
@@ -13,27 +13,27 @@ WORKDIR /app
 # Copy workspace configuration
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 
-# Copy client package.json
-COPY apps/client/package.json ./apps/client/
+# Copy ponder package.json
+COPY services/liquidator/ponder/package.json ./services/liquidator/ponder/
 
 # Install dependencies (workspace-aware)
-RUN pnpm install --frozen-lockfile --filter @aave-v4-liquidation-bot/client
+RUN pnpm install --frozen-lockfile --filter @services/liquidator-ponder
 
-# Copy client source code
-COPY apps/client/ ./apps/client/
+# Copy ponder source code and config
+COPY services/liquidator/ponder/ ./services/liquidator/ponder/
 
 # ============================================
 # Stage 2: Production runtime
 # ============================================
 FROM node:22-alpine AS runner
 
-# Install pnpm for running tsx and wget for healthchecks
+# Install pnpm for running ponder and wget for healthchecks
 RUN apk add --no-cache wget && \
     corepack enable && corepack prepare pnpm@9.13.2 --activate
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 liquidator
+    adduser --system --uid 1001 ponder
 
 WORKDIR /app
 
@@ -42,18 +42,21 @@ COPY --from=builder /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-lock.yaml ./
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/client ./apps/client
+COPY --from=builder /app/services/liquidator/ponder ./services/liquidator/ponder
 
 # Set ownership
-RUN chown -R liquidator:nodejs /app
+RUN chown -R ponder:nodejs /app
 
-USER liquidator
+USER ponder
 
-WORKDIR /app/apps/client
+WORKDIR /app/services/liquidator/ponder
 
-# Health check for metrics server
-HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:9090/health || exit 1
+# Expose Ponder API port
+EXPOSE 42069
 
-# Default command: start polling mode
+# Health check for Ponder API
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:42069/positions || exit 1
+
+# Default command: start production mode
 CMD ["pnpm", "start"]
