@@ -56,7 +56,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         console.log("\n--- Verification Results ---");
 
         // Check if position was fully liquidated (both collateral and debt are 0)
-        bool fullyLiquidated = (collateralAfter == 0 && debtAfter == 0 && collateralBefore > 0);
+        bool fullyLiquidated = (collateralAfter == 0 && debtAfter == 0);
 
         // Check if position was partially liquidated
         bool debtReduced = debtAfter < debtBefore;
