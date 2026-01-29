@@ -140,7 +140,7 @@ jobs:
             --skip-simulation \
             --slow
 
-      - name: Run E2E setup script
+      - name: Run setup position script
         run: |
           forge script test/e2e/LiquidationE2ESetup.s.sol:LiquidationE2ESetup \
             --rpc-url http://127.0.0.1:8545 \
@@ -150,7 +150,7 @@ jobs:
             --skip-simulation \
             --slow
 
-      - name: Run E2E verification script
+      - name: Run liquidation verification script
         run: |
           forge script test/e2e/LiquidationE2EVerify.s.sol:LiquidationE2EVerify \
             --rpc-url http://127.0.0.1:8545 \
