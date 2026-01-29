@@ -47,18 +47,8 @@ contract LiquidationE2E is Script, ActionE2EPegIn, ActionE2EApplication {
         console.log("Creating .env file...");
         _createEnvFile();
 
-        // Fund liquidator BEFORE starting bot (so bot has funds available)
-        address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
-        console.log("Funding liquidator:", liquidator);
-
-        // Use broadcast with admin to send REAL transactions visible to external RPC clients (bot)
-        vm.startBroadcast(adminPrivateKey);
-        usdc.mint(liquidator, 1000 * ONE_USDC);
-        wbtc.mint(liquidator, 1 * uint256(ONE_BTC));
-        vm.stopBroadcast();
-
-        // Brief pause to ensure transactions are fully processed
-        vm.sleep(1000);
+        // Note: Liquidator is funded in a separate script (FundLiquidator.s.sol) that runs before this one
+        // This ensures funding happens outside any potential fork/isolation context
 
         // Start Ponder indexer (uses existing `pnpm indexer` script)
         console.log("Starting Ponder indexer...");

@@ -60,7 +60,7 @@ jobs:
       VAULT_PROVIDER_ADDRESS: "0x4CCeBa2d7D2B4fdcE4304d3e09a1fea9fbEb1528"
       VAULT_PROVIDER_BTCPUBKEY: "0x4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
       VAULT_PROVIDER_POP_SIGNATURE: "0x0247304402206dd71f8057d4b8b383aa607ffd8e90e970b70146042ff76c87db368f4f4c882c02207963f27aa9a1eedac025229934a089cc36d2509bcf546655d6252cebe7943ef30121034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
-      
+
     steps:
       - uses: actions/checkout@v4
 
@@ -131,6 +131,15 @@ jobs:
         run: |
           cd contracts
           forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --private-key $PRIVATE_KEY \
+            --skip-simulation \
+            --slow
+
+      - name: Fund liquidator
+        run: |
+          forge script test/e2e/FundLiquidator.s.sol:FundLiquidator \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
             --private-key $PRIVATE_KEY \
