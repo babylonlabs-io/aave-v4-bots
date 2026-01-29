@@ -28,6 +28,39 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      FOUNDRY_PROFILE: e2e
+      # Deployment configuration
+      DEPLOYER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      ADMIN_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      ADMIN_PRIVKEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      BTC_INIT_BLOCK_HEIGHT: "2017"
+      BTC_INIT_EXPECTED_TARGET: "0x207fffff"
+      BTC_NETWORK_TYPE: "regtest"
+      BTC_ADMIN: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      BTC_RPC_URL: http://localhost:18443
+      BTC_RPC_USER: btcuser
+      BTC_RPC_PASSWORD: btcpassword
+      # Universal Challengers
+      NUM_UNIVERSAL_CHALLENGERS: "1"
+      UNIVERSAL_CHALLENGER_0_ETH_ADDRESS: "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
+      UNIVERSAL_CHALLENGER_0_BTC_PUBLIC_KEY: "0x7962d45b38e8bcf82fa8efa8432a01f20c9a53e24c7d3f11df197cb8e70926da"
+      # Aave Application
+      APPLICATION_NAME: "Aave v4"
+      NUM_APP_OPERATORS: "2"
+      APP_OPERATOR_0_ETH_ADDRESS: "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+      APP_OPERATOR_0_BTC_PUBLIC_KEY: "0x9ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b"
+      APP_OPERATOR_1_ETH_ADDRESS: "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"
+      APP_OPERATOR_1_BTC_PUBLIC_KEY: "0x466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+      # Vault Provider
+      USE_REAL_REGISTRATION: "true"
+      VAULT_PROVIDER_PRIVATE_KEY: "0x000000000000000000000000000000000000000000000000000000000000000a"
+      VAULT_PROVIDER_ADDRESS: "0x4CCeBa2d7D2B4fdcE4304d3e09a1fea9fbEb1528"
+      VAULT_PROVIDER_BTCPUBKEY: "0x4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      VAULT_PROVIDER_POP_SIGNATURE: "0x0247304402206dd71f8057d4b8b383aa607ffd8e90e970b70146042ff76c87db368f4f4c882c02207963f27aa9a1eedac025229934a089cc36d2509bcf546655d6252cebe7943ef30121034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      
     steps:
       - uses: actions/checkout@v4
 
@@ -94,38 +127,25 @@ jobs:
       - name: Start Anvil
         run: anvil --silent &
 
-      - name: Deploy contracts to Anvil
-        env:
-          FOUNDRY_PROFILE: e2e
-          DEPLOYER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-          ADMIN_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-          PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-          ADMIN_PRIVKEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-          BTC_INIT_BLOCK_HEIGHT: "2017"
-          BTC_INIT_EXPECTED_TARGET: "0x207fffff"
-          BTC_NETWORK_TYPE: "regtest"
-          BTC_ADMIN: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      - name: Deploy and setup E2E environment
         run: |
           cd contracts
-          forge script script/deployment/DeployAll.s.sol \
+          forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
             --private-key $PRIVATE_KEY \
             --skip-simulation \
             --slow
 
-      - name: Run E2E tests
-        env:
-          FOUNDRY_PROFILE: e2e
-          BTC_RPC_URL: http://localhost:18443
-          BTC_RPC_USER: btcuser
-          BTC_RPC_PASSWORD: btcpassword
-          USE_DOCKER: "true"
-          DEPLOYER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-          ADMIN_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-          ADMIN_PRIVKEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      - name: Run E2E test script
         run: |
-          forge test --rpc-url http://127.0.0.1:8545 --threads 1 --match-path 'test/e2e/**/*.sol' -vvv
+          forge script test/e2e/LiquidationE2E.s.sol:LiquidationE2E \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --private-key $PRIVATE_KEY \
+            --ffi \
+            --skip-simulation \
+            --slow
 
       - name: Show logs on failure
         if: failure()
