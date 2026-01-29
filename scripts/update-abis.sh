@@ -3,10 +3,13 @@ set -e
 
 echo "Updating ABIs from compiled contracts..."
 
-# Check if contracts are built
+# Check if contracts are built, if not build them
 if [ ! -d "contracts/out" ]; then
-    echo "Error: contracts/out directory not found. Run 'forge build' first."
-    exit 1
+    echo "contracts/out not found. Building contracts..."
+    echo "Initializing submodules..."
+    git submodule update --init --recursive
+    echo "Building contracts with forge..."
+    forge build
 fi
 
 # Extract VaultSwap ABI
