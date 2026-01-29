@@ -124,9 +124,6 @@ jobs:
           ./test/e2e/scripts/btc-helper.sh mine 2020
           ./test/e2e/scripts/btc-helper.sh info
 
-      - name: Build contracts
-        run: forge build
-
       - name: Start Anvil
         run: anvil --silent &
 

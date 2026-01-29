@@ -38,9 +38,9 @@ contract LiquidationE2EVerify is Script, BaseE2E {
 
         // Wait for Ponder to index + bot to liquidate
         console.log("\n--- Waiting for Bot Liquidation ---");
-        console.log("Waiting 45 seconds for Ponder sync + bot liquidation...");
+        console.log("Waiting 5 seconds for Ponder sync + bot liquidation...");
         console.log("Start time:", block.timestamp);
-        vm.sleep(60000);
+        vm.sleep(5000);
 
         // Check position after waiting
         (uint256 collateralAfter, uint256 debtAfter, uint256 healthFactorAfter) = _getPositionInfo(borrower);
