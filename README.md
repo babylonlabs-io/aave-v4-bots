@@ -132,3 +132,40 @@ pnpm test:coverage
 - Node.js >= 18.14
 - pnpm
 - Docker (for containerized deployment)
+
+# Scripts
+
+## update-abis.sh
+
+Updates TypeScript ABI files from compiled Solidity contracts.
+
+### Usage
+
+```bash
+# From project root
+pnpm update-abis
+
+# Or directly
+bash scripts/update-abis.sh
+```
+
+### What it does
+
+1. Extracts ABIs from `contracts/out/` (Forge build artifacts)
+2. Converts them to TypeScript const exports
+3. Updates the following files:
+   - `apps/client/src/abis/VaultSwap.ts`
+   - `apps/client/src/abis/AaveIntegrationController.ts`
+   - `apps/ponder/abis/Spoke.ts`
+   - `apps/ponder/abis/Controller.ts`
+
+### When to run
+
+Run this script whenever:
+- Contract interfaces change in the vault-contracts submodule
+- You see ABI-related errors like "signature not found on provided ABI"
+- After updating the contracts submodule to a new version
+
+### CI Integration
+
+This script automatically runs in the E2E tests workflow after building contracts.

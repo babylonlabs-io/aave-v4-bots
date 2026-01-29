@@ -12,6 +12,7 @@
     "liquidate": "tsx apps/client/src/index.ts",
     "liquidate:list-owned": "tsx apps/client/src/index.ts list-owned",
     "liquidate:swap": "tsx apps/client/src/index.ts swap",
+    "update-abis": "bash scripts/update-abis.sh",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",
