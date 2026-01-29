@@ -39,6 +39,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         // Wait for Ponder to index + bot to liquidate
         console.log("\n--- Waiting for Bot Liquidation ---");
         console.log("Waiting 45 seconds for Ponder sync + bot liquidation...");
+        console.log("Start time:", block.timestamp);
         vm.sleep(45000);
 
         // Check position after waiting
