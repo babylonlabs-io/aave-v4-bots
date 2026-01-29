@@ -3,14 +3,14 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {ActionE2EPegIn} from "../../contracts/test/e2e/action/ActionE2EPegIn.sol";
-import {ActionE2EApplication} from "../../contracts/test/e2e/action/ActionE2EApplication.sol";
+import {BaseE2E} from "../../contracts/test/e2e/base/BaseE2E.sol";
 import {BtcHelpers} from "../../contracts/test/utils/BtcHelpers.sol";
 import {PopSignatures} from "../../contracts/test/utils/PopSignatures.sol";
 import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
 import {AaveCollateralLogic} from "vault-contracts/lib/aave/AaveCollateralLogic.sol";
 import {IBTCVaultsManager} from "vault-contracts/interfaces/IBTCVaultsManager.sol";
 import {BTCProofOfPossession} from "vault-contracts/lib/pop/BTCProofOfPossession.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 
 /// @title LiquidationE2E
 /// @notice E2E script to setup a liquidatable position for the liquidation bot
@@ -26,29 +26,35 @@ import {BTCProofOfPossession} from "vault-contracts/lib/pop/BTCProofOfPossession
 /// # 2. Then run this script to create a liquidatable position (in liquidation bot repo)
 /// cd .. && forge script test/e2e/LiquidationE2E.s.sol:LiquidationE2E --rpc-url $RPC_URL --broadcast --ffi
 /// ```
-contract LiquidationE2E is Script, ActionE2EPegIn, ActionE2EApplication {
+contract LiquidationE2E is Script, BaseE2E {
     // Bot process management
     string public botProcessId;
     string public ponderProcessId;
 
     /// @notice Main entry point for the script
-    /// @dev Overrides setUp from BaseE2ETest to use Script pattern instead of Test pattern
+    /// @dev Overrides setUp from BaseE2E to use Script pattern instead of Test pattern
     function run() public {
         // Call parent setUp to load all deployed contracts and environment
-        // Note: BaseE2ETest.setUp() loads contracts from DeploymentState
-        setUp();
+        // Note: BaseE2E.init(Vm) loads contracts from DeploymentState
+        init(vm);
 
         // Load admin private key for broadcasting transactions
         uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVKEY");
 
         console.log("\n=== E2E Script Setup ===");
 
+        // Fund liquidator with USDC and WBTC
+        console.log("Funding liquidator...");
+        address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
+        vm.startBroadcast(adminPrivateKey);
+        usdc.mint(liquidator, 1000 * ONE_USDC);
+        wbtc.mint(liquidator, 1 * uint256(ONE_BTC));
+        vm.stopBroadcast();
+        console.log("Liquidator funded with 1000 USDC and 1 WBTC");
+
         // Create .env file with deployed contract addresses for bot and Ponder
         console.log("Creating .env file...");
-        _createEnvFile();
-
-        // Note: Liquidator is funded in a separate script (FundLiquidator.s.sol) that runs before this one
-        // This ensures funding happens outside any potential fork/isolation context
+        _createEnvFile()
 
         // Start Ponder indexer (uses existing `pnpm indexer` script)
         console.log("Starting Ponder indexer...");
@@ -336,6 +342,13 @@ contract LiquidationE2E is Script, ActionE2EPegIn, ActionE2EApplication {
         string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
         console.log("Bot started with PID:", pid);
         return pid;
+    }
+
+    /// @notice Get user's proxy address (Aave positions use proxy contracts)
+    /// @dev Helper function from ActionE2EApplication
+    function _getUserProxyAddress(address user) internal view returns (address) {
+        bytes32 salt = keccak256(abi.encodePacked(user));
+        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveController));
     }
 
     function _getPositionInfo(address user)

@@ -137,15 +137,6 @@ jobs:
             --skip-simulation \
             --slow
 
-      - name: Fund liquidator
-        run: |
-          forge script test/e2e/FundLiquidator.s.sol:FundLiquidator \
-            --rpc-url http://127.0.0.1:8545 \
-            --broadcast \
-            --private-key $PRIVATE_KEY \
-            --skip-simulation \
-            --slow
-
       - name: Run E2E test script
         run: |
           forge script test/e2e/LiquidationE2E.s.sol:LiquidationE2E \
