@@ -72,4 +72,3 @@ export const spokeAbi = [
     stateMutability: "view",
   },
 ] as const;
-
