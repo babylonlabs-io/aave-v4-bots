@@ -12,6 +12,8 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 /// @dev Part 2: Waits for bot to liquidate, then checks on-chain state
 ///      Run this AFTER LiquidationE2ESetup.s.sol
 contract LiquidationE2EVerify is Script, BaseE2E {
+    uint256 constant BORROWER_PRIVATE_KEY = 12;
+
     /// @notice Main entry point for the verification script
     function run() public {
         // Load deployed contracts
@@ -20,7 +22,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         console.log("\n=== E2E Liquidation Verification ===");
 
         // Get borrower address (same as setup script)
-        address borrower = vm.addr(12);
+        address borrower = vm.addr(BORROWER_PRIVATE_KEY);
         address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
 
         // Get position info before liquidation (after price drop from setup script)

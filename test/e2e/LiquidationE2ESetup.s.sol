@@ -17,6 +17,8 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 /// @dev Part 1: Creates unhealthy position, starts bot/ponder, persists state
 ///      Run LiquidationE2EVerify.s.sol after this to verify liquidation occurred
 contract LiquidationE2ESetup is Script, BaseE2E {
+    uint256 constant BORROWER_PRIVATE_KEY = 12;
+
     /// @notice Main entry point for the setup script
     function run() public {
         // Call parent setUp to load all deployed contracts and environment
@@ -53,7 +55,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
 
         // Create borrower and fund with ETH
         console.log("\n--- Step 5: Create Borrower ---");
-        address borrower = vm.addr(12);
+        address borrower = vm.addr(BORROWER_PRIVATE_KEY);
         vm.startBroadcast(adminPrivateKey);
         payable(borrower).transfer(10 ether);
         vm.stopBroadcast();
@@ -63,14 +65,14 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         console.log("\n--- Step 6: Pegin BTC ---");
         uint64 peginAmount = 10_000; // 0.0001 BTC
         bytes32 depositorBtcPubKey = PopSignatures.TEST_DEPOSITOR_BTC_PUBKEY;
-        bytes32 vaultId = _doPegInScript(borrower, depositorBtcPubKey, peginAmount);
+        bytes32 vaultId = _doPegInScript(BORROWER_PRIVATE_KEY, depositorBtcPubKey, peginAmount);
         console.log("Pegin completed, vaultId:", vm.toString(vaultId));
 
         // Add vault as collateral
         console.log("\n--- Step 7: Add Collateral ---");
         bytes32[] memory vaultIds = new bytes32[](1);
         vaultIds[0] = vaultId;
-        _addVaultToPositionScript(borrower, vaultIds);
+        _addVaultToPositionScript(BORROWER_PRIVATE_KEY, vaultIds);
         console.log("Collateral added");
 
         // Setup borrow liquidity
@@ -80,7 +82,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         // Borrow USDC
         console.log("\n--- Step 9: Borrow USDC ---");
         uint256 borrowAmount = 3 * ONE_USDC;
-        _borrowFromPositionScript(borrower, borrowAmount, borrower);
+        _borrowFromPositionScript(BORROWER_PRIVATE_KEY, borrowAmount, borrower);
         console.log("Borrowed:", borrowAmount / ONE_USDC, "USDC");
 
         // Check position is healthy
@@ -112,10 +114,11 @@ contract LiquidationE2ESetup is Script, BaseE2E {
 
     // ============ Helper Functions ============
 
-    function _doPegInScript(address depositor, bytes32 depositorBtcPubKey, uint256 amountSats)
+    function _doPegInScript(uint256 depositorPrivateKey, bytes32 depositorBtcPubKey, uint256 amountSats)
         internal
         returns (bytes32 vaultId)
     {
+        address depositor = vm.addr(depositorPrivateKey);
         bytes32 vaultProviderBtcKey = vaultManager.getVaultProviderBTCKey(vp);
         bytes memory btcPopSignature =
             PopSignatures.getBip322P2wpkh(vm, depositorBtcPubKey, BTCProofOfPossession.ACTION_PEGIN);
@@ -123,7 +126,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             depositorBtcPubKey, vaultProviderBtcKey, uint64(amountSats), address(aaveController)
         );
 
-        vm.startBroadcast(depositor);
+        vm.startBroadcast(depositorPrivateKey);
         vaultId = vaultManager.submitPeginRequest(depositor, depositorBtcPubKey, btcPopSignature, unsignedPeginTx, vp);
         vm.stopBroadcast();
 
@@ -138,8 +141,9 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         return vaultId;
     }
 
-    function _addVaultToPositionScript(address depositor, bytes32[] memory vaultIds) internal {
-        vm.startBroadcast(depositor);
+    function _addVaultToPositionScript(uint256 depositorPrivateKey, bytes32[] memory vaultIds) internal {
+        address depositor = vm.addr(depositorPrivateKey);
+        vm.startBroadcast(depositorPrivateKey);
         aaveController.addCollateralToCorePosition(vaultIds, vaultBtcId);
         vm.stopBroadcast();
 
@@ -155,10 +159,11 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         );
     }
 
-    function _borrowFromPositionScript(address borrower, uint256 amountUsdc, address receiver) internal {
+    function _borrowFromPositionScript(uint256 borrowerPrivateKey, uint256 amountUsdc, address receiver) internal {
+        address borrower = vm.addr(borrowerPrivateKey);
         uint256 balanceBefore = usdc.balanceOf(receiver);
 
-        vm.startBroadcast(borrower);
+        vm.startBroadcast(borrowerPrivateKey);
         bytes32 positionId = AaveCollateralLogic.getPositionKey(borrower, vaultBtcId);
         aaveController.borrowFromCorePosition(positionId, usdcId, amountUsdc, receiver);
         vm.stopBroadcast();
