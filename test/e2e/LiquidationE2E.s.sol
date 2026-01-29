@@ -54,7 +54,7 @@ contract LiquidationE2E is Script, BaseE2E {
 
         // Create .env file with deployed contract addresses for bot and Ponder
         console.log("Creating .env file...");
-        _createEnvFile()
+        _createEnvFile();
 
         // Start Ponder indexer (uses existing `pnpm indexer` script)
         console.log("Starting Ponder indexer...");
