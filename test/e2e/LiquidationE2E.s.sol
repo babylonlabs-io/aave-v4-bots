@@ -199,8 +199,9 @@ contract LiquidationE2E is Script, ActionE2EPegIn, ActionE2EApplication {
         bytes32 vaultProviderBtcKey = vaultManager.getVaultProviderBTCKey(vp);
         bytes memory btcPopSignature =
             PopSignatures.getBip322P2wpkh(vm, depositorBtcPubKey, BTCProofOfPossession.ACTION_PEGIN);
-        (bytes memory unsignedPeginTx, string memory prevoutTxid, uint32 prevoutVout, uint64 utxoAmount) =
-            _generateUnsignedPeginTx(depositorBtcPubKey, vaultProviderBtcKey, uint64(amountSats), address(aaveController));
+        (bytes memory unsignedPeginTx, string memory prevoutTxid, uint32 prevoutVout, uint64 utxoAmount) = _generateUnsignedPeginTx(
+            depositorBtcPubKey, vaultProviderBtcKey, uint64(amountSats), address(aaveController)
+        );
 
         // Step 2: Submit pegin request (broadcast with depositor)
         vm.startBroadcast(depositor);
@@ -215,7 +216,8 @@ contract LiquidationE2E is Script, ActionE2EPegIn, ActionE2EApplication {
         console.log("  ACKs collected from vault provider, keepers, and challengers");
 
         // Step 4: Sign and broadcast pegin transaction to Bitcoin
-        string memory txid = _signAndBroadcastPeginTx(unsignedPeginTx, depositorBtcPubKey, prevoutTxid, prevoutVout, utxoAmount);
+        string memory txid =
+            _signAndBroadcastPeginTx(unsignedPeginTx, depositorBtcPubKey, prevoutTxid, prevoutVout, utxoAmount);
         console.log("  BTC transaction broadcasted with txid:", txid);
 
         // Step 5: Submit inclusion proof and activate vault (broadcast with vault provider)
