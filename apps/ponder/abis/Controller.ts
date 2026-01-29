@@ -1,4 +1,4 @@
-export const ControllerAbi = [
+export const controllerAbi = [
   {
     "type": "constructor",
     "inputs": [

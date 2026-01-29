@@ -40,7 +40,12 @@
       "*.md",
       "pnpm-lock.yaml",
       "apps/ponder/generated",
-      "apps/ponder/.ponder"
+      "apps/ponder/.ponder",
+      "apps/client/src/abis/**",
+      "apps/ponder/abis/**",
+      "contracts/out/**",
+      "contracts/cache/**",
+      "contracts/broadcast/**"
     ]
   }
 }

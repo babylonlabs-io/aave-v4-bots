@@ -1,4 +1,4 @@
-export const VaultSwapAbi = [
+export const vaultSwapAbi = [
   {
     "type": "constructor",
     "inputs": [

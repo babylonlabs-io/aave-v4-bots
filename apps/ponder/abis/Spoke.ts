@@ -1,4 +1,4 @@
-export const SpokeAbi = [
+export const spokeAbi = [
   {
     "type": "constructor",
     "inputs": [
