@@ -13,4 +13,3 @@
   "include": ["src/**/*.ts", "ponder.config.ts", "ponder.schema.ts", "abis/**/*.ts"],
   "exclude": ["node_modules"]
 }
-

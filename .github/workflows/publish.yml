@@ -17,7 +17,7 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./contrib/images/liquidation-aave-indexer/Dockerfile
+      dockerfile: ./docker/ponder.Dockerfile
       repoName: liquidation-aave-indexer
       push_to_dockerhub: false
     permissions:
@@ -33,7 +33,7 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./contrib/images/liquidation-aave-client/Dockerfile
+      dockerfile: ./docker/client.Dockerfile
       repoName: liquidation-aave-client
       push_to_dockerhub: false
     permissions:
