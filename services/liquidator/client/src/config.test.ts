@@ -13,7 +13,7 @@ describe("config validation", () => {
   });
 
   const validEnv = {
-    LIQUIDATOR_PRIVATE_KEY: "0xpriv_key",
+    LIQUIDATOR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42069",
     RPC_URL: "http://localhost:8545",
     CONTROLLER_ADDRESS: "0x1234567890123456789012345678901234567890",
