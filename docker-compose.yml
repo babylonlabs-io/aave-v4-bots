@@ -1,10 +1,11 @@
 services:
   # ============================================
-  # PostgreSQL Database
+  # LIQUIDATOR SERVICE
   # ============================================
-  postgres:
+
+  liquidator-postgres:
     image: postgres:17-alpine
-    container_name: liquidation-postgres
+    container_name: liquidator-postgres
     environment:
       POSTGRES_USER: ponder
       POSTGRES_PASSWORD: ponder
@@ -12,36 +13,30 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - liquidation_postgres_data:/var/lib/postgresql/data
+      - liquidator_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ponder"]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
-      - liquidation-network
+      - liquidator-network
 
-  # ============================================
-  # Ponder Indexer
-  # ============================================
-  ponder:
+  liquidator-ponder:
     build:
       context: .
-      dockerfile: docker/ponder.Dockerfile
-    container_name: liquidation-ponder
+      dockerfile: docker/liquidator-ponder.Dockerfile
+    container_name: liquidator-ponder
     env_file:
-      - .env
+      - .env.liquidator
     environment:
-      # Override DATABASE_URL to use internal Docker network
-      DATABASE_URL: postgresql://ponder:ponder@postgres:5432/ponder
-      # Database schema name (required for Ponder v0.13+ with PostgreSQL)
+      DATABASE_URL: postgresql://ponder:ponder@liquidator-postgres:5432/ponder
       DATABASE_SCHEMA: public
-      # Ponder port (internal)
       PONDER_PORT: 42069
     ports:
-      - "${PONDER_PORT:-42069}:42069"
+      - "${LIQUIDATOR_PONDER_PORT:-42069}:42069"
     depends_on:
-      postgres:
+      liquidator-postgres:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:42069/positions"]
@@ -50,28 +45,23 @@ services:
       start_period: 30s
       retries: 3
     networks:
-      - liquidation-network
+      - liquidator-network
     restart: unless-stopped
 
-  # ============================================
-  # Liquidation Client Bot
-  # ============================================
-  client:
+  liquidator-client:
     build:
       context: .
-      dockerfile: docker/client.Dockerfile
-    container_name: liquidation-client
+      dockerfile: docker/liquidator-client.Dockerfile
+    container_name: liquidator-client
     env_file:
-      - .env
+      - .env.liquidator
     environment:
-      # Override PONDER_URL to use internal Docker network
-      PONDER_URL: http://ponder:42069
-      # Metrics port
+      PONDER_URL: http://liquidator-ponder:42069
       METRICS_PORT: 9090
     ports:
-      - "${METRICS_PORT:-9090}:9090"
+      - "${LIQUIDATOR_METRICS_PORT:-9090}:9090"
     depends_on:
-      ponder:
+      liquidator-ponder:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/health"]
@@ -80,12 +70,89 @@ services:
       start_period: 10s
       retries: 3
     networks:
-      - liquidation-network
+      - liquidator-network
+    restart: unless-stopped
+
+  # ============================================
+  # ARBITRAGEUR SERVICE
+  # ============================================
+
+  arbitrageur-postgres:
+    image: postgres:17-alpine
+    container_name: arbitrageur-postgres
+    environment:
+      POSTGRES_USER: ponder
+      POSTGRES_PASSWORD: ponder
+      POSTGRES_DB: ponder
+    ports:
+      - "5433:5432"
+    volumes:
+      - arbitrageur_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ponder"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - arbitrageur-network
+
+  arbitrageur-ponder:
+    build:
+      context: .
+      dockerfile: docker/arbitrageur-ponder.Dockerfile
+    container_name: arbitrageur-ponder
+    env_file:
+      - .env.arbitrageur
+    environment:
+      DATABASE_URL: postgresql://ponder:ponder@arbitrageur-postgres:5432/ponder
+      DATABASE_SCHEMA: public
+      PONDER_PORT: 42070
+    ports:
+      - "${ARBITRAGEUR_PONDER_PORT:-42070}:42070"
+    depends_on:
+      arbitrageur-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:42070/escrowed-vaults"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    networks:
+      - arbitrageur-network
+    restart: unless-stopped
+
+  arbitrageur-client:
+    build:
+      context: .
+      dockerfile: docker/arbitrageur-client.Dockerfile
+    container_name: arbitrageur-client
+    env_file:
+      - .env.arbitrageur
+    environment:
+      PONDER_URL: http://arbitrageur-ponder:42070
+      METRICS_PORT: 9091
+    ports:
+      - "${ARBITRAGEUR_METRICS_PORT:-9091}:9091"
+    depends_on:
+      arbitrageur-ponder:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9091/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - arbitrageur-network
     restart: unless-stopped
 
 volumes:
-  liquidation_postgres_data:
+  liquidator_postgres_data:
+  arbitrageur_postgres_data:
 
 networks:
-  liquidation-network:
+  liquidator-network:
+    driver: bridge
+  arbitrageur-network:
     driver: bridge

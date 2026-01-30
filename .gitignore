@@ -7,7 +7,9 @@ dist/
 
 # Environment
 .env
+.env.*
 .env.local
+!.env.*.example
 
 # IDE
 .idea/
