@@ -44,13 +44,13 @@ contract LiquidationE2ESetup is Script, BaseE2E {
 
         // Start Ponder indexer
         console.log("\n--- Step 3: Start Ponder ---");
-        string memory ponderProcessId = _startPonder();
+        string memory ponderProcessId = _startLiquidatorPonder();
         vm.sleep(10000); // Wait 10s for Ponder to initialize
         console.log("Ponder is ready!");
 
         // Start liquidation bot
         console.log("\n--- Step 4: Start Bot ---");
-        string memory botProcessId = _startBot();
+        string memory botProcessId = _startLiquidatorBot();
         console.log("Bot is ready!");
 
         // Create borrower and fund with ETH
@@ -221,25 +221,26 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         vm.ffi(inputs);
     }
 
-    function _startPonder() internal returns (string memory) {
+    function _startLiquidatorPonder() internal returns (string memory) {
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
-        inputs[2] = "{ set -a; [ -f .env ] && . .env; set +a; pnpm indexer > /tmp/ponder.log 2>&1 & echo $!; }";
+        inputs[2] =
+        "{ set -a; [ -f .env ] && . .env; set +a; pnpm liquidator:indexer > /tmp/ponder.log 2>&1 & echo $!; }";
         bytes memory result = vm.ffi(inputs);
         string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
-        console.log("Ponder started with PID:", pid);
+        console.log("Liquidator ponder started with PID:", pid);
         return pid;
     }
 
-    function _startBot() internal returns (string memory) {
+    function _startLiquidatorBot() internal returns (string memory) {
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
-        inputs[2] = "{ set -a; [ -f .env ] && . .env; set +a; pnpm liquidate > /tmp/bot.log 2>&1 & echo $!; }";
+        inputs[2] = "{ set -a; [ -f .env ] && . .env; set +a; pnpm liquidator:run > /tmp/bot.log 2>&1 & echo $!; }";
         bytes memory result = vm.ffi(inputs);
         string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
-        console.log("Bot started with PID:", pid);
+        console.log("Liquidator bot started with PID:", pid);
         return pid;
     }
 
