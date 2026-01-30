@@ -12,8 +12,7 @@ import {
   parseAbiItem,
 } from "viem";
 
-import { aaveIntegrationControllerAbi, erc20Abi, spokeAbi } from "./abis/AaveIntegrationController";
-import { vaultSwapAbi } from "./abis/VaultSwap";
+import { controllerAbi, erc20Abi, spokeAbi, vaultSwapAbi } from "@repo/shared";
 import {
   recordError,
   recordLiquidationFailed,
@@ -81,7 +80,7 @@ export class LiquidationBot {
 
     const spokeAddress = await this.publicClient.readContract({
       address: this.controllerAddress,
-      abi: aaveIntegrationControllerAbi,
+      abi: controllerAbi,
       functionName: "BTC_VAULT_CORE_SPOKE",
     });
 
@@ -150,7 +149,7 @@ export class LiquidationBot {
         positions.map((p) =>
           this.publicClient.simulateContract({
             address: this.controllerAddress,
-            abi: aaveIntegrationControllerAbi,
+            abi: controllerAbi,
             functionName: "liquidateCorePosition",
             args: [p.proxyAddress],
             account: this.walletClient.account,
@@ -198,7 +197,7 @@ export class LiquidationBot {
         try {
           const hash = await this.walletClient.writeContract({
             address: this.controllerAddress,
-            abi: aaveIntegrationControllerAbi,
+            abi: controllerAbi,
             functionName: "liquidateCorePosition",
             args: [pos.proxyAddress],
             nonce: nonce + i,

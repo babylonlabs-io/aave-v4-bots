@@ -1,4 +1,15 @@
+// VaultSwap ABI - methods used by liquidator and arbitrageur bots
+
 export const vaultSwapAbi = [
+  // Liquidator
+  {
+    type: "function",
+    name: "swapVaultForWbtc",
+    inputs: [{ name: "vaultId", type: "bytes32" }],
+    outputs: [{ name: "wbtcOut", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  // Arbitrageur
   {
     type: "function",
     name: "swapWbtcForVault",

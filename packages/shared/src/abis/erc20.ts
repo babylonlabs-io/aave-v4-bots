@@ -1,19 +1,4 @@
-export const aaveIntegrationControllerAbi = [
-  {
-    type: "function",
-    name: "arbitrageurRedeem",
-    inputs: [{ name: "vaultId", type: "bytes32" }],
-    outputs: [],
-    stateMutability: "nonpayable",
-  },
-  {
-    type: "function",
-    name: "getVaultOwner",
-    inputs: [{ name: "vaultId", type: "bytes32" }],
-    outputs: [{ name: "owner", type: "address" }],
-    stateMutability: "view",
-  },
-] as const;
+// Standard ERC20 ABI - used by both bots
 
 export const erc20Abi = [
   {
