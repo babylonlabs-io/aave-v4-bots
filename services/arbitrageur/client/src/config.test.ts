@@ -20,7 +20,7 @@ describe("config validation", () => {
   });
 
   const validEnv = {
-    ARBITRAGEUR_PRIVATE_KEY: "0xpriv_key",
+    ARBITRAGEUR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42070",
     RPC_URL: "http://localhost:8545",
     CONTROLLER_ADDRESS: "0x1234567890123456789012345678901234567890",
