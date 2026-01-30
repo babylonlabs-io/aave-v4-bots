@@ -13,11 +13,11 @@ import {
 
 import {
   type RetryConfig,
-  fetchWithRetry,
-  withRetry,
   controllerAbi,
   erc20Abi,
+  fetchWithRetry,
   vaultSwapAbi,
+  withRetry,
 } from "@repo/shared";
 import { updateLastPollTime } from "./health";
 import { recordError, recordPollDuration, recordVaultAcquired, recordWbtcBalance } from "./metrics";
