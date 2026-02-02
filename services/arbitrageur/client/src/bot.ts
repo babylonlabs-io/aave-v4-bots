@@ -11,9 +11,14 @@ import {
   maxUint256,
 } from "viem";
 
-import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/shared";
-import { aaveIntegrationControllerAbi, erc20Abi } from "./abis/AaveIntegrationController";
-import { vaultSwapAbi } from "./abis/VaultSwap";
+import {
+  type RetryConfig,
+  controllerAbi,
+  erc20Abi,
+  fetchWithRetry,
+  vaultSwapAbi,
+  withRetry,
+} from "@repo/shared";
 import { updateLastPollTime } from "./health";
 import { recordError, recordPollDuration, recordVaultAcquired, recordWbtcBalance } from "./metrics";
 import type { EscrowedVault, OwnedVault, PonderResponse } from "./types";
@@ -239,7 +244,7 @@ export class ArbitrageurBot {
       try {
         await this.publicClient.estimateContractGas({
           address: this.controllerAddress,
-          abi: aaveIntegrationControllerAbi,
+          abi: controllerAbi,
           functionName: "arbitrageurRedeem",
           args: [vaultId],
           account: this.walletClient.account,
@@ -254,7 +259,7 @@ export class ArbitrageurBot {
 
       const hash = await this.walletClient.writeContract({
         address: this.controllerAddress,
-        abi: aaveIntegrationControllerAbi,
+        abi: controllerAbi,
         functionName: "arbitrageurRedeem",
         args: [vaultId],
       });
@@ -448,7 +453,7 @@ export class ArbitrageurBot {
       () =>
         this.publicClient.readContract({
           address: this.controllerAddress,
-          abi: aaveIntegrationControllerAbi,
+          abi: controllerAbi,
           functionName: "getVaultOwner",
           args: [vaultId],
         }),
