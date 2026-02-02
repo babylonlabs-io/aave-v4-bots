@@ -27,8 +27,6 @@
     "arbitrageur:redeem": "tsx services/arbitrageur/client/src/index.ts redeem",
     "arbitrageur:list-owned": "tsx services/arbitrageur/client/src/index.ts list-owned",
 
-    "update-abis": "bash scripts/update-abis.sh",
-
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "format": "biome format --write .",
