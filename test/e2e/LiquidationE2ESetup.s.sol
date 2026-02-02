@@ -75,9 +75,9 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         _addVaultToPositionScript(BORROWER_PRIVATE_KEY, vaultIds);
         console.log("Collateral added");
 
-        // Setup borrow liquidity
-        console.log("\n--- Step 8: Setup Borrow Liquidity ---");
-        _setUpBorrowLiquidityScript();
+        // Setup liquidity (USDC for borrowing and WBTC for VaultSwap)
+        console.log("\n--- Step 8: Setup Liquidity ---");
+        _setUpLiquidityScript();
 
         // Borrow USDC
         console.log("\n--- Step 9: Borrow USDC ---");
@@ -172,14 +172,22 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         require(balanceAfter - balanceBefore == amountUsdc, "received amount mismatched");
     }
 
-    function _setUpBorrowLiquidityScript() internal {
-        uint256 amountToSupply = ONE_USDC * 1_000_000;
+    function _setUpLiquidityScript() internal {
         uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVKEY");
 
         vm.startBroadcast(adminPrivateKey);
-        usdc.mint(admin, amountToSupply);
-        usdc.approve(address(aaveSpoke), amountToSupply);
-        aaveSpoke.supply(usdcId, amountToSupply, admin);
+
+        // Add USDC liquidity to Aave Spoke for borrowing
+        uint256 usdcAmountToSupply = ONE_USDC * 1_000_000;
+        usdc.mint(admin, usdcAmountToSupply);
+        usdc.approve(address(aaveSpoke), usdcAmountToSupply);
+        aaveSpoke.supply(usdcId, usdcAmountToSupply, admin);
+
+        // Add WBTC liquidity to Hub for VaultSwap
+        uint256 wbtcLiquidity = 1000e8; // 1000 WBTC
+        wbtc.mint(address(hub), wbtcLiquidity);
+        hub.add(wbtcId, wbtcLiquidity);
+
         vm.stopBroadcast();
     }
 

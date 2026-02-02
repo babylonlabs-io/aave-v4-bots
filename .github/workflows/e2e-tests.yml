@@ -158,7 +158,7 @@ jobs:
             --slow
 
       - name: Show logs on failure
-        if: failure()
+        # if: failure()
         run: |
           echo "=== Ponder logs ==="
           cat /tmp/ponder.log || true
