@@ -53,8 +53,8 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
         // Wait for arbitrageur bot to process
         console.log("\n--- Waiting for Arbitrageur Bot ---");
-        console.log("Waiting 10 seconds for arbitrageur to acquire vaults...");
-        vm.sleep(10000);
+        console.log("Waiting 5 seconds for arbitrageur to acquire vaults...");
+        vm.sleep(5000);
 
         // Check balances and ownership after waiting
         uint256 arbWbtcAfter = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
