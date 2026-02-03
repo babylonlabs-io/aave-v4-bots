@@ -3,22 +3,21 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {BaseE2E} from "../../contracts/test/e2e/base/BaseE2E.sol";
-import {BtcHelpers} from "../../contracts/test/utils/BtcHelpers.sol";
-import {PopSignatures} from "../../contracts/test/utils/PopSignatures.sol";
+import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
+import {BtcHelpers} from "test-utils/BtcHelpers.sol";
+import {PopSignatures} from "test-utils/PopSignatures.sol";
 import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
 import {AaveCollateralLogic} from "vault-contracts/lib/aave/AaveCollateralLogic.sol";
 import {IBTCVaultsManager} from "vault-contracts/interfaces/IBTCVaultsManager.sol";
 import {BTCProofOfPossession} from "vault-contracts/lib/pop/BTCProofOfPossession.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {E2EConstants} from "./E2EConstants.sol";
 
 /// @title LiquidationE2ESetup
 /// @notice E2E script to setup a liquidatable position for the liquidation bot
 /// @dev Part 1: Creates unhealthy position, starts bot/ponder, persists state
 ///      Run LiquidationE2EVerify.s.sol after this to verify liquidation occurred
 contract LiquidationE2ESetup is Script, BaseE2E {
-    uint256 constant BORROWER_PRIVATE_KEY = 12;
-
     /// @notice Main entry point for the setup script
     function run() public {
         // Call parent setUp to load all deployed contracts and environment
@@ -31,58 +30,77 @@ contract LiquidationE2ESetup is Script, BaseE2E {
 
         // Fund liquidator with USDC and WBTC
         console.log("\n--- Step 1: Fund Liquidator ---");
-        address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
         vm.startBroadcast(adminPrivateKey);
-        usdc.mint(liquidator, 1000 * ONE_USDC);
-        wbtc.mint(liquidator, 1 * uint256(ONE_BTC));
+        usdc.mint(E2EConstants.LIQUIDATOR, 1000 * ONE_USDC);
+        wbtc.mint(E2EConstants.LIQUIDATOR, 1 * uint256(ONE_BTC));
         vm.stopBroadcast();
         console.log("Liquidator funded with 1000 USDC and 1 WBTC");
 
-        // Create .env file with deployed contract addresses for bot and Ponder
-        console.log("\n--- Step 2: Create .env File ---");
-        _createEnvFile();
+        // Fund arbitrageur with WBTC
+        console.log("\n--- Step 2: Fund Arbitrageur ---");
+        vm.startBroadcast(adminPrivateKey);
+        wbtc.mint(E2EConstants.ARBITRAGEUR, 10 * uint256(ONE_BTC));
+        vm.stopBroadcast();
+        console.log("Arbitrageur funded with 10 WBTC");
 
-        // Start Ponder indexer
-        console.log("\n--- Step 3: Start Ponder ---");
+        // Create .env files with deployed contract addresses for bots and Ponder
+        console.log("\n--- Step 3: Create .env Files ---");
+        _createEnvFile();
+        _createArbitrageurEnvFile();
+
+        // Start Ponder indexers
+        console.log("\n--- Step 4: Start Liquidator Ponder ---");
         string memory ponderProcessId = _startLiquidatorPonder();
         vm.sleep(10000); // Wait 10s for Ponder to initialize
-        console.log("Ponder is ready!");
+        console.log("Liquidator Ponder is ready!");
 
-        // Start liquidation bot
-        console.log("\n--- Step 4: Start Bot ---");
+        console.log("\n--- Step 5: Start Arbitrageur Ponder ---");
+        string memory arbPonderProcessId = _startArbitrageurPonder();
+        vm.sleep(10000); // Wait 10s for Arbitrageur Ponder to initialize
+        console.log("Arbitrageur Ponder is ready!");
+
+        // Start bots
+        console.log("\n--- Step 6: Start Liquidator Bot ---");
         string memory botProcessId = _startLiquidatorBot();
-        console.log("Bot is ready!");
+        console.log("Liquidator Bot is ready!");
+
+        console.log("\n--- Step 7: Start Arbitrageur Bot ---");
+        string memory arbBotProcessId = _startArbitrageurBot();
+        console.log("Arbitrageur Bot is ready!");
 
         // Create borrower and fund with ETH
-        console.log("\n--- Step 5: Create Borrower ---");
-        address borrower = vm.addr(BORROWER_PRIVATE_KEY);
+        console.log("\n--- Step 8: Create Borrower ---");
+        address borrower = vm.addr(E2EConstants.BORROWER_PRIVATE_KEY);
         vm.startBroadcast(adminPrivateKey);
         payable(borrower).transfer(10 ether);
         vm.stopBroadcast();
         console.log("Borrower address:", borrower);
 
         // Pegin BTC
-        console.log("\n--- Step 6: Pegin BTC ---");
+        console.log("\n--- Step 9: Pegin BTC ---");
         uint64 peginAmount = 10_000; // 0.0001 BTC
         bytes32 depositorBtcPubKey = PopSignatures.TEST_DEPOSITOR_BTC_PUBKEY;
-        bytes32 vaultId = _doPegInScript(BORROWER_PRIVATE_KEY, depositorBtcPubKey, peginAmount);
+        bytes32 vaultId = _doPegInScript(E2EConstants.BORROWER_PRIVATE_KEY, depositorBtcPubKey, peginAmount);
         console.log("Pegin completed, vaultId:", vm.toString(vaultId));
 
+        // Save vault ID for arbitrageur verification script
+        _saveVaultId(vaultId);
+
         // Add vault as collateral
-        console.log("\n--- Step 7: Add Collateral ---");
+        console.log("\n--- Step 10: Add Collateral ---");
         bytes32[] memory vaultIds = new bytes32[](1);
         vaultIds[0] = vaultId;
-        _addVaultToPositionScript(BORROWER_PRIVATE_KEY, vaultIds);
+        _addVaultToPositionScript(E2EConstants.BORROWER_PRIVATE_KEY, vaultIds);
         console.log("Collateral added");
 
         // Setup liquidity (USDC for borrowing and WBTC for VaultSwap)
-        console.log("\n--- Step 8: Setup Liquidity ---");
+        console.log("\n--- Step 11: Setup Liquidity ---");
         _setUpLiquidityScript();
 
         // Borrow USDC
-        console.log("\n--- Step 9: Borrow USDC ---");
+        console.log("\n--- Step 12: Borrow USDC ---");
         uint256 borrowAmount = 3 * ONE_USDC;
-        _borrowFromPositionScript(BORROWER_PRIVATE_KEY, borrowAmount, borrower);
+        _borrowFromPositionScript(E2EConstants.BORROWER_PRIVATE_KEY, borrowAmount, borrower);
         console.log("Borrowed:", borrowAmount / ONE_USDC, "USDC");
 
         // Check position is healthy
@@ -94,7 +112,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         require(healthFactorBefore > 1e18, "Position should be healthy initially");
 
         // Simulate price drop
-        console.log("\n--- Step 10: Price Drop ---");
+        console.log("\n--- Step 13: Price Drop ---");
         vm.startBroadcast(adminPrivateKey);
         btcPriceFeed.simulatePriceDrop(40); // 40% drop
         vm.stopBroadcast();
@@ -106,10 +124,12 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         require(healthFactorAfter < 1e18, "Position should be unhealthy after price drop");
 
         console.log("\n=== Setup Complete ===");
-        console.log("Run LiquidationE2EVerify.s.sol to verify liquidation");
+        console.log("Run LiquidationE2EVerify.s.sol to verify liquidation and arbitrage");
         console.log("Borrower address:", borrower);
-        console.log("Ponder PID:", ponderProcessId);
-        console.log("Bot PID:", botProcessId);
+        console.log("Liquidator Ponder PID:", ponderProcessId);
+        console.log("Liquidator Bot PID:", botProcessId);
+        console.log("Arbitrageur Ponder PID:", arbPonderProcessId);
+        console.log("Arbitrageur Bot PID:", arbBotProcessId);
     }
 
     // ============ Helper Functions ============
@@ -196,21 +216,41 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         inputs[0] = "bash";
         inputs[1] = "-c";
         inputs[2] = string.concat(
-            "cat > .env << 'EOF'\n",
-            "# Ponder config\n",
-            "PONDER_RPC_URL_1=http://localhost:8545\n",
+            "cat > .env.liquidator << 'EOF'\n",
+            "# Shared Ponder config\n",
+            "PONDER_RPC_URL_1=",
+            E2EConstants.RPC_URL,
+            "\n",
+            "START_BLOCK=0\n",
+            "PONDER_POLLING_INTERVAL=1000\n",
+            "CHAIN_ID=",
+            vm.toString(E2EConstants.CHAIN_ID),
+            "\n",
+            "\n",
+            "# Liquidator Ponder config\n",
             "SPOKE_ADDRESS=",
             vm.toString(address(aaveSpoke)),
             "\n",
-            "START_BLOCK=0\n",
-            "DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder\n",
-            "DATABASE_SCHEMA=public\n",
-            "PONDER_POLLING_INTERVAL=1000\n",
+            "DATABASE_URL=",
+            E2EConstants.DB_URL,
+            "\n",
+            "DATABASE_SCHEMA=",
+            E2EConstants.LIQUIDATOR_DB_SCHEMA,
+            "\n",
+            "PONDER_PORT=",
+            vm.toString(E2EConstants.LIQUIDATOR_PONDER_PORT),
+            "\n",
             "\n",
             "# Liquidation bot config\n",
-            "LIQUIDATOR_PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d\n",
-            "PONDER_URL=http://localhost:42069\n",
-            "RPC_URL=http://localhost:8545\n",
+            "LIQUIDATOR_PRIVATE_KEY=",
+            vm.toString(E2EConstants.LIQUIDATOR_PRIVATE_KEY),
+            "\n",
+            "PONDER_URL=",
+            E2EConstants.LIQUIDATOR_PONDER_URL,
+            "\n",
+            "RPC_URL=",
+            E2EConstants.RPC_URL,
+            "\n",
             "CONTROLLER_ADDRESS=",
             vm.toString(address(aaveController)),
             "\n",
@@ -229,12 +269,80 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         vm.ffi(inputs);
     }
 
+    function _createArbitrageurEnvFile() internal {
+        string[] memory inputs = new string[](3);
+        inputs[0] = "bash";
+        inputs[1] = "-c";
+        inputs[2] = string.concat(
+            "cat > .env.arbitrageur << 'EOF'\n",
+            "# Arbitrageur Ponder config\n",
+            "PONDER_RPC_URL_1=",
+            E2EConstants.RPC_URL,
+            "\n",
+            "VAULT_SWAP_ADDRESS=",
+            vm.toString(address(vaultSwap)),
+            "\n",
+            "BTC_VAULTS_MANAGER_ADDRESS=",
+            vm.toString(address(vaultManager)),
+            "\n",
+            "START_BLOCK=0\n",
+            "DATABASE_URL=",
+            E2EConstants.DB_URL,
+            "\n",
+            "DATABASE_SCHEMA=",
+            E2EConstants.ARBITRAGEUR_DB_SCHEMA,
+            "\n",
+            "PONDER_PORT=",
+            vm.toString(E2EConstants.ARBITRAGEUR_PONDER_PORT),
+            "\n",
+            "PONDER_POLLING_INTERVAL=1000\n",
+            "CHAIN_ID=",
+            vm.toString(E2EConstants.CHAIN_ID),
+            "\n",
+            "\n",
+            "# Arbitrageur bot config\n",
+            "ARBITRAGEUR_PRIVATE_KEY=",
+            vm.toString(E2EConstants.ARBITRAGEUR_PRIVATE_KEY),
+            "\n",
+            "PONDER_URL=",
+            E2EConstants.ARBITRAGEUR_PONDER_URL,
+            "\n",
+            "RPC_URL=",
+            E2EConstants.RPC_URL,
+            "\n",
+            "CONTROLLER_ADDRESS=",
+            vm.toString(address(aaveController)),
+            "\n",
+            "VAULT_SWAP_ADDRESS=",
+            vm.toString(address(vaultSwap)),
+            "\n",
+            "WBTC_ADDRESS=",
+            vm.toString(address(wbtc)),
+            "\n",
+            "POLLING_INTERVAL_MS=1000\n",
+            "VAULT_PROCESSING_DELAY_MS=1000\n",
+            "MAX_SLIPPAGE_BPS=100\n",
+            "AUTO_REDEEM=false\n",
+            "METRICS_PORT=9091\n",
+            "EOF"
+        );
+        vm.ffi(inputs);
+    }
+
+    function _saveVaultId(bytes32 vaultId) internal {
+        string[] memory inputs = new string[](3);
+        inputs[0] = "bash";
+        inputs[1] = "-c";
+        inputs[2] = string.concat("echo '", vm.toString(vaultId), "' > .e2e-vault-id");
+        vm.ffi(inputs);
+    }
+
     function _startLiquidatorPonder() internal returns (string memory) {
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
         inputs[2] =
-        "{ set -a; [ -f .env ] && . .env; set +a; pnpm liquidator:indexer > /tmp/ponder.log 2>&1 & echo $!; }";
+            "{ set -a; [ -f .env.liquidator ] && . .env.liquidator; set +a; pnpm liquidator:indexer > /tmp/liq-ponder.log 2>&1 & echo $!; }";
         bytes memory result = vm.ffi(inputs);
         string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
         console.log("Liquidator ponder started with PID:", pid);
@@ -245,10 +353,35 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
-        inputs[2] = "{ set -a; [ -f .env ] && . .env; set +a; pnpm liquidator:run > /tmp/bot.log 2>&1 & echo $!; }";
+        inputs[2] =
+            "{ set -a; [ -f .env.liquidator ] && . .env.liquidator; set +a; pnpm liquidator:run > /tmp/liq-bot.log 2>&1 & echo $!; }";
         bytes memory result = vm.ffi(inputs);
         string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
         console.log("Liquidator bot started with PID:", pid);
+        return pid;
+    }
+
+    function _startArbitrageurPonder() internal returns (string memory) {
+        string[] memory inputs = new string[](3);
+        inputs[0] = "bash";
+        inputs[1] = "-c";
+        inputs[2] =
+            "{ set -a; [ -f .env.arbitrageur ] && . .env.arbitrageur; set +a; pnpm arbitrageur:indexer > /tmp/arb-ponder.log 2>&1 & echo $!; }";
+        bytes memory result = vm.ffi(inputs);
+        string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
+        console.log("Arbitrageur ponder started with PID:", pid);
+        return pid;
+    }
+
+    function _startArbitrageurBot() internal returns (string memory) {
+        string[] memory inputs = new string[](3);
+        inputs[0] = "bash";
+        inputs[1] = "-c";
+        inputs[2] =
+            "{ set -a; [ -f .env.arbitrageur ] && . .env.arbitrageur; set +a; pnpm arbitrageur:run > /tmp/arb-bot.log 2>&1 & echo $!; }";
+        bytes memory result = vm.ffi(inputs);
+        string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
+        console.log("Arbitrageur bot started with PID:", pid);
         return pid;
     }
 
