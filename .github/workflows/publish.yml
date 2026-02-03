@@ -14,7 +14,7 @@ permissions:
 jobs:
   # Liquidator Service
   docker_liquidator_indexer:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@a5bf0dd12c945ee8fb95cd18765f134928de3e32 # v0.16.0
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@d2299e834fcbaca4bf2db043a2939798043d5951 # v0.16.1
     secrets: inherit
     with:
       publish: true
@@ -28,7 +28,7 @@ jobs:
       packages: read
 
   docker_liquidator_client:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@a5bf0dd12c945ee8fb95cd18765f134928de3e32 # v0.16.0
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@d2299e834fcbaca4bf2db043a2939798043d5951 # v0.16.1
     secrets: inherit
     with:
       publish: true
@@ -43,7 +43,7 @@ jobs:
 
   # Arbitrageur Service
   docker_arbitrageur_indexer:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@a5bf0dd12c945ee8fb95cd18765f134928de3e32 # v0.16.0
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@d2299e834fcbaca4bf2db043a2939798043d5951 # v0.16.1
     secrets: inherit
     with:
       publish: true
@@ -57,7 +57,7 @@ jobs:
       packages: read
 
   docker_arbitrageur_client:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@a5bf0dd12c945ee8fb95cd18765f134928de3e32 # v0.16.0
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@d2299e834fcbaca4bf2db043a2939798043d5951 # v0.16.1
     secrets: inherit
     with:
       publish: true
