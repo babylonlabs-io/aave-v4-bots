@@ -36,12 +36,13 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         vm.stopBroadcast();
         console.log("Liquidator funded with 1000 USDC and 1 WBTC");
 
-        // Fund arbitrageur with WBTC
+        // Fund arbitrageur with ETH and WBTC
         console.log("\n--- Step 2: Fund Arbitrageur ---");
         vm.startBroadcast(adminPrivateKey);
+        payable(E2EConstants.ARBITRAGEUR).transfer(10 ether);
         wbtc.mint(E2EConstants.ARBITRAGEUR, 10 * uint256(ONE_BTC));
         vm.stopBroadcast();
-        console.log("Arbitrageur funded with 10 WBTC");
+        console.log("Arbitrageur funded with 10 ETH and 10 WBTC");
 
         // Create .env files with deployed contract addresses for bots and Ponder
         console.log("\n--- Step 3: Create .env Files ---");
