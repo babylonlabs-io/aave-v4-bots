@@ -1,6 +1,6 @@
 # Arbitrageur Operation Guide
 
-This guide covers operation of the arbitrageur service for the Aave v4 integration
+This guide covers the operation of the arbitrageur service for the Aave v4 integration
 with Babylon's Trustless Bitcoin Vaults protocol.
 
 ## Table of Contents
@@ -11,31 +11,30 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [External Service Connections](#22-external-service-connections)
    - [Network Requirements](#23-network-requirements)
 3. [Architecture Overview](#3-architecture-overview)
-4. [Registration Requirements](#4-registration-requirements)
-5. [Installation](#5-installation)
-   - [Prerequisites](#51-prerequisites)
-   - [Native Installation](#52-native-installation)
-   - [Docker Installation](#53-docker-installation)
-6. [Configuration](#6-configuration)
-   - [Environment Files](#61-environment-files)
-   - [Ponder Indexer Configuration](#62-ponder-indexer-configuration)
-   - [Arbitrageur Client Configuration](#63-arbitrageur-client-configuration)
-   - [Contract Addresses](#64-contract-addresses)
-7. [Wallet Setup](#7-wallet-setup)
-   - [Funding Requirements](#71-funding-requirements)
-8. [Starting the Service](#8-starting-the-service)
-   - [Native Deployment](#81-native-deployment)
-   - [Docker Deployment](#82-docker-deployment)
-9. [Operations](#9-operations)
-   - [Health Monitoring](#91-health-monitoring)
-   - [Prometheus Metrics](#92-prometheus-metrics)
-   - [Manual Commands](#93-manual-commands)
-10. [Vault Acquisition Flow](#10-vault-acquisition-flow)
-    - [Economic Model](#101-economic-model)
-    - [Interest Accrual](#102-interest-accrual)
-11. [Troubleshooting](#11-troubleshooting)
-    - [Common Issues](#111-common-issues)
-    - [Error Types](#112-error-types)
+4. [Installation](#4-installation)
+   - [Prerequisites](#41-prerequisites)
+   - [Native Installation](#42-native-installation)
+   - [Docker Installation](#43-docker-installation)
+5. [Configuration](#5-configuration)
+   - [Environment Files](#51-environment-files)
+   - [Ponder Indexer Configuration](#52-ponder-indexer-configuration)
+   - [Arbitrageur Client Configuration](#53-arbitrageur-client-configuration)
+   - [Contract Addresses](#54-contract-addresses)
+6. [Wallet Setup](#6-wallet-setup)
+   - [Funding Requirements](#61-funding-requirements)
+7. [Starting the Service](#7-starting-the-service)
+   - [Native Deployment](#71-native-deployment)
+   - [Docker Deployment](#72-docker-deployment)
+8. [Operations](#8-operations)
+   - [Health Monitoring](#81-health-monitoring)
+   - [Prometheus Metrics](#82-prometheus-metrics)
+   - [Manual Commands](#83-manual-commands)
+9. [Vault Acquisition Flow](#9-vault-acquisition-flow)
+    - [Economic Model](#91-economic-model)
+    - [Interest Accrual](#92-interest-accrual)
+10. [Troubleshooting](#10-troubleshooting)
+    - [Common Issues](#101-common-issues)
+    - [Error Types](#102-error-types)
 
 ## 1. Introduction
 
@@ -49,6 +48,10 @@ The service consists of two components:
 |-----------|-------------|
 | **Ponder Indexer** | Indexes blockchain events (`VaultSwappedForWbtc`, `WbtcSwappedForVault`) and tracks escrowed vaults available for acquisition |
 | **Arbitrageur Client** | Polls the indexer for profitable vaults and executes acquisition transactions |
+
+> **Note**: A vault keeper daemon must be running to complete vault redemptions. The keeper listens for redemption events and handles the off-chain claim process.
+
+> **Important**: The trustless Bitcoin vaults protocol requires all entities that may claim a BTC vault to pre-sign a set of transactions during the vault's creation. This restricts claims to a pre-approved set of participants controlled by the smart contract admin, making the arbitrageur role **permissioned**.
 
 ## 2. System Requirements
 
@@ -106,27 +109,22 @@ The service consists of two components:
 └─────────────────────────────────────────┘
 ```
 
-## 4. Registration Requirements
+## 4. Installation
 
-> **Important**: Operating an arbitrageur is **not permissionless**. Only pre-approved
-> partners registered as Aave v4 application keepers can operate arbitrageurs. Registration
-> is required to redeem vaults for actual BTC through the Babylon protocol.
-
-## 5. Installation
-
-### 5.1. Prerequisites
+### 4.1. Prerequisites
 
 - **Node.js**: >= 18.14 (22 LTS recommended)
 - **pnpm**: 9.13.2+
 - **Docker** (for containerized deployment)
 - **PostgreSQL**: 17+ (or use Docker)
-- **Registration**: Must be registered as Aave keeper (see [Section 4](#4-registration-requirements))
+- **Registration**: Must be registered as Aave keeper (see [Introduction](#1-introduction))
 
-### 5.2. Native Installation
+### 4.2. Native Installation
 
 **Clone and install dependencies:**
 
 ```bash
+# TODO: Add release tag once we create a release (e.g., --branch v1.0.0)
 git clone https://github.com/babylonlabs-io/aave-v4-bots.git
 cd aave-v4-bots
 pnpm install
@@ -146,22 +144,24 @@ aave-v4-bots/
 └── docker-compose.yml       # Docker orchestration
 ```
 
-### 5.3. Docker Installation
+### 4.3. Docker Installation
 
-Build Docker images from the repository root:
+Pre-built images are available from GitHub Container Registry:
+
+| Image | Description |
+|-------|-------------|
+| `ghcr.io/babylonlabs-io/arbitrageur-aave-indexer` | Ponder indexer |
+| `ghcr.io/babylonlabs-io/arbitrageur-aave-client` | Arbitrageur client |
+
+Docker Compose will automatically pull these images. To build locally instead:
 
 ```bash
 docker compose build arbitrageur-ponder arbitrageur-client
 ```
 
-| Image | Description |
-|-------|-------------|
-| `arbitrageur-ponder` | Ponder indexer |
-| `arbitrageur-client` | Arbitrageur client |
+## 5. Configuration
 
-## 6. Configuration
-
-### 6.1. Environment Files
+### 5.1. Environment Files
 
 The service requires two environment configurations:
 
@@ -180,13 +180,13 @@ cp env.arbitrageur.example .env.arbitrageur
 cp .env.arbitrageur services/arbitrageur/ponder/.env.local
 ```
 
-### 6.2. Ponder Indexer Configuration
+### 5.2. Ponder Indexer Configuration
 
 Configure the indexer in `services/arbitrageur/ponder/.env.local`:
 
 ```bash
 # RPC URL for blockchain indexing
-PONDER_RPC_URL_1=https://eth-mainnet.example.com
+PONDER_RPC_URL=https://eth-mainnet.example.com
 
 # VaultSwap contract address
 VAULT_SWAP_ADDRESS=0x...
@@ -194,7 +194,7 @@ VAULT_SWAP_ADDRESS=0x...
 # BTCVaultsManager contract address
 BTC_VAULTS_MANAGER_ADDRESS=0x...
 
-# Chain ID
+# Chain ID (1 for mainnet, 11155111 for Sepolia testnet)
 CHAIN_ID=1
 
 # Block number to start indexing from
@@ -210,16 +210,16 @@ DATABASE_SCHEMA=public
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `PONDER_RPC_URL_1` | Ethereum RPC endpoint for indexing | Required |
+| `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Required |
 | `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |
 | `BTC_VAULTS_MANAGER_ADDRESS` | BTCVaultsManager contract | Required |
-| `CHAIN_ID` | Network chain ID | `1` |
+| `CHAIN_ID` | Network chain ID (1 for mainnet, 11155111 for Sepolia) | `1` |
 | `START_BLOCK` | Block to begin indexing | `0` |
 | `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | `1000` |
 | `DATABASE_URL` | PostgreSQL connection string | Required |
 | `DATABASE_SCHEMA` | PostgreSQL schema | `public` |
 
-### 6.3. Arbitrageur Client Configuration
+### 5.3. Arbitrageur Client Configuration
 
 Configure the client in `.env.arbitrageur`:
 
@@ -233,7 +233,7 @@ ARBITRAGEUR_PRIVATE_KEY=0x...
 PONDER_URL=http://localhost:42070
 
 # RPC URL for transaction execution
-RPC_URL=https://eth-mainnet.example.com
+CLIENT_RPC_URL=https://eth-mainnet.example.com
 
 # Contract addresses
 CONTROLLER_ADDRESS=0x...
@@ -276,7 +276,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 |-----------|-------------|---------|
 | `ARBITRAGEUR_PRIVATE_KEY` | Private key for signing transactions | Required |
 | `PONDER_URL` | Indexer API endpoint | Required |
-| `RPC_URL` | RPC for transaction execution | Required |
+| `CLIENT_RPC_URL` | RPC for transaction execution | Required |
 | `CONTROLLER_ADDRESS` | AaveIntegrationController address | Required |
 | `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
@@ -290,7 +290,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `RETRY_MAX_DELAY_MS` | Maximum retry delay | `30000` |
 | `TX_RECEIPT_TIMEOUT_MS` | Transaction receipt timeout | `120000` |
 
-### 6.4. Contract Addresses
+### 5.4. Contract Addresses
 
 Testnet contract addresses are provided as part of the onboarding requirements.
 
@@ -301,9 +301,9 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 | `CONTROLLER_ADDRESS` | Verify vault ownership, initiate redemption |
 | `WBTC_ADDRESS` | WBTC token for acquisition payments |
 
-## 7. Wallet Setup
+## 6. Wallet Setup
 
-### 7.1. Funding Requirements
+### 6.1. Funding Requirements
 
 The arbitrageur wallet requires:
 
@@ -321,9 +321,9 @@ The arbitrageur wallet requires:
 - Set up alerts for low ETH balance
 - Set up alerts for low WBTC balance
 
-## 8. Starting the Service
+## 7. Starting the Service
 
-### 8.1. Native Deployment
+### 7.1. Native Deployment
 
 **Step 1: Start PostgreSQL**
 
@@ -355,7 +355,7 @@ curl http://localhost:9091/health
 curl http://localhost:42070/escrowed-vaults
 ```
 
-### 8.2. Docker Deployment
+### 7.2. Docker Deployment
 
 **Start all arbitrageur services:**
 
@@ -385,9 +385,9 @@ docker compose logs -f arbitrageur-client
 
 **Health checks are automatic** - Docker will restart unhealthy containers.
 
-## 9. Operations
+## 8. Operations
 
-### 9.1. Health Monitoring
+### 8.1. Health Monitoring
 
 **Health endpoint:**
 
@@ -421,7 +421,7 @@ curl http://localhost:9091/ready
 
 Returns HTTP 200 if ready, HTTP 503 if dependencies unreachable.
 
-### 9.2. Prometheus Metrics
+### 8.2. Prometheus Metrics
 
 Available at `GET http://localhost:9091/metrics`
 
@@ -457,7 +457,7 @@ Available at `GET http://localhost:9091/metrics`
     summary: "Arbitrageur WBTC balance low"
 ```
 
-### 9.3. Manual Commands
+### 8.3. Manual Commands
 
 **List owned vaults:**
 
@@ -490,9 +490,9 @@ curl http://localhost:42070/escrowed-vaults-raw
 curl "http://localhost:42070/owned-vaults?owner=0x..."
 ```
 
-## 10. Vault Acquisition Flow
+## 9. Vault Acquisition Flow
 
-### 10.1. Economic Model
+### 9.1. Economic Model
 
 When acquiring a vault, the arbitrageur pays less than the full BTC value:
 
@@ -504,12 +504,10 @@ When acquiring a vault, the arbitrageur pays less than the full BTC value:
 
 > **Note**: The exact discount percentage is defined as a protocol parameter.
 > Check the `ProtocolParam` contract on your target network for current rates.
+>
+> <!-- TODO: Update this when protocol params are moved to Aave contracts -->
 
-**WBTC payment distribution:**
-- Loan repayment to Aave Hub (WBTC borrowed when liquidator swapped)
-- Protocol fees split between Babylon Labs and Aave v4
-
-### 10.2. Interest Accrual
+### 9.2. Interest Accrual
 
 The debt on an escrowed vault accrues interest over time:
 
@@ -523,21 +521,21 @@ required, including accrued interest.
 > **Note**: Vault acquisition is first-come-first-served. The first successful
 > `swapWbtcForVault()` transaction wins the vault.
 
-## 11. Troubleshooting
+## 10. Troubleshooting
 
-### 11.1. Common Issues
+### 10.1. Common Issues
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
 | "Ponder unreachable" | Indexer not running or wrong URL | Check `PONDER_URL`, verify indexer is healthy |
-| "RPC unreachable" | Invalid RPC endpoint | Verify `RPC_URL` and network connectivity |
+| "RPC unreachable" | Invalid RPC endpoint | Verify `CLIENT_RPC_URL` and network connectivity |
 | "Configuration validation failed" | Invalid env vars | Check error output for specific field |
 | "Swap reverted" | Vault already acquired or slippage exceeded | Normal competition - vault was acquired by another |
 | "Gas estimation failed" | Contract call would revert | Vault state changed, will retry |
 | "Transaction timeout" | Network congestion | Increase `TX_RECEIPT_TIMEOUT_MS` |
 | "Insufficient WBTC" | Low balance | Fund wallet with more WBTC |
 
-### 11.2. Error Types
+### 10.2. Error Types
 
 | Error Type | Trigger | Action |
 |------------|---------|--------|

@@ -16,7 +16,7 @@ Indexes VaultSwap events and exposes API endpoints for querying escrowed vaults.
 
 ```bash
 # RPC URL for indexing
-PONDER_RPC_URL_1=http://localhost:8545
+PONDER_RPC_URL=http://localhost:8545
 
 # VaultSwap contract address
 VAULT_SWAP_ADDRESS=0x...
