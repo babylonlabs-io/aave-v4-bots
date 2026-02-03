@@ -51,11 +51,11 @@ cp .env.liquidator services/liquidator/ponder/.env.local
 cp .env.arbitrageur services/arbitrageur/ponder/.env.local
 ```
 
-| Component | Env File Location | Loaded From |
-|-----------|------------------|-------------|
-| Liquidator Client | `.env.liquidator` | Root directory |
-| Liquidator Ponder | `services/liquidator/ponder/.env.local` | Ponder directory |
-| Arbitrageur Client | `.env.arbitrageur` | Root directory |
+| Component          | Env File Location                        | Loaded From      |
+| ------------------ | ---------------------------------------- | ---------------- |
+| Liquidator Client  | `.env.liquidator`                        | Root directory   |
+| Liquidator Ponder  | `services/liquidator/ponder/.env.local`  | Ponder directory |
+| Arbitrageur Client | `.env.arbitrageur`                       | Root directory   |
 | Arbitrageur Ponder | `services/arbitrageur/ponder/.env.local` | Ponder directory |
 
 ### 2. Install Dependencies
@@ -115,14 +115,14 @@ docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-client
 
 ### Service Ports
 
-| Service | Port | Description |
-|---------|------|-------------|
-| liquidator-postgres | 5432 | Liquidator PostgreSQL |
-| liquidator-ponder | 42069 | Liquidator Indexer API |
-| liquidator-client | 9090 | Liquidator Metrics/Health |
-| arbitrageur-postgres | 5433 | Arbitrageur PostgreSQL |
-| arbitrageur-ponder | 42070 | Arbitrageur Indexer API |
-| arbitrageur-client | 9091 | Arbitrageur Metrics/Health |
+| Service              | Port  | Description                |
+| -------------------- | ----- | -------------------------- |
+| liquidator-postgres  | 5432  | Liquidator PostgreSQL      |
+| liquidator-ponder    | 42069 | Liquidator Indexer API     |
+| liquidator-client    | 9090  | Liquidator Metrics/Health  |
+| arbitrageur-postgres | 5433  | Arbitrageur PostgreSQL     |
+| arbitrageur-ponder   | 42070 | Arbitrageur Indexer API    |
+| arbitrageur-client   | 9091  | Arbitrageur Metrics/Health |
 
 ### Stop Services
 

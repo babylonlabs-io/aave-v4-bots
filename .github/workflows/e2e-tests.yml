@@ -1,0 +1,166 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ponder
+          POSTGRES_PASSWORD: ponder
+          POSTGRES_DB: ponder
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      FOUNDRY_PROFILE: e2e
+      # Deployment configuration
+      DEPLOYER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      ADMIN_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      ADMIN_PRIVKEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      BTC_INIT_BLOCK_HEIGHT: "2017"
+      BTC_INIT_EXPECTED_TARGET: "0x207fffff"
+      BTC_NETWORK_TYPE: "regtest"
+      BTC_ADMIN: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      BTC_RPC_URL: http://localhost:18443
+      BTC_RPC_USER: btcuser
+      BTC_RPC_PASSWORD: btcpassword
+      # Universal Challengers
+      NUM_UNIVERSAL_CHALLENGERS: "1"
+      UNIVERSAL_CHALLENGER_0_ETH_ADDRESS: "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
+      UNIVERSAL_CHALLENGER_0_BTC_PUBLIC_KEY: "0x7962d45b38e8bcf82fa8efa8432a01f20c9a53e24c7d3f11df197cb8e70926da"
+      # Aave Application
+      APPLICATION_NAME: "Aave v4"
+      NUM_APP_OPERATORS: "2"
+      APP_OPERATOR_0_ETH_ADDRESS: "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+      APP_OPERATOR_0_BTC_PUBLIC_KEY: "0x9ac20335eb38768d2052be1dbbc3c8f6178407458e51e6b4ad22f1d91758895b"
+      APP_OPERATOR_1_ETH_ADDRESS: "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF"
+      APP_OPERATOR_1_BTC_PUBLIC_KEY: "0x466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+      # Vault Provider
+      USE_REAL_REGISTRATION: "true"
+      VAULT_PROVIDER_PRIVATE_KEY: "0x000000000000000000000000000000000000000000000000000000000000000a"
+      VAULT_PROVIDER_ADDRESS: "0x4CCeBa2d7D2B4fdcE4304d3e09a1fea9fbEb1528"
+      VAULT_PROVIDER_BTCPUBKEY: "0x4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+      VAULT_PROVIDER_POP_SIGNATURE: "0x0247304402206dd71f8057d4b8b383aa607ffd8e90e970b70146042ff76c87db368f4f4c882c02207963f27aa9a1eedac025229934a089cc36d2509bcf546655d6252cebe7943ef30121034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout submodules (private repo)
+        env:
+          GITHUB_TOKEN: ${{ secrets.VAULT_REPOS_RO }}
+        run: |
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl python3-pip
+
+      - name: Install Python dependencies
+        run: |
+          pip3 install --user base58 coincurve
+
+      - name: Start Bitcoin regtest
+        run: docker compose -f contracts/docker-compose.e2e.yml up -d bitcoin-regtest
+
+      - name: Wait for Bitcoin node
+        run: |
+          chmod +x contracts/test/e2e/scripts/btc-helper.sh
+          for i in {1..30}; do
+            if USE_DOCKER=true contracts/test/e2e/scripts/btc-helper.sh wait; then
+              echo "✓ Bitcoin node is ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "✗ Bitcoin node failed to start"
+              docker compose -f contracts/docker-compose.e2e.yml logs bitcoin-regtest
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Initialize Bitcoin environment
+        env:
+          USE_DOCKER: "true"
+        run: |
+          cd contracts
+          ./test/e2e/scripts/btc-helper.sh wallet test_wallet
+          ./test/e2e/scripts/btc-helper.sh mine 2020
+          ./test/e2e/scripts/btc-helper.sh info
+
+      - name: Start Anvil
+        run: anvil --silent &
+
+      - name: Deploy and setup E2E environment
+        run: |
+          cd contracts
+          forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --private-key $PRIVATE_KEY \
+            --skip-simulation \
+            --slow
+
+      - name: Run setup position script
+        run: |
+          forge script test/e2e/LiquidationE2ESetup.s.sol:LiquidationE2ESetup \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --private-key $PRIVATE_KEY \
+            --ffi \
+            --skip-simulation \
+            --slow
+
+      - name: Run liquidation verification script
+        run: |
+          forge script test/e2e/LiquidationE2EVerify.s.sol:LiquidationE2EVerify \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --private-key $PRIVATE_KEY \
+            --ffi \
+            --skip-simulation \
+            --slow
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Ponder logs ==="
+          cat /tmp/ponder.log || true
+          echo "=== Bot logs ==="
+          cat /tmp/bot.log || true

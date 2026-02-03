@@ -1,0 +1,1 @@
+../../../contracts/test/e2e/scripts/btc-helper.sh
