@@ -1,107 +1,21 @@
-TIME-LIMITED TESTNET LICENSE
-
-Version 1.0
+MIT License
 
 Copyright (c) 2026 Babylon Labs Limited
 
-All rights reserved.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-IMPORTANT: THIS IS NOT AN OPEN-SOURCE LICENSE.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-1. DEFINITIONS
-
-"Software" means the source code, documentation, and any related materials made available by
-Babylon Labs Limited (the "Licensor") under this License.
-
-"Testnet Use" means use of the Software solely for non-production testing, evaluation, security review,
-research, or experimentation on a test network or local environment, and not for mainnet, production,
-or commercial purposes.
-
-"Expiration Date" means the date that is 30 April 2026 (inclusive).
-
-2. LICENSE GRANT
-
-Subject to the terms of this License, the Licensor grants you a limited, non-exclusive, non-transferable,
-non-sublicensable, revocable license to use, copy, and modify the Software solely for Testnet Use until
-the Expiration Date.
-
-You agree to grant and hereby grants to Licensor a nonexclusive, perpetual, irrevocable, royalty free,
-worldwide license (with the right to grant and authorize sublicenses) to make, have made, use, import,
-offer for sale, sell, reproduce, distribute, modify, adapt, prepare derivative works of, display, perform and
-otherwise exploit without restriction any feedback given to Licensor during and for the purposes of the
-testnet.
-
-3. RESTRICTIONS
-
-You may NOT, directly or indirectly:
-(a) use the Software on any mainnet, production system, or live environment;
-(b) use the Software for any commercial purpose or in connection with a commercial product or service;
-(c) offer the Software or any derivative as a hosted service, SaaS, or infrastructure;
-(d) create, distribute, or deploy any competing or substantially similar product or service;
-(e) sublicense, sell, license, or otherwise distribute the Software or derivatives to third parties;
-(f) remove or alter any copyright or license notices.
-
-4. DERIVATIVE WORKS
-
-You may create modifications or derivative works solely for Testnet Use during the license term. All such
-derivatives are subject to this License and may not be used or distributed after the Expiration Date.
-No rights to derivative works survive expiration.
-
-5. RESEARCH AND SECURITY AUDIT EXCEPTION
-
-As part of the Testnet Use security review, you may use, copy, modify, and analyze the Software for the
-purpose of:
-(a) security research;
-(b) vulnerability analysis;
-(c) formal or informal security audits;
-(d) academic research; or
-(e) responsible disclosure of security issues whereas responsible disclosure means reporting a
-vulnerability privately to the Licensor and refraining from public disclosure or exploitation for a
-reasonable period, not less than thirty (30) days, unless the Licensor authorizes earlier disclosure or the
-vulnerability is already publicly exploited,
-
-provided that:
-(i) such use is strictly non-commercial;
-(ii) the Software is not deployed on any mainnet or production system;
-(iii) no derivative work, exploit code, or audit tooling derived from the Software is used in production or
-offered as a service;
-(iv) any public disclosure of findings does not include sufficient detail to enable exploitation prior to
-remediation, unless expressly authorized by the Licensor.
-
-This exception does not permit offering audit services, commercial security products, or competing
-implementations based on the Software.
-
-6. AUTOMATIC EXPIRATION
-
-This License automatically expires on the Expiration Date without notice.
-
-Upon expiration, you must immediately:
-(a) cease all use of the Software and derivatives;
-(b) delete all copies in your possession or control.
-
-No rights are granted or implied after expiration.
-
-7. NO FUTURE RIGHTS
-
-This License does not grant any right or expectation to use the Software after expiration or under any
-future license. Any future licensing is at Licensor’s sole discretion.
-
-8. NO WARRANTY
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, OR NON-
-INFRINGEMENT.
-
-9. LIMITATION OF LIABILITY
-
-TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE LICENSOR BE LIABLE FOR ANY
-DAMAGES ARISING OUT OF OR RELATED TO THE SOFTWARE OR THIS LICENSE.
-
-10. TERMINATION FOR BREACH
-
-Any violation of this License immediately terminates all rights granted herein.
-
-11. GOVERNING LAW
-
-This License shall be governed by and construed in accordance with the laws of the British Virgin Islands,
-excluding conflict-of-laws principles.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
