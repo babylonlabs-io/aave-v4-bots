@@ -27,18 +27,27 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         (uint256 collateralBefore, uint256 debtBefore, uint256 healthFactorBefore) = _getPositionInfo(borrower);
         uint256 liquidatorUsdcBefore = usdc.balanceOf(E2EConstants.LIQUIDATOR);
 
-        console.log("\n--- Unhealthy Position (After Price Drop) ---");
+        console.log("\n--- Position (After Price Drop - liquidation may already have occurred) ---");
         console.log("Borrower:", borrower);
         console.log("Collateral value:", collateralBefore / 1e26, "USD");
         console.log("Debt value:", debtBefore / 1e26, "USD");
         console.log("Health Factor:", healthFactorBefore / 1e16, "/ 100");
         console.log("Liquidator USDC balance:", liquidatorUsdcBefore / ONE_USDC, "USDC");
 
-        // Wait for Ponder to index + bot to liquidate
-        console.log("\n--- Waiting for Bot Liquidation ---");
-        console.log("Waiting 5 seconds for Ponder sync + bot liquidation...");
-        console.log("Start time:", block.timestamp);
-        vm.sleep(5000);
+        // Check if liquidation already occurred
+        bool liquidationAlreadyOccurred = (collateralBefore == 0 && debtBefore == 0)
+            || (debtBefore > 0 && collateralBefore > 0 && liquidatorUsdcBefore > 0);
+
+        // Wait for Ponder to index + bot to liquidate (only if not yet liquidated)
+        if (!liquidationAlreadyOccurred) {
+            console.log("\n--- Waiting for Bot Liquidation ---");
+            console.log("Waiting 5 seconds for Ponder sync + bot liquidation...");
+            console.log("Start time:", block.timestamp);
+            vm.sleep(5000);
+        } else {
+            console.log("\n--- Liquidation Already Occurred ---");
+            console.log("Skipping wait period");
+        }
 
         // Check position after waiting
         (uint256 collateralAfter, uint256 debtAfter, uint256 healthFactorAfter) = _getPositionInfo(borrower);

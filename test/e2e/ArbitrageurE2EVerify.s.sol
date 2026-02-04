@@ -27,7 +27,6 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
         uint256 liquidatorWbtcBefore = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
         address vaultOwnerBefore = bytes32(0) == vaultId ? address(0) : aaveController.getVaultOwner(vaultId);
 
-        console.log("\n--- Before Arbitrageur Acquisition ---");
         console.log("Arbitrageur:", E2EConstants.ARBITRAGEUR);
         console.log("Arbitrageur WBTC balance:", arbWbtcBefore / 1e8, "WBTC");
         console.log("Liquidator:", E2EConstants.LIQUIDATOR);
@@ -46,15 +45,14 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
             if (!isEscrowed) {
                 console.log("[INFO] Vault is not escrowed - checking if already acquired by arbitrageur");
+            } else {
+                console.log("\n--- Waiting for Arbitrageur Bot ---");
+                console.log("Waiting 5 seconds for arbitrageur to acquire vaults...");
+                vm.sleep(5000);
             }
         } else {
             console.log("\n[WARN] No vault ID found - will rely on balance checks only");
         }
-
-        // Wait for arbitrageur bot to process
-        console.log("\n--- Waiting for Arbitrageur Bot ---");
-        console.log("Waiting 5 seconds for arbitrageur to acquire vaults...");
-        vm.sleep(5000);
 
         // Check balances and ownership after waiting
         uint256 arbWbtcAfter = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
