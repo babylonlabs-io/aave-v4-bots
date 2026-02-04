@@ -13,10 +13,10 @@ library E2EConstants {
     uint256 internal constant LIQUIDATOR_PRIVATE_KEY =
         0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d;
 
-    // Arbitrageur (derived from private key 0x1)
-    address internal constant ARBITRAGEUR = 0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf;
+    // Arbitrageur (Anvil account[2])
+    address internal constant ARBITRAGEUR = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
     uint256 internal constant ARBITRAGEUR_PRIVATE_KEY =
-        0x0000000000000000000000000000000000000000000000000000000000000001;
+        0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a;
 
     // Borrower (Anvil account[11])
     uint256 internal constant BORROWER_PRIVATE_KEY = 12;
