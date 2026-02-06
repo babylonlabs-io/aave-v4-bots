@@ -113,10 +113,9 @@ The service consists of two components:
 
 ### 4.1. Prerequisites
 
-- **Node.js**: >= 18.14 (22 LTS recommended)
+- **Node.js**: >= 18.14
 - **pnpm**: 9.13.2+
-- **Docker** (for containerized deployment)
-- **PostgreSQL**: 17+ (or use Docker)
+- **PostgreSQL**: 17+
 - **Registration**: Must be registered as Aave keeper (see [Introduction](#1-introduction))
 
 ### 4.2. Native Installation
@@ -146,12 +145,12 @@ aave-v4-bots/
 
 ### 4.3. Docker Installation
 
-Pre-built images are available from GitHub Container Registry:
+Pre-built images are available from Docker Hub:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/babylonlabs-io/arbitrageur-aave-indexer` | Ponder indexer |
-| `ghcr.io/babylonlabs-io/arbitrageur-aave-client` | Arbitrageur client |
+| `babylonlabs/arbitrageur-aave-indexer` | Ponder indexer |
+| `babylonlabs/arbitrageur-aave-client` | Arbitrageur client |
 
 Docker Compose will automatically pull these images. To build locally instead:
 
@@ -361,12 +360,6 @@ curl http://localhost:42070/escrowed-vaults
 
 ```bash
 docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-client
-```
-
-**Or start everything (including liquidator):**
-
-```bash
-docker compose up -d
 ```
 
 **View logs:**
