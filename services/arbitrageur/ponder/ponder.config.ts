@@ -4,7 +4,7 @@ import { btcVaultsManagerAbi } from "./abis/BTCVaultsManager";
 import { vaultSwapAbi } from "./abis/VaultSwap";
 
 // Validate required environment variables
-const PONDER_RPC_URL = process.env.PONDER_RPC_URL_1;
+const PONDER_RPC_URL = process.env.PONDER_RPC_URL;
 const VAULT_SWAP_ADDRESS = process.env.VAULT_SWAP_ADDRESS;
 const BTC_VAULTS_MANAGER_ADDRESS = process.env.BTC_VAULTS_MANAGER_ADDRESS;
 const START_BLOCK = Number(process.env.START_BLOCK || 0);
@@ -13,7 +13,7 @@ const POLLING_INTERVAL = Number(process.env.PONDER_POLLING_INTERVAL || 1000);
 const CHAIN_ID = Number(process.env.CHAIN_ID || 1);
 
 if (!PONDER_RPC_URL) {
-  throw new Error("PONDER_RPC_URL_1 environment variable is required");
+  throw new Error("PONDER_RPC_URL environment variable is required");
 }
 
 if (!VAULT_SWAP_ADDRESS) {

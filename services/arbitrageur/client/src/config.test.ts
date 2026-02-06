@@ -22,7 +22,7 @@ describe("config validation", () => {
   const validEnv = {
     ARBITRAGEUR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42070",
-    RPC_URL: "http://localhost:8545",
+    CLIENT_RPC_URL: "http://localhost:8545",
     CONTROLLER_ADDRESS: "0x1234567890123456789012345678901234567890",
     VAULT_SWAP_ADDRESS: "0x1234567890123456789012345678901234567890",
     WBTC_ADDRESS: "0x1234567890123456789012345678901234567890",
@@ -49,9 +49,9 @@ describe("config validation", () => {
       expect(mockExit).toHaveBeenCalledWith(1);
     });
 
-    it("should fail when RPC_URL is missing", async () => {
+    it("should fail when CLIENT_RPC_URL is missing", async () => {
       process.env = { ...validEnv };
-      process.env.RPC_URL = undefined;
+      process.env.CLIENT_RPC_URL = undefined;
 
       const { loadConfig } = await import("./config");
 
@@ -121,7 +121,7 @@ describe("config validation", () => {
 
       expect(config.arbitrageurPrivateKey).toBe(validEnv.ARBITRAGEUR_PRIVATE_KEY);
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
-      expect(config.rpcUrl).toBe(validEnv.RPC_URL);
+      expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
       expect(config.controllerAddress).toBe(validEnv.CONTROLLER_ADDRESS);
       expect(config.vaultSwapAddress).toBe(validEnv.VAULT_SWAP_ADDRESS);
       expect(config.wbtcAddress).toBe(validEnv.WBTC_ADDRESS);

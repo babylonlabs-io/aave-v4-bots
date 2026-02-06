@@ -5,7 +5,7 @@ export function loadConfig(): Config {
   const requiredEnvVars = [
     "LIQUIDATOR_PRIVATE_KEY",
     "PONDER_URL",
-    "RPC_URL",
+    "CLIENT_RPC_URL",
     "CONTROLLER_ADDRESS",
     "VAULT_SWAP_ADDRESS",
     "WBTC_ADDRESS",
@@ -34,7 +34,7 @@ export function loadConfig(): Config {
     liquidatorPrivateKey: process.env.LIQUIDATOR_PRIVATE_KEY as Hex,
     pollingIntervalMs: Number.parseInt(process.env.POLLING_INTERVAL_MS || "10000", 10),
     ponderUrl: process.env.PONDER_URL!,
-    rpcUrl: process.env.RPC_URL!,
+    rpcUrl: process.env.CLIENT_RPC_URL!,
     controllerAddress: process.env.CONTROLLER_ADDRESS as Address,
     vaultSwapAddress: process.env.VAULT_SWAP_ADDRESS as Address,
     wbtcAddress: process.env.WBTC_ADDRESS as Address,

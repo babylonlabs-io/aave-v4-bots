@@ -4,7 +4,7 @@ import { controllerAbi } from "./abis/Controller";
 import { spokeAbi } from "./abis/Spoke";
 
 // Validate required environment variables
-const PONDER_RPC_URL = process.env.PONDER_RPC_URL_1;
+const PONDER_RPC_URL = process.env.PONDER_RPC_URL;
 const SPOKE_ADDRESS = process.env.SPOKE_ADDRESS;
 const CONTROLLER_ADDRESS = process.env.CONTROLLER_ADDRESS;
 const CHAIN_ID = Number(process.env.CHAIN_ID || 1);
@@ -13,7 +13,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const POLLING_INTERVAL = Number(process.env.PONDER_POLLING_INTERVAL || 1000);
 
 if (!PONDER_RPC_URL) {
-  throw new Error("PONDER_RPC_URL_1 environment variable is required");
+  throw new Error("PONDER_RPC_URL environment variable is required");
 }
 
 if (!SPOKE_ADDRESS) {
