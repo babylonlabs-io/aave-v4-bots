@@ -219,7 +219,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         inputs[2] = string.concat(
             "cat > .env.liquidator << 'EOF'\n",
             "# Shared Ponder config\n",
-            "PONDER_RPC_URL_1=",
+            "PONDER_RPC_URL=",
             E2EConstants.RPC_URL,
             "\n",
             "START_BLOCK=0\n",
