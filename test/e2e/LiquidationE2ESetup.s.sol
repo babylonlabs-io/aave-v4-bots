@@ -198,7 +198,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         inputs[2] = string.concat(
             "cat > .env << 'EOF'\n",
             "# Ponder config\n",
-            "PONDER_RPC_URL_1=http://localhost:8545\n",
+            "PONDER_RPC_URL=http://localhost:8545\n",
             "SPOKE_ADDRESS=",
             vm.toString(address(aaveSpoke)),
             "\n",
@@ -210,7 +210,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             "# Liquidation bot config\n",
             "LIQUIDATOR_PRIVATE_KEY=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d\n",
             "PONDER_URL=http://localhost:42069\n",
-            "RPC_URL=http://localhost:8545\n",
+            "CLIENT_RPC_URL=http://localhost:8545\n",
             "CONTROLLER_ADDRESS=",
             vm.toString(address(aaveController)),
             "\n",

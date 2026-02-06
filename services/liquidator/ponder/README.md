@@ -16,7 +16,7 @@ Indexes Aave V4 Spoke events and exposes API endpoints for querying positions.
 
 ```bash
 # RPC URL for indexing
-PONDER_RPC_URL_1=http://localhost:8545
+PONDER_RPC_URL=http://localhost:8545
 
 # Spoke contract address
 SPOKE_ADDRESS=0x...

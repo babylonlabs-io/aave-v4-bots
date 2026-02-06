@@ -15,7 +15,7 @@ describe("config validation", () => {
   const validEnv = {
     LIQUIDATOR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42069",
-    RPC_URL: "http://localhost:8545",
+    CLIENT_RPC_URL: "http://localhost:8545",
     CONTROLLER_ADDRESS: "0x1234567890123456789012345678901234567890",
     VAULT_SWAP_ADDRESS: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
     WBTC_ADDRESS: "0x0000000000000000000000000000000000000001",
@@ -42,13 +42,13 @@ describe("config validation", () => {
       expect(() => loadConfig()).toThrow("Missing required environment variable: PONDER_URL");
     });
 
-    it("should throw when RPC_URL is missing", async () => {
+    it("should throw when CLIENT_RPC_URL is missing", async () => {
       process.env = { ...validEnv };
-      process.env.RPC_URL = undefined;
+      process.env.CLIENT_RPC_URL = undefined;
 
       const { loadConfig } = await import("./config");
 
-      expect(() => loadConfig()).toThrow("Missing required environment variable: RPC_URL");
+      expect(() => loadConfig()).toThrow("Missing required environment variable: CLIENT_RPC_URL");
     });
 
     it("should throw when CONTROLLER_ADDRESS is missing", async () => {
@@ -92,7 +92,7 @@ describe("config validation", () => {
 
       expect(config.liquidatorPrivateKey).toBe(validEnv.LIQUIDATOR_PRIVATE_KEY);
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
-      expect(config.rpcUrl).toBe(validEnv.RPC_URL);
+      expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
       expect(config.controllerAddress).toBe(validEnv.CONTROLLER_ADDRESS);
       expect(config.vaultSwapAddress).toBe(validEnv.VAULT_SWAP_ADDRESS);
       expect(config.wbtcAddress).toBe(validEnv.WBTC_ADDRESS);

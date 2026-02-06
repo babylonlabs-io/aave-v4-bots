@@ -91,7 +91,7 @@ The liquidation bot automates position monitoring and liquidation execution.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `LIQUIDATOR_PRIVATE_KEY` | Private key of liquidator wallet | Required |
-| `RPC_URL` | Ethereum RPC endpoint | Required |
+| `CLIENT_RPC_URL` | Ethereum RPC endpoint | Required |
 | `PONDER_URL` | Ponder indexer API URL | Required |
 | `CONTROLLER_ADDRESS` | AaveIntegrationController contract | Required |
 | `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |

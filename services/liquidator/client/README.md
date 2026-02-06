@@ -39,7 +39,7 @@ LIQUIDATOR_PRIVATE_KEY=0x...
 PONDER_URL=http://localhost:42069
 
 # RPC URL
-RPC_URL=http://localhost:8545
+CLIENT_RPC_URL=http://localhost:8545
 
 # AaveIntegrationController address
 CONTROLLER_ADDRESS=0x...
