@@ -41,6 +41,11 @@
       "pnpm-lock.yaml",
       "services/*/ponder/generated",
       "services/*/ponder/.ponder",
+      "services/*/client/src/abis/**",
+      "services/*/ponder/abis/**",
+      "contracts/out/**",
+      "contracts/cache/**",
+      "contracts/broadcast/**",
       "external"
     ]
   }
