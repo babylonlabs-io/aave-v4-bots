@@ -1,19 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {BaseE2E} from "../../contracts/test/e2e/base/BaseE2E.sol";
+import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
 import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {E2EConstants} from "./E2EConstants.sol";
 
 /// @title LiquidationE2EVerify
 /// @notice E2E script to verify the liquidation bot performed the liquidation
 /// @dev Part 2: Waits for bot to liquidate, then checks on-chain state
 ///      Run this AFTER LiquidationE2ESetup.s.sol
 contract LiquidationE2EVerify is Script, BaseE2E {
-    uint256 constant BORROWER_PRIVATE_KEY = 12;
-
     /// @notice Main entry point for the verification script
     function run() public {
         // Load deployed contracts
@@ -22,29 +21,37 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         console.log("\n=== E2E Liquidation Verification ===");
 
         // Get borrower address (same as setup script)
-        address borrower = vm.addr(BORROWER_PRIVATE_KEY);
-        address liquidator = 0x70997970C51812dc3A010C7d01b50e0d17dc79C8;
+        address borrower = vm.addr(E2EConstants.BORROWER_PRIVATE_KEY);
 
         // Get position info before liquidation (after price drop from setup script)
         (uint256 collateralBefore, uint256 debtBefore, uint256 healthFactorBefore) = _getPositionInfo(borrower);
-        uint256 liquidatorUsdcBefore = usdc.balanceOf(liquidator);
+        uint256 liquidatorUsdcBefore = usdc.balanceOf(E2EConstants.LIQUIDATOR);
 
-        console.log("\n--- Unhealthy Position (After Price Drop) ---");
+        console.log("\n--- Position (After Price Drop - liquidation may already have occurred) ---");
         console.log("Borrower:", borrower);
         console.log("Collateral value:", collateralBefore / 1e26, "USD");
         console.log("Debt value:", debtBefore / 1e26, "USD");
         console.log("Health Factor:", healthFactorBefore / 1e16, "/ 100");
         console.log("Liquidator USDC balance:", liquidatorUsdcBefore / ONE_USDC, "USDC");
 
-        // Wait for Ponder to index + bot to liquidate
-        console.log("\n--- Waiting for Bot Liquidation ---");
-        console.log("Waiting 5 seconds for Ponder sync + bot liquidation...");
-        console.log("Start time:", block.timestamp);
-        vm.sleep(5000);
+        // Check if liquidation already occurred
+        bool liquidationAlreadyOccurred = (collateralBefore == 0 && debtBefore == 0)
+            || (debtBefore > 0 && collateralBefore > 0 && liquidatorUsdcBefore > 0);
+
+        // Wait for Ponder to index + bot to liquidate (only if not yet liquidated)
+        if (!liquidationAlreadyOccurred) {
+            console.log("\n--- Waiting for Bot Liquidation ---");
+            console.log("Waiting 5 seconds for Ponder sync + bot liquidation...");
+            console.log("Start time:", block.timestamp);
+            vm.sleep(5000);
+        } else {
+            console.log("\n--- Liquidation Already Occurred ---");
+            console.log("Skipping wait period");
+        }
 
         // Check position after waiting
         (uint256 collateralAfter, uint256 debtAfter, uint256 healthFactorAfter) = _getPositionInfo(borrower);
-        uint256 liquidatorUsdcAfter = usdc.balanceOf(liquidator);
+        uint256 liquidatorUsdcAfter = usdc.balanceOf(E2EConstants.LIQUIDATOR);
 
         console.log("\n--- Position After Waiting ---");
         console.log("Collateral value:", collateralAfter / 1e26, "USD");

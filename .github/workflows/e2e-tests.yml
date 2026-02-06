@@ -157,10 +157,24 @@ jobs:
             --skip-simulation \
             --slow
 
+      - name: Run arbitrageur verification script
+        run: |
+          forge script test/e2e/ArbitrageurE2EVerify.s.sol:ArbitrageurE2EVerify \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --private-key $PRIVATE_KEY \
+            --ffi \
+            --skip-simulation \
+            --slow
+
       - name: Show logs on failure
         if: failure()
         run: |
-          echo "=== Ponder logs ==="
-          cat /tmp/ponder.log || true
-          echo "=== Bot logs ==="
-          cat /tmp/bot.log || true
+          echo "=== Liquidator Ponder logs ==="
+          cat /tmp/liq-ponder.log || true
+          echo "=== Liquidator Bot logs ==="
+          cat /tmp/liq-bot.log || true
+          echo "=== Arbitrageur Ponder logs ==="
+          cat /tmp/arb-ponder.log || true
+          echo "=== Arbitrageur Bot logs ==="
+          cat /tmp/arb-bot.log || true

@@ -26,7 +26,9 @@ remappings = [
     "src/interfaces/IMulticall.sol=contracts/lib/aave-v4/src/interfaces/IMulticall.sol",
     "src/access/=contracts/lib/aave-v4/src/access/",
     "script/utils/=contracts/script/utils/",
-    "lib/aave-v4/=contracts/lib/aave-v4/"
+    "lib/aave-v4/=contracts/lib/aave-v4/",
+    "test-utils/=contracts/test/utils/",
+    "test-e2e-base/=contracts/test/e2e/base/"
 ]
 
 # E2E test profile - requires Bitcoin regtest and Postgres running
