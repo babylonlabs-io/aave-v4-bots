@@ -277,7 +277,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         inputs[2] = string.concat(
             "cat > .env.arbitrageur << 'EOF'\n",
             "# Arbitrageur Ponder config\n",
-            "PONDER_RPC_URL_1=",
+            "PONDER_RPC_URL=",
             E2EConstants.RPC_URL,
             "\n",
             "VAULT_SWAP_ADDRESS=",
