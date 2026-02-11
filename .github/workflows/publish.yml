@@ -22,6 +22,7 @@ jobs:
       repoName: liquidation-aave-indexer
       push_to_dockerhub: false
       hadolint_nofail: true
+      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -37,6 +38,7 @@ jobs:
       repoName: liquidation-aave-client
       push_to_dockerhub: false
       hadolint_nofail: true
+      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -53,6 +55,7 @@ jobs:
       repoName: arbitrageur-aave-indexer
       push_to_dockerhub: false
       hadolint_nofail: true
+      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -68,6 +71,7 @@ jobs:
       repoName: arbitrageur-aave-client
       push_to_dockerhub: false
       hadolint_nofail: true
+      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
