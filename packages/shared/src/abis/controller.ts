@@ -12,9 +12,19 @@ export const controllerAbi = [
   {
     type: "function",
     name: "liquidateCorePosition",
-    inputs: [{ name: "borrowerProxy", type: "address" }],
+    inputs: [
+      { name: "borrower", type: "address" },
+      { name: "btcRedeemKey", type: "bytes32" },
+    ],
     outputs: [{ name: "seizedAmount", type: "uint256" }],
     stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "getUserOfProxy",
+    inputs: [{ name: "proxy", type: "address" }],
+    outputs: [{ name: "user", type: "address" }],
+    stateMutability: "view",
   },
   {
     type: "event",

@@ -144,25 +144,42 @@ export class LiquidationBot {
 
       console.log(`${this.logTag}Found ${positions.length} liquidatable position(s)`);
 
-      // 2. Simulate all liquidations in parallel to filter to valid ones
-      const simulationResults = await Promise.allSettled(
+      // 2. Resolve borrower addresses from proxy addresses
+      // The contract's liquidateCorePosition takes the user address, not the proxy
+      const borrowerAddresses = await Promise.all(
         positions.map((p) =>
+          this.publicClient.readContract({
+            address: this.controllerAddress,
+            abi: controllerAbi,
+            functionName: "getUserOfProxy",
+            args: [p.proxyAddress],
+          })
+        )
+      );
+
+      // 3. Simulate all liquidations in parallel to filter to valid ones
+      // btcRedeemKey = bytes32(0) means WBTC payout via VaultSwap
+      const zeroBytes32 =
+        "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
+
+      const simulationResults = await Promise.allSettled(
+        positions.map((p, i) =>
           this.publicClient.simulateContract({
             address: this.controllerAddress,
             abi: controllerAbi,
             functionName: "liquidateCorePosition",
-            args: [p.proxyAddress],
+            args: [borrowerAddresses[i], zeroBytes32],
             account: this.walletClient.account,
           })
         )
       );
 
-      const validPositions: LiquidatablePosition[] = [];
+      const validIndices: number[] = [];
       for (let i = 0; i < simulationResults.length; i++) {
         const result = simulationResults[i];
         const pos = positions[i];
         if (result.status === "fulfilled") {
-          validPositions.push(pos);
+          validIndices.push(i);
         } else {
           recordSimulationFailed();
           const reason = result.reason;
@@ -176,13 +193,13 @@ export class LiquidationBot {
         }
       }
 
-      if (validPositions.length === 0) {
+      if (validIndices.length === 0) {
         console.log(`${this.logTag}No positions passed simulation`);
         return;
       }
 
       console.log(
-        `${this.logTag}${validPositions.length}/${positions.length} positions passed simulation`
+        `${this.logTag}${validIndices.length}/${positions.length} positions passed simulation`
       );
 
       // 4. Send all liquidation txs with explicit nonces
@@ -192,17 +209,21 @@ export class LiquidationBot {
       });
 
       const txHashes: Hex[] = [];
-      for (let i = 0; i < validPositions.length; i++) {
-        const pos = validPositions[i];
+      for (let j = 0; j < validIndices.length; j++) {
+        const idx = validIndices[j];
+        const pos = positions[idx];
+        const borrower = borrowerAddresses[idx];
         try {
           const hash = await this.walletClient.writeContract({
             address: this.controllerAddress,
             abi: controllerAbi,
             functionName: "liquidateCorePosition",
-            args: [pos.proxyAddress],
-            nonce: nonce + i,
+            args: [borrower, zeroBytes32],
+            nonce: nonce + j,
           });
-          console.log(`${this.logTag}Sent liquidation for ${pos.proxyAddress}: ${hash}`);
+          console.log(
+            `${this.logTag}Sent liquidation for ${pos.proxyAddress} (borrower: ${borrower}): ${hash}`
+          );
           txHashes.push(hash);
         } catch (error) {
           recordError("tx_send_error");
