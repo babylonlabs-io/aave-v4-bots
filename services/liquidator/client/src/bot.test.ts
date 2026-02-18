@@ -25,6 +25,12 @@ const mockPosition: LiquidatablePosition = {
   suppliedShares: "1000000000",
 };
 
+// The borrower address returned by getUserOfProxy for the mock proxy
+const mockBorrowerAddress = "0x000000000000000000000000000000000000b0bb";
+
+// bytes32(0) = WBTC payout via VaultSwap
+const zeroBytes32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
 function createMockClients() {
   return {
     walletClient: {
@@ -33,7 +39,10 @@ function createMockClients() {
     },
     publicClient: {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
-      readContract: vi.fn().mockResolvedValue(BigInt("1000000000000000000")),
+      readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
+        if (functionName === "getUserOfProxy") return Promise.resolve(mockBorrowerAddress);
+        return Promise.resolve(BigInt("1000000000000000000"));
+      }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
       waitForTransactionReceipt: vi
         .fn()
@@ -212,7 +221,7 @@ describe("LiquidationBot", () => {
         expect.objectContaining({
           nonce: 42,
           functionName: "liquidateCorePosition",
-          args: [mockPosition.proxyAddress],
+          args: [mockBorrowerAddress, zeroBytes32],
         })
       );
     });
