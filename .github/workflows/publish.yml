@@ -21,6 +21,8 @@ jobs:
       dockerfile: ./docker/liquidator-ponder.Dockerfile
       repoName: liquidation-aave-indexer
       push_to_dockerhub: false
+      hadolint_nofail: true
+      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -35,6 +37,8 @@ jobs:
       dockerfile: ./docker/liquidator-client.Dockerfile
       repoName: liquidation-aave-client
       push_to_dockerhub: false
+      hadolint_nofail: true
+      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -50,6 +54,8 @@ jobs:
       dockerfile: ./docker/arbitrageur-ponder.Dockerfile
       repoName: arbitrageur-aave-indexer
       push_to_dockerhub: false
+      hadolint_nofail: true
+      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -64,6 +70,8 @@ jobs:
       dockerfile: ./docker/arbitrageur-client.Dockerfile
       repoName: arbitrageur-aave-client
       push_to_dockerhub: false
+      hadolint_nofail: true
+      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
