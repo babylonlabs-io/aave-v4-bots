@@ -18,7 +18,7 @@ A monorepo containing bots for Babylon's Aave V4 integration:
 │  services/                                                                  │
 │  ├── liquidator/                                                            │
 │  │   ├── client/       Liquidation bot (polls indexer, executes txs)       │
-│  │   └── ponder/       Indexer (tracks Supply/Withdraw/Liquidation)        │
+│  │   └── ponder/       Indexer (tracks Supply/Withdraw/Liquidation/Proxy)  │
 │  │                                                                          │
 │  └── arbitrageur/                                                           │
 │      ├── client/       Arbitrageur bot (polls indexer, acquires vaults)    │
@@ -90,8 +90,6 @@ pnpm arbitrageur:indexer
 ```bash
 # Liquidator bot
 pnpm liquidator:run
-pnpm liquidator:list-owned
-pnpm liquidator:swap -- <vaultId>
 
 # Arbitrageur bot
 pnpm arbitrageur:run

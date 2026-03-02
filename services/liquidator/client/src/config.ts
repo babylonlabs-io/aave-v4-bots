@@ -7,7 +7,7 @@ export function loadConfig(): Config {
     "PONDER_URL",
     "CLIENT_RPC_URL",
     "CONTROLLER_ADDRESS",
-    "VAULT_SWAP_ADDRESS",
+    "LENS_ADDRESS",
     "WBTC_ADDRESS",
   ];
 
@@ -36,10 +36,11 @@ export function loadConfig(): Config {
     ponderUrl: process.env.PONDER_URL!,
     rpcUrl: process.env.CLIENT_RPC_URL!,
     controllerAddress: process.env.CONTROLLER_ADDRESS as Address,
-    vaultSwapAddress: process.env.VAULT_SWAP_ADDRESS as Address,
+    lensAddress: process.env.LENS_ADDRESS as Address,
     wbtcAddress: process.env.WBTC_ADDRESS as Address,
     debtTokenAddresses,
-    autoSwap: (process.env.AUTO_SWAP || "true").toLowerCase() !== "false",
+    btcRedeemKey: (process.env.BTC_REDEEM_KEY ||
+      "0x0000000000000000000000000000000000000000000000000000000000000000") as Hex,
     metricsPort: Number.parseInt(process.env.METRICS_PORT || "9090", 10),
   };
 }

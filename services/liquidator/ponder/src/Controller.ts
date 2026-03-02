@@ -1,5 +1,5 @@
 import { ponder } from "ponder:registry";
-import { vault } from "ponder:schema";
+import { proxyMapping, vault } from "ponder:schema";
 
 /**
  * VaultOwnershipTransferred event handler
@@ -25,4 +25,24 @@ ponder.on("Controller:VaultOwnershipTransferred", async ({ event, context }) => 
       previousOwner,
       updatedAt: timestamp,
     }));
+});
+
+/**
+ * UserProxyCreated event handler
+ * - Maps proxy address to borrower (EOA) address
+ * - Used to resolve borrower for liquidateCorePosition calls
+ */
+ponder.on("Controller:UserProxyCreated", async ({ event, context }) => {
+  const borrower = event.args.user;
+  const proxyAddress = event.args.proxy;
+  const timestamp = event.block.timestamp;
+
+  await context.db
+    .insert(proxyMapping)
+    .values({
+      proxyAddress,
+      borrower,
+      createdAt: timestamp,
+    })
+    .onConflictDoNothing();
 });

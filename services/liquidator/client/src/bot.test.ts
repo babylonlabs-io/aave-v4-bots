@@ -9,16 +9,19 @@ vi.mock("./metrics", () => ({
   recordLiquidationSuccess: vi.fn(),
   recordLiquidationFailed: vi.fn(),
   recordSimulationFailed: vi.fn(),
-  recordVaultsSeized: vi.fn(),
-  recordVaultSwapped: vi.fn(),
-  recordWbtcReceived: vi.fn(),
   recordError: vi.fn(),
   recordPollDuration: vi.fn(),
   recordTokenBalance: vi.fn(),
 }));
 
+const ZERO_BYTES32 =
+  "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
+
+const mockInputs = [{ token: "0xUSDC" as `0x${string}`, amount: 1000000n }] as const;
+
 const mockPosition: LiquidatablePosition = {
   proxyAddress: "0x1234567890123456789012345678901234567890",
+  borrower: "0xborrower0000000000000000000000000000000001",
   healthFactor: "900000000000000000", // 0.9 (below 1.0)
   totalCollateralValue: "1000000000000000000",
   totalDebtValue: "500000000000000000",
@@ -33,7 +36,12 @@ function createMockClients() {
     },
     publicClient: {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
-      readContract: vi.fn().mockResolvedValue(BigInt("1000000000000000000")),
+      readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
+        if (functionName === "estimateLiquidation") {
+          return Promise.resolve([mockInputs, ["0xvault1"]]);
+        }
+        return Promise.resolve(BigInt("1000000000000000000"));
+      }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
       waitForTransactionReceipt: vi
         .fn()
@@ -51,10 +59,10 @@ function createBot(
     walletClient: clients.walletClient as unknown as LiquidationBotConfig["walletClient"],
     publicClient: clients.publicClient as unknown as LiquidationBotConfig["publicClient"],
     controllerAddress: "0xcontroller" as `0x${string}`,
-    vaultSwapAddress: "0xvaultswap" as `0x${string}`,
+    lensAddress: "0xlens" as `0x${string}`,
     wbtcAddress: "0xwbtc" as `0x${string}`,
+    btcRedeemKey: ZERO_BYTES32,
     ponderUrl: "http://localhost:42069",
-    autoSwap: false,
     ...overrides,
   });
 }
@@ -85,7 +93,8 @@ describe("LiquidationBot", () => {
 
       await bot.run();
 
-      // Should simulate + send liquidation tx
+      // Should call Lens estimate + simulate + send liquidation tx
+      expect(clients.publicClient.readContract).toHaveBeenCalled();
       expect(clients.publicClient.simulateContract).toHaveBeenCalledOnce();
       expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
     });
@@ -134,6 +143,32 @@ describe("LiquidationBot", () => {
     });
   });
 
+  describe("run() - Lens estimation", () => {
+    it("skips positions where Lens estimate fails", async () => {
+      const clients = createMockClients();
+      clients.publicClient.readContract.mockRejectedValue(
+        new Error("Position is not undercollateralized")
+      );
+      const bot = createBot(clients);
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            liquidatable: [mockPosition],
+            total: 1,
+            checked: 1,
+          }),
+      });
+
+      await bot.run();
+
+      // Should not simulate or send tx since Lens failed
+      expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+    });
+  });
+
   describe("run() - simulation filtering", () => {
     it("skips positions that fail simulation", async () => {
       const clients = createMockClients();
@@ -163,6 +198,7 @@ describe("LiquidationBot", () => {
       const position2: LiquidatablePosition = {
         ...mockPosition,
         proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        borrower: "0xborrower0000000000000000000000000000000002",
       };
 
       // First simulation succeeds, second fails
@@ -191,7 +227,7 @@ describe("LiquidationBot", () => {
   });
 
   describe("run() - transaction handling", () => {
-    it("sends liquidation with explicit nonce", async () => {
+    it("sends liquidation with borrower address and inputs from Lens", async () => {
       const clients = createMockClients();
       clients.publicClient.getTransactionCount.mockResolvedValue(42);
       const bot = createBot(clients);
@@ -212,7 +248,7 @@ describe("LiquidationBot", () => {
         expect.objectContaining({
           nonce: 42,
           functionName: "liquidateCorePosition",
-          args: [mockPosition.proxyAddress],
+          args: [mockPosition.borrower, ZERO_BYTES32, mockInputs],
         })
       );
     });
@@ -224,6 +260,7 @@ describe("LiquidationBot", () => {
       const position2: LiquidatablePosition = {
         ...mockPosition,
         proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        borrower: "0xborrower0000000000000000000000000000000002",
       };
 
       const bot = createBot(clients);
@@ -257,6 +294,7 @@ describe("LiquidationBot", () => {
       const position2: LiquidatablePosition = {
         ...mockPosition,
         proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        borrower: "0xborrower0000000000000000000000000000000002",
       };
 
       // First writeContract fails, second succeeds
@@ -333,31 +371,6 @@ describe("LiquidationBot", () => {
     });
   });
 
-  describe("run() - auto-swap disabled", () => {
-    it("does not swap vaults when autoSwap is false", async () => {
-      const clients = createMockClients();
-      const bot = createBot(clients, { autoSwap: false });
-
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            liquidatable: [mockPosition],
-            total: 1,
-            checked: 1,
-          }),
-      });
-
-      await bot.run();
-
-      // writeContract called once for liquidation, not for swap
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
-        expect.objectContaining({ functionName: "liquidateCorePosition" })
-      );
-    });
-  });
-
   describe("ensureApproval()", () => {
     it("approves when allowance is below threshold", async () => {
       const clients = createMockClients();
@@ -370,7 +383,6 @@ describe("LiquidationBot", () => {
 
       await bot.ensureApproval();
 
-      // readContract for allowance + readContract for symbol + writeContract for approve + waitForReceipt
       expect(clients.publicClient.readContract).toHaveBeenCalled();
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -381,7 +393,6 @@ describe("LiquidationBot", () => {
 
     it("skips approval when allowance is sufficient", async () => {
       const clients = createMockClients();
-      // Return max uint256 allowance
       const maxUint = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
       clients.publicClient.readContract.mockResolvedValue(maxUint);
 
@@ -391,7 +402,6 @@ describe("LiquidationBot", () => {
 
       await bot.ensureApproval();
 
-      // No writeContract call for approve
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
 
@@ -410,12 +420,6 @@ describe("LiquidationBot", () => {
     it("discovers borrowable reserves from Spoke", async () => {
       const clients = createMockClients();
 
-      // Mock the chain of readContract calls:
-      // 1. BTC_VAULT_CORE_SPOKE -> spoke address
-      // 2. getReserveCount -> 2
-      // 3. getReserve(0) -> borrowable
-      // 4. symbol for reserve 0
-      // 5. getReserve(1) -> not borrowable
       clients.publicClient.readContract
         .mockResolvedValueOnce("0xspoke") // BTC_VAULT_CORE_SPOKE
         .mockResolvedValueOnce(2n) // getReserveCount
@@ -427,7 +431,6 @@ describe("LiquidationBot", () => {
 
       await bot.discoverDebtTokens();
 
-      // Should have called readContract 5 times
       expect(clients.publicClient.readContract).toHaveBeenCalledTimes(5);
     });
 
@@ -442,108 +445,7 @@ describe("LiquidationBot", () => {
 
       await bot.discoverDebtTokens();
 
-      // Only 2 calls: spoke address + reserve count
       expect(clients.publicClient.readContract).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe("listOwnedVaults()", () => {
-    it("fetches and logs owned vaults from ponder", async () => {
-      const clients = createMockClients();
-      const bot = createBot(clients);
-
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () =>
-          Promise.resolve({
-            vaults: [
-              {
-                vaultId: "0xvault1",
-                owner: "0xliquidator",
-                previousOwner: "0xprevious",
-                updatedAt: "12345",
-              },
-            ],
-          }),
-      });
-
-      // Should not throw
-      await expect(bot.listOwnedVaults()).resolves.not.toThrow();
-
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/owned-vaults?owner="));
-    });
-
-    it("handles empty vault list", async () => {
-      const clients = createMockClients();
-      const bot = createBot(clients);
-
-      global.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ vaults: [] }),
-      });
-
-      await expect(bot.listOwnedVaults()).resolves.not.toThrow();
-    });
-
-    it("handles ponder API failure", async () => {
-      const clients = createMockClients();
-      const bot = createBot(clients);
-
-      global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
-
-      await expect(bot.listOwnedVaults()).resolves.not.toThrow();
-    });
-  });
-
-  describe("swapSingleVault()", () => {
-    it("swaps a vault for WBTC successfully", async () => {
-      const clients = createMockClients();
-
-      // balanceOf before and after
-      clients.publicClient.readContract
-        .mockResolvedValueOnce(100000000n) // balance before
-        .mockResolvedValueOnce(200000000n); // balance after
-
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "success",
-        blockNumber: 456n,
-      });
-
-      const bot = createBot(clients);
-      const vaultId =
-        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef" as `0x${string}`;
-
-      await bot.swapSingleVault(vaultId);
-
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
-        expect.objectContaining({
-          functionName: "swapVaultForWbtc",
-          args: [vaultId],
-        })
-      );
-    });
-
-    it("handles swap tx revert", async () => {
-      const clients = createMockClients();
-      clients.publicClient.readContract.mockResolvedValue(100000000n);
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "reverted",
-        blockNumber: 456n,
-      });
-
-      const bot = createBot(clients);
-
-      await expect(bot.swapSingleVault("0xvault" as `0x${string}`)).resolves.not.toThrow();
-    });
-
-    it("handles swap failure gracefully", async () => {
-      const clients = createMockClients();
-      clients.publicClient.readContract.mockResolvedValue(100000000n);
-      clients.walletClient.writeContract.mockRejectedValue(new Error("gas too low"));
-
-      const bot = createBot(clients);
-
-      await expect(bot.swapSingleVault("0xvault" as `0x${string}`)).resolves.not.toThrow();
     });
   });
 
@@ -551,8 +453,6 @@ describe("LiquidationBot", () => {
     it("logs debt token and WBTC balances", async () => {
       const clients = createMockClients();
 
-      // For debt token: balanceOf, symbol, decimals
-      // For WBTC: balanceOf, symbol
       clients.publicClient.readContract
         .mockResolvedValueOnce(1000000n) // debt token balance
         .mockResolvedValueOnce("USDC") // debt token symbol

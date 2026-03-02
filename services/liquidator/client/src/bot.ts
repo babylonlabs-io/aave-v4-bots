@@ -7,12 +7,10 @@ import {
   type PublicClient,
   type Transport,
   type WalletClient,
-  decodeEventLog,
   formatUnits,
-  parseAbiItem,
 } from "viem";
 
-import { controllerAbi, erc20Abi, spokeAbi, vaultSwapAbi } from "@repo/shared";
+import { controllerAbi, erc20Abi, lensAbi, spokeAbi } from "@repo/shared";
 import {
   recordError,
   recordLiquidationFailed,
@@ -22,30 +20,28 @@ import {
   recordPositionsLiquidatable,
   recordSimulationFailed,
   recordTokenBalance,
-  recordVaultSwapped,
-  recordVaultsSeized,
-  recordWbtcReceived,
 } from "./metrics";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
-// Event for parsing vault transfers from liquidation logs
-const vaultOwnershipTransferredEvent = parseAbiItem(
-  "event VaultOwnershipTransferred(bytes32 indexed vaultId, address indexed previousOwner, address indexed newOwner)"
-);
-
 // Maximum time to wait for a tx receipt before giving up (ms)
 const TX_RECEIPT_TIMEOUT = 60_000;
+
+// Token input for liquidation (matches Solidity TokenAmount struct)
+interface TokenAmount {
+  token: Address;
+  amount: bigint;
+}
 
 export interface LiquidationBotConfig {
   logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   controllerAddress: Address;
-  vaultSwapAddress: Address;
+  lensAddress: Address;
   debtTokenAddresses?: Address[];
   wbtcAddress: Address;
+  btcRedeemKey: Hex;
   ponderUrl: string;
-  autoSwap: boolean;
 }
 
 export class LiquidationBot {
@@ -53,22 +49,22 @@ export class LiquidationBot {
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private controllerAddress: Address;
-  private vaultSwapAddress: Address;
+  private lensAddress: Address;
   private debtTokenAddresses: Address[];
   private wbtcAddress: Address;
+  private btcRedeemKey: Hex;
   private ponderUrl: string;
-  private autoSwap: boolean;
 
   constructor(config: LiquidationBotConfig) {
     this.logTag = config.logTag;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.controllerAddress = config.controllerAddress;
-    this.vaultSwapAddress = config.vaultSwapAddress;
+    this.lensAddress = config.lensAddress;
     this.debtTokenAddresses = config.debtTokenAddresses ?? [];
     this.wbtcAddress = config.wbtcAddress;
+    this.btcRedeemKey = config.btcRedeemKey;
     this.ponderUrl = config.ponderUrl;
-    this.autoSwap = config.autoSwap;
   }
 
   /**
@@ -126,7 +122,7 @@ export class LiquidationBot {
 
   /**
    * Run one iteration of the liquidation bot.
-   * Simulates all candidates in parallel, then batch-sends valid liquidations.
+   * For each position: estimate via Lens, simulate, then execute.
    */
   async run(): Promise<void> {
     const startTime = Date.now();
@@ -144,25 +140,63 @@ export class LiquidationBot {
 
       console.log(`${this.logTag}Found ${positions.length} liquidatable position(s)`);
 
-      // 2. Simulate all liquidations in parallel to filter to valid ones
-      const simulationResults = await Promise.allSettled(
+      // 2. Estimate liquidation inputs via Lens for each position
+      const estimateResults = await Promise.allSettled(
         positions.map((p) =>
+          this.publicClient.readContract({
+            address: this.lensAddress,
+            abi: lensAbi,
+            functionName: "estimateLiquidation",
+            args: [p.proxyAddress],
+          })
+        )
+      );
+
+      // 3. Build position + inputs pairs, filter failed estimates
+      const candidates: Array<{
+        position: LiquidatablePosition;
+        inputs: readonly { token: Address; amount: bigint }[];
+      }> = [];
+
+      for (let i = 0; i < estimateResults.length; i++) {
+        const result = estimateResults[i];
+        const pos = positions[i];
+
+        if (result.status === "fulfilled") {
+          const [inputs] = result.value;
+          candidates.push({ position: pos, inputs });
+        } else {
+          recordError("lens_estimate_error");
+          const reason = result.reason;
+          const errorMsg = reason instanceof Error ? reason.message : "Unknown error";
+          console.warn(`${this.logTag}Lens estimate failed for ${pos.proxyAddress}: ${errorMsg}`);
+        }
+      }
+
+      if (candidates.length === 0) {
+        console.log(`${this.logTag}No positions passed Lens estimation`);
+        return;
+      }
+
+      // 4. Simulate all liquidations in parallel
+      const simulationResults = await Promise.allSettled(
+        candidates.map(({ position, inputs }) =>
           this.publicClient.simulateContract({
             address: this.controllerAddress,
             abi: controllerAbi,
             functionName: "liquidateCorePosition",
-            args: [p.proxyAddress],
+            args: [position.borrower, this.btcRedeemKey, inputs],
             account: this.walletClient.account,
           })
         )
       );
 
-      const validPositions: LiquidatablePosition[] = [];
+      const validCandidates: typeof candidates = [];
       for (let i = 0; i < simulationResults.length; i++) {
         const result = simulationResults[i];
-        const pos = positions[i];
+        const candidate = candidates[i];
         if (result.status === "fulfilled") {
-          validPositions.push(pos);
+          validCandidates.push(candidate);
         } else {
           recordSimulationFailed();
           const reason = result.reason;
@@ -172,43 +206,45 @@ export class LiquidationBot {
           } else if (reason instanceof Error) {
             errorMsg = reason.message;
           }
-          console.warn(`${this.logTag}Simulation failed for ${pos.proxyAddress}: ${errorMsg}`);
+          console.warn(
+            `${this.logTag}Simulation failed for ${candidate.position.proxyAddress}: ${errorMsg}`
+          );
         }
       }
 
-      if (validPositions.length === 0) {
+      if (validCandidates.length === 0) {
         console.log(`${this.logTag}No positions passed simulation`);
         return;
       }
 
       console.log(
-        `${this.logTag}${validPositions.length}/${positions.length} positions passed simulation`
+        `${this.logTag}${validCandidates.length}/${positions.length} positions passed simulation`
       );
 
-      // 4. Send all liquidation txs with explicit nonces
+      // 5. Send all liquidation txs with explicit nonces
       const nonce = await this.publicClient.getTransactionCount({
         address: this.walletClient.account.address,
         blockTag: "pending",
       });
 
       const txHashes: Hex[] = [];
-      for (let i = 0; i < validPositions.length; i++) {
-        const pos = validPositions[i];
+      for (let i = 0; i < validCandidates.length; i++) {
+        const { position, inputs } = validCandidates[i];
         try {
           const hash = await this.walletClient.writeContract({
             address: this.controllerAddress,
             abi: controllerAbi,
             functionName: "liquidateCorePosition",
-            args: [pos.proxyAddress],
+            args: [position.borrower, this.btcRedeemKey, inputs],
             nonce: nonce + i,
           });
-          console.log(`${this.logTag}Sent liquidation for ${pos.proxyAddress}: ${hash}`);
+          console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);
           txHashes.push(hash);
         } catch (error) {
           recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           console.error(
-            `${this.logTag}Failed to send liquidation for ${pos.proxyAddress}: ${errorMsg}`
+            `${this.logTag}Failed to send liquidation for ${position.borrower}: ${errorMsg}`
           );
         }
       }
@@ -218,7 +254,7 @@ export class LiquidationBot {
         return;
       }
 
-      // 5. Batch-wait for all receipts
+      // 6. Batch-wait for all receipts
       console.log(`${this.logTag}Waiting for ${txHashes.length} liquidation receipt(s)...`);
       const receipts = await Promise.allSettled(
         txHashes.map((hash) =>
@@ -226,8 +262,6 @@ export class LiquidationBot {
         )
       );
 
-      // 6. Collect seized vault IDs from successful receipts
-      const allSeizedVaultIds: Hex[] = [];
       for (let i = 0; i < receipts.length; i++) {
         const result = receipts[i];
         if (result.status === "fulfilled") {
@@ -237,8 +271,6 @@ export class LiquidationBot {
             console.log(
               `${this.logTag}Liquidation confirmed in block ${receipt.blockNumber}: ${txHashes[i]}`
             );
-            const vaultIds = this.parseSeizedVaultIds(receipt.logs);
-            allSeizedVaultIds.push(...vaultIds);
           } else {
             recordLiquidationFailed();
             recordError("tx_reverted");
@@ -248,25 +280,6 @@ export class LiquidationBot {
           recordLiquidationFailed();
           recordError("tx_reverted");
           console.error(`${this.logTag}Failed to get receipt for ${txHashes[i]}: ${result.reason}`);
-        }
-      }
-
-      // Record seized vaults
-      if (allSeizedVaultIds.length > 0) {
-        recordVaultsSeized(allSeizedVaultIds.length);
-      }
-
-      // 7. Swap seized vaults for WBTC (if auto-swap enabled)
-      if (allSeizedVaultIds.length > 0) {
-        if (this.autoSwap) {
-          await this.swapSeizedVaultsForWbtc(allSeizedVaultIds);
-        } else {
-          console.log(
-            `${this.logTag}Auto-swap disabled. Seized ${allSeizedVaultIds.length} vault(s):`
-          );
-          for (const vaultId of allSeizedVaultIds) {
-            console.log(`   ${vaultId}`);
-          }
         }
       }
     } catch (error) {
@@ -296,120 +309,6 @@ export class LiquidationBot {
       console.error(`${this.logTag}Failed to fetch liquidatable positions:`, error);
       return [];
     }
-  }
-
-  /**
-   * Parse VaultOwnershipTransferred events from transaction logs to get seized vault IDs
-   */
-  private parseSeizedVaultIds(logs: readonly { topics: readonly Hex[]; data: Hex }[]): Hex[] {
-    const liquidator = this.walletClient.account.address.toLowerCase();
-    const seizedVaultIds: Hex[] = [];
-
-    for (const log of logs) {
-      try {
-        const decoded = decodeEventLog({
-          abi: [vaultOwnershipTransferredEvent],
-          data: log.data,
-          topics: [...log.topics] as [Hex, ...Hex[]],
-        });
-
-        if (decoded.eventName === "VaultOwnershipTransferred") {
-          const args = decoded.args as {
-            vaultId: Hex;
-            previousOwner: Address;
-            newOwner: Address;
-          };
-          if (args.newOwner.toLowerCase() === liquidator) {
-            seizedVaultIds.push(args.vaultId);
-            console.log(`${this.logTag}  Seized vault: ${args.vaultId}`);
-          }
-        }
-      } catch {
-        // Not a VaultOwnershipTransferred event, skip
-      }
-    }
-
-    return seizedVaultIds;
-  }
-
-  /**
-   * Swap all seized vaults for WBTC using parallel tx submission
-   */
-  private async swapSeizedVaultsForWbtc(vaultIds: Hex[]): Promise<void> {
-    if (vaultIds.length === 0) {
-      return;
-    }
-
-    const liquidator = this.walletClient.account.address;
-
-    const wbtcBalanceBefore = await this.publicClient.readContract({
-      address: this.wbtcAddress,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [liquidator],
-    });
-
-    console.log(`${this.logTag}Swapping ${vaultIds.length} vault(s) for WBTC...`);
-    console.log(`   WBTC balance before: ${formatUnits(wbtcBalanceBefore, 8)} WBTC`);
-
-    // Send all swap txs with explicit nonces
-    const nonce = await this.publicClient.getTransactionCount({
-      address: liquidator,
-      blockTag: "pending",
-    });
-
-    const swapHashes: Hex[] = [];
-    for (let i = 0; i < vaultIds.length; i++) {
-      try {
-        const hash = await this.walletClient.writeContract({
-          address: this.vaultSwapAddress,
-          abi: vaultSwapAbi,
-          functionName: "swapVaultForWbtc",
-          args: [vaultIds[i]],
-          nonce: nonce + i,
-        });
-        swapHashes.push(hash);
-      } catch (error) {
-        recordError("swap_error");
-        const errorMsg = error instanceof Error ? error.message : "Unknown error";
-        console.error(`${this.logTag}  Failed to send swap for vault ${vaultIds[i]}: ${errorMsg}`);
-      }
-    }
-
-    // Batch-wait for all swap receipts
-    if (swapHashes.length > 0) {
-      const swapReceipts = await Promise.allSettled(
-        swapHashes.map((hash) =>
-          this.publicClient.waitForTransactionReceipt({ hash, timeout: TX_RECEIPT_TIMEOUT })
-        )
-      );
-
-      for (let i = 0; i < swapReceipts.length; i++) {
-        const result = swapReceipts[i];
-        if (result.status === "fulfilled" && result.value.status === "success") {
-          recordVaultSwapped();
-          console.log(`${this.logTag}  Vault swap confirmed: ${swapHashes[i]}`);
-        } else {
-          recordError("swap_error");
-          console.error(`${this.logTag}  Vault swap failed: ${swapHashes[i]}`);
-        }
-      }
-    }
-
-    const wbtcBalanceAfter = await this.publicClient.readContract({
-      address: this.wbtcAddress,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [liquidator],
-    });
-
-    const totalWbtcReceived = wbtcBalanceAfter - wbtcBalanceBefore;
-    if (totalWbtcReceived > 0n) {
-      recordWbtcReceived(totalWbtcReceived);
-    }
-    console.log(`${this.logTag}Swap complete!`);
-    console.log(`   WBTC balance after: ${formatUnits(wbtcBalanceAfter, 8)} WBTC`);
-    console.log(`   Total WBTC received: ${formatUnits(totalWbtcReceived, 8)} WBTC`);
   }
 
   /**
@@ -505,96 +404,5 @@ export class LiquidationBot {
 
     recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, 8);
     console.log(`   ${wbtcSymbol}: ${formatUnits(wbtcBalance, 8)}`);
-  }
-
-  /**
-   * List all vaults owned by the liquidator (from Ponder indexer)
-   */
-  async listOwnedVaults(): Promise<void> {
-    const owner = this.walletClient.account.address.toLowerCase();
-    const url = `${this.ponderUrl}/owned-vaults?owner=${owner}`;
-
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`Ponder API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const vaults = data.vaults as Array<{
-        vaultId: string;
-        owner: string;
-        previousOwner: string;
-        updatedAt: string;
-      }>;
-
-      if (vaults.length === 0) {
-        console.log(`${this.logTag}No vaults owned by ${owner}`);
-        return;
-      }
-
-      console.log(`${this.logTag}Owned vaults (${vaults.length}):`);
-      console.log(
-        "  VaultId                                                            | Previous Owner                             | Updated At"
-      );
-      console.log(`  ${"-".repeat(96)}`);
-      for (const v of vaults) {
-        console.log(`  ${v.vaultId} | ${v.previousOwner} | ${v.updatedAt}`);
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "Unknown error";
-      console.error(`${this.logTag}Failed to list owned vaults: ${msg}`);
-    }
-  }
-
-  /**
-   * Swap a single vault for WBTC via the VaultSwap contract
-   */
-  async swapSingleVault(vaultId: Hex): Promise<void> {
-    const liquidator = this.walletClient.account.address;
-
-    const wbtcBefore = await this.publicClient.readContract({
-      address: this.wbtcAddress,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [liquidator],
-    });
-
-    console.log(`${this.logTag}Swapping vault ${vaultId} for WBTC...`);
-    console.log(`   WBTC balance before: ${formatUnits(wbtcBefore, 8)}`);
-
-    try {
-      const hash = await this.walletClient.writeContract({
-        address: this.vaultSwapAddress,
-        abi: vaultSwapAbi,
-        functionName: "swapVaultForWbtc",
-        args: [vaultId],
-      });
-
-      console.log(`${this.logTag}Swap tx sent: ${hash}`);
-      const receipt = await this.publicClient.waitForTransactionReceipt({
-        hash,
-        timeout: TX_RECEIPT_TIMEOUT,
-      });
-
-      if (receipt.status === "success") {
-        const wbtcAfter = await this.publicClient.readContract({
-          address: this.wbtcAddress,
-          abi: erc20Abi,
-          functionName: "balanceOf",
-          args: [liquidator],
-        });
-
-        const received = wbtcAfter - wbtcBefore;
-        console.log(`${this.logTag}Swap confirmed in block ${receipt.blockNumber}`);
-        console.log(`   WBTC balance after: ${formatUnits(wbtcAfter, 8)}`);
-        console.log(`   WBTC received: ${formatUnits(received, 8)}`);
-      } else {
-        console.error(`${this.logTag}Swap tx reverted: ${hash}`);
-      }
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : "Unknown error";
-      console.error(`${this.logTag}Swap failed: ${msg}`);
-    }
   }
 }

@@ -18,6 +18,17 @@ export const position = onchainTable("position", (t) => ({
 }));
 
 /**
+ * Maps proxy addresses to borrower (EOA) addresses.
+ * - Populated from UserProxyCreated events on Controller
+ * - Used to resolve borrower address for liquidateCorePosition calls
+ */
+export const proxyMapping = onchainTable("proxy_mapping", (t) => ({
+  proxyAddress: t.hex().primaryKey(),
+  borrower: t.hex().notNull(),
+  createdAt: t.bigint().notNull(),
+}));
+
+/**
  * Tracks vault ownership via VaultOwnershipTransferred events from Controller.
  * - Upserted on every ownership transfer (liquidation, escrow, release, emergency repay)
  */

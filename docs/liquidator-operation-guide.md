@@ -48,7 +48,7 @@ The service consists of two components:
 
 | Component | Description |
 |-----------|-------------|
-| **Ponder Indexer** | Indexes blockchain events (`Supply`, `Withdraw`, `LiquidationCall`) and tracks all active positions with collateral |
+| **Ponder Indexer** | Indexes blockchain events (`Supply`, `Withdraw`, `LiquidationCall`, `UserProxyCreated`) and tracks all active positions with collateral |
 | **Liquidation Client** | Polls the indexer for liquidatable positions and executes liquidation transactions |
 
 ## 2. System Requirements
@@ -99,16 +99,23 @@ The service consists of two components:
 ┌─────────────────────────────────────────┐
 │         Liquidation Client              │
 │  - Polls indexer at configured interval │
+│  - Estimates inputs via Lens contract   │
 │  - Simulates liquidations               │
 │  - Executes liquidateCorePosition()     │
-│  - Optionally swaps vaults for WBTC     │
 │  - Exposes /metrics, /health, /ready    │
+└────────────────────┬────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────┐
+│      Aave Integration Lens              │
+│  - Pre-computes liquidation inputs      │
 └────────────────────┬────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────┐
 │      Aave Integration Controller        │
 │  - Entry point for liquidations         │
+│  - Atomic WBTC swap when redeemKey=0    │
 └────────────────────┬────────────────────┘
                      │
                      ▼
@@ -243,7 +250,7 @@ CLIENT_RPC_URL=https://eth-mainnet.example.com
 
 # Contract addresses
 CONTROLLER_ADDRESS=0x...
-VAULT_SWAP_ADDRESS=0x...
+LENS_ADDRESS=0x...
 WBTC_ADDRESS=0x...
 
 # ====== Optional ======
@@ -252,8 +259,8 @@ WBTC_ADDRESS=0x...
 # Auto-discovered from Spoke if not set
 # DEBT_TOKEN_ADDRESSES=0xUSDC...,0xUSDT...
 
-# Auto-swap seized vaults for WBTC (default: true)
-AUTO_SWAP=true
+# BTC redeem key for direct BTC redemption (default: bytes32(0) for WBTC payout)
+# BTC_REDEEM_KEY=0x0000000000000000000000000000000000000000000000000000000000000000
 
 # Position check frequency (default: 10000ms)
 POLLING_INTERVAL_MS=10000
@@ -268,10 +275,10 @@ METRICS_PORT=9090
 | `PONDER_URL` | Indexer API endpoint | Required |
 | `CLIENT_RPC_URL` | RPC for transaction execution | Required |
 | `CONTROLLER_ADDRESS` | AaveIntegrationController address | Required |
-| `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |
+| `LENS_ADDRESS` | AaveIntegrationLens address | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
 | `DEBT_TOKEN_ADDRESSES` | Override auto-discovery (comma-separated) | Auto-discovered |
-| `AUTO_SWAP` | Swap vaults for WBTC after liquidation | `true` |
+| `BTC_REDEEM_KEY` | BTC redeem key for direct redemption (`bytes32(0)` = WBTC payout) | `bytes32(0)` |
 | `POLLING_INTERVAL_MS` | How often to check positions | `10000` |
 | `METRICS_PORT` | HTTP server port for metrics/health | `9090` |
 
@@ -283,8 +290,8 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 |----------|---------|
 | `SPOKE_ADDRESS` | Core Spoke - tracks positions via Supply/Withdraw events |
 | `CONTROLLER_ADDRESS` | Entry point for `liquidateCorePosition()` calls |
-| `VAULT_SWAP_ADDRESS` | Instant vault-to-WBTC swap via `swapVaultForWbtc()` |
-| `WBTC_ADDRESS` | WBTC token for swap settlements |
+| `LENS_ADDRESS` | AaveIntegrationLens - pre-computes liquidation inputs via `estimateLiquidation()` |
+| `WBTC_ADDRESS` | WBTC token for balance monitoring |
 
 ## 6. Wallet Setup
 
@@ -411,9 +418,6 @@ Available at `GET http://localhost:9090/metrics`
 | `liquidator_liquidations_total` | Counter | Successful liquidations |
 | `liquidator_liquidations_failed_total` | Counter | Failed liquidation attempts |
 | `liquidator_simulations_failed_total` | Counter | Failed simulations |
-| `liquidator_vaults_seized_total` | Counter | Vaults seized from liquidations |
-| `liquidator_vaults_swapped_total` | Counter | Vaults swapped for WBTC |
-| `liquidator_wbtc_received_total` | Counter | WBTC received (satoshis) |
 | `liquidator_token_balance` | Gauge | Current token balances |
 | `liquidator_errors_total` | Counter | Errors by type |
 | `liquidator_poll_duration_seconds` | Histogram | Poll cycle duration |
@@ -442,18 +446,6 @@ Available at `GET http://localhost:9090/metrics`
 
 ### 8.3. Manual Commands
 
-**List owned vaults:**
-
-```bash
-pnpm liquidator:list-owned
-```
-
-**Manually swap a vault for WBTC:**
-
-```bash
-pnpm liquidator:swap -- <vaultId>
-```
-
 **Query indexer endpoints:**
 
 ```bash
@@ -465,9 +457,6 @@ curl http://localhost:42069/liquidatable-positions
 
 # Positions with live health factors
 curl http://localhost:42069/positions-health
-
-# Vaults owned by specific address
-curl "http://localhost:42069/owned-vaults?owner=0x..."
 ```
 
 ## 9. Troubleshooting
@@ -490,7 +479,6 @@ curl "http://localhost:42069/owned-vaults?owner=0x..."
 | `ponder_fetch_error` | Failed to fetch from indexer | Verify Ponder is running |
 | `tx_send_error` | Failed to send transaction | Check RPC connectivity, wallet balance |
 | `tx_reverted` | Transaction reverted on-chain | Position may already be liquidated |
-| `swap_error` | Failed vault swap | Check WBTC balance, contract approval |
 
 **Viewing logs:**
 

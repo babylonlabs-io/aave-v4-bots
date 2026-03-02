@@ -43,11 +43,20 @@ app.get("/liquidatable-positions", async (c) => {
     return c.json({ error: "SPOKE_ADDRESS not configured" }, 500);
   }
 
-  // Query all positions from database
-  const positions = await db.query.position.findMany();
+  // Query all positions and proxy mappings from database
+  const [positions, proxyMappings] = await Promise.all([
+    db.query.position.findMany(),
+    db.query.proxyMapping.findMany(),
+  ]);
 
   if (positions.length === 0) {
     return c.json({ liquidatable: [], total: 0, checked: 0 });
+  }
+
+  // Build proxy -> borrower lookup
+  const proxyToBorrower = new Map<string, string>();
+  for (const m of proxyMappings) {
+    proxyToBorrower.set(m.proxyAddress.toLowerCase(), m.borrower);
   }
 
   // Fetch account data for all positions in parallel
@@ -64,6 +73,7 @@ app.get("/liquidatable-positions", async (c) => {
 
   const liquidatable: Array<{
     proxyAddress: string;
+    borrower: string;
     healthFactor: string;
     totalCollateralValue: string;
     totalDebtValue: string;
@@ -79,6 +89,12 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
+    const borrower = proxyToBorrower.get(p.proxyAddress.toLowerCase());
+    if (!borrower) {
+      console.error(`No borrower mapping found for proxy ${p.proxyAddress}`);
+      continue;
+    }
+
     const accountData = result.value;
     const healthFactor = accountData.healthFactor;
     const totalDebtValue = accountData.totalDebtValue;
@@ -87,6 +103,7 @@ app.get("/liquidatable-positions", async (c) => {
     if (healthFactor < HEALTH_FACTOR_THRESHOLD && totalDebtValue > 0n) {
       liquidatable.push({
         proxyAddress: p.proxyAddress,
+        borrower,
         healthFactor: healthFactor.toString(),
         totalCollateralValue: accountData.totalCollateralValue.toString(),
         totalDebtValue: totalDebtValue.toString(),
@@ -195,37 +212,6 @@ app.get("/positions-health", async (c) => {
     replaceBigInts({
       positions: positionsWithHealth,
       total: positions.length,
-    })
-  );
-});
-
-/**
- * GET /owned-vaults?owner=0x...
- *
- * Returns all vaults owned by the given address
- */
-app.get("/owned-vaults", async (c) => {
-  const owner = c.req.query("owner");
-
-  if (!owner) {
-    return c.json({ error: "Missing required query parameter: owner" }, 400);
-  }
-
-  const ownerLower = owner.toLowerCase() as `0x${string}`;
-
-  const vaults = await db.query.vault.findMany({
-    where: (fields, { eq }) => eq(fields.owner, ownerLower),
-  });
-
-  return c.json(
-    replaceBigInts({
-      vaults: vaults.map((v) => ({
-        vaultId: v.vaultId,
-        owner: v.owner,
-        previousOwner: v.previousOwner,
-        updatedAt: v.updatedAt,
-      })),
-      total: vaults.length,
     })
   );
 });

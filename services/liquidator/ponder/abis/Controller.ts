@@ -24,4 +24,23 @@ export const controllerAbi = [
     ],
     anonymous: false,
   },
+  {
+    type: "event",
+    name: "UserProxyCreated",
+    inputs: [
+      {
+        name: "user",
+        type: "address",
+        indexed: true,
+        internalType: "address",
+      },
+      {
+        name: "proxy",
+        type: "address",
+        indexed: true,
+        internalType: "address",
+      },
+    ],
+    anonymous: false,
+  },
 ] as const;

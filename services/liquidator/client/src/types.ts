@@ -2,6 +2,7 @@ import type { Address, Hex } from "viem";
 
 export interface LiquidatablePosition {
   proxyAddress: Address;
+  borrower: Address;
   healthFactor: string;
   totalCollateralValue: string;
   totalDebtValue: string;
@@ -27,14 +28,14 @@ export interface Config {
 
   // Contract addresses
   controllerAddress: Address;
-  vaultSwapAddress: Address;
+  lensAddress: Address;
   wbtcAddress: Address;
 
   // Optional: override auto-discovered debt tokens from Spoke
   debtTokenAddresses?: Address[];
 
-  // Auto-swap seized vaults for WBTC (default: true)
-  autoSwap: boolean;
+  // BTC redeem key (default: bytes32(0) for WBTC payout via VaultSwap)
+  btcRedeemKey: Hex;
 
   // Monitoring
   metricsPort: number;
