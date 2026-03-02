@@ -21,10 +21,9 @@ library E2EConstants {
     // Borrower (Anvil account[11])
     uint256 internal constant BORROWER_PRIVATE_KEY = 12;
 
-    // Postgres database configuration (using same instance with different schemas)
-    string internal constant DB_URL = "postgresql://ponder:ponder@localhost:5432/ponder";
-    string internal constant LIQUIDATOR_DB_SCHEMA = "liquidator";
-    string internal constant ARBITRAGEUR_DB_SCHEMA = "arbitrageur";
+    // Postgres database configuration (separate databases to avoid Ponder sync conflicts)
+    string internal constant LIQUIDATOR_DB_URL = "postgresql://ponder:ponder@localhost:5432/ponder_liquidator";
+    string internal constant ARBITRAGEUR_DB_URL = "postgresql://ponder:ponder@localhost:5432/ponder_arbitrageur";
 
     // Ponder service URLs and ports
     string internal constant LIQUIDATOR_PONDER_URL = "http://localhost:42069";

@@ -34,16 +34,32 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         console.log("Health Factor:", healthFactorBefore / 1e16, "/ 100");
         console.log("Liquidator USDC balance:", liquidatorUsdcBefore / ONE_USDC, "USDC");
 
-        // Check if liquidation already occurred
-        bool liquidationAlreadyOccurred = (collateralBefore == 0 && debtBefore == 0)
-            || (debtBefore > 0 && collateralBefore > 0 && liquidatorUsdcBefore > 0);
+        // Check if liquidation already occurred (position fully liquidated = both zero)
+        bool liquidationAlreadyOccurred = (collateralBefore == 0 && debtBefore == 0);
 
-        // Wait for Ponder to index + bot to liquidate (only if not yet liquidated)
+        // Poll until bot liquidates or timeout (only if not yet liquidated)
         if (!liquidationAlreadyOccurred) {
             console.log("\n--- Waiting for Bot Liquidation ---");
-            console.log("Waiting 5 seconds for Ponder sync + bot liquidation...");
-            console.log("Start time:", block.timestamp);
-            vm.sleep(5000);
+            console.log("Polling every 5 seconds for up to 120 seconds...");
+
+            uint256 maxWaitSeconds = 120;
+            uint256 pollIntervalSeconds = 5;
+            uint256 elapsed = 0;
+
+            while (elapsed < maxWaitSeconds) {
+                vm.sleep(pollIntervalSeconds * 1000);
+                elapsed += pollIntervalSeconds;
+
+                (uint256 col, uint256 debt,) = _getPositionInfo(borrower);
+                bool positionChanged =
+                    (col == 0 && debt == 0) || (col < collateralBefore) || (debt < debtBefore);
+
+                if (positionChanged) {
+                    console.log("Liquidation detected after", elapsed, "seconds");
+                    break;
+                }
+                console.log("Still waiting...", elapsed, "/", maxWaitSeconds);
+            }
         } else {
             console.log("\n--- Liquidation Already Occurred ---");
             console.log("Skipping wait period");

@@ -45,8 +45,8 @@ jobs:
       BTC_RPC_PASSWORD: btcpassword
       # Universal Challengers
       NUM_UNIVERSAL_CHALLENGERS: "1"
-      UNIVERSAL_CHALLENGER_0_ETH_ADDRESS: "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
-      UNIVERSAL_CHALLENGER_0_BTC_PUBLIC_KEY: "0x7962d45b38e8bcf82fa8efa8432a01f20c9a53e24c7d3f11df197cb8e70926da"
+      UC_0_ETH_ADDRESS: "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
+      UC_0_BTC_PUBLIC_KEY: "0x7962d45b38e8bcf82fa8efa8432a01f20c9a53e24c7d3f11df197cb8e70926da"
       # Aave Application
       APPLICATION_NAME: "Aave v4"
       NUM_APP_OPERATORS: "2"
@@ -59,7 +59,6 @@ jobs:
       VAULT_PROVIDER_PRIVATE_KEY: "0x000000000000000000000000000000000000000000000000000000000000000a"
       VAULT_PROVIDER_ADDRESS: "0x4CCeBa2d7D2B4fdcE4304d3e09a1fea9fbEb1528"
       VAULT_PROVIDER_BTCPUBKEY: "0x4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
-      VAULT_PROVIDER_POP_SIGNATURE: "0x0247304402206dd71f8057d4b8b383aa607ffd8e90e970b70146042ff76c87db368f4f4c882c02207963f27aa9a1eedac025229934a089cc36d2509bcf546655d6252cebe7943ef30121034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
 
     steps:
       - uses: actions/checkout@v4
@@ -90,11 +89,22 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl python3-pip
+          sudo apt-get install -y jq curl python3-pip postgresql-client
 
       - name: Install Python dependencies
         run: |
           pip3 install --user base58 coincurve
+
+      - name: Install contracts test utils (Node.js deps for PoP signature generation)
+        run: npm ci --prefix contracts/test/utils
+
+      - name: Create symlink for FFI scripts (PopHelpers uses relative path test/utils/)
+        run: ln -s ../contracts/test/utils test/utils
+
+      - name: Create separate Ponder databases
+        run: |
+          PGPASSWORD=ponder psql -h localhost -U ponder -d ponder -c "CREATE DATABASE ponder_liquidator;"
+          PGPASSWORD=ponder psql -h localhost -U ponder -d ponder -c "CREATE DATABASE ponder_arbitrageur;"
 
       - name: Start Bitcoin regtest
         run: docker compose -f contracts/docker-compose.e2e.yml up -d bitcoin-regtest
