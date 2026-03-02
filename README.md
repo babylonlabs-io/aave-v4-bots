@@ -93,9 +93,6 @@ pnpm liquidator:run
 
 # Arbitrageur bot
 pnpm arbitrageur:run
-pnpm arbitrageur:list-owned
-pnpm arbitrageur:verify <vaultId>
-pnpm arbitrageur:redeem <vaultId>
 ```
 
 ## Docker Deployment

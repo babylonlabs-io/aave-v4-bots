@@ -23,8 +23,6 @@ Exposed at `GET /metrics` on port `9091` (configurable via `METRICS_PORT`).
 | `tx_timeout` | Transaction receipt timeout |
 | `acquire_error` | Failed to acquire vault |
 | `swap_reverted` | Swap transaction reverted |
-| `redeem_error` | Failed to redeem vault |
-| `redeem_reverted` | Redeem transaction reverted |
 | `contract_revert` | Contract call reverted |
 
 ## Health Endpoints

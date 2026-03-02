@@ -11,28 +11,19 @@ import {
   maxUint256,
 } from "viem";
 
-import {
-  type RetryConfig,
-  controllerAbi,
-  erc20Abi,
-  fetchWithRetry,
-  vaultSwapAbi,
-  withRetry,
-} from "@repo/shared";
+import { type RetryConfig, erc20Abi, fetchWithRetry, vaultSwapAbi, withRetry } from "@repo/shared";
 import { updateLastPollTime } from "./health";
 import { recordError, recordPollDuration, recordVaultAcquired, recordWbtcBalance } from "./metrics";
-import type { EscrowedVault, OwnedVault, PonderResponse } from "./types";
+import type { EscrowedVault, PonderResponse } from "./types";
 
 export interface ArbitrageurBotConfig {
   logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
-  controllerAddress: Address;
   vaultSwapAddress: Address;
   wbtcAddress: Address;
   ponderUrl: string;
   maxSlippageBps: number;
-  autoRedeem: boolean;
   vaultProcessingDelayMs: number;
   retryConfig: RetryConfig;
   txReceiptTimeoutMs: number;
@@ -42,29 +33,22 @@ export class ArbitrageurBot {
   private logTag: string;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
-  private controllerAddress: Address;
   private vaultSwapAddress: Address;
   private wbtcAddress: Address;
   private ponderUrl: string;
   private maxSlippageBps: number;
-  private autoRedeem: boolean;
   private vaultProcessingDelayMs: number;
   private retryConfig: RetryConfig;
   private txReceiptTimeoutMs: number;
-
-  // Local tracking of owned vaults
-  private ownedVaults: Map<Hex, OwnedVault> = new Map();
 
   constructor(config: ArbitrageurBotConfig) {
     this.logTag = config.logTag;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
-    this.controllerAddress = config.controllerAddress;
     this.vaultSwapAddress = config.vaultSwapAddress;
     this.wbtcAddress = config.wbtcAddress;
     this.ponderUrl = config.ponderUrl;
     this.maxSlippageBps = config.maxSlippageBps;
-    this.autoRedeem = config.autoRedeem;
     this.vaultProcessingDelayMs = config.vaultProcessingDelayMs;
     this.retryConfig = config.retryConfig;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
@@ -89,11 +73,7 @@ export class ArbitrageurBot {
 
       // 2. Process each vault one by one
       for (const vault of vaults) {
-        const success = await this.acquireVault(vault);
-
-        if (success && this.autoRedeem) {
-          await this.redeemVault(vault.vaultId);
-        }
+        await this.acquireVault(vault);
 
         // Delay between processing vaults
         if (this.vaultProcessingDelayMs > 0) {
@@ -136,7 +116,7 @@ export class ArbitrageurBot {
   }
 
   /**
-   * Acquire a vault by swapping WBTC for it
+   * Acquire a vault by swapping WBTC for it (redemption is atomic)
    */
   async acquireVault(vault: EscrowedVault): Promise<boolean> {
     const { vaultId, btcAmount, currentDebt } = vault;
@@ -177,7 +157,7 @@ export class ArbitrageurBot {
         return false;
       }
 
-      // Execute swap via VaultSwap contract
+      // Execute swap via VaultSwap contract (redemption is atomic)
       const hash = await this.walletClient.writeContract({
         address: this.vaultSwapAddress,
         abi: vaultSwapAbi,
@@ -197,21 +177,8 @@ export class ArbitrageurBot {
       }
 
       if (receipt.status === "success") {
-        console.log(`${this.logTag}Vault acquired in block ${receipt.blockNumber}`);
-
-        // Track locally
-        this.ownedVaults.set(vaultId, {
-          vaultId,
-          acquiredAt: Date.now(),
-          wbtcPaid: currentDebtBigInt, // approximate, actual may differ slightly
-          btcAmount: btcAmountBigInt,
-        });
-
-        // Record metrics
+        console.log(`${this.logTag}Vault acquired and redeemed in block ${receipt.blockNumber}`);
         recordVaultAcquired(currentDebtBigInt);
-
-        console.log(`${this.logTag}Total vaults owned this session: ${this.ownedVaults.size}`);
-
         return true;
       }
       console.error(`${this.logTag}Swap transaction reverted`);
@@ -228,75 +195,6 @@ export class ArbitrageurBot {
       }
 
       console.error(`${this.logTag}Failed to acquire vault ${vaultId}`);
-      console.error(`   Error: ${errorMsg}`);
-      return false;
-    }
-  }
-
-  /**
-   * Redeem a vault to the arbitrageur's BTC key
-   */
-  async redeemVault(vaultId: Hex): Promise<boolean> {
-    console.log(`${this.logTag}Attempting to redeem vault: ${vaultId}`);
-
-    try {
-      // Estimate gas first
-      try {
-        await this.publicClient.estimateContractGas({
-          address: this.controllerAddress,
-          abi: controllerAbi,
-          functionName: "arbitrageurRedeem",
-          args: [vaultId],
-          account: this.walletClient.account,
-        });
-      } catch (gasError) {
-        const errorMsg = gasError instanceof Error ? gasError.message : String(gasError);
-        console.error(`${this.logTag}Gas estimation failed for redeem ${vaultId}, skipping`);
-        console.error(`   Error: ${errorMsg}`);
-        recordError("gas_estimation_failed");
-        return false;
-      }
-
-      const hash = await this.walletClient.writeContract({
-        address: this.controllerAddress,
-        abi: controllerAbi,
-        functionName: "arbitrageurRedeem",
-        args: [vaultId],
-      });
-
-      console.log(`${this.logTag}Redeem transaction sent: ${hash}`);
-
-      // Wait for confirmation with timeout
-      const receipt = await this.waitForReceiptWithTimeout(hash, "redeem");
-
-      if (!receipt) {
-        console.warn(`${this.logTag}Transaction receipt timeout for redeem ${vaultId}`);
-        recordError("tx_timeout");
-        return false;
-      }
-
-      if (receipt.status === "success") {
-        console.log(`${this.logTag}Vault redeemed in block ${receipt.blockNumber}`);
-
-        // Remove from local tracking (vault is now redeemed)
-        this.ownedVaults.delete(vaultId);
-
-        return true;
-      }
-      console.error(`${this.logTag}Redeem transaction reverted`);
-      recordError("redeem_reverted");
-      return false;
-    } catch (error) {
-      let errorMsg = "Unknown error";
-      if (error instanceof ContractFunctionRevertedError) {
-        errorMsg = `${error.data?.errorName || "Contract reverted"}`;
-        recordError("contract_revert");
-      } else if (error instanceof Error) {
-        errorMsg = error.message;
-        recordError("redeem_error");
-      }
-
-      console.error(`${this.logTag}Failed to redeem vault ${vaultId}`);
       console.error(`   Error: ${errorMsg}`);
       return false;
     }
@@ -376,33 +274,6 @@ export class ArbitrageurBot {
   }
 
   /**
-   * Get all vaults owned by this arbitrageur (locally tracked)
-   */
-  getOwnedVaults(): OwnedVault[] {
-    return Array.from(this.ownedVaults.values());
-  }
-
-  /**
-   * Log summary of owned vaults
-   */
-  logOwnedVaults(): void {
-    const vaults = this.getOwnedVaults();
-
-    if (vaults.length === 0) {
-      console.log(`${this.logTag}No vaults owned this session`);
-      return;
-    }
-
-    console.log(`${this.logTag}Vaults owned this session: ${vaults.length}`);
-    for (const vault of vaults) {
-      console.log(`   - ${vault.vaultId}`);
-      console.log(
-        `     BTC: ${formatUnits(vault.btcAmount, 8)} | Paid: ${formatUnits(vault.wbtcPaid, 8)} WBTC`
-      );
-    }
-  }
-
-  /**
    * Log arbitrageur's WBTC balance
    */
   async logBalance(): Promise<void> {
@@ -441,27 +312,6 @@ export class ArbitrageurBot {
     } catch (error) {
       console.error(`${this.logTag}Failed to fetch balance:`, error);
     }
-  }
-
-  /**
-   * Verify ownership of a vault on-chain
-   */
-  async verifyVaultOwnership(vaultId: Hex): Promise<boolean> {
-    const arbitrageur = this.walletClient.account.address;
-
-    const owner = await withRetry(
-      () =>
-        this.publicClient.readContract({
-          address: this.controllerAddress,
-          abi: controllerAbi,
-          functionName: "getVaultOwner",
-          args: [vaultId],
-        }),
-      this.retryConfig,
-      "verify ownership"
-    );
-
-    return owner.toLowerCase() === arbitrageur.toLowerCase();
   }
 
   /**

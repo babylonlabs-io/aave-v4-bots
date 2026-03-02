@@ -136,7 +136,6 @@ describe("config validation", () => {
       expect(config.pollingIntervalMs).toBe(30000);
       expect(config.vaultProcessingDelayMs).toBe(5000);
       expect(config.maxSlippageBps).toBe(100);
-      expect(config.autoRedeem).toBe(true);
       expect(config.metricsPort).toBe(9091);
       expect(config.retryMaxAttempts).toBe(3);
       expect(config.retryInitialDelayMs).toBe(1000);
@@ -149,7 +148,6 @@ describe("config validation", () => {
         ...validEnv,
         POLLING_INTERVAL_MS: "60000",
         MAX_SLIPPAGE_BPS: "200",
-        AUTO_REDEEM: "false",
         METRICS_PORT: "3000",
         RETRY_MAX_ATTEMPTS: "5",
         TX_RECEIPT_TIMEOUT_MS: "60000",
@@ -160,7 +158,6 @@ describe("config validation", () => {
 
       expect(config.pollingIntervalMs).toBe(60000);
       expect(config.maxSlippageBps).toBe(200);
-      expect(config.autoRedeem).toBe(false);
       expect(config.metricsPort).toBe(3000);
       expect(config.retryMaxAttempts).toBe(5);
       expect(config.txReceiptTimeoutMs).toBe(60000);

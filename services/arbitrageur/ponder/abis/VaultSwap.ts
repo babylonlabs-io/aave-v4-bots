@@ -5,26 +5,13 @@ export const vaultSwapAbi = [
 
   {
     type: "event",
-    name: "VaultSwappedForWbtc",
-    inputs: [
-      { name: "seller", type: "address", indexed: true },
-      { name: "vaultId", type: "bytes32", indexed: false },
-      { name: "wbtcAmount", type: "uint256", indexed: false },
-    ],
+    name: "AddedVault",
+    inputs: [{ name: "vaultId", type: "bytes32", indexed: true }],
   },
   {
     type: "event",
-    name: "WbtcSwappedForVault",
-    inputs: [
-      { name: "buyer", type: "address", indexed: true },
-      { name: "vaultId", type: "bytes32", indexed: false },
-      { name: "wbtcAmount", type: "uint256", indexed: false },
-    ],
-  },
-  {
-    type: "event",
-    name: "ResidualDebtCleared",
-    inputs: [{ name: "amountRestored", type: "uint256", indexed: false }],
+    name: "RemovedVault",
+    inputs: [{ name: "vaultId", type: "bytes32", indexed: true }],
   },
   {
     type: "event",
@@ -42,13 +29,6 @@ export const vaultSwapAbi = [
 
   {
     type: "function",
-    name: "getEscrowedVaults",
-    inputs: [],
-    outputs: [{ name: "vaultIds", type: "bytes32[]" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
     name: "isVaultEscrowed",
     inputs: [{ name: "vaultId", type: "bytes32" }],
     outputs: [{ name: "", type: "bool" }],
@@ -64,7 +44,7 @@ export const vaultSwapAbi = [
   {
     type: "function",
     name: "getEscrowedVaultsInfo",
-    inputs: [],
+    inputs: [{ name: "_escrowedVaults", type: "bytes32[]" }],
     outputs: [
       {
         name: "vaults",
@@ -72,7 +52,8 @@ export const vaultSwapAbi = [
         components: [
           { name: "vaultId", type: "bytes32" },
           { name: "btcAmount", type: "uint256" },
-          { name: "currentDebt", type: "uint256" },
+          { name: "hubDebt", type: "uint256" },
+          { name: "protocolFee", type: "uint256" },
         ],
       },
     ],

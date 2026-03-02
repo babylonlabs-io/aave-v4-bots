@@ -7,26 +7,24 @@ Polls the Ponder indexer for escrowed vaults and acquires them using WBTC.
 1. **Poll** - Fetches `/escrowed-vaults` from Ponder every N seconds
 2. **Check** - Finds vaults available for acquisition with current debt
 3. **Approve** - Ensures WBTC approval for VaultSwap contract (one-time)
-4. **Acquire** - Calls `VaultSwap.swapWbtcForVault(vaultId, maxWbtcIn)`
-5. **Redeem** (optional) - Auto-redeems acquired vaults if `AUTO_REDEEM=true`
+4. **Acquire** - Calls `VaultSwap.swapWbtcForVault(vaultId, maxWbtcIn)` (redemption is atomic)
 
 ## Acquisition Flow
 
 ```
 Bot                          VaultSwap                    Controller
- │                               │                            │
- │ swapWbtcForVault(vaultId) ───▶│                            │
- │                               │ pull WBTC from buyer       │
- │                               │ repay debt on Hub          │
- │                               │ releaseVaultFromSwap ─────▶│
- │                               │                            │ transfer ownership
- │◀───────────── success ────────│                            │
+ |                               |                            |
+ | swapWbtcForVault(vaultId) -->|                            |
+ |                               | pull WBTC from buyer       |
+ |                               | repay debt on Hub          |
+ |                               | redeemVaultFromSwap ------>|
+ |                               |                            | transfer + redeem
+ |<-------------- success -------|                            |
 ```
 
 The arbitrageur:
-- Pays WBTC to acquire the escrowed vault (debt + interest)
-- Receives ownership of the BTC vault
-- Can redeem the vault to receive the underlying BTC
+- Pays WBTC to acquire the escrowed vault (debt + interest + fees)
+- Vault is atomically redeemed in the same transaction
 
 ## Environment Variables
 
@@ -39,9 +37,6 @@ PONDER_URL=http://localhost:42070
 
 # RPC URL
 CLIENT_RPC_URL=http://localhost:8545
-
-# AaveIntegrationController address
-CONTROLLER_ADDRESS=0x...
 
 # VaultSwap contract address (for WBTC approval)
 VAULT_SWAP_ADDRESS=0x...
@@ -58,11 +53,8 @@ VAULT_PROCESSING_DELAY_MS=5000
 # Max slippage in basis points (default: 1%)
 MAX_SLIPPAGE_BPS=100
 
-# Auto-redeem vaults after acquiring (default: true)
-AUTO_REDEEM=true
-
-# Metrics port (default: 9090)
-METRICS_PORT=9090
+# Metrics port (default: 9091)
+METRICS_PORT=9091
 
 # Retry configuration
 RETRY_MAX_ATTEMPTS=3
@@ -77,24 +69,15 @@ TX_RECEIPT_TIMEOUT_MS=120000
 
 ```bash
 # Start polling mode (default)
-pnpm arbitrage
-
-# List owned vaults (acquired but not yet redeemed)
-pnpm arbitrage:list-owned
-
-# Verify on-chain ownership of a vault
-pnpm arbitrage:verify <vaultId>
-
-# Redeem a specific vault
-pnpm arbitrage:redeem <vaultId>
+pnpm arbitrageur:run
 
 # Show help
-pnpm arbitrage:help
+pnpm arbitrageur:run help
 ```
 
 ## Monitoring
 
-The client exposes metrics and health endpoints on `METRICS_PORT` (default 9090):
+The client exposes metrics and health endpoints on `METRICS_PORT` (default 9091):
 
 - `GET /health` - Health check with ponder/RPC reachability
 - `GET /metrics` - Prometheus metrics
@@ -104,10 +87,8 @@ The client exposes metrics and health endpoints on `METRICS_PORT` (default 9090)
 
 ```bash
 # From root
-pnpm arbitrage
+pnpm arbitrageur:run
 
 # Or directly
 tsx src/index.ts
 ```
-
-

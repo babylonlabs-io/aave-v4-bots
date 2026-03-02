@@ -28,7 +28,7 @@ with Babylon's Trustless Bitcoin Vaults protocol.
 8. [Operations](#8-operations)
    - [Health Monitoring](#81-health-monitoring)
    - [Prometheus Metrics](#82-prometheus-metrics)
-   - [Manual Commands](#83-manual-commands)
+   - [Indexer Endpoints](#83-indexer-endpoints)
 9. [Vault Acquisition Flow](#9-vault-acquisition-flow)
     - [Economic Model](#91-economic-model)
     - [Interest Accrual](#92-interest-accrual)
@@ -46,7 +46,7 @@ The service consists of two components:
 
 | Component | Description |
 |-----------|-------------|
-| **Ponder Indexer** | Indexes blockchain events (`VaultSwappedForWbtc`, `WbtcSwappedForVault`) and tracks escrowed vaults available for acquisition |
+| **Ponder Indexer** | Indexes blockchain events (`AddedVault`, `RemovedVault`) and tracks escrowed vaults available for acquisition |
 | **Arbitrageur Client** | Polls the indexer for profitable vaults and executes acquisition transactions |
 
 > **Note**: A vault keeper daemon must be running to complete vault redemptions. The keeper listens for redemption events and handles the off-chain claim process.
@@ -92,9 +92,9 @@ The service consists of two components:
          ▼                       ▼                       │
 ┌─────────────────────────────────────────┐              │
 │           Ponder Indexer                │              │
-│  - Indexes VaultSwap events             │              │
+│  - Indexes AddedVault/RemovedVault     │              │
 │  - Tracks escrowed vaults               │              │
-│  - Calculates live debt with interest   │              │
+│  - Enriches with live debt data         │              │
 │  - Exposes /escrowed-vaults API         │              │
 └────────────────────┬────────────────────┘              │
                      │                                   │
@@ -104,7 +104,7 @@ The service consists of two components:
 │  - Polls indexer at configured interval │              │
 │  - Evaluates vault profitability        │              │
 │  - Executes swapWbtcForVault()          │──────────────┘
-│  - Optionally initiates redemption      │
+│  - Acquisition + redemption is atomic   │
 │  - Exposes /metrics, /health, /ready    │
 └─────────────────────────────────────────┘
 ```
@@ -190,9 +190,6 @@ PONDER_RPC_URL=https://eth-mainnet.example.com
 # VaultSwap contract address
 VAULT_SWAP_ADDRESS=0x...
 
-# BTCVaultsManager contract address
-BTC_VAULTS_MANAGER_ADDRESS=0x...
-
 # Chain ID (1 for mainnet, 11155111 for Sepolia testnet)
 CHAIN_ID=1
 
@@ -211,7 +208,6 @@ DATABASE_SCHEMA=public
 |-----------|-------------|---------|
 | `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Required |
 | `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |
-| `BTC_VAULTS_MANAGER_ADDRESS` | BTCVaultsManager contract | Required |
 | `CHAIN_ID` | Network chain ID (1 for mainnet, 11155111 for Sepolia) | `1` |
 | `START_BLOCK` | Block to begin indexing | `0` |
 | `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | `1000` |
@@ -243,9 +239,6 @@ WBTC_ADDRESS=0x...
 
 # Maximum slippage in basis points (default: 100 = 1%)
 MAX_SLIPPAGE_BPS=100
-
-# Auto-initiate redemption after acquisition (default: true)
-AUTO_REDEEM=true
 
 # Vault check frequency (default: 30000ms = 30 seconds)
 POLLING_INTERVAL_MS=30000
@@ -280,7 +273,6 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
 | `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | `100` (1%) |
-| `AUTO_REDEEM` | Auto-initiate redemption after acquisition | `true` |
 | `POLLING_INTERVAL_MS` | How often to check for vaults | `30000` |
 | `VAULT_PROCESSING_DELAY_MS` | Delay between vault acquisitions | `5000` |
 | `METRICS_PORT` | HTTP server port for metrics/health | `9091` |
@@ -296,8 +288,7 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 | Contract | Purpose |
 |----------|---------|
 | `VAULT_SWAP_ADDRESS` | Execute `swapWbtcForVault()` to acquire vaults |
-| `BTC_VAULTS_MANAGER_ADDRESS` | Vault redemption and management |
-| `CONTROLLER_ADDRESS` | Verify vault ownership, initiate redemption |
+| `CONTROLLER_ADDRESS` | AaveIntegrationController for vault management |
 | `WBTC_ADDRESS` | WBTC token for acquisition payments |
 
 ## 6. Wallet Setup
@@ -450,37 +441,16 @@ Available at `GET http://localhost:9091/metrics`
     summary: "Arbitrageur WBTC balance low"
 ```
 
-### 8.3. Manual Commands
-
-**List owned vaults:**
-
-```bash
-pnpm arbitrageur:list-owned
-```
-
-**Verify vault ownership:**
-
-```bash
-pnpm arbitrageur:verify <vaultId>
-```
-
-**Manually initiate redemption:**
-
-```bash
-pnpm arbitrageur:redeem <vaultId>
-```
+### 8.3. Indexer Endpoints
 
 **Query indexer endpoints:**
 
 ```bash
-# Escrowed vaults available for acquisition
+# Escrowed vaults available for acquisition (enriched with live debt data)
 curl http://localhost:42070/escrowed-vaults
 
 # Raw escrowed vaults (for debugging)
 curl http://localhost:42070/escrowed-vaults-raw
-
-# Vaults owned by specific address
-curl "http://localhost:42070/owned-vaults?owner=0x..."
 ```
 
 ## 9. Vault Acquisition Flow
@@ -505,11 +475,11 @@ When acquiring a vault, the arbitrageur pays less than the full BTC value:
 The debt on an escrowed vault accrues interest over time:
 
 ```
-currentDebt = principal + accruedInterest
+currentDebt = principal + accruedInterest + protocolFee
 ```
 
-The `previewWbtcToAcquireVault(vaultId)` function returns the current WBTC
-required, including accrued interest.
+The `previewWbtcToAcquireVaultWithFees(vaultId)` function returns the current WBTC
+required, broken down into principal, interest, and protocol fee components.
 
 > **Note**: Vault acquisition is first-come-first-served. The first successful
 > `swapWbtcForVault()` transaction wins the vault.
@@ -538,8 +508,6 @@ required, including accrued interest.
 | `tx_timeout` | Transaction receipt timeout | Check network, increase timeout |
 | `acquire_error` | Failed to acquire vault | Check WBTC balance, approval |
 | `swap_reverted` | Swap transaction reverted | Vault likely acquired by another |
-| `redeem_error` | Failed to initiate redemption | Check keeper registration |
-| `redeem_reverted` | Redeem transaction reverted | Vault state issue |
 | `contract_revert` | Generic contract revert | Check transaction for reason |
 
 **Viewing logs:**
