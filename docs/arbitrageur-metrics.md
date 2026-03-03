@@ -24,7 +24,7 @@ Exposed at `GET /metrics` on port `9091` (configurable via `METRICS_PORT`).
 | `acquire_error` | Failed to acquire vault |
 | `swap_reverted` | Swap transaction reverted |
 | `contract_revert` | Contract call reverted |
-| `vault_unprofitable` | Vault failed profitability guard |
+| `vault_skipped` | Vault failed profitability guard |
 
 ## Health Endpoints
 

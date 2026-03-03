@@ -114,6 +114,11 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
+process.on("SIGTERM", () => {
+  console.log("\nShutting down...");
+  process.exit(0);
+});
+
 main().catch((error) => {
   console.error("Fatal error:", error);
   process.exit(1);

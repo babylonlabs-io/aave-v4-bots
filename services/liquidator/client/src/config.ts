@@ -69,9 +69,19 @@ export function loadConfig(): Config {
     throw new Error("Invalid TX_RECEIPT_TIMEOUT_MS: must be a positive integer");
   }
 
+  const pollingIntervalMs = Number.parseInt(process.env.POLLING_INTERVAL_MS || "10000", 10);
+  if (!Number.isFinite(pollingIntervalMs) || pollingIntervalMs <= 0) {
+    throw new Error("Invalid POLLING_INTERVAL_MS: must be a positive integer");
+  }
+
+  const metricsPort = Number.parseInt(process.env.METRICS_PORT || "9090", 10);
+  if (!Number.isFinite(metricsPort) || metricsPort <= 0) {
+    throw new Error("Invalid METRICS_PORT: must be a positive integer");
+  }
+
   return {
     liquidatorPrivateKey: liquidatorPrivateKey as Hex,
-    pollingIntervalMs: Number.parseInt(process.env.POLLING_INTERVAL_MS || "10000", 10),
+    pollingIntervalMs,
     ponderUrl: process.env.PONDER_URL!,
     rpcUrl: process.env.CLIENT_RPC_URL!,
     controllerAddress,
@@ -79,7 +89,7 @@ export function loadConfig(): Config {
     wbtcAddress,
     debtTokenAddresses,
     btcRedeemKey: btcRedeemKey as Hex,
-    metricsPort: Number.parseInt(process.env.METRICS_PORT || "9090", 10),
+    metricsPort,
     txReceiptTimeoutMs,
   };
 }

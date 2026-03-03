@@ -256,10 +256,18 @@ export class LiquidationBot {
           console.error(
             `${this.logTag}Failed to send liquidation for ${position.borrower}: ${errorMsg}`
           );
-          nextNonce = await this.publicClient.getTransactionCount({
-            address: this.walletClient.account.address,
-            blockTag: "pending",
-          });
+          try {
+            nextNonce = await this.publicClient.getTransactionCount({
+              address: this.walletClient.account.address,
+              blockTag: "pending",
+            });
+          } catch (nonceError) {
+            console.error(
+              `${this.logTag}Failed to re-sync nonce, skipping remaining candidates:`,
+              nonceError
+            );
+            break;
+          }
         }
       }
 
@@ -292,7 +300,7 @@ export class LiquidationBot {
           }
         } else {
           recordLiquidationFailed();
-          recordError("tx_reverted");
+          recordError("receipt_fetch_error");
           console.error(`${this.logTag}Failed to get receipt for ${txHashes[i]}: ${result.reason}`);
         }
       }

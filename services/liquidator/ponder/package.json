@@ -7,7 +7,7 @@
     "dev": "ponder dev --port 42069",
     "start": "ponder start --port 42069",
     "codegen": "ponder codegen",
-    "test": "node --import tsx --test src/positionAccounting.test.ts"
+    "test": "node --import tsx --test tests/positionAccounting.test.ts"
   },
   "dependencies": {
     "ponder": "^0.13.6",

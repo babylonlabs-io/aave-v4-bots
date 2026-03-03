@@ -24,7 +24,8 @@ Exposed at `GET /metrics` on port `9090` (configurable via `METRICS_PORT`).
 | `ponder_fetch_error` | Failed to fetch from Ponder API |
 | `lens_estimate_error` | Failed to estimate liquidation via lens contract |
 | `tx_send_error` | Failed to send liquidation transaction |
-| `tx_reverted` | Transaction reverted or receipt failed |
+| `tx_reverted` | Transaction reverted on-chain |
+| `receipt_fetch_error` | Failed to fetch transaction receipt |
 
 ## Health Endpoints
 

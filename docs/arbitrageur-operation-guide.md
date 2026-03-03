@@ -509,7 +509,7 @@ required, broken down into principal, interest, and protocol fee components.
 | `acquire_error` | Failed to acquire vault | Check WBTC balance, approval |
 | `swap_reverted` | Swap transaction reverted | Vault likely acquired by another |
 | `contract_revert` | Generic contract revert | Check transaction for reason |
-| `vault_unprofitable` | Profitability guard failed | Normal skip; verify debt/interest changes |
+| `vault_skipped` | Profitability guard failed | Normal skip; verify debt/interest changes |
 
 **Viewing logs:**
 

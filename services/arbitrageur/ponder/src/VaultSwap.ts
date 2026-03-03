@@ -29,14 +29,3 @@ ponder.on("VaultSwap:RemovedVault", async ({ event, context }) => {
 
   await context.db.delete(escrowedVault, { vaultId });
 });
-
-/**
- * VaultEmergencyRepaid event handler
- * - Defensive cleanup: ensure vault is removed from escrow table if repaid directly.
- * - Idempotent with RemovedVault handler.
- */
-ponder.on("VaultSwap:VaultEmergencyRepaid", async ({ event, context }) => {
-  const vaultId = event.args.vaultId;
-
-  await context.db.delete(escrowedVault, { vaultId });
-});

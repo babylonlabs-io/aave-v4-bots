@@ -27,7 +27,7 @@ const HEALTH_FACTOR_THRESHOLD = BigInt(1e18);
  *
  * Returns all positions that are liquidatable (health factor < 1.0 AND has debt)
  *
- * Uses multicall to batch all getUserAccountData calls into a single RPC request
+ * Fetches getUserAccountData for each position in parallel via individual RPC calls
  */
 app.get("/liquidatable-positions", async (c) => {
   // Get the public client for the network

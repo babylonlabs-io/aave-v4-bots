@@ -123,8 +123,8 @@ export class ArbitrageurBot {
    */
   async acquireVault(vault: EscrowedVault): Promise<boolean> {
     const { vaultId, btcAmount, currentDebt } = vault;
-    const currentDebtBigInt = BigInt(currentDebt.replace("n", ""));
-    const btcAmountBigInt = BigInt(btcAmount.replace("n", ""));
+    const currentDebtBigInt = BigInt(currentDebt);
+    const btcAmountBigInt = BigInt(btcAmount);
 
     console.log(`${this.logTag}Attempting to acquire vault:`);
     console.log(`   Vault ID: ${vaultId}`);
@@ -145,7 +145,7 @@ export class ArbitrageurBot {
         console.warn(
           `   Hub debt: ${formatUnits(hubDebt, 8)} WBTC | Interest: ${formatUnits(accruedInterest, 8)} WBTC | Discount: ${formatUnits(arbitrageurDiscount, 8)} WBTC`
         );
-        recordError("vault_unprofitable");
+        recordError("vault_skipped");
         return false;
       }
 

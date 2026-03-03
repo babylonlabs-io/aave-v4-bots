@@ -25,8 +25,8 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
         // Read vault ID from file created by LiquidationE2ESetup
         bytes32 vaultId = _readVaultIdFromFile();
         require(vaultId != bytes32(0), "Missing vault ID from setup");
-        uint256 arbInitialWbtc = _readInitialWbtcBalance("ARB_INITIAL_WBTC");
-        uint256 liqInitialWbtc = _readInitialWbtcBalance("LIQ_INITIAL_WBTC");
+        uint256 arbInitialWbtc = _readInitialWbtcBalance(".e2e-initial-arb-wbtc");
+        uint256 liqInitialWbtc = _readInitialWbtcBalance(".e2e-initial-liq-wbtc");
 
         // Get current WBTC balances
         uint256 arbWbtcNow = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
@@ -136,28 +136,20 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
     /// @dev Read vault ID from temporary file created by LiquidationE2ESetup
     /// @return The vault ID, or bytes32(0) if file doesn't exist
-    function _readVaultIdFromFile() internal returns (bytes32) {
-        string[] memory inputs = new string[](3);
-        inputs[0] = "bash";
-        inputs[1] = "-c";
-        inputs[2] =
-            "[ -f .e2e-vault-id ] && cat .e2e-vault-id | tr -d '\\n' || echo '0x0000000000000000000000000000000000000000000000000000000000000000'";
-
-        return bytes32(vm.ffi(inputs));
+    function _readVaultIdFromFile() internal view returns (bytes32) {
+        try vm.readFile(".e2e-vault-id") returns (string memory content) {
+            return vm.parseBytes32(content);
+        } catch {
+            return bytes32(0);
+        }
     }
 
-    function _readInitialWbtcBalance(string memory envName) internal returns (uint256) {
-        string[] memory inputs = new string[](3);
-        inputs[0] = "bash";
-        inputs[1] = "-c";
-        inputs[2] = string.concat(
-            "[ -f .e2e-initial-balances ] && { set -a; . ./.e2e-initial-balances; set +a; echo -n $",
-            envName,
-            "; } || echo -n 0"
-        );
-        bytes memory raw = vm.ffi(inputs);
-        string memory value = string(raw);
-        uint256 parsed = vm.parseUint(value);
+    /// @dev Read initial WBTC balance from file written by LiquidationE2ESetup.
+    ///      Uses vm.readFile instead of FFI to avoid Foundry's hex-decoding of
+    ///      all-digit output (e.g. "1000000000" gets hex-decoded to 5 raw bytes).
+    function _readInitialWbtcBalance(string memory filename) internal view returns (uint256) {
+        string memory content = vm.readFile(filename);
+        uint256 parsed = vm.parseUint(content);
         require(parsed > 0, "Missing initial WBTC balances from setup");
         return parsed;
     }

@@ -16,8 +16,8 @@ vi.mock("./health", () => ({
 
 const mockVault: EscrowedVault = {
   vaultId: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-  btcAmount: "100000000n", // 1 BTC
-  currentDebt: "50000000n", // 0.5 WBTC
+  btcAmount: "100000000", // 1 BTC
+  currentDebt: "50000000", // 0.5 WBTC
   createdAt: "2024-01-01T00:00:00Z",
 };
 
@@ -199,7 +199,7 @@ describe("ArbitrageurBot", () => {
       const clients = createMockClients();
       const tinyVault: EscrowedVault = {
         ...mockVault,
-        currentDebt: "1n",
+        currentDebt: "1",
       };
       const bot = createBot(clients, { maxSlippageBps: 1 }); // 0.01%
 

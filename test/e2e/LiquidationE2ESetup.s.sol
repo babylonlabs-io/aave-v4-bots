@@ -315,31 +315,14 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     }
 
     function _saveVaultId(bytes32 vaultId) internal {
-        string[] memory inputs = new string[](3);
-        inputs[0] = "bash";
-        inputs[1] = "-c";
-        inputs[2] = string.concat("echo '", vm.toString(vaultId), "' > .e2e-vault-id");
-        vm.ffi(inputs);
+        vm.writeFile(".e2e-vault-id", vm.toString(vaultId));
     }
 
     function _saveInitialWbtcBalances() internal {
         uint256 arbInitialWbtc = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
         uint256 liqInitialWbtc = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
-
-        string[] memory inputs = new string[](3);
-        inputs[0] = "bash";
-        inputs[1] = "-c";
-        inputs[2] = string.concat(
-            "cat > .e2e-initial-balances << 'EOF'\n",
-            "ARB_INITIAL_WBTC=",
-            vm.toString(arbInitialWbtc),
-            "\n",
-            "LIQ_INITIAL_WBTC=",
-            vm.toString(liqInitialWbtc),
-            "\n",
-            "EOF"
-        );
-        vm.ffi(inputs);
+        vm.writeFile(".e2e-initial-arb-wbtc", vm.toString(arbInitialWbtc));
+        vm.writeFile(".e2e-initial-liq-wbtc", vm.toString(liqInitialWbtc));
     }
 
     function _startLiquidatorPonder() internal returns (string memory) {
@@ -406,12 +389,14 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     }
 
     function _getCurrentBlockNumber() internal returns (string memory) {
+        // Write block number to file, then read with vm.readLine to avoid
+        // FFI hex-decoding issues (all-digit output gets hex-decoded by Foundry)
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
-        inputs[2] = "cast block-number --rpc-url http://localhost:8545 | tr -d '\\n'";
-        bytes memory result = vm.ffi(inputs);
-        string memory blockNum = string(result);
+        inputs[2] = "cast block-number --rpc-url http://localhost:8545 > .e2e-block-number";
+        vm.ffi(inputs);
+        string memory blockNum = vm.readLine(".e2e-block-number");
         console.log("Current block number for START_BLOCK:", blockNum);
         return blockNum;
     }

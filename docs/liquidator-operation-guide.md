@@ -479,6 +479,7 @@ curl http://localhost:42069/positions-health
 | `ponder_fetch_error` | Failed to fetch from indexer | Verify Ponder is running |
 | `tx_send_error` | Failed to send transaction | Check RPC connectivity, wallet balance |
 | `tx_reverted` | Transaction reverted on-chain | Position may already be liquidated |
+| `receipt_fetch_error` | Failed to fetch transaction receipt | Check RPC connectivity |
 
 **Viewing logs:**
 
