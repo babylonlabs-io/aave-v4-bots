@@ -7,6 +7,7 @@ vi.mock("./metrics", () => ({
   recordVaultAcquired: vi.fn(),
   recordError: vi.fn(),
   recordPollDuration: vi.fn(),
+  recordWbtcBalance: vi.fn(),
 }));
 
 vi.mock("./health", () => ({
@@ -82,6 +83,12 @@ describe("ArbitrageurBot", () => {
       expect(result).toBe(true);
       expect(clients.publicClient.estimateContractGas).toHaveBeenCalledOnce();
       expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionName: "swapWbtcForVault",
+          args: [mockVault.vaultId, 50500000n], // 0.5 WBTC debt + 1% slippage
+        })
+      );
       expect(clients.publicClient.waitForTransactionReceipt).toHaveBeenCalledWith({
         hash: "0xtxhash",
       });
@@ -165,6 +172,46 @@ describe("ArbitrageurBot", () => {
 
       // Should have 2 writeContract calls: approve + swap
       expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+    });
+
+    it("approves when allowance covers debt but not slippage-adjusted maxWbtcIn", async () => {
+      const clients = createMockClients();
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName }: { functionName: string }) => {
+          if (functionName === "isVaultProfitableForArbitrageur") {
+            return Promise.resolve([true, 0n, 1n, 0n]);
+          }
+          if (functionName === "allowance") {
+            return Promise.resolve(50000000n); // equals currentDebt, but < maxWbtcIn with 1% slippage
+          }
+          return Promise.resolve(0n);
+        }
+      );
+
+      const bot = createBot(clients, { maxSlippageBps: 100 });
+      await bot.acquireVault(mockVault);
+
+      // Should still approve because swap uses maxWbtcIn, not currentDebt
+      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+    });
+
+    it("uses debt as maxWbtcIn when slippage floor division rounds to zero", async () => {
+      const clients = createMockClients();
+      const tinyVault: EscrowedVault = {
+        ...mockVault,
+        currentDebt: "1n",
+      };
+      const bot = createBot(clients, { maxSlippageBps: 1 }); // 0.01%
+
+      const result = await bot.acquireVault(tinyVault);
+
+      expect(result).toBe(true);
+      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionName: "swapWbtcForVault",
+          args: [tinyVault.vaultId, 1n],
+        })
+      );
     });
   });
 

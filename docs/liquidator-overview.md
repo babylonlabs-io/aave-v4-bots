@@ -4,7 +4,7 @@
 
 The Aave v4 integration with Babylon's Trustless Bitcoin Vaults protocol allows BTC holders to trustlessly use their BTC as collateral to borrow on Ethereum. When a borrower's position becomes undercollateralized (health factor < 1.0), it becomes eligible for liquidation. The liquidator repays the borrower's debt and seizes the collateral.
 
-The Bitcoin contained in a trustless BTC vault cannot be split -- it can only be withdrawn in its entirety. Therefore, only full liquidations are supported. Partial liquidation is not available for positions using BTC vaults as collateral.
+The Bitcoin contained in a trustless BTC vault cannot be split on the BTC side, but the Aave-side liquidation logic can still liquidate only part of a position's collateral shares in a given call. In practice, a position may be liquidated incrementally across multiple events until its tracked shares reach zero.
 
 ## Permissionless Liquidation
 

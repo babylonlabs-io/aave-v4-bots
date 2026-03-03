@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Aave v4 integration with Babylon's Trustless Bitcoin Vaults enables BTC holders to use their Bitcoin as collateral for borrowing on Ethereum. When borrowers become undercollateralized, their positions can be liquidated. However, liquidating BTC vault collateral presents unique challenges that the **Swap Spoke** and **arbitrageur system** are designed to solve.
+The Aave v4 integration with Babylon's Trustless Bitcoin Vaults enables BTC holders to use their Bitcoin as collateral for borrowing on Ethereum. When borrowers become undercollateralized, their positions can be liquidated. However, liquidating BTC vault collateral presents unique challenges that the **VaultSwap** and **arbitrageur system** are designed to solve.
 
 ## The Problem
 
@@ -13,9 +13,9 @@ Liquidations in Aave v4 are permissionless, anyone can liquidate an undercollate
 
 These constraints mean permissionless liquidators cannot directly receive BTC. They need immediate liquidity to continue operating.
 
-## The Solution: Swap Spoke
+## The Solution: VaultSwap
 
-Aave v4 uses a Hub and Spoke architecture where the Hub manages core lending logic and Spokes handle asset-specific operations. The **Swap Spoke** is a custom spoke designed specifically for BTC vault collateral, enabling instant liquidity for liquidators while preserving the security model of the Babylon vault protocol.
+Aave v4 uses a Hub and Spoke architecture where the Hub manages core lending logic and Spokes handle asset-specific operations. **VaultSwap** provides instant liquidity for liquidators while preserving the security model of the Babylon vault protocol.
 
 ### How It Works
 
@@ -25,7 +25,7 @@ Aave v4 uses a Hub and Spoke architecture where the Hub manages core lending log
 
 1. **Liquidation**: A permissionless liquidator identifies an undercollateralized position and executes liquidation on Aave v4, receiving ownership of the BTC vault(s)
 
-2. **Instant Swap**: The liquidator calls `swapVaultForWbtc` on the Swap Spoke, transferring vault ownership to escrow and receiving WBTC immediately. The WBTC is provided by the Aave Hub as a loan.
+2. **Instant Swap**: The liquidator swaps seized vaults via `VaultSwap` and receives WBTC immediately. The WBTC is provided by the Aave Hub as a loan.
 
 3. **Escrow State**: The vault is now held in escrow, waiting to be acquired by a registered arbitrageur. If a position contained multiple vaults, each is escrowed individually.
 
@@ -143,6 +143,6 @@ event RemovedVault(bytes32 indexed vaultId);
 | Actor | Action | Result |
 |-------|--------|--------|
 | **Liquidator** | Liquidates position, swaps vault for WBTC | Receives instant WBTC liquidity |
-| **Swap Spoke** | Holds vault in escrow, borrows from Hub | Bridges permissionless liquidation to registered redemption |
+| **VaultSwap** | Holds vault in escrow, borrows from Hub | Bridges permissionless liquidation to registered redemption |
 | **Arbitrageur** | Monitors and acquires escrowed vaults | Pays discounted price, vault is atomically redeemed |
 | **Aave Hub** | Provides WBTC liquidity | Loan repaid when arbitrageur acquires |

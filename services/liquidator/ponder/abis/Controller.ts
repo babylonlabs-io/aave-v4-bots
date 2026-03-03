@@ -1,5 +1,12 @@
 export const controllerAbi = [
   {
+    type: "function",
+    name: "getUserOfProxy",
+    inputs: [{ name: "proxy", type: "address", internalType: "address" }],
+    outputs: [{ name: "", type: "address", internalType: "address" }],
+    stateMutability: "view",
+  },
+  {
     type: "event",
     name: "VaultOwnershipTransferred",
     inputs: [

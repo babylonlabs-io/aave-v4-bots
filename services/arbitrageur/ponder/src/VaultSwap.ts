@@ -10,10 +10,13 @@ ponder.on("VaultSwap:AddedVault", async ({ event, context }) => {
   const vaultId = event.args.vaultId;
   const timestamp = event.block.timestamp;
 
-  await context.db.insert(escrowedVault).values({
-    vaultId,
-    createdAt: timestamp,
-  });
+  await context.db
+    .insert(escrowedVault)
+    .values({
+      vaultId,
+      createdAt: timestamp,
+    })
+    .onConflictDoNothing();
 });
 
 /**
@@ -22,6 +25,17 @@ ponder.on("VaultSwap:AddedVault", async ({ event, context }) => {
  * - Remove vault from escrowed_vault table
  */
 ponder.on("VaultSwap:RemovedVault", async ({ event, context }) => {
+  const vaultId = event.args.vaultId;
+
+  await context.db.delete(escrowedVault, { vaultId });
+});
+
+/**
+ * VaultEmergencyRepaid event handler
+ * - Defensive cleanup: ensure vault is removed from escrow table if repaid directly.
+ * - Idempotent with RemovedVault handler.
+ */
+ponder.on("VaultSwap:VaultEmergencyRepaid", async ({ event, context }) => {
   const vaultId = event.args.vaultId;
 
   await context.db.delete(escrowedVault, { vaultId });

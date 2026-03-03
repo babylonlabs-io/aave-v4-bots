@@ -40,7 +40,6 @@ const envSchema = z.object({
   ARBITRAGEUR_PRIVATE_KEY: privateKeySchema,
   PONDER_URL: urlSchema,
   CLIENT_RPC_URL: urlSchema,
-  CONTROLLER_ADDRESS: addressSchema,
   VAULT_SWAP_ADDRESS: addressSchema,
   WBTC_ADDRESS: addressSchema,
 
@@ -71,7 +70,6 @@ export interface Config {
   rpcUrl: string;
 
   // Contract addresses
-  controllerAddress: Address;
   vaultSwapAddress: Address;
   wbtcAddress: Address;
 
@@ -121,7 +119,6 @@ export function loadConfig(): Config {
     arbitrageurPrivateKey: env.ARBITRAGEUR_PRIVATE_KEY as Hex,
     ponderUrl: env.PONDER_URL,
     rpcUrl: env.CLIENT_RPC_URL,
-    controllerAddress: env.CONTROLLER_ADDRESS as Address,
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,
     wbtcAddress: env.WBTC_ADDRESS as Address,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),

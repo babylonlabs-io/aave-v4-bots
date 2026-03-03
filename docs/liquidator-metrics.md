@@ -22,6 +22,7 @@ Exposed at `GET /metrics` on port `9090` (configurable via `METRICS_PORT`).
 |-------------|---------|
 | `poll_error` | Exception in poll cycle |
 | `ponder_fetch_error` | Failed to fetch from Ponder API |
+| `lens_estimate_error` | Failed to estimate liquidation via lens contract |
 | `tx_send_error` | Failed to send liquidation transaction |
 | `tx_reverted` | Transaction reverted or receipt failed |
 

@@ -39,4 +39,7 @@ export interface Config {
 
   // Monitoring
   metricsPort: number;
+
+  // Transaction timeout
+  txReceiptTimeoutMs: number;
 }

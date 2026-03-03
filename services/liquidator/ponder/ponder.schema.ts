@@ -4,7 +4,8 @@ import { onchainTable } from "ponder";
  * Tracks proxy addresses that have collateral positions.
  * - Added on Supply event
  * - Updated on Withdraw (shares decremented)
- * - Removed when shares = 0 or on LiquidationCall
+ * - Updated on LiquidationCall (partial liquidation decrements shares)
+ * - Removed when shares reach 0
  */
 export const position = onchainTable("position", (t) => ({
   // Proxy address is the unique identifier

@@ -132,7 +132,7 @@ export class ArbitrageurBot {
     console.log(`   Current Debt: ${formatUnits(currentDebtBigInt, 8)} WBTC`);
 
     try {
-      const [isProfitable, accruedInterest, arbitrageurDiscount] =
+      const [isProfitable, accruedInterest, arbitrageurDiscount, hubDebt] =
         await this.publicClient.readContract({
           address: this.vaultSwapAddress,
           abi: vaultSwapAbi,
@@ -143,18 +143,18 @@ export class ArbitrageurBot {
       if (!isProfitable) {
         console.warn(`${this.logTag}Vault ${vaultId} is currently unprofitable, skipping`);
         console.warn(
-          `   Interest: ${formatUnits(accruedInterest, 8)} WBTC | Discount: ${formatUnits(arbitrageurDiscount, 8)} WBTC`
+          `   Hub debt: ${formatUnits(hubDebt, 8)} WBTC | Interest: ${formatUnits(accruedInterest, 8)} WBTC | Discount: ${formatUnits(arbitrageurDiscount, 8)} WBTC`
         );
         recordError("vault_unprofitable");
         return false;
       }
 
-      // Ensure WBTC approval for VaultSwap contract
-      await this.ensureApproval(currentDebtBigInt);
-
       // Calculate maxWbtcIn with slippage buffer
       const slippageBuffer = (currentDebtBigInt * BigInt(this.maxSlippageBps)) / 10000n;
       const maxWbtcIn = currentDebtBigInt + slippageBuffer;
+
+      // Ensure WBTC approval covers the slippage-adjusted max spend amount
+      await this.ensureApproval(maxWbtcIn);
 
       console.log(
         `${this.logTag}Max WBTC willing to pay: ${formatUnits(maxWbtcIn, 8)} (${this.maxSlippageBps / 100}% slippage)`
@@ -288,6 +288,9 @@ export class ArbitrageurBot {
       const receipt = await this.waitForReceiptWithTimeout(hash, "approval");
       if (!receipt) {
         throw new Error("Approval transaction timed out");
+      }
+      if (receipt.status !== "success") {
+        throw new Error("Approval transaction reverted");
       }
       console.log(`${this.logTag}Approval confirmed`);
     }

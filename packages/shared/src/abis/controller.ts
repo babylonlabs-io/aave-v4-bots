@@ -44,12 +44,4 @@ export const controllerAbi = [
     ],
     anonymous: false,
   },
-  // Arbitrageur
-  {
-    type: "function",
-    name: "getVaultOwner",
-    inputs: [{ name: "vaultId", type: "bytes32" }],
-    outputs: [{ name: "owner", type: "address" }],
-    stateMutability: "view",
-  },
 ] as const;

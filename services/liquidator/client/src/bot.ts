@@ -10,7 +10,14 @@ import {
   formatUnits,
 } from "viem";
 
-import { controllerAbi, erc20Abi, lensAbi, spokeAbi } from "@repo/shared";
+import {
+  type RetryConfig,
+  controllerAbi,
+  erc20Abi,
+  fetchWithRetry,
+  lensAbi,
+  spokeAbi,
+} from "@repo/shared";
 import {
   recordError,
   recordLiquidationFailed,
@@ -23,14 +30,12 @@ import {
 } from "./metrics";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
-// Maximum time to wait for a tx receipt before giving up (ms)
-const TX_RECEIPT_TIMEOUT = 60_000;
-
-// Token input for liquidation (matches Solidity TokenAmount struct)
-interface TokenAmount {
-  token: Address;
-  amount: bigint;
-}
+const DEFAULT_FETCH_RETRY: RetryConfig = {
+  maxAttempts: 3,
+  initialDelayMs: 1000,
+  maxDelayMs: 5000,
+  backoffMultiplier: 2,
+};
 
 export interface LiquidationBotConfig {
   logTag: string;
@@ -42,6 +47,7 @@ export interface LiquidationBotConfig {
   wbtcAddress: Address;
   btcRedeemKey: Hex;
   ponderUrl: string;
+  txReceiptTimeoutMs: number;
 }
 
 export class LiquidationBot {
@@ -54,6 +60,7 @@ export class LiquidationBot {
   private wbtcAddress: Address;
   private btcRedeemKey: Hex;
   private ponderUrl: string;
+  private txReceiptTimeoutMs: number;
 
   constructor(config: LiquidationBotConfig) {
     this.logTag = config.logTag;
@@ -65,6 +72,7 @@ export class LiquidationBot {
     this.wbtcAddress = config.wbtcAddress;
     this.btcRedeemKey = config.btcRedeemKey;
     this.ponderUrl = config.ponderUrl;
+    this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
   }
 
   /**
@@ -221,8 +229,9 @@ export class LiquidationBot {
         `${this.logTag}${validCandidates.length}/${positions.length} positions passed simulation`
       );
 
-      // 5. Send all liquidation txs with explicit nonces
-      const nonce = await this.publicClient.getTransactionCount({
+      // 5. Send all liquidation txs with explicit nonces.
+      // Re-sync nonce after send failures to avoid gaps/stuck sequence.
+      let nextNonce = await this.publicClient.getTransactionCount({
         address: this.walletClient.account.address,
         blockTag: "pending",
       });
@@ -236,16 +245,21 @@ export class LiquidationBot {
             abi: controllerAbi,
             functionName: "liquidateCorePosition",
             args: [position.borrower, this.btcRedeemKey, inputs],
-            nonce: nonce + i,
+            nonce: nextNonce,
           });
           console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);
           txHashes.push(hash);
+          nextNonce += 1;
         } catch (error) {
           recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           console.error(
             `${this.logTag}Failed to send liquidation for ${position.borrower}: ${errorMsg}`
           );
+          nextNonce = await this.publicClient.getTransactionCount({
+            address: this.walletClient.account.address,
+            blockTag: "pending",
+          });
         }
       }
 
@@ -258,7 +272,7 @@ export class LiquidationBot {
       console.log(`${this.logTag}Waiting for ${txHashes.length} liquidation receipt(s)...`);
       const receipts = await Promise.allSettled(
         txHashes.map((hash) =>
-          this.publicClient.waitForTransactionReceipt({ hash, timeout: TX_RECEIPT_TIMEOUT })
+          this.publicClient.waitForTransactionReceipt({ hash, timeout: this.txReceiptTimeoutMs })
         )
       );
 
@@ -295,7 +309,11 @@ export class LiquidationBot {
    */
   private async fetchLiquidatablePositions(): Promise<LiquidatablePosition[]> {
     try {
-      const response = await fetch(`${this.ponderUrl}/liquidatable-positions`);
+      const response = await fetchWithRetry(
+        `${this.ponderUrl}/liquidatable-positions`,
+        undefined,
+        DEFAULT_FETCH_RETRY
+      );
 
       if (!response.ok) {
         throw new Error(`Ponder API error: ${response.status}`);
@@ -345,7 +363,13 @@ export class LiquidationBot {
           args: [this.controllerAddress, maxApproval],
         });
 
-        await this.publicClient.waitForTransactionReceipt({ hash, timeout: TX_RECEIPT_TIMEOUT });
+        const receipt = await this.publicClient.waitForTransactionReceipt({
+          hash,
+          timeout: this.txReceiptTimeoutMs,
+        });
+        if (receipt.status !== "success") {
+          throw new Error(`Approval transaction reverted for ${symbol}`);
+        }
         console.log(`${this.logTag}Approved ${symbol}`);
       }
     }

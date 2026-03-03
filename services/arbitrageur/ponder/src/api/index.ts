@@ -42,12 +42,23 @@ app.get("/escrowed-vaults", async (c) => {
   const vaults = await db.query.escrowedVault.findMany();
 
   if (vaults.length === 0) {
-    return c.json({ vaults: [], total: 0 });
+    return c.json({ vaults: [], total: 0, failedVaultsCount: 0 });
   }
 
   // Build vault ID array and createdAt lookup
   const vaultIds = vaults.map((v) => v.vaultId);
   const createdAtMap = new Map(vaults.map((v) => [v.vaultId, v.createdAt]));
+  const toApiVault = (info: {
+    vaultId: `0x${string}`;
+    btcAmount: bigint;
+    hubDebt: bigint;
+    protocolFee: bigint;
+  }) => ({
+    vaultId: info.vaultId,
+    btcAmount: info.btcAmount.toString(),
+    currentDebt: (info.hubDebt + info.protocolFee).toString(),
+    createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
+  });
 
   try {
     // Single batch RPC call to get info for all vaults
@@ -58,22 +69,54 @@ app.get("/escrowed-vaults", async (c) => {
       args: [vaultIds],
     });
 
-    const enrichedVaults = vaultsInfo.map((info) => ({
-      vaultId: info.vaultId,
-      btcAmount: info.btcAmount.toString(),
-      currentDebt: (info.hubDebt + info.protocolFee).toString(),
-      createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
-    }));
+    const enrichedVaults = vaultsInfo.map(toApiVault);
 
     return c.json(
       replaceBigInts({
         vaults: enrichedVaults,
         total: enrichedVaults.length,
+        failedVaultsCount: 0,
       })
     );
   } catch (error) {
-    console.error("Failed to fetch escrowed vaults info:", error);
-    return c.json({ error: "Failed to fetch vault data from contract" }, 500);
+    console.error("Batch getEscrowedVaultsInfo failed, falling back to per-vault fetch:", error);
+
+    const settled = await Promise.allSettled(
+      vaultIds.map((vaultId) =>
+        publicClient.readContract({
+          address: vaultSwapAddress,
+          abi: vaultSwapAbi,
+          functionName: "getEscrowedVaultsInfo",
+          args: [[vaultId]],
+        })
+      )
+    );
+
+    const enrichedVaults = [];
+    let failed = 0;
+
+    for (let i = 0; i < settled.length; i++) {
+      const result = settled[i];
+      const vaultId = vaultIds[i];
+      if (result.status === "fulfilled" && result.value.length > 0) {
+        enrichedVaults.push(toApiVault(result.value[0]));
+      } else {
+        failed += 1;
+        console.error(
+          `Failed to fetch vault info for ${vaultId}:`,
+          result.status === "rejected" ? result.reason : "empty response"
+        );
+      }
+    }
+
+    return c.json(
+      replaceBigInts({
+        vaults: enrichedVaults,
+        total: enrichedVaults.length,
+        failedVaultsCount: failed,
+      }),
+      enrichedVaults.length > 0 ? 200 : 500
+    );
   }
 });
 

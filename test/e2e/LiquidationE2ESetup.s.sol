@@ -46,6 +46,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         wbtc.mint(E2EConstants.ARBITRAGEUR, 10 * uint256(ONE_BTC));
         vm.stopBroadcast();
         console.log("Arbitrageur funded with 10 ETH and 10 WBTC");
+        _saveInitialWbtcBalances();
 
         // Deploy AaveIntegrationLens for liquidation estimation
         console.log("\n--- Step 3: Deploy Lens ---");
@@ -232,6 +233,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             "DATABASE_URL=",
             E2EConstants.LIQUIDATOR_DB_URL,
             "\n",
+            "DATABASE_SCHEMA=public\n",
             "\n",
             "# Liquidation Client\n",
             "LIQUIDATOR_PRIVATE_KEY=",
@@ -282,6 +284,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             "DATABASE_URL=",
             E2EConstants.ARBITRAGEUR_DB_URL,
             "\n",
+            "DATABASE_SCHEMA=public\n",
             "\n",
             "# Arbitrageur Client\n",
             "ARBITRAGEUR_PRIVATE_KEY=",
@@ -292,9 +295,6 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             "\n",
             "CLIENT_RPC_URL=",
             E2EConstants.RPC_URL,
-            "\n",
-            "CONTROLLER_ADDRESS=",
-            vm.toString(address(aaveController)),
             "\n",
             "WBTC_ADDRESS=",
             vm.toString(address(wbtc)),
@@ -319,6 +319,26 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         inputs[0] = "bash";
         inputs[1] = "-c";
         inputs[2] = string.concat("echo '", vm.toString(vaultId), "' > .e2e-vault-id");
+        vm.ffi(inputs);
+    }
+
+    function _saveInitialWbtcBalances() internal {
+        uint256 arbInitialWbtc = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
+        uint256 liqInitialWbtc = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
+
+        string[] memory inputs = new string[](3);
+        inputs[0] = "bash";
+        inputs[1] = "-c";
+        inputs[2] = string.concat(
+            "cat > .e2e-initial-balances << 'EOF'\n",
+            "ARB_INITIAL_WBTC=",
+            vm.toString(arbInitialWbtc),
+            "\n",
+            "LIQ_INITIAL_WBTC=",
+            vm.toString(liqInitialWbtc),
+            "\n",
+            "EOF"
+        );
         vm.ffi(inputs);
     }
 

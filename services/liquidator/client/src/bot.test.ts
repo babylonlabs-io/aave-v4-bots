@@ -63,6 +63,7 @@ function createBot(
     wbtcAddress: "0xwbtc" as `0x${string}`,
     btcRedeemKey: ZERO_BYTES32,
     ponderUrl: "http://localhost:42069",
+    txReceiptTimeoutMs: 60000,
     ...overrides,
   });
 }
@@ -249,6 +250,34 @@ describe("LiquidationBot", () => {
           nonce: 42,
           functionName: "liquidateCorePosition",
           args: [mockPosition.borrower, ZERO_BYTES32, mockInputs],
+        })
+      );
+    });
+
+    it("sends liquidation with non-zero BTC redeem key when configured", async () => {
+      const clients = createMockClients();
+      clients.publicClient.getTransactionCount.mockResolvedValue(7);
+      const nonZeroRedeemKey =
+        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef" as const;
+      const bot = createBot(clients, { btcRedeemKey: nonZeroRedeemKey });
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            liquidatable: [mockPosition],
+            total: 1,
+            checked: 1,
+          }),
+      });
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nonce: 7,
+          functionName: "liquidateCorePosition",
+          args: [mockPosition.borrower, nonZeroRedeemKey, mockInputs],
         })
       );
     });

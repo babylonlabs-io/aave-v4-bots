@@ -108,6 +108,7 @@ describe("config validation", () => {
       );
       expect(config.metricsPort).toBe(9090);
       expect(config.debtTokenAddresses).toBeUndefined();
+      expect(config.txReceiptTimeoutMs).toBe(120000);
     });
 
     it("should parse custom polling interval", async () => {
@@ -128,6 +129,15 @@ describe("config validation", () => {
       expect(config.metricsPort).toBe(3000);
     });
 
+    it("should parse custom TX_RECEIPT_TIMEOUT_MS", async () => {
+      process.env = { ...validEnv, TX_RECEIPT_TIMEOUT_MS: "45000" };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.txReceiptTimeoutMs).toBe(45000);
+    });
+
     it("should parse custom BTC_REDEEM_KEY", async () => {
       const customKey = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
       process.env = { ...validEnv, BTC_REDEEM_KEY: customKey };
@@ -146,6 +156,46 @@ describe("config validation", () => {
 
       expect(config.btcRedeemKey).toBe(
         "0x0000000000000000000000000000000000000000000000000000000000000000"
+      );
+    });
+
+    it("should throw for invalid BTC_REDEEM_KEY format", async () => {
+      process.env = { ...validEnv, BTC_REDEEM_KEY: "not-a-hex" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
+    });
+
+    it("should throw for short BTC_REDEEM_KEY", async () => {
+      process.env = { ...validEnv, BTC_REDEEM_KEY: "0x1234" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
+    });
+
+    it("should throw for invalid CONTROLLER_ADDRESS", async () => {
+      process.env = { ...validEnv, CONTROLLER_ADDRESS: "not-an-address" };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(
+        "Invalid CONTROLLER_ADDRESS: must be a 0x-prefixed 20-byte hex address"
+      );
+    });
+
+    it("should throw for invalid private key format", async () => {
+      process.env = { ...validEnv, LIQUIDATOR_PRIVATE_KEY: "0x1234" };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(
+        "Invalid LIQUIDATOR_PRIVATE_KEY: must be 0x-prefixed 32-byte hex"
+      );
+    });
+
+    it("should throw for invalid TX_RECEIPT_TIMEOUT_MS", async () => {
+      process.env = { ...validEnv, TX_RECEIPT_TIMEOUT_MS: "0" };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(
+        "Invalid TX_RECEIPT_TIMEOUT_MS: must be a positive integer"
       );
     });
   });

@@ -40,7 +40,7 @@ with Babylon's Trustless Bitcoin Vaults protocol.
 
 The arbitrageur service monitors escrowed BTC vaults and acquires them at a discount
 using WBTC. Escrowed vaults are created when liquidators swap seized vaults for
-instant WBTC liquidity via the Swap Spoke.
+instant WBTC liquidity via VaultSwap.
 
 The service consists of two components:
 
@@ -86,7 +86,7 @@ The service consists of two components:
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Ethereum RPC  │     │   PostgreSQL    │     │  Swap Spoke     │
+│   Ethereum RPC  │     │   PostgreSQL    │     │   VaultSwap     │
 └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
          │                       │                       │
          ▼                       ▼                       │
@@ -509,6 +509,7 @@ required, broken down into principal, interest, and protocol fee components.
 | `acquire_error` | Failed to acquire vault | Check WBTC balance, approval |
 | `swap_reverted` | Swap transaction reverted | Vault likely acquired by another |
 | `contract_revert` | Generic contract revert | Check transaction for reason |
+| `vault_unprofitable` | Profitability guard failed | Normal skip; verify debt/interest changes |
 
 **Viewing logs:**
 
