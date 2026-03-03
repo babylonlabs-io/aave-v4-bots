@@ -11,9 +11,6 @@ Exposed at `GET /metrics` on port `9090` (configurable via `METRICS_PORT`).
 | `liquidator_liquidations_total` | Counter | - | Total successful liquidations |
 | `liquidator_liquidations_failed_total` | Counter | - | Total failed liquidation attempts |
 | `liquidator_simulations_failed_total` | Counter | - | Total simulations that failed |
-| `liquidator_vaults_seized_total` | Counter | - | Total vaults seized from liquidations |
-| `liquidator_vaults_swapped_total` | Counter | - | Total vaults swapped for WBTC |
-| `liquidator_wbtc_received_total` | Counter | - | Total WBTC received from swaps (satoshis) |
 | `liquidator_token_balance` | Gauge | `token`, `address` | Current token balance (debt tokens + WBTC) |
 | `liquidator_errors_total` | Counter | `type` | Errors by type |
 | `liquidator_poll_duration_seconds` | Histogram | - | Poll cycle duration |
@@ -25,9 +22,10 @@ Exposed at `GET /metrics` on port `9090` (configurable via `METRICS_PORT`).
 |-------------|---------|
 | `poll_error` | Exception in poll cycle |
 | `ponder_fetch_error` | Failed to fetch from Ponder API |
+| `lens_estimate_error` | Failed to estimate liquidation via lens contract |
 | `tx_send_error` | Failed to send liquidation transaction |
-| `tx_reverted` | Transaction reverted or receipt failed |
-| `swap_error` | Failed to send or confirm vault swap |
+| `tx_reverted` | Transaction reverted on-chain |
+| `receipt_fetch_error` | Failed to fetch transaction receipt |
 
 ## Health Endpoints
 

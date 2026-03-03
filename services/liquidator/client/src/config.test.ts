@@ -17,7 +17,7 @@ describe("config validation", () => {
     PONDER_URL: "http://localhost:42069",
     CLIENT_RPC_URL: "http://localhost:8545",
     CONTROLLER_ADDRESS: "0x1234567890123456789012345678901234567890",
-    VAULT_SWAP_ADDRESS: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    LENS_ADDRESS: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
     WBTC_ADDRESS: "0x0000000000000000000000000000000000000001",
   };
 
@@ -62,15 +62,13 @@ describe("config validation", () => {
       );
     });
 
-    it("should throw when VAULT_SWAP_ADDRESS is missing", async () => {
+    it("should throw when LENS_ADDRESS is missing", async () => {
       process.env = { ...validEnv };
-      process.env.VAULT_SWAP_ADDRESS = undefined;
+      process.env.LENS_ADDRESS = undefined;
 
       const { loadConfig } = await import("./config");
 
-      expect(() => loadConfig()).toThrow(
-        "Missing required environment variable: VAULT_SWAP_ADDRESS"
-      );
+      expect(() => loadConfig()).toThrow("Missing required environment variable: LENS_ADDRESS");
     });
 
     it("should throw when WBTC_ADDRESS is missing", async () => {
@@ -94,7 +92,7 @@ describe("config validation", () => {
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
       expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
       expect(config.controllerAddress).toBe(validEnv.CONTROLLER_ADDRESS);
-      expect(config.vaultSwapAddress).toBe(validEnv.VAULT_SWAP_ADDRESS);
+      expect(config.lensAddress).toBe(validEnv.LENS_ADDRESS);
       expect(config.wbtcAddress).toBe(validEnv.WBTC_ADDRESS);
     });
 
@@ -105,9 +103,12 @@ describe("config validation", () => {
       const config = loadConfig();
 
       expect(config.pollingIntervalMs).toBe(10000);
-      expect(config.autoSwap).toBe(true);
+      expect(config.btcRedeemKey).toBe(
+        "0x0000000000000000000000000000000000000000000000000000000000000000"
+      );
       expect(config.metricsPort).toBe(9090);
       expect(config.debtTokenAddresses).toBeUndefined();
+      expect(config.txReceiptTimeoutMs).toBe(120000);
     });
 
     it("should parse custom polling interval", async () => {
@@ -128,31 +129,74 @@ describe("config validation", () => {
       expect(config.metricsPort).toBe(3000);
     });
 
-    it("should parse AUTO_SWAP=false", async () => {
-      process.env = { ...validEnv, AUTO_SWAP: "false" };
+    it("should parse custom TX_RECEIPT_TIMEOUT_MS", async () => {
+      process.env = { ...validEnv, TX_RECEIPT_TIMEOUT_MS: "45000" };
 
       const { loadConfig } = await import("./config");
       const config = loadConfig();
 
-      expect(config.autoSwap).toBe(false);
+      expect(config.txReceiptTimeoutMs).toBe(45000);
     });
 
-    it("should parse AUTO_SWAP=FALSE (case insensitive)", async () => {
-      process.env = { ...validEnv, AUTO_SWAP: "FALSE" };
+    it("should parse custom BTC_REDEEM_KEY", async () => {
+      const customKey = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+      process.env = { ...validEnv, BTC_REDEEM_KEY: customKey };
 
       const { loadConfig } = await import("./config");
       const config = loadConfig();
 
-      expect(config.autoSwap).toBe(false);
+      expect(config.btcRedeemKey).toBe(customKey);
     });
 
-    it("should default AUTO_SWAP to true when not set", async () => {
+    it("should default BTC_REDEEM_KEY to bytes32(0) when not set", async () => {
       process.env = { ...validEnv };
 
       const { loadConfig } = await import("./config");
       const config = loadConfig();
 
-      expect(config.autoSwap).toBe(true);
+      expect(config.btcRedeemKey).toBe(
+        "0x0000000000000000000000000000000000000000000000000000000000000000"
+      );
+    });
+
+    it("should throw for invalid BTC_REDEEM_KEY format", async () => {
+      process.env = { ...validEnv, BTC_REDEEM_KEY: "not-a-hex" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
+    });
+
+    it("should throw for short BTC_REDEEM_KEY", async () => {
+      process.env = { ...validEnv, BTC_REDEEM_KEY: "0x1234" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
+    });
+
+    it("should throw for invalid CONTROLLER_ADDRESS", async () => {
+      process.env = { ...validEnv, CONTROLLER_ADDRESS: "not-an-address" };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(
+        "Invalid CONTROLLER_ADDRESS: must be a 0x-prefixed 20-byte hex address"
+      );
+    });
+
+    it("should throw for invalid private key format", async () => {
+      process.env = { ...validEnv, LIQUIDATOR_PRIVATE_KEY: "0x1234" };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(
+        "Invalid LIQUIDATOR_PRIVATE_KEY: must be 0x-prefixed 32-byte hex"
+      );
+    });
+
+    it("should throw for invalid TX_RECEIPT_TIMEOUT_MS", async () => {
+      process.env = { ...validEnv, TX_RECEIPT_TIMEOUT_MS: "0" };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(
+        "Invalid TX_RECEIPT_TIMEOUT_MS: must be a positive integer"
+      );
     });
   });
 

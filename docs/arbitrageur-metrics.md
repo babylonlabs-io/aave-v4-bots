@@ -23,9 +23,8 @@ Exposed at `GET /metrics` on port `9091` (configurable via `METRICS_PORT`).
 | `tx_timeout` | Transaction receipt timeout |
 | `acquire_error` | Failed to acquire vault |
 | `swap_reverted` | Swap transaction reverted |
-| `redeem_error` | Failed to redeem vault |
-| `redeem_reverted` | Redeem transaction reverted |
 | `contract_revert` | Contract call reverted |
+| `vault_skipped` | Vault failed profitability guard |
 
 ## Health Endpoints
 
@@ -34,4 +33,3 @@ Exposed at `GET /metrics` on port `9091` (configurable via `METRICS_PORT`).
 | `GET /health` | `{"status": "healthy\|degraded\|unhealthy", "uptime": <seconds>, "lastPollAt": "<ISO>", "ponderReachable": <bool>, "rpcReachable": <bool>, "latestBlockNumber": "<string>"}` |
 | `GET /ready` | `{"ready": <bool>}` - 503 if dependencies unreachable |
 | `GET /metrics` | Prometheus format |
-

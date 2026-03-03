@@ -10,7 +10,7 @@ Indexes Aave V4 Spoke events and exposes API endpoints for querying positions.
 - `LiquidationCall` - Removes liquidated position
 
 ### Controller Contract
-- `VaultOwnershipTransferred` - Tracks vault ownership changes
+- `UserProxyCreated` - Maps borrower EOA to proxy address for liquidation calls
 
 ## Environment Variables
 
@@ -51,6 +51,7 @@ Returns positions with health factor < 1.0 that have debt.
   "liquidatable": [
     {
       "proxyAddress": "0x...",
+      "borrower": "0x...",
       "healthFactor": "950000000000000000",
       "totalCollateralValue": "1000000000",
       "totalDebtValue": "500000000",
@@ -69,24 +70,6 @@ Returns all tracked positions (debugging).
 ### `GET /positions-health`
 
 Returns all positions with their current health factors (debugging).
-
-### `GET /owned-vaults?owner=0x...`
-
-Returns all vaults owned by the given address.
-
-```json
-{
-  "vaults": [
-    {
-      "vaultId": "0x...",
-      "owner": "0x...",
-      "previousOwner": "0x...",
-      "updatedAt": "1234567890"
-    }
-  ],
-  "total": 1
-}
-```
 
 ### `GET /graphql`
 

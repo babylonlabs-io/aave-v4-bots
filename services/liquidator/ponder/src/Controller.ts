@@ -1,28 +1,22 @@
 import { ponder } from "ponder:registry";
-import { vault } from "ponder:schema";
+import { proxyMapping } from "ponder:schema";
 
 /**
- * VaultOwnershipTransferred event handler
- * - Upsert vault row tracking current and previous owner
- * - Covers: liquidation, escrow for swap, release from swap, emergency repay
+ * UserProxyCreated event handler
+ * - Maps proxy address to borrower (EOA) address
+ * - Used to resolve borrower for liquidateCorePosition calls
  */
-ponder.on("Controller:VaultOwnershipTransferred", async ({ event, context }) => {
-  const vaultId = event.args.vaultId;
-  const previousOwner = event.args.previousOwner;
-  const newOwner = event.args.newOwner;
+ponder.on("Controller:UserProxyCreated", async ({ event, context }) => {
+  const borrower = event.args.user;
+  const proxyAddress = event.args.proxy;
   const timestamp = event.block.timestamp;
 
   await context.db
-    .insert(vault)
+    .insert(proxyMapping)
     .values({
-      vaultId,
-      owner: newOwner,
-      previousOwner,
-      updatedAt: timestamp,
+      proxyAddress,
+      borrower,
+      createdAt: timestamp,
     })
-    .onConflictDoUpdate(() => ({
-      owner: newOwner,
-      previousOwner,
-      updatedAt: timestamp,
-    }));
+    .onConflictDoNothing();
 });

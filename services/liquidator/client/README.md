@@ -5,29 +5,29 @@ Polls the Ponder indexer for unhealthy positions and executes liquidations.
 ## How It Works
 
 1. **Poll** - Fetches `/liquidatable-positions` from Ponder every N seconds
-2. **Simulate** - Simulates all liquidations in parallel to filter valid ones
-3. **Approve** - Ensures debt token approval for Controller (one-time)
-4. **Liquidate** - Calls `AaveIntegrationController.liquidateCorePosition(proxyAddress)`
-5. **Swap** (optional) - Auto-swaps seized vaults for WBTC if `AUTO_SWAP=true`
+2. **Estimate** - Calls `estimateLiquidation(proxyAddress)` on the Lens to compute exact inputs
+3. **Simulate** - Simulates all liquidations in parallel to filter valid ones
+4. **Approve** - Ensures debt token approval for Controller (one-time)
+5. **Liquidate** - Calls `AaveIntegrationController.liquidateCorePosition(borrower, btcRedeemKey, inputs)`
 
 ## Liquidation Flow
 
 ```
-Bot                          Controller                    Aave V4
- │                               │                            │
- │ liquidateCorePosition() ─────▶│                            │
- │                               │ repay debt (from caller) ──▶│
- │                               │ transfer vaults to caller ─▶│
- │◀───────────── success ────────│                            │
- │                               │                            │
- │ swapVaultForWbtc() ──────────▶│ VaultSwap                  │
- │◀──────── WBTC received ──────│                            │
+Bot                    Lens                Controller               VaultSwap
+ │                       │                      │                       │
+ │ estimateLiquidation()▶│                      │                       │
+ │◀── inputs[], vaults[] │                      │                       │
+ │                       │                      │                       │
+ │ liquidateCorePosition(borrower, redeemKey, inputs) ──▶│              │
+ │                       │                      │── repay debt ────────▶│
+ │                       │                      │── seize + swap ──────▶│ (if redeemKey=0)
+ │◀──────────── WBTC received ─────────────────│◀── WBTC ─────────────│
 ```
 
 The liquidator:
+- Calls the Lens to pre-compute exact inputs (debt repayments + fairness payment + protocol fee)
 - Repays the position's debt (needs debt tokens, e.g., USDC)
-- Receives the BTC vaults as reward
-- Optionally swaps seized vaults for WBTC via VaultSwap contract
+- Receives WBTC atomically when `btcRedeemKey = bytes32(0)` (Controller handles vault swap internally)
 
 ## Environment Variables
 
@@ -44,8 +44,8 @@ CLIENT_RPC_URL=http://localhost:8545
 # AaveIntegrationController address
 CONTROLLER_ADDRESS=0x...
 
-# VaultSwap contract address
-VAULT_SWAP_ADDRESS=0x...
+# AaveIntegrationLens address
+LENS_ADDRESS=0x...
 
 # WBTC token address
 WBTC_ADDRESS=0x...
@@ -53,8 +53,8 @@ WBTC_ADDRESS=0x...
 # Debt token addresses, comma-separated (optional, auto-discovered from Spoke)
 DEBT_TOKEN_ADDRESSES=0x...,0x...
 
-# Auto-swap seized vaults for WBTC (default: true)
-AUTO_SWAP=true
+# BTC redeem key for direct redemption (default: bytes32(0) for WBTC payout)
+# BTC_REDEEM_KEY=0x0000000000000000000000000000000000000000000000000000000000000000
 
 # Poll interval (default: 10s)
 POLLING_INTERVAL_MS=10000
@@ -68,12 +68,6 @@ METRICS_PORT=9090
 ```bash
 # Start polling mode (default)
 pnpm liquidate
-
-# List vaults owned by the liquidator
-pnpm liquidate:list-owned
-
-# Swap a specific seized vault for WBTC
-pnpm liquidate:swap -- <vaultId>
 ```
 
 ## Monitoring

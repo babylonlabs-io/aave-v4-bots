@@ -49,11 +49,12 @@ async function createBot(config: Config) {
     walletClient,
     publicClient,
     controllerAddress: config.controllerAddress,
-    vaultSwapAddress: config.vaultSwapAddress,
+    lensAddress: config.lensAddress,
     wbtcAddress: config.wbtcAddress,
     debtTokenAddresses: config.debtTokenAddresses,
+    btcRedeemKey: config.btcRedeemKey,
     ponderUrl: config.ponderUrl,
-    autoSwap: config.autoSwap,
+    txReceiptTimeoutMs: config.txReceiptTimeoutMs,
   });
 
   return { bot, publicClient };
@@ -86,7 +87,9 @@ async function main() {
     await bot.ensureApproval();
     await bot.logBalances();
 
-    console.log(`Auto-swap: ${config.autoSwap ? "enabled" : "disabled"}`);
+    const isDirectRedemption =
+      config.btcRedeemKey !== "0x0000000000000000000000000000000000000000000000000000000000000000";
+    console.log(`Redemption mode: ${isDirectRedemption ? "direct BTC" : "WBTC via VaultSwap"}`);
     console.log(`Polling every ${config.pollingIntervalMs / 1000}s...`);
     console.log("---");
 
@@ -99,27 +102,19 @@ async function main() {
       console.log("---");
       await new Promise((r) => setTimeout(r, config.pollingIntervalMs));
     }
-  } else if (command === "list-owned") {
-    const { bot } = await createBot(config);
-    await bot.listOwnedVaults();
-  } else if (command === "swap") {
-    // Skip "--" separator that pnpm injects
-    const args = process.argv.slice(3).filter((a) => a !== "--");
-    const vaultId = args[0] as Hex;
-    if (!vaultId) {
-      console.error("Usage: swap <vaultId>");
-      process.exit(1);
-    }
-    const { bot } = await createBot(config);
-    await bot.swapSingleVault(vaultId);
   } else {
     console.error(`Unknown command: ${command}`);
-    console.error("Available commands: poll (default), list-owned, swap <vaultId>");
+    console.error("Available commands: poll (default)");
     process.exit(1);
   }
 }
 
 process.on("SIGINT", () => {
+  console.log("\nShutting down...");
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
   console.log("\nShutting down...");
   process.exit(0);
 });

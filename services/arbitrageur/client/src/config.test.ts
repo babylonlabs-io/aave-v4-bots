@@ -23,7 +23,6 @@ describe("config validation", () => {
     ARBITRAGEUR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42070",
     CLIENT_RPC_URL: "http://localhost:8545",
-    CONTROLLER_ADDRESS: "0x1234567890123456789012345678901234567890",
     VAULT_SWAP_ADDRESS: "0x1234567890123456789012345678901234567890",
     WBTC_ADDRESS: "0x1234567890123456789012345678901234567890",
   };
@@ -58,16 +57,6 @@ describe("config validation", () => {
       expect(() => loadConfig()).toThrow("process.exit called");
       expect(mockExit).toHaveBeenCalledWith(1);
     });
-
-    it("should fail when CONTROLLER_ADDRESS is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.CONTROLLER_ADDRESS = undefined;
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(mockExit).toHaveBeenCalledWith(1);
-    });
   });
 
   describe("format validation", () => {
@@ -88,7 +77,7 @@ describe("config validation", () => {
     });
 
     it("should fail with invalid address format", async () => {
-      process.env = { ...validEnv, CONTROLLER_ADDRESS: "not-an-address" };
+      process.env = { ...validEnv, VAULT_SWAP_ADDRESS: "not-an-address" };
 
       const { loadConfig } = await import("./config");
 
@@ -96,7 +85,7 @@ describe("config validation", () => {
     });
 
     it("should fail with address too short", async () => {
-      process.env = { ...validEnv, CONTROLLER_ADDRESS: "0x1234" };
+      process.env = { ...validEnv, WBTC_ADDRESS: "0x1234" };
 
       const { loadConfig } = await import("./config");
 
@@ -122,7 +111,6 @@ describe("config validation", () => {
       expect(config.arbitrageurPrivateKey).toBe(validEnv.ARBITRAGEUR_PRIVATE_KEY);
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
       expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
-      expect(config.controllerAddress).toBe(validEnv.CONTROLLER_ADDRESS);
       expect(config.vaultSwapAddress).toBe(validEnv.VAULT_SWAP_ADDRESS);
       expect(config.wbtcAddress).toBe(validEnv.WBTC_ADDRESS);
     });
@@ -136,7 +124,6 @@ describe("config validation", () => {
       expect(config.pollingIntervalMs).toBe(30000);
       expect(config.vaultProcessingDelayMs).toBe(5000);
       expect(config.maxSlippageBps).toBe(100);
-      expect(config.autoRedeem).toBe(true);
       expect(config.metricsPort).toBe(9091);
       expect(config.retryMaxAttempts).toBe(3);
       expect(config.retryInitialDelayMs).toBe(1000);
@@ -149,7 +136,6 @@ describe("config validation", () => {
         ...validEnv,
         POLLING_INTERVAL_MS: "60000",
         MAX_SLIPPAGE_BPS: "200",
-        AUTO_REDEEM: "false",
         METRICS_PORT: "3000",
         RETRY_MAX_ATTEMPTS: "5",
         TX_RECEIPT_TIMEOUT_MS: "60000",
@@ -160,7 +146,6 @@ describe("config validation", () => {
 
       expect(config.pollingIntervalMs).toBe(60000);
       expect(config.maxSlippageBps).toBe(200);
-      expect(config.autoRedeem).toBe(false);
       expect(config.metricsPort).toBe(3000);
       expect(config.retryMaxAttempts).toBe(5);
       expect(config.txReceiptTimeoutMs).toBe(60000);

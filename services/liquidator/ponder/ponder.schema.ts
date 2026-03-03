@@ -4,7 +4,8 @@ import { onchainTable } from "ponder";
  * Tracks proxy addresses that have collateral positions.
  * - Added on Supply event
  * - Updated on Withdraw (shares decremented)
- * - Removed when shares = 0 or on LiquidationCall
+ * - Updated on LiquidationCall (partial liquidation decrements shares)
+ * - Removed when shares reach 0
  */
 export const position = onchainTable("position", (t) => ({
   // Proxy address is the unique identifier
@@ -18,12 +19,12 @@ export const position = onchainTable("position", (t) => ({
 }));
 
 /**
- * Tracks vault ownership via VaultOwnershipTransferred events from Controller.
- * - Upserted on every ownership transfer (liquidation, escrow, release, emergency repay)
+ * Maps proxy addresses to borrower (EOA) addresses.
+ * - Populated from UserProxyCreated events on Controller
+ * - Used to resolve borrower address for liquidateCorePosition calls
  */
-export const vault = onchainTable("vault", (t) => ({
-  vaultId: t.hex().primaryKey(),
-  owner: t.hex().notNull(),
-  previousOwner: t.hex().notNull(),
-  updatedAt: t.bigint().notNull(),
+export const proxyMapping = onchainTable("proxy_mapping", (t) => ({
+  proxyAddress: t.hex().primaryKey(),
+  borrower: t.hex().notNull(),
+  createdAt: t.bigint().notNull(),
 }));

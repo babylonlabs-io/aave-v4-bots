@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "ponder dev --port 42069",
     "start": "ponder start --port 42069",
-    "codegen": "ponder codegen"
+    "codegen": "ponder codegen",
+    "test": "node --import tsx --test tests/positionAccounting.test.ts"
   },
   "dependencies": {
     "ponder": "^0.13.6",

@@ -2,7 +2,7 @@ import { db, publicClients } from "ponder:api";
 import schema from "ponder:schema";
 import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
-import type { Address } from "viem";
+import type { Address, PublicClient } from "viem";
 
 import { vaultSwapAbi } from "../../abis/VaultSwap";
 
@@ -23,17 +23,16 @@ app.use("/sql/*", client({ db, schema }));
  * GET /escrowed-vaults
  *
  * Returns all escrowed vaults with live debt data from VaultSwap contract.
+ * Uses a single batch call to getEscrowedVaultsInfo for efficiency.
  * This is the main endpoint the arbitrageur client will poll.
  */
 app.get("/escrowed-vaults", async (c) => {
-  // Get the public client for the network
-  const publicClient = Object.values(publicClients)[0];
+  const publicClient = Object.values(publicClients)[0] as PublicClient | undefined;
 
   if (!publicClient) {
     return c.json({ error: "No public client configured" }, 500);
   }
 
-  // Get VaultSwap address from env
   const vaultSwapAddress = process.env.VAULT_SWAP_ADDRESS as Address;
   if (!vaultSwapAddress) {
     return c.json({ error: "VAULT_SWAP_ADDRESS not configured" }, 500);
@@ -43,47 +42,82 @@ app.get("/escrowed-vaults", async (c) => {
   const vaults = await db.query.escrowedVault.findMany();
 
   if (vaults.length === 0) {
-    return c.json({ vaults: [], total: 0 });
+    return c.json({ vaults: [], total: 0, failedVaultsCount: 0 });
   }
 
-  // Enrich with live debt data from contract
-  const enrichedVaults: Array<{
-    vaultId: string;
-    seller: string;
-    btcAmount: string;
-    currentDebt: string;
-    createdAt: string;
-  }> = [];
+  // Build vault ID array and createdAt lookup
+  const vaultIds = vaults.map((v) => v.vaultId);
+  const createdAtMap = new Map(vaults.map((v) => [v.vaultId, v.createdAt]));
+  const toApiVault = (info: {
+    vaultId: `0x${string}`;
+    btcAmount: bigint;
+    hubDebt: bigint;
+    protocolFee: bigint;
+  }) => ({
+    vaultId: info.vaultId,
+    btcAmount: info.btcAmount.toString(),
+    currentDebt: (info.hubDebt + info.protocolFee).toString(),
+    createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
+  });
 
-  for (const vault of vaults) {
-    try {
-      // Get current debt (principal + accrued interest)
-      const currentDebt = await publicClient.readContract({
-        address: vaultSwapAddress,
-        abi: vaultSwapAbi,
-        functionName: "previewWbtcToAcquireVault",
-        args: [vault.vaultId],
-      });
+  try {
+    // Single batch RPC call to get info for all vaults
+    const vaultsInfo = await publicClient.readContract({
+      address: vaultSwapAddress,
+      abi: vaultSwapAbi,
+      functionName: "getEscrowedVaultsInfo",
+      args: [vaultIds],
+    });
 
-      enrichedVaults.push({
-        vaultId: vault.vaultId,
-        seller: vault.seller,
-        btcAmount: vault.btcAmount.toString(),
-        currentDebt: currentDebt.toString(),
-        createdAt: vault.createdAt.toString(),
-      });
-    } catch (error) {
-      // If we can't get debt, vault might have been removed - skip it
-      console.error(`Failed to fetch debt for vault ${vault.vaultId}:`, error);
+    const enrichedVaults = vaultsInfo.map(toApiVault);
+
+    return c.json(
+      replaceBigInts({
+        vaults: enrichedVaults,
+        total: enrichedVaults.length,
+        failedVaultsCount: 0,
+      })
+    );
+  } catch (error) {
+    console.error("Batch getEscrowedVaultsInfo failed, falling back to per-vault fetch:", error);
+
+    const settled = await Promise.allSettled(
+      vaultIds.map((vaultId) =>
+        publicClient.readContract({
+          address: vaultSwapAddress,
+          abi: vaultSwapAbi,
+          functionName: "getEscrowedVaultsInfo",
+          args: [[vaultId]],
+        })
+      )
+    );
+
+    const enrichedVaults = [];
+    let failed = 0;
+
+    for (let i = 0; i < settled.length; i++) {
+      const result = settled[i];
+      const vaultId = vaultIds[i];
+      if (result.status === "fulfilled" && result.value.length > 0) {
+        enrichedVaults.push(toApiVault(result.value[0]));
+      } else {
+        failed += 1;
+        console.error(
+          `Failed to fetch vault info for ${vaultId}:`,
+          result.status === "rejected" ? result.reason : "empty response"
+        );
+      }
     }
-  }
 
-  return c.json(
-    replaceBigInts({
-      vaults: enrichedVaults,
-      total: enrichedVaults.length,
-    })
-  );
+    return c.json(
+      replaceBigInts({
+        vaults: enrichedVaults,
+        total: enrichedVaults.length,
+        failedVaultsCount: failed,
+      }),
+      enrichedVaults.length > 0 ? 200 : 500
+    );
+  }
 });
 
 /**
@@ -98,39 +132,7 @@ app.get("/escrowed-vaults-raw", async (c) => {
     replaceBigInts({
       vaults: vaults.map((v) => ({
         vaultId: v.vaultId,
-        seller: v.seller,
-        btcAmount: v.btcAmount,
         createdAt: v.createdAt,
-      })),
-      total: vaults.length,
-    })
-  );
-});
-
-/**
- * GET /owned-vaults
- *
- * Returns all vaults owned by arbitrageurs (acquired but not yet redeemed).
- * Optionally filter by owner address using ?owner=0x... query parameter.
- */
-app.get("/owned-vaults", async (c) => {
-  const ownerFilter = c.req.query("owner")?.toLowerCase();
-
-  let vaults = await db.query.ownedVault.findMany();
-
-  // Filter by owner if provided
-  if (ownerFilter) {
-    vaults = vaults.filter((v) => v.owner.toLowerCase() === ownerFilter);
-  }
-
-  return c.json(
-    replaceBigInts({
-      vaults: vaults.map((v) => ({
-        vaultId: v.vaultId,
-        owner: v.owner,
-        btcAmount: v.btcAmount.toString(),
-        wbtcPaid: v.wbtcPaid.toString(),
-        acquiredAt: v.acquiredAt.toString(),
       })),
       total: vaults.length,
     })

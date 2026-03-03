@@ -8,8 +8,11 @@ import {IBTCVaultsManager} from "vault-contracts/interfaces/IBTCVaultsManager.so
 import {E2EConstants} from "./E2EConstants.sol";
 
 /// @title ArbitrageurE2EVerify
-/// @notice E2E script to verify the arbitrageur bot acquired vaults and paid WBTC
-/// @dev Part 3: Waits for arbitrageur bot to acquire escrowed vaults from liquidator
+/// @notice E2E script to verify the arbitrageur bot acquired vaults from VaultSwap
+/// @dev Part 3: Checks that the arbitrageur bot atomically acquired + redeemed the vault.
+///      With the new atomic flow, swapWbtcForVault redeems internally, so the vault status
+///      becomes Redeemed and the vault is no longer escrowed. We verify by comparing WBTC
+///      balances against the known initial funding amounts from the setup script.
 ///      Run this AFTER LiquidationE2EVerify.s.sol
 contract ArbitrageurE2EVerify is Script, BaseE2E {
     /// @notice Main entry point for the verification script
@@ -21,119 +24,133 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
         // Read vault ID from file created by LiquidationE2ESetup
         bytes32 vaultId = _readVaultIdFromFile();
+        require(vaultId != bytes32(0), "Missing vault ID from setup");
+        uint256 arbInitialWbtc = _readInitialWbtcBalance(".e2e-initial-arb-wbtc");
+        uint256 liqInitialWbtc = _readInitialWbtcBalance(".e2e-initial-liq-wbtc");
 
-        // Get initial balances and ownership
-        uint256 arbWbtcBefore = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
-        uint256 liquidatorWbtcBefore = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
-        address vaultOwnerBefore = bytes32(0) == vaultId ? address(0) : aaveController.getVaultOwner(vaultId);
+        // Get current WBTC balances
+        uint256 arbWbtcNow = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
+        uint256 liquidatorWbtcNow = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
 
         console.log("Arbitrageur:", E2EConstants.ARBITRAGEUR);
-        console.log("Arbitrageur WBTC balance:", arbWbtcBefore / 1e8, "WBTC");
+        console.log("Arbitrageur WBTC balance (sats):", arbWbtcNow);
+        console.log("Arbitrageur initial WBTC (sats):", arbInitialWbtc);
         console.log("Liquidator:", E2EConstants.LIQUIDATOR);
-        console.log("Liquidator WBTC balance:", liquidatorWbtcBefore / 1e8, "WBTC");
+        console.log("Liquidator WBTC balance (sats):", liquidatorWbtcNow);
+        console.log("Liquidator initial WBTC (sats):", liqInitialWbtc);
 
-        if (bytes32(0) != vaultId) {
-            console.log("\nVault ID:", vm.toString(vaultId));
-            console.log("Vault owner before:", vaultOwnerBefore);
+        // Check vault status
+        bool vaultRedeemed = false;
+        bool vaultEscrowed = false;
 
-            IBTCVaultsManager.BTCVault memory vault = vaultManager.getBTCVault(vaultId);
-            console.log("Vault BTC amount:", vault.amount / 1e8, "BTC");
+        console.log("\nVault ID:", vm.toString(vaultId));
 
-            // Check if vault is escrowed in VaultSwap
-            bool isEscrowed = vaultSwap.isVaultEscrowed(vaultId);
-            console.log("Is vault escrowed in VaultSwap:", isEscrowed);
+        IBTCVaultsManager.BTCVault memory vault = vaultManager.getBTCVault(vaultId);
+        console.log("Vault status:", uint8(vault.status));
+        console.log("Vault BTC amount:", vault.amount, "sats");
 
-            if (!isEscrowed) {
-                console.log("[INFO] Vault is not escrowed - checking if already acquired by arbitrageur");
-            } else {
-                console.log("\n--- Waiting for Arbitrageur Bot ---");
-                console.log("Waiting 5 seconds for arbitrageur to acquire vaults...");
-                vm.sleep(5000);
+        vaultRedeemed = vault.status == IBTCVaultsManager.BTCVaultStatus.Redeemed;
+        vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
+
+        console.log("Is vault redeemed:", vaultRedeemed);
+        console.log("Is vault escrowed in VaultSwap:", vaultEscrowed);
+
+        // If vault is still escrowed, poll until the arbitrageur bot processes it
+        if (vaultEscrowed) {
+            console.log("\n--- Waiting for Arbitrageur Bot ---");
+            console.log("Polling every 5 seconds for up to 120 seconds...");
+
+            uint256 maxWaitSeconds = 120;
+            uint256 pollIntervalSeconds = 5;
+            uint256 elapsed = 0;
+
+            while (elapsed < maxWaitSeconds) {
+                vm.sleep(pollIntervalSeconds * 1000);
+                elapsed += pollIntervalSeconds;
+
+                vault = vaultManager.getBTCVault(vaultId);
+                vaultRedeemed = vault.status == IBTCVaultsManager.BTCVaultStatus.Redeemed;
+                vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
+
+                if (vaultRedeemed || !vaultEscrowed) {
+                    console.log("Arbitrage detected after", elapsed, "seconds");
+                    break;
+                }
+                console.log("Still waiting...", elapsed, "/", maxWaitSeconds);
             }
-        } else {
-            console.log("\n[WARN] No vault ID found - will rely on balance checks only");
+
+            // Re-read final balances
+            arbWbtcNow = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
+            liquidatorWbtcNow = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
+
+            console.log("\n--- After Waiting ---");
+            console.log("Arbitrageur WBTC balance:", arbWbtcNow, "sats");
+            console.log("Liquidator WBTC balance:", liquidatorWbtcNow, "sats");
+            console.log("Is vault redeemed:", vaultRedeemed);
+            console.log("Is vault still escrowed:", vaultEscrowed);
         }
 
-        // Check balances and ownership after waiting
-        uint256 arbWbtcAfter = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
-        uint256 liquidatorWbtcAfter = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
-        address vaultOwnerAfter = bytes32(0) == vaultId ? address(0) : aaveController.getVaultOwner(vaultId);
-
-        console.log("\n--- After Arbitrageur Acquisition ---");
-        console.log("Arbitrageur WBTC balance:", arbWbtcAfter / 1e8, "WBTC");
-        console.log("Liquidator WBTC balance:", liquidatorWbtcAfter / 1e8, "WBTC");
-
-        if (bytes32(0) != vaultId) {
-            console.log("Vault owner after:", vaultOwnerAfter);
-
-            bool isEscrowedAfter = vaultSwap.isVaultEscrowed(vaultId);
-            console.log("Is vault still escrowed:", isEscrowedAfter);
-        }
-
-        // Verify arbitrageur acquired vaults
+        // Verification: compare balances against initial funding
         console.log("\n--- Verification Results ---");
 
-        bool vaultAcquired = false;
-        bool wbtcPaid = arbWbtcAfter < arbWbtcBefore;
-        bool liquidatorReceivedWbtc = liquidatorWbtcAfter > liquidatorWbtcBefore;
+        // Arbitrageur spent WBTC to acquire vault (balance decreased from initial)
+        bool arbSpentWbtc = arbWbtcNow < arbInitialWbtc;
+        // Liquidator received WBTC from liquidation via VaultSwap (balance increased from initial)
+        bool liqReceivedWbtc = liquidatorWbtcNow > liqInitialWbtc;
 
-        // Check vault ownership
-        if (bytes32(0) != vaultId) {
-            vaultAcquired = vaultOwnerAfter == E2EConstants.ARBITRAGEUR;
-
-            if (vaultAcquired) {
-                console.log("[PASS] Arbitrageur now owns the vault");
-            } else if (vaultOwnerBefore == E2EConstants.ARBITRAGEUR) {
-                console.log("[PASS] Arbitrageur already owned the vault before this check");
-                vaultAcquired = true; // Count as success
-            } else {
-                console.log("[INFO] Vault not owned by arbitrageur. Owner:", vaultOwnerAfter);
-            }
+        if (vaultRedeemed) {
+            console.log("[PASS] Vault status is Redeemed (atomic acquisition + redemption completed)");
         }
 
-        // Check WBTC payment
-        if (wbtcPaid) {
-            uint256 wbtcSpent = arbWbtcBefore - arbWbtcAfter;
-            console.log("[PASS] Arbitrageur paid:", wbtcSpent / 1e8, "WBTC");
+        if (arbSpentWbtc) {
+            uint256 wbtcSpent = arbInitialWbtc - arbWbtcNow;
+            console.log("[PASS] Arbitrageur spent:", wbtcSpent, "sats WBTC to acquire vault");
         } else {
-            console.log("[INFO] Arbitrageur WBTC balance unchanged");
+            console.log("[INFO] Arbitrageur WBTC balance unchanged from initial funding");
         }
 
-        // Check liquidator received payment
-        if (liquidatorReceivedWbtc) {
-            uint256 wbtcReceived = liquidatorWbtcAfter - liquidatorWbtcBefore;
-            console.log("[PASS] Liquidator received:", wbtcReceived / 1e8, "WBTC from VaultSwap");
+        if (liqReceivedWbtc) {
+            uint256 wbtcReceived = liquidatorWbtcNow - liqInitialWbtc;
+            console.log("[PASS] Liquidator received:", wbtcReceived, "sats WBTC from VaultSwap");
         } else {
-            console.log("[INFO] Liquidator WBTC balance unchanged");
+            console.log("[INFO] Liquidator WBTC balance unchanged from initial funding");
         }
 
-        // Final verdict
-        // Success if:
-        // 1. Vault was acquired by arbitrageur (either now or before), OR
-        // 2. WBTC was paid and liquidator received payment (for cases without vault ID tracking)
-        bool success = vaultAcquired || (wbtcPaid && liquidatorReceivedWbtc);
+        // Final verdict:
+        // With atomic redemption flow, success is indicated by:
+        // 1. Vault is redeemed (status = Redeemed), OR
+        // 2. Vault left escrow AND both balance-side effects are present
+        bool success = vaultRedeemed || (!vaultEscrowed && arbSpentWbtc && liqReceivedWbtc);
 
         if (success) {
             console.log("\n=== E2E Arbitrageur Test PASSED ===\n");
         } else {
             console.log("\n=== E2E Arbitrageur Test FAILED ===\n");
             console.log("Check /tmp/arb-ponder.log and /tmp/arb-bot.log for details");
-            console.log("\nExpected:");
-            console.log("- Arbitrageur to own the vault, OR");
-            console.log("- Arbitrageur to pay WBTC AND liquidator to receive WBTC");
+            console.log("\nExpected (atomic redemption flow):");
+            console.log("- Vault status to be Redeemed, OR");
+            console.log("- Arbitrageur WBTC to decrease AND liquidator WBTC to increase from initial funding");
             revert("Arbitrage did not occur as expected");
         }
     }
 
     /// @dev Read vault ID from temporary file created by LiquidationE2ESetup
     /// @return The vault ID, or bytes32(0) if file doesn't exist
-    function _readVaultIdFromFile() internal returns (bytes32) {
-        string[] memory inputs = new string[](3);
-        inputs[0] = "bash";
-        inputs[1] = "-c";
-        inputs[2] =
-            "[ -f .e2e-vault-id ] && cat .e2e-vault-id | tr -d '\\n' || echo '0x0000000000000000000000000000000000000000000000000000000000000000'";
+    function _readVaultIdFromFile() internal view returns (bytes32) {
+        try vm.readFile(".e2e-vault-id") returns (string memory content) {
+            return vm.parseBytes32(content);
+        } catch {
+            return bytes32(0);
+        }
+    }
 
-        return bytes32(vm.ffi(inputs));
+    /// @dev Read initial WBTC balance from file written by LiquidationE2ESetup.
+    ///      Uses vm.readFile instead of FFI to avoid Foundry's hex-decoding of
+    ///      all-digit output (e.g. "1000000000" gets hex-decoded to 5 raw bytes).
+    function _readInitialWbtcBalance(string memory filename) internal view returns (uint256) {
+        string memory content = vm.readFile(filename);
+        uint256 parsed = vm.parseUint(content);
+        require(parsed > 0, "Missing initial WBTC balances from setup");
+        return parsed;
     }
 }

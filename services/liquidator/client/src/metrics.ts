@@ -56,33 +56,6 @@ export const simulationsFailedTotal = new Counter({
 });
 
 /**
- * Total vaults seized from liquidations
- */
-export const vaultsSeizedTotal = new Counter({
-  name: "liquidator_vaults_seized_total",
-  help: "Total number of vaults seized from liquidations",
-  registers: [registry],
-});
-
-/**
- * Total vaults successfully swapped for WBTC
- */
-export const vaultsSwappedTotal = new Counter({
-  name: "liquidator_vaults_swapped_total",
-  help: "Total number of vaults successfully swapped for WBTC",
-  registers: [registry],
-});
-
-/**
- * Total WBTC received from vault swaps (in satoshis)
- */
-export const wbtcReceivedTotal = new Counter({
-  name: "liquidator_wbtc_received_total",
-  help: "Total WBTC received from vault swaps (in satoshis)",
-  registers: [registry],
-});
-
-/**
  * Total errors by type
  */
 export const errorsTotal = new Counter({
@@ -143,18 +116,6 @@ export function recordLiquidationFailed(): void {
 
 export function recordSimulationFailed(): void {
   simulationsFailedTotal.inc();
-}
-
-export function recordVaultsSeized(count: number): void {
-  vaultsSeizedTotal.inc(count);
-}
-
-export function recordVaultSwapped(): void {
-  vaultsSwappedTotal.inc();
-}
-
-export function recordWbtcReceived(satoshis: bigint): void {
-  wbtcReceivedTotal.inc(Number(satoshis));
 }
 
 export function recordError(type: string): void {

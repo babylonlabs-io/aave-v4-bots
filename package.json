@@ -14,8 +14,6 @@
     "liquidator:indexer": "pnpm --filter @services/liquidator-ponder dev",
     "liquidator:indexer:start": "pnpm --filter @services/liquidator-ponder start",
     "liquidator:run": "tsx services/liquidator/client/src/index.ts",
-    "liquidator:list-owned": "tsx services/liquidator/client/src/index.ts list-owned",
-    "liquidator:swap": "tsx services/liquidator/client/src/index.ts swap",
 
     "arbitrageur:db:up": "docker compose up -d arbitrageur-postgres",
     "arbitrageur:db:down": "docker compose down -v arbitrageur-postgres",
@@ -23,9 +21,6 @@
     "arbitrageur:indexer": "pnpm --filter @services/arbitrageur-ponder dev",
     "arbitrageur:indexer:start": "pnpm --filter @services/arbitrageur-ponder start",
     "arbitrageur:run": "tsx services/arbitrageur/client/src/index.ts",
-    "arbitrageur:verify": "tsx services/arbitrageur/client/src/index.ts verify",
-    "arbitrageur:redeem": "tsx services/arbitrageur/client/src/index.ts redeem",
-    "arbitrageur:list-owned": "tsx services/arbitrageur/client/src/index.ts list-owned",
 
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",

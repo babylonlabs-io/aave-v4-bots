@@ -40,7 +40,6 @@ const envSchema = z.object({
   ARBITRAGEUR_PRIVATE_KEY: privateKeySchema,
   PONDER_URL: urlSchema,
   CLIENT_RPC_URL: urlSchema,
-  CONTROLLER_ADDRESS: addressSchema,
   VAULT_SWAP_ADDRESS: addressSchema,
   WBTC_ADDRESS: addressSchema,
 
@@ -48,7 +47,6 @@ const envSchema = z.object({
   POLLING_INTERVAL_MS: positiveIntSchema.optional().default("30000"),
   VAULT_PROCESSING_DELAY_MS: nonNegativeIntSchema.optional().default("5000"),
   MAX_SLIPPAGE_BPS: nonNegativeIntSchema.optional().default("100"),
-  AUTO_REDEEM: z.string().optional().default("true"),
   METRICS_PORT: positiveIntSchema.optional().default("9091"),
 
   // Retry configuration (optional)
@@ -72,7 +70,6 @@ export interface Config {
   rpcUrl: string;
 
   // Contract addresses
-  controllerAddress: Address;
   vaultSwapAddress: Address;
   wbtcAddress: Address;
 
@@ -82,9 +79,6 @@ export interface Config {
 
   // Trading
   maxSlippageBps: number;
-
-  // Behavior
-  autoRedeem: boolean;
 
   // Monitoring
   metricsPort: number;
@@ -125,13 +119,11 @@ export function loadConfig(): Config {
     arbitrageurPrivateKey: env.ARBITRAGEUR_PRIVATE_KEY as Hex,
     ponderUrl: env.PONDER_URL,
     rpcUrl: env.CLIENT_RPC_URL,
-    controllerAddress: env.CONTROLLER_ADDRESS as Address,
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,
     wbtcAddress: env.WBTC_ADDRESS as Address,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     vaultProcessingDelayMs: Number.parseInt(env.VAULT_PROCESSING_DELAY_MS, 10),
     maxSlippageBps: Number.parseInt(env.MAX_SLIPPAGE_BPS, 10),
-    autoRedeem: env.AUTO_REDEEM === "true",
     metricsPort: Number.parseInt(env.METRICS_PORT, 10),
     retryMaxAttempts: Number.parseInt(env.RETRY_MAX_ATTEMPTS, 10),
     retryInitialDelayMs: Number.parseInt(env.RETRY_INITIAL_DELAY_MS, 10),

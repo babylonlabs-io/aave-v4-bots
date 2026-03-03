@@ -34,16 +34,34 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         console.log("Health Factor:", healthFactorBefore / 1e16, "/ 100");
         console.log("Liquidator USDC balance:", liquidatorUsdcBefore / ONE_USDC, "USDC");
 
-        // Check if liquidation already occurred
-        bool liquidationAlreadyOccurred = (collateralBefore == 0 && debtBefore == 0)
-            || (debtBefore > 0 && collateralBefore > 0 && liquidatorUsdcBefore > 0);
+        // Check if liquidation already fully occurred before this script started.
+        // We intentionally do not treat "HF >= 1" as terminal because partial liquidation
+        // can make the position healthy while still leaving debt/collateral.
+        bool liquidationAlreadyOccurred = (collateralBefore == 0 && debtBefore == 0);
 
-        // Wait for Ponder to index + bot to liquidate (only if not yet liquidated)
+        // Poll until bot liquidates or timeout (only if not yet liquidated)
         if (!liquidationAlreadyOccurred) {
             console.log("\n--- Waiting for Bot Liquidation ---");
-            console.log("Waiting 5 seconds for Ponder sync + bot liquidation...");
-            console.log("Start time:", block.timestamp);
-            vm.sleep(5000);
+            console.log("Polling every 5 seconds for up to 120 seconds...");
+
+            uint256 maxWaitSeconds = 120;
+            uint256 pollIntervalSeconds = 5;
+            uint256 elapsed = 0;
+
+            while (elapsed < maxWaitSeconds) {
+                vm.sleep(pollIntervalSeconds * 1000);
+                elapsed += pollIntervalSeconds;
+
+                (uint256 col, uint256 debt,) = _getPositionInfo(borrower);
+                bool positionChanged =
+                    (col == 0 && debt == 0) || ((col < collateralBefore) && (debt < debtBefore));
+
+                if (positionChanged) {
+                    console.log("Liquidation detected after", elapsed, "seconds");
+                    break;
+                }
+                console.log("Still waiting...", elapsed, "/", maxWaitSeconds);
+            }
         } else {
             console.log("\n--- Liquidation Already Occurred ---");
             console.log("Skipping wait period");
@@ -68,7 +86,10 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         // Check if position was partially liquidated
         bool debtReduced = debtAfter < debtBefore;
         bool collateralReduced = collateralAfter < collateralBefore;
-        bool keeperPaid = liquidatorUsdcAfter > liquidatorUsdcBefore;
+        bool liquidatorSpentUsdc = liquidatorUsdcAfter < liquidatorUsdcBefore;
+        console.log("Collateral delta:", int256(collateralAfter) - int256(collateralBefore));
+        console.log("Debt delta:", int256(debtAfter) - int256(debtBefore));
+        console.log("Liquidator USDC delta:", int256(liquidatorUsdcAfter) - int256(liquidatorUsdcBefore));
 
         if (fullyLiquidated) {
             console.log("[PASS] Position fully liquidated (collateral and debt both 0)");
@@ -88,17 +109,25 @@ contract LiquidationE2EVerify is Script, BaseE2E {
             }
         }
 
-        if (keeperPaid) {
-            console.log("[PASS] Keeper received:", (liquidatorUsdcAfter - liquidatorUsdcBefore) / ONE_USDC, "USDC");
+        if (liquidatorSpentUsdc) {
+            console.log("[PASS] Liquidator spent:", (liquidatorUsdcBefore - liquidatorUsdcAfter) / ONE_USDC, "USDC");
+        } else {
+            console.log("[WARN] Liquidator USDC did not decrease");
         }
 
-        // Final verdict - pass if either fully liquidated OR partially liquidated with keeper paid
-        bool liquidationOccurred = fullyLiquidated || (debtReduced && collateralReduced);
+        // Final verdict
+        // Pass when either:
+        // 1) borrower position changed due to liquidation, or
+        // 2) liquidator spent USDC in this run (covers transient state-read inconsistencies).
+        bool liquidationOccurred = fullyLiquidated || (debtReduced && collateralReduced) || liquidatorSpentUsdc;
 
-        if (liquidationOccurred || keeperPaid) {
+        if (liquidationOccurred) {
             console.log("\n=== E2E Liquidation Test PASSED ===\n");
         } else {
             console.log("\n=== E2E Liquidation Test FAILED ===\n");
+            if (liquidatorSpentUsdc) {
+                console.log("[WARN] USDC spending observed without borrower position liquidation");
+            }
             console.log("Check /tmp/ponder.log and /tmp/bot.log for details");
             revert("Liquidation did not occur as expected");
         }

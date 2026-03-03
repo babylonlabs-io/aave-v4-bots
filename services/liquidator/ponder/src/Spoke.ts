@@ -1,5 +1,6 @@
 import { ponder } from "ponder:registry";
 import { position } from "ponder:schema";
+import { applyLiquidation, applySupply, applyWithdraw } from "./positionAccounting";
 
 /**
  * Supply event handler
@@ -20,7 +21,7 @@ ponder.on("Spoke:Supply", async ({ event, context }) => {
       updatedAt: timestamp,
     })
     .onConflictDoUpdate((row) => ({
-      suppliedShares: row.suppliedShares + suppliedShares,
+      suppliedShares: applySupply(row.suppliedShares, suppliedShares),
       updatedAt: timestamp,
     }));
 });
@@ -38,9 +39,9 @@ ponder.on("Spoke:Withdraw", async ({ event, context }) => {
   const existingRecord = await context.db.find(position, { proxyAddress });
   if (!existingRecord) return;
 
-  const newShares = existingRecord.suppliedShares - withdrawnShares;
+  const newShares = applyWithdraw(existingRecord.suppliedShares, withdrawnShares);
 
-  if (newShares <= 0n) {
+  if (newShares === null) {
     await context.db.delete(position, { proxyAddress });
   } else {
     await context.db.update(position, { proxyAddress }).set({
@@ -52,14 +53,26 @@ ponder.on("Spoke:Withdraw", async ({ event, context }) => {
 
 /**
  * LiquidationCall event handler
- * - Full liquidation: delete position
+ * - Partial liquidation: decrement suppliedShares by collateralSharesToLiquidate
+ * - Full liquidation: delete when remaining shares <= 0
  * - Skip if position doesn't exist (e.g. START_BLOCK is after the Supply event)
  */
 ponder.on("Spoke:LiquidationCall", async ({ event, context }) => {
   const proxyAddress = event.args.user;
+  const collateralSharesToLiquidate = event.args.collateralSharesToLiquidate;
+  const timestamp = event.block.timestamp;
 
   const existingRecord = await context.db.find(position, { proxyAddress });
   if (!existingRecord) return;
 
-  await context.db.delete(position, { proxyAddress });
+  const newShares = applyLiquidation(existingRecord.suppliedShares, collateralSharesToLiquidate);
+
+  if (newShares === null) {
+    await context.db.delete(position, { proxyAddress });
+  } else {
+    await context.db.update(position, { proxyAddress }).set({
+      suppliedShares: newShares,
+      updatedAt: timestamp,
+    });
+  }
 });
