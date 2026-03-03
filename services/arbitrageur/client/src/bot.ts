@@ -107,6 +107,9 @@ export class ArbitrageurBot {
       }
 
       const data: PonderResponse = await response.json();
+      if (!Array.isArray(data.vaults)) {
+        throw new Error("Invalid Ponder response: vaults must be an array");
+      }
       return data.vaults;
     } catch (error) {
       console.error(`${this.logTag}Failed to fetch escrowed vaults:`, error);
@@ -129,6 +132,23 @@ export class ArbitrageurBot {
     console.log(`   Current Debt: ${formatUnits(currentDebtBigInt, 8)} WBTC`);
 
     try {
+      const [isProfitable, accruedInterest, arbitrageurDiscount] =
+        await this.publicClient.readContract({
+          address: this.vaultSwapAddress,
+          abi: vaultSwapAbi,
+          functionName: "isVaultProfitableForArbitrageur",
+          args: [vaultId as Hex],
+        });
+
+      if (!isProfitable) {
+        console.warn(`${this.logTag}Vault ${vaultId} is currently unprofitable, skipping`);
+        console.warn(
+          `   Interest: ${formatUnits(accruedInterest, 8)} WBTC | Discount: ${formatUnits(arbitrageurDiscount, 8)} WBTC`
+        );
+        recordError("vault_unprofitable");
+        return false;
+      }
+
       // Ensure WBTC approval for VaultSwap contract
       await this.ensureApproval(currentDebtBigInt);
 

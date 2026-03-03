@@ -108,13 +108,16 @@ contract LiquidationE2EVerify is Script, BaseE2E {
             console.log("[PASS] Keeper received:", (liquidatorUsdcAfter - liquidatorUsdcBefore) / ONE_USDC, "USDC");
         }
 
-        // Final verdict - pass if either fully liquidated OR partially liquidated with keeper paid
+        // Final verdict - pass only if the target position was actually liquidated
         bool liquidationOccurred = fullyLiquidated || (debtReduced && collateralReduced);
 
-        if (liquidationOccurred || keeperPaid) {
+        if (liquidationOccurred) {
             console.log("\n=== E2E Liquidation Test PASSED ===\n");
         } else {
             console.log("\n=== E2E Liquidation Test FAILED ===\n");
+            if (keeperPaid) {
+                console.log("[WARN] Keeper payment observed without borrower position liquidation");
+            }
             console.log("Check /tmp/ponder.log and /tmp/bot.log for details");
             revert("Liquidation did not occur as expected");
         }

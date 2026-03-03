@@ -27,7 +27,15 @@ function createMockClients() {
       writeContract: vi.fn().mockResolvedValue("0xtxhash"),
     },
     publicClient: {
-      readContract: vi.fn().mockResolvedValue(BigInt("1000000000000")), // High allowance
+      readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
+        if (functionName === "isVaultProfitableForArbitrageur") {
+          return Promise.resolve([true, 0n, 1n, 0n]);
+        }
+        if (functionName === "allowance") {
+          return Promise.resolve(BigInt("1000000000000")); // High allowance
+        }
+        return Promise.resolve(0n);
+      }),
       estimateContractGas: vi.fn().mockResolvedValue(100000n),
       waitForTransactionReceipt: vi
         .fn()
@@ -90,6 +98,28 @@ describe("ArbitrageurBot", () => {
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
 
+    it("skips vault when not profitable for arbitrageur", async () => {
+      const clients = createMockClients();
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName }: { functionName: string }) => {
+          if (functionName === "isVaultProfitableForArbitrageur") {
+            return Promise.resolve([false, 1000n, 10n, 100000n]);
+          }
+          if (functionName === "allowance") {
+            return Promise.resolve(BigInt("1000000000000"));
+          }
+          return Promise.resolve(0n);
+        }
+      );
+
+      const bot = createBot(clients);
+      const result = await bot.acquireVault(mockVault);
+
+      expect(result).toBe(false);
+      expect(clients.publicClient.estimateContractGas).not.toHaveBeenCalled();
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+    });
+
     it("handles contract revert after tx sent", async () => {
       const clients = createMockClients();
       clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
@@ -118,7 +148,17 @@ describe("ArbitrageurBot", () => {
 
     it("approves WBTC when allowance insufficient", async () => {
       const clients = createMockClients();
-      clients.publicClient.readContract.mockResolvedValue(0n); // No allowance
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName }: { functionName: string }) => {
+          if (functionName === "isVaultProfitableForArbitrageur") {
+            return Promise.resolve([true, 0n, 1n, 0n]);
+          }
+          if (functionName === "allowance") {
+            return Promise.resolve(0n); // No allowance
+          }
+          return Promise.resolve(0n);
+        }
+      );
       const bot = createBot(clients);
 
       await bot.acquireVault(mockVault);
@@ -177,8 +217,9 @@ describe("ArbitrageurBot", () => {
         json: () => Promise.resolve({ invalid: "data" }),
       });
 
-      // Should not throw, but won't process anything
+      // Should not throw and should not attempt any swaps
       await expect(bot.run()).resolves.not.toThrow();
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
   });
 
