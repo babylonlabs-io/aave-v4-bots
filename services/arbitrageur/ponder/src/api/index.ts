@@ -50,14 +50,22 @@ app.get("/escrowed-vaults", async (c) => {
   const createdAtMap = new Map(vaults.map((v) => [v.vaultId, v.createdAt]));
   const toApiVault = (info: {
     vaultId: `0x${string}`;
-    btcAmount: bigint;
-    hubDebt: bigint;
-    protocolFee: bigint;
+    amountVault: bigint;
+    amountDebt: bigint;
+    amountFee: bigint;
+
+    amountWbtcToAcquire: bigint;
+    isProfitable: boolean;
   }) => ({
     vaultId: info.vaultId,
-    btcAmount: info.btcAmount.toString(),
-    currentDebt: (info.hubDebt + info.protocolFee).toString(),
-    createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
+    // btcAmount: info.btcAmount.toString(),
+    // currentDebt: (info.hubDebt + info.protocolFee).toString(),
+    // createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
+    amountVault: info.amountVault.toString(),
+    amountDebt: info.amountDebt.toString(),
+    amountFee: info.amountFee.toString(),
+    amountWbtcToAcquire: info.amountWbtcToAcquire.toString(),
+    isProfitable: info.isProfitable,
   });
 
   try {
@@ -65,7 +73,7 @@ app.get("/escrowed-vaults", async (c) => {
     const vaultsInfo = await publicClient.readContract({
       address: vaultSwapAddress,
       abi: vaultSwapAbi,
-      functionName: "getEscrowedVaultsInfo",
+      functionName: "previewEscrowedVaults",
       args: [vaultIds],
     });
 
@@ -86,7 +94,7 @@ app.get("/escrowed-vaults", async (c) => {
         publicClient.readContract({
           address: vaultSwapAddress,
           abi: vaultSwapAbi,
-          functionName: "getEscrowedVaultsInfo",
+          functionName: "previewEscrowedVaults",
           args: [[vaultId]],
         })
       )

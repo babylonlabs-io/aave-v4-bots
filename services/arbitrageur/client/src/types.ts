@@ -5,9 +5,12 @@ import type { Hex } from "viem";
  */
 export interface EscrowedVault {
   vaultId: Hex;
-  btcAmount: string;
-  currentDebt: string;
-  createdAt: string;
+  amountVault: string;
+  amountDebt: string;
+  amountFee: string;
+  
+  amountWbtcToAcquire: string;
+  isProfitable: boolean;
 }
 
 /**

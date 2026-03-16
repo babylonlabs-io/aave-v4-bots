@@ -47,3 +47,5 @@ CLAUDE.md
 
 tmp/
 contracts/deployments/local.json
+.e2e*
+simulate-e2e-workflow.sh
