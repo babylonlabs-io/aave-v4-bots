@@ -4,7 +4,10 @@ export const lensAbi = [
   {
     type: "function",
     name: "estimateLiquidation",
-    inputs: [{ name: "borrowerProxy", type: "address" }],
+    inputs: [
+      { name: "borrowerProxy", type: "address" },
+      { name: "isDirectRedemption", type: "bool" },
+    ],
     outputs: [
       {
         name: "inputs",
@@ -24,6 +27,7 @@ export const lensAbi = [
     inputs: [
       { name: "borrowerProxy", type: "address" },
       { name: "priorityLoanTokenIds", type: "uint256[]" },
+      { name: "isDirectRedemption", type: "bool" },
     ],
     outputs: [
       {

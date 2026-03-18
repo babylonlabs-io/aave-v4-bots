@@ -155,7 +155,7 @@ export class LiquidationBot {
             address: this.lensAddress,
             abi: lensAbi,
             functionName: "estimateLiquidation",
-            args: [p.proxyAddress],
+            args: [p.proxyAddress, false],
           })
         )
       );
