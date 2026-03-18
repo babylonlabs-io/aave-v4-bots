@@ -88,7 +88,9 @@ async function main() {
     await bot.ensureApproval();
     await bot.logBalances();
 
-    console.log(`Redemption mode: ${config.isDirectRedemption ? "direct BTC" : "WBTC via VaultSwap"}`);
+    console.log(
+      `Redemption mode: ${config.isDirectRedemption ? "direct BTC" : "WBTC via VaultSwap"}`
+    );
     console.log(`Polling every ${config.pollingIntervalMs / 1000}s...`);
     console.log("---");
 
