@@ -64,6 +64,8 @@ export function loadConfig(): Config {
     throw new Error("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
   }
 
+  const isDirectRedemption = process.env.IS_DIRECT_REDEMPTION === "true";
+
   const txReceiptTimeoutMs = Number.parseInt(process.env.TX_RECEIPT_TIMEOUT_MS || "120000", 10);
   if (!Number.isFinite(txReceiptTimeoutMs) || txReceiptTimeoutMs <= 0) {
     throw new Error("Invalid TX_RECEIPT_TIMEOUT_MS: must be a positive integer");
@@ -89,6 +91,7 @@ export function loadConfig(): Config {
     wbtcAddress,
     debtTokenAddresses,
     btcRedeemKey: btcRedeemKey as Hex,
+    isDirectRedemption,
     metricsPort,
     txReceiptTimeoutMs,
   };

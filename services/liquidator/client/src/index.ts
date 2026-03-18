@@ -53,6 +53,7 @@ async function createBot(config: Config) {
     wbtcAddress: config.wbtcAddress,
     debtTokenAddresses: config.debtTokenAddresses,
     btcRedeemKey: config.btcRedeemKey,
+    isDirectRedemption: config.isDirectRedemption,
     ponderUrl: config.ponderUrl,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
   });
@@ -87,9 +88,7 @@ async function main() {
     await bot.ensureApproval();
     await bot.logBalances();
 
-    const isDirectRedemption =
-      config.btcRedeemKey !== "0x0000000000000000000000000000000000000000000000000000000000000000";
-    console.log(`Redemption mode: ${isDirectRedemption ? "direct BTC" : "WBTC via VaultSwap"}`);
+    console.log(`Redemption mode: ${config.isDirectRedemption ? "direct BTC" : "WBTC via VaultSwap"}`);
     console.log(`Polling every ${config.pollingIntervalMs / 1000}s...`);
     console.log("---");
 

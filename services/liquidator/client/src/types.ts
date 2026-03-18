@@ -37,6 +37,9 @@ export interface Config {
   // BTC redeem key (default: bytes32(0) for WBTC payout via VaultSwap)
   btcRedeemKey: Hex;
 
+  // Whether to use direct BTC redemption (default: false = WBTC via VaultSwap)
+  isDirectRedemption: boolean;
+
   // Monitoring
   metricsPort: number;
 
