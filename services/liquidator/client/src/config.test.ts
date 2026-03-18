@@ -107,6 +107,7 @@ describe("config validation", () => {
         "0x0000000000000000000000000000000000000000000000000000000000000000"
       );
       expect(config.metricsPort).toBe(9090);
+      expect(config.isDirectRedemption).toBe(false);
       expect(config.debtTokenAddresses).toBeUndefined();
       expect(config.txReceiptTimeoutMs).toBe(120000);
     });

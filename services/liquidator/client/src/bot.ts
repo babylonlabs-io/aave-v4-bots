@@ -46,6 +46,7 @@ export interface LiquidationBotConfig {
   debtTokenAddresses?: Address[];
   wbtcAddress: Address;
   btcRedeemKey: Hex;
+  isDirectRedemption: boolean;
   ponderUrl: string;
   txReceiptTimeoutMs: number;
 }
@@ -59,6 +60,7 @@ export class LiquidationBot {
   private debtTokenAddresses: Address[];
   private wbtcAddress: Address;
   private btcRedeemKey: Hex;
+  private isDirectRedemption: boolean;
   private ponderUrl: string;
   private txReceiptTimeoutMs: number;
 
@@ -71,6 +73,7 @@ export class LiquidationBot {
     this.debtTokenAddresses = config.debtTokenAddresses ?? [];
     this.wbtcAddress = config.wbtcAddress;
     this.btcRedeemKey = config.btcRedeemKey;
+    this.isDirectRedemption = config.isDirectRedemption;
     this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
   }
@@ -155,7 +158,7 @@ export class LiquidationBot {
             address: this.lensAddress,
             abi: lensAbi,
             functionName: "estimateLiquidation",
-            args: [p.proxyAddress],
+            args: [p.proxyAddress, this.isDirectRedemption],
           })
         )
       );

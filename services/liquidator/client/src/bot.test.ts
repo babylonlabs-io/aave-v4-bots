@@ -62,6 +62,7 @@ function createBot(
     lensAddress: "0xlens" as `0x${string}`,
     wbtcAddress: "0xwbtc" as `0x${string}`,
     btcRedeemKey: ZERO_BYTES32,
+    isDirectRedemption: false,
     ponderUrl: "http://localhost:42069",
     txReceiptTimeoutMs: 60000,
     ...overrides,
@@ -259,7 +260,7 @@ describe("LiquidationBot", () => {
       clients.publicClient.getTransactionCount.mockResolvedValue(7);
       const nonZeroRedeemKey =
         "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef" as const;
-      const bot = createBot(clients, { btcRedeemKey: nonZeroRedeemKey });
+      const bot = createBot(clients, { btcRedeemKey: nonZeroRedeemKey, isDirectRedemption: true });
 
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
