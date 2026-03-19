@@ -122,36 +122,28 @@ export class ArbitrageurBot {
    * Acquire a vault by swapping WBTC for it (redemption is atomic)
    */
   async acquireVault(vault: EscrowedVault): Promise<boolean> {
-    const { vaultId, btcAmount, currentDebt } = vault;
-    const currentDebtBigInt = BigInt(currentDebt);
-    const btcAmountBigInt = BigInt(btcAmount);
+    const { vaultId, amountWbtcToAcquire, amountDebt, isProfitable } = vault;
+    // const currentDebtBigInt = BigInt(currentDebt);
+    // const btcAmountBigInt = BigInt(btcAmount);
+    const currentDebtBigInt = BigInt(amountDebt);
+    const currentAmountWbtcToAcquire = BigInt(amountWbtcToAcquire);
+    
 
     console.log(`${this.logTag}Attempting to acquire vault:`);
     console.log(`   Vault ID: ${vaultId}`);
-    console.log(`   BTC Amount: ${formatUnits(btcAmountBigInt, 8)} WBTC`);
+    console.log(`   BTC Amount To Acquire: ${formatUnits(currentAmountWbtcToAcquire, 8)} WBTC`);
     console.log(`   Current Debt: ${formatUnits(currentDebtBigInt, 8)} WBTC`);
 
     try {
-      const [isProfitable, accruedInterest, arbitrageurDiscount, hubDebt] =
-        await this.publicClient.readContract({
-          address: this.vaultSwapAddress,
-          abi: vaultSwapAbi,
-          functionName: "isVaultProfitableForArbitrageur",
-          args: [vaultId as Hex],
-        });
-
       if (!isProfitable) {
         console.warn(`${this.logTag}Vault ${vaultId} is currently unprofitable, skipping`);
-        console.warn(
-          `   Hub debt: ${formatUnits(hubDebt, 8)} WBTC | Interest: ${formatUnits(accruedInterest, 8)} WBTC | Discount: ${formatUnits(arbitrageurDiscount, 8)} WBTC`
-        );
         recordError("vault_skipped");
         return false;
       }
 
       // Calculate maxWbtcIn with slippage buffer
-      const slippageBuffer = (currentDebtBigInt * BigInt(this.maxSlippageBps)) / 10000n;
-      const maxWbtcIn = currentDebtBigInt + slippageBuffer;
+      const slippageBuffer = (currentAmountWbtcToAcquire * BigInt(this.maxSlippageBps)) / 10000n;
+      const maxWbtcIn = currentAmountWbtcToAcquire + slippageBuffer;
 
       // Ensure WBTC approval covers the slippage-adjusted max spend amount
       await this.ensureApproval(maxWbtcIn);
@@ -198,7 +190,7 @@ export class ArbitrageurBot {
 
       if (receipt.status === "success") {
         console.log(`${this.logTag}Vault acquired and redeemed in block ${receipt.blockNumber}`);
-        recordVaultAcquired(currentDebtBigInt);
+        recordVaultAcquired(currentAmountWbtcToAcquire);
         return true;
       }
       console.error(`${this.logTag}Swap transaction reverted`);

@@ -37,6 +37,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         usdc.mint(E2EConstants.LIQUIDATOR, 10_000 * ONE_USDC);
         wbtc.mint(E2EConstants.LIQUIDATOR, 1 * uint256(ONE_BTC));
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
         console.log("Liquidator funded with 10,000 USDC and 1 WBTC");
 
         // Fund arbitrageur with ETH and WBTC
@@ -45,6 +46,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         payable(E2EConstants.ARBITRAGEUR).transfer(10 ether);
         wbtc.mint(E2EConstants.ARBITRAGEUR, 10 * uint256(ONE_BTC));
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
         console.log("Arbitrageur funded with 10 ETH and 10 WBTC");
         _saveInitialWbtcBalances();
 
@@ -54,6 +56,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         AaveIntegrationLens lens =
             new AaveIntegrationLens(address(vaultManager), address(aaveController), address(aaveSpoke), vaultBtcId);
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
         console.log("Lens deployed at:", address(lens));
 
         // Get current block number so Ponder can skip deployment blocks
@@ -90,6 +93,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         vm.startBroadcast(adminPrivateKey);
         payable(borrower).transfer(10 ether);
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
         console.log("Borrower address:", borrower);
 
         // Pegin BTC
@@ -127,6 +131,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         vm.startBroadcast(adminPrivateKey);
         btcPriceFeed.simulatePriceDrop(40); // 40% drop
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
         console.log("BTC price dropped by 40%");
 
         // Verify position is now unhealthy
@@ -161,18 +166,30 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         vm.deal(depositor, depositor.balance + pegInFee);
 
         vm.startBroadcast(depositorPrivateKey);
+        bytes memory depositorPayout = "1"; // No custom payout script, use default
+        // bytes32 to bytes
+        // depositorBtcPubKey = bytes
+
+
+
+
         vaultId = vaultManager.submitPeginRequest{value: pegInFee}(
-            depositor, depositorBtcPubKey, btcPopSignature, unsignedPeginTx, vp, _E2E_LAMPORT_PK_HASH
+            depositor, depositorBtcPubKey, btcPopSignature, unsignedPeginTx, vp, depositorPayout, _E2E_LAMPORT_PK_HASH
         );
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
 
         _collectPeginACKs(vaultId);
         string memory txid =
             _signAndBroadcastPeginTx(unsignedPeginTx, depositorBtcPubKey, prevoutTxid, prevoutVout, utxoAmount);
 
         vm.startBroadcast(vpPrivKey);
-        _submitInclusionProofAndActivateVault(vaultId, txid);
+
+        bytes32[] memory vaultIds = new bytes32[](1);
+        vaultIds[0] = vaultId;
+        _submitBatchedInclusionProofs(vaultIds);
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
 
         return vaultId;
     }
@@ -183,6 +200,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         vm.startBroadcast(borrowerPrivateKey);
         aaveController.borrowFromCorePosition(usdcId, amountUsdc, receiver);
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
 
         uint256 balanceAfter = usdc.balanceOf(receiver);
         require(balanceAfter - balanceBefore == amountUsdc, "received amount mismatched");
@@ -205,6 +223,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         hub.add(wbtcId, wbtcLiquidity);
 
         vm.stopBroadcast();
+        _confirmTransactions(); // Prevent reorg
     }
 
     function _createEnvFile(address lensAddress, string memory startBlock) internal {
@@ -399,5 +418,14 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         string memory blockNum = vm.readLine(".e2e-block-number");
         console.log("Current block number for START_BLOCK:", blockNum);
         return blockNum;
+    }
+
+    /// @dev Confirm transactions and prevent reorgs by advancing blocks
+    /// @notice This function advances Anvil blocks to ensure transaction finality
+    function _confirmTransactions() internal {
+        // Advance 2 blocks to ensure transaction finality and prevent reorgs
+        vm.roll(block.number + 2);
+        // Small delay to allow Anvil to process the block advancement
+        vm.sleep(100);
     }
 }
