@@ -14,15 +14,13 @@ permissions:
 jobs:
   # Liquidator Service
   docker_liquidator_indexer:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@d2299e834fcbaca4bf2db043a2939798043d5951 # v0.16.1
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@0adff9d36a387ebfc921621f2e6b357230f8c08e # v0.18.1
     secrets: inherit
     with:
       publish: true
       dockerfile: ./docker/liquidator-ponder.Dockerfile
       repoName: liquidation-aave-indexer
       push_to_dockerhub: false
-      hadolint_nofail: true
-      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -30,15 +28,13 @@ jobs:
       packages: read
 
   docker_liquidator_client:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@d2299e834fcbaca4bf2db043a2939798043d5951 # v0.16.1
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@0adff9d36a387ebfc921621f2e6b357230f8c08e # v0.18.1
     secrets: inherit
     with:
       publish: true
       dockerfile: ./docker/liquidator-client.Dockerfile
       repoName: liquidation-aave-client
       push_to_dockerhub: false
-      hadolint_nofail: true
-      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -47,15 +43,13 @@ jobs:
 
   # Arbitrageur Service
   docker_arbitrageur_indexer:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@d2299e834fcbaca4bf2db043a2939798043d5951 # v0.16.1
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@0adff9d36a387ebfc921621f2e6b357230f8c08e # v0.18.1
     secrets: inherit
     with:
       publish: true
       dockerfile: ./docker/arbitrageur-ponder.Dockerfile
       repoName: arbitrageur-aave-indexer
       push_to_dockerhub: false
-      hadolint_nofail: true
-      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
@@ -63,15 +57,13 @@ jobs:
       packages: read
 
   docker_arbitrageur_client:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@d2299e834fcbaca4bf2db043a2939798043d5951 # v0.16.1
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@0adff9d36a387ebfc921621f2e6b357230f8c08e # v0.18.1
     secrets: inherit
     with:
       publish: true
       dockerfile: ./docker/arbitrageur-client.Dockerfile
       repoName: arbitrageur-aave-client
       push_to_dockerhub: false
-      hadolint_nofail: true
-      trivy_nofail: true
     permissions:
       contents: read
       id-token: write
