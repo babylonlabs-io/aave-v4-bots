@@ -58,7 +58,7 @@ function createBot(
     logTag: "[TEST] ",
     walletClient: clients.walletClient as unknown as LiquidationBotConfig["walletClient"],
     publicClient: clients.publicClient as unknown as LiquidationBotConfig["publicClient"],
-    controllerAddress: "0xcontroller" as `0x${string}`,
+    adapterAddress: "0xadapter" as `0x${string}`,
     lensAddress: "0xlens" as `0x${string}`,
     wbtcAddress: "0xwbtc" as `0x${string}`,
     btcRedeemKey: ZERO_BYTES32,

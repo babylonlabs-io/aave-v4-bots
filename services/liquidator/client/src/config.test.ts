@@ -16,7 +16,7 @@ describe("config validation", () => {
     LIQUIDATOR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42069",
     CLIENT_RPC_URL: "http://localhost:8545",
-    CONTROLLER_ADDRESS: "0x1234567890123456789012345678901234567890",
+    ADAPTER_ADDRESS: "0x1234567890123456789012345678901234567890",
     LENS_ADDRESS: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
     WBTC_ADDRESS: "0x0000000000000000000000000000000000000001",
   };
@@ -51,14 +51,14 @@ describe("config validation", () => {
       expect(() => loadConfig()).toThrow("Missing required environment variable: CLIENT_RPC_URL");
     });
 
-    it("should throw when CONTROLLER_ADDRESS is missing", async () => {
+    it("should throw when ADAPTER_ADDRESS is missing", async () => {
       process.env = { ...validEnv };
-      process.env.CONTROLLER_ADDRESS = undefined;
+      process.env.ADAPTER_ADDRESS = undefined;
 
       const { loadConfig } = await import("./config");
 
       expect(() => loadConfig()).toThrow(
-        "Missing required environment variable: CONTROLLER_ADDRESS"
+        "Missing required environment variable: ADAPTER_ADDRESS"
       );
     });
 
@@ -91,7 +91,7 @@ describe("config validation", () => {
       expect(config.liquidatorPrivateKey).toBe(validEnv.LIQUIDATOR_PRIVATE_KEY);
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
       expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
-      expect(config.controllerAddress).toBe(validEnv.CONTROLLER_ADDRESS);
+      expect(config.adapterAddress).toBe(validEnv.ADAPTER_ADDRESS);
       expect(config.lensAddress).toBe(validEnv.LENS_ADDRESS);
       expect(config.wbtcAddress).toBe(validEnv.WBTC_ADDRESS);
     });
@@ -176,11 +176,11 @@ describe("config validation", () => {
       expect(() => loadConfig()).toThrow("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
     });
 
-    it("should throw for invalid CONTROLLER_ADDRESS", async () => {
-      process.env = { ...validEnv, CONTROLLER_ADDRESS: "not-an-address" };
+    it("should throw for invalid ADAPTER_ADDRESS", async () => {
+      process.env = { ...validEnv, ADAPTER_ADDRESS: "not-an-address" };
       const { loadConfig } = await import("./config");
       expect(() => loadConfig()).toThrow(
-        "Invalid CONTROLLER_ADDRESS: must be a 0x-prefixed 20-byte hex address"
+        "Invalid ADAPTER_ADDRESS: must be a 0x-prefixed 20-byte hex address"
       );
     });
 

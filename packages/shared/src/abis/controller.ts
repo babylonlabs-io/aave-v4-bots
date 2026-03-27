@@ -1,6 +1,6 @@
-// AaveIntegrationController ABI - methods used by liquidator and arbitrageur bots
+// AaveIntegrationAdapter ABI - methods used by liquidator and arbitrageur bots
 
-export const controllerAbi = [
+export const adapterAbi = [
   // Liquidator
   {
     type: "function",
