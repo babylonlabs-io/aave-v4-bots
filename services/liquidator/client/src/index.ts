@@ -48,7 +48,7 @@ async function createBot(config: Config) {
     logTag: "[Bot] ",
     walletClient,
     publicClient,
-    controllerAddress: config.controllerAddress,
+    adapterAddress: config.adapterAddress,
     lensAddress: config.lensAddress,
     wbtcAddress: config.wbtcAddress,
     debtTokenAddresses: config.debtTokenAddresses,

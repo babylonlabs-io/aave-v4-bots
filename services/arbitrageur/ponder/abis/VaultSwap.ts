@@ -80,14 +80,14 @@ export const vaultSwapAbi = [
   },
   {
     type: "function",
-    name: "BTC_VAULTS_MANAGER",
+    name: "BTC_VAULT_REGISTRY",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
     stateMutability: "view",
   },
   {
     type: "function",
-    name: "CONTROLLER",
+    name: "ADAPTER",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
     stateMutability: "view",
