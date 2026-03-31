@@ -45,7 +45,7 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
         console.log("\nVault ID:", vm.toString(vaultId));
 
-        IBTCVaultRegistry.BTCVault memory vault = vaultManager.getBTCVault(vaultId);
+        IBTCVaultRegistry.BTCVault memory vault = btcVaultRegistry.getBTCVault(vaultId);
         console.log("Vault status:", uint8(vault.status));
         console.log("Vault BTC amount:", vault.amount, "sats");
 
@@ -68,7 +68,7 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
                 vm.sleep(pollIntervalSeconds * 1000);
                 elapsed += pollIntervalSeconds;
 
-                vault = vaultManager.getBTCVault(vaultId);
+                vault = btcVaultRegistry.getBTCVault(vaultId);
                 vaultRedeemed = vault.status == IBTCVaultRegistry.BTCVaultStatus.Redeemed;
                 vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
 

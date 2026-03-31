@@ -51,7 +51,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         console.log("\n--- Step 3: Deploy Lens ---");
         vm.startBroadcast(adminPrivateKey);
         AaveIntegrationLens lens =
-            new AaveIntegrationLens(address(vaultManager), address(aaveController), address(aaveSpoke), vaultBtcId);
+            new AaveIntegrationLens(address(btcVaultRegistry), address(aaveAdapter), address(aaveSpoke), vaultBtcId);
         vm.stopBroadcast();
         console.log("Lens deployed at:", address(lens));
 
@@ -149,18 +149,18 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         returns (bytes32 vaultId)
     {
         address depositor = vm.addr(depositorPrivateKey);
-        bytes32 vaultProviderBtcKey = vaultManager.getVaultProviderBTCKey(vp);
+        bytes32 vaultProviderBtcKey = btcVaultRegistry.getVaultProviderBTCKey(vp);
         bytes memory btcPopSignature =
-            PopHelpers.getBip322P2wpkh(vm, depositorBtcPubKey, BTCProofOfPossession.ACTION_PEGIN, address(vaultManager));
+            PopHelpers.getBip322P2wpkh(vm, depositorBtcPubKey, BTCProofOfPossession.ACTION_PEGIN, address(btcVaultRegistry));
         (bytes memory unsignedPeginTx, string memory prevoutTxid, uint32 prevoutVout, uint64 utxoAmount) =
-            _generateUnsignedPeginTx(depositorBtcPubKey, vaultProviderBtcKey, uint64(amountSats), address(aaveController));
+            _generateUnsignedPeginTx(depositorBtcPubKey, vaultProviderBtcKey, uint64(amountSats), address(aaveAdapter));
 
         // Get required pegin fee and fund depositor
-        uint256 pegInFee = vaultManager.getPegInFee(vp);
+        uint256 pegInFee = btcVaultRegistry.getPegInFee(vp);
         vm.deal(depositor, depositor.balance + pegInFee);
 
         vm.startBroadcast(depositorPrivateKey);
-        vaultId = vaultManager.submitPeginRequest{value: pegInFee}(
+        vaultId = btcVaultRegistry.submitPeginRequest{value: pegInFee}(
             depositor, depositorBtcPubKey, btcPopSignature, unsignedPeginTx, vp, _E2E_LAMPORT_PK_HASH
         );
         vm.stopBroadcast();
@@ -180,7 +180,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         uint256 balanceBefore = usdc.balanceOf(receiver);
 
         vm.startBroadcast(borrowerPrivateKey);
-        aaveController.borrowFromCorePosition(usdcId, amountUsdc, receiver);
+        aaveAdapter.borrowFromCorePosition(usdcId, amountUsdc, receiver);
         vm.stopBroadcast();
 
         uint256 balanceAfter = usdc.balanceOf(receiver);
@@ -220,7 +220,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             vm.toString(address(aaveSpoke)),
             "\n",
             "ADAPTER_ADDRESS=",
-            vm.toString(address(aaveController)),
+            vm.toString(address(aaveAdapter)),
             "\n",
             "CHAIN_ID=",
             vm.toString(E2EConstants.CHAIN_ID),
@@ -374,7 +374,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
 
     function _getUserProxyAddress(address user) internal view returns (address) {
         bytes32 salt = keccak256(abi.encodePacked(user));
-        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveController));
+        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveAdapter));
     }
 
     function _getPositionInfo(address user)
