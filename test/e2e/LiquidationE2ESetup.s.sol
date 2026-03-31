@@ -8,7 +8,6 @@ import {BtcHelpers} from "test-utils/BtcHelpers.sol";
 import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
 import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
-import {IBTCVaultsManager} from "vault-contracts/interfaces/IBTCVaultsManager.sol";
 import {BTCProofOfPossession} from "vault-contracts/lib/pop/BTCProofOfPossession.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {AaveIntegrationLens} from "vault-contracts/applications/aave/AaveIntegrationLens.sol";
@@ -220,7 +219,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             "SPOKE_ADDRESS=",
             vm.toString(address(aaveSpoke)),
             "\n",
-            "CONTROLLER_ADDRESS=",
+            "ADAPTER_ADDRESS=",
             vm.toString(address(aaveController)),
             "\n",
             "CHAIN_ID=",

@@ -21,8 +21,8 @@ PONDER_RPC_URL=http://localhost:8545
 # Spoke contract address
 SPOKE_ADDRESS=0x...
 
-# AaveIntegrationController address
-CONTROLLER_ADDRESS=0x...
+# AaveIntegrationAdapter address
+ADAPTER_ADDRESS=0x...
 
 # Chain ID
 CHAIN_ID=1

@@ -57,9 +57,7 @@ describe("config validation", () => {
 
       const { loadConfig } = await import("./config");
 
-      expect(() => loadConfig()).toThrow(
-        "Missing required environment variable: ADAPTER_ADDRESS"
-      );
+      expect(() => loadConfig()).toThrow("Missing required environment variable: ADAPTER_ADDRESS");
     });
 
     it("should throw when LENS_ADDRESS is missing", async () => {

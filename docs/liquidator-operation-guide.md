@@ -204,8 +204,8 @@ PONDER_RPC_URL=https://eth-mainnet.example.com
 # Core Spoke contract address (Babylon's dedicated Spoke)
 SPOKE_ADDRESS=0x...
 
-# AaveIntegrationController address
-CONTROLLER_ADDRESS=0x...
+# AaveIntegrationAdapter address
+ADAPTER_ADDRESS=0x...
 
 # Chain ID
 CHAIN_ID=1
@@ -225,7 +225,7 @@ DATABASE_SCHEMA=public
 |-----------|-------------|---------|
 | `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Required |
 | `SPOKE_ADDRESS` | Babylon's Aave Core Spoke contract | Required |
-| `CONTROLLER_ADDRESS` | AaveIntegrationController contract | Required |
+| `ADAPTER_ADDRESS` | AaveIntegrationAdapter contract | Required |
 | `CHAIN_ID` | Network chain ID | `1` |
 | `START_BLOCK` | Block to begin indexing | `0` |
 | `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | `1000` |
@@ -249,7 +249,7 @@ PONDER_URL=http://localhost:42069
 CLIENT_RPC_URL=https://eth-mainnet.example.com
 
 # Contract addresses
-CONTROLLER_ADDRESS=0x...
+ADAPTER_ADDRESS=0x...
 LENS_ADDRESS=0x...
 WBTC_ADDRESS=0x...
 
@@ -274,7 +274,7 @@ METRICS_PORT=9090
 | `LIQUIDATOR_PRIVATE_KEY` | Private key for signing transactions | Required |
 | `PONDER_URL` | Indexer API endpoint | Required |
 | `CLIENT_RPC_URL` | RPC for transaction execution | Required |
-| `CONTROLLER_ADDRESS` | AaveIntegrationController address | Required |
+| `ADAPTER_ADDRESS` | AaveIntegrationAdapter address | Required |
 | `LENS_ADDRESS` | AaveIntegrationLens address | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
 | `DEBT_TOKEN_ADDRESSES` | Override auto-discovery (comma-separated) | Auto-discovered |
@@ -289,7 +289,7 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 | Contract | Purpose |
 |----------|---------|
 | `SPOKE_ADDRESS` | Core Spoke - tracks positions via Supply/Withdraw events |
-| `CONTROLLER_ADDRESS` | Entry point for `liquidateCorePosition()` calls |
+| `ADAPTER_ADDRESS` | Entry point for `liquidateCorePosition()` calls |
 | `LENS_ADDRESS` | AaveIntegrationLens - pre-computes liquidation inputs via `estimateLiquidation()` |
 | `WBTC_ADDRESS` | WBTC token for balance monitoring |
 

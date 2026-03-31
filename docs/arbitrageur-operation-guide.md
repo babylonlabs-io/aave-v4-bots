@@ -231,7 +231,7 @@ PONDER_URL=http://localhost:42070
 CLIENT_RPC_URL=https://eth-mainnet.example.com
 
 # Contract addresses
-CONTROLLER_ADDRESS=0x...
+ADAPTER_ADDRESS=0x...
 VAULT_SWAP_ADDRESS=0x...
 WBTC_ADDRESS=0x...
 
@@ -269,7 +269,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `ARBITRAGEUR_PRIVATE_KEY` | Private key for signing transactions | Required |
 | `PONDER_URL` | Indexer API endpoint | Required |
 | `CLIENT_RPC_URL` | RPC for transaction execution | Required |
-| `CONTROLLER_ADDRESS` | AaveIntegrationController address | Required |
+| `ADAPTER_ADDRESS` | AaveIntegrationAdapter address | Required |
 | `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
 | `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | `100` (1%) |
@@ -288,7 +288,7 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 | Contract | Purpose |
 |----------|---------|
 | `VAULT_SWAP_ADDRESS` | Execute `swapWbtcForVault()` to acquire vaults |
-| `CONTROLLER_ADDRESS` | AaveIntegrationController for vault management |
+| `ADAPTER_ADDRESS` | AaveIntegrationAdapter for vault management |
 | `WBTC_ADDRESS` | WBTC token for acquisition payments |
 
 ## 6. Wallet Setup

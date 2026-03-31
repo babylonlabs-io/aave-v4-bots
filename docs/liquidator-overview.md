@@ -92,7 +92,7 @@ The liquidation bot automates position monitoring and liquidation execution.
 | `LIQUIDATOR_PRIVATE_KEY` | Private key of liquidator wallet | Required |
 | `CLIENT_RPC_URL` | Ethereum RPC endpoint | Required |
 | `PONDER_URL` | Ponder indexer API URL | Required |
-| `CONTROLLER_ADDRESS` | AaveIntegrationController contract | Required |
+| `ADAPTER_ADDRESS` | AaveIntegrationAdapter contract | Required |
 | `LENS_ADDRESS` | AaveIntegrationLens contract | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
 | `DEBT_TOKEN_ADDRESSES` | Debt token addresses (comma-separated, optional) | Auto-discovered |

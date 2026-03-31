@@ -4,7 +4,7 @@ pragma solidity 0.8.28;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
-import {IBTCVaultsManager} from "vault-contracts/interfaces/IBTCVaultsManager.sol";
+import {IBTCVaultRegistry} from "vault-contracts/interfaces/IBTCVaultRegistry.sol";
 import {E2EConstants} from "./E2EConstants.sol";
 
 /// @title ArbitrageurE2EVerify
@@ -45,11 +45,11 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
         console.log("\nVault ID:", vm.toString(vaultId));
 
-        IBTCVaultsManager.BTCVault memory vault = vaultManager.getBTCVault(vaultId);
+        IBTCVaultRegistry.BTCVault memory vault = vaultManager.getBTCVault(vaultId);
         console.log("Vault status:", uint8(vault.status));
         console.log("Vault BTC amount:", vault.amount, "sats");
 
-        vaultRedeemed = vault.status == IBTCVaultsManager.BTCVaultStatus.Redeemed;
+        vaultRedeemed = vault.status == IBTCVaultRegistry.BTCVaultStatus.Redeemed;
         vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
 
         console.log("Is vault redeemed:", vaultRedeemed);
@@ -69,7 +69,7 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
                 elapsed += pollIntervalSeconds;
 
                 vault = vaultManager.getBTCVault(vaultId);
-                vaultRedeemed = vault.status == IBTCVaultsManager.BTCVaultStatus.Redeemed;
+                vaultRedeemed = vault.status == IBTCVaultRegistry.BTCVaultStatus.Redeemed;
                 vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
 
                 if (vaultRedeemed || !vaultEscrowed) {
