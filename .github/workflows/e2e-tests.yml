@@ -61,7 +61,7 @@ jobs:
       VAULT_PROVIDER_BTCPUBKEY: "0x4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 https://github.com/actions/checkout/releases/tag/v6.0.2
 
       - name: Checkout submodules (private repo)
         env:
@@ -71,15 +71,15 @@ jobs:
           git submodule update --init --recursive
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1 https://github.com/foundry-rs/foundry-toolchain/releases/tag/v1
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 https://github.com/actions/setup-node/releases/tag/v4
         with:
           node-version: '20'
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2 https://github.com/pnpm/action-setup/releases/tag/v2
         with:
           version: 9
 
