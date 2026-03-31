@@ -8,8 +8,6 @@ import {BtcHelpers} from "test-utils/BtcHelpers.sol";
 import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
 import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
-import {BTCProofOfPossession} from "vault-contracts/lib/pop/BTCProofOfPossession.sol";
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {AaveIntegrationLens} from "vault-contracts/applications/aave/AaveIntegrationLens.sol";
 import {E2EConstants} from "./E2EConstants.sol";
 
@@ -19,6 +17,8 @@ import {E2EConstants} from "./E2EConstants.sol";
 ///      Run LiquidationE2EVerify.s.sol after this to verify liquidation occurred
 contract LiquidationE2ESetup is Script, BaseE2E {
     bytes32 internal constant _E2E_LAMPORT_PK_HASH = keccak256("test_lamport_key");
+    bytes internal constant _E2E_DUMMY_PAYOUT_ADDRESS =
+        hex"5120aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     /// @notice Main entry point for the setup script
     function run() public {
@@ -151,9 +151,13 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         address depositor = vm.addr(depositorPrivateKey);
         bytes32 vaultProviderBtcKey = btcVaultRegistry.getVaultProviderBTCKey(vp);
         bytes memory btcPopSignature =
-            PopHelpers.getBip322P2wpkh(vm, depositorBtcPubKey, BTCProofOfPossession.ACTION_PEGIN, address(btcVaultRegistry));
+            PopHelpers.getBip322P2wpkh(vm, depositorBtcPubKey, PopHelpers.ACTION_PEGIN, address(btcVaultRegistry));
         (bytes memory unsignedPeginTx, string memory prevoutTxid, uint32 prevoutVout, uint64 utxoAmount) =
             _generateUnsignedPeginTx(depositorBtcPubKey, vaultProviderBtcKey, uint64(amountSats), address(aaveAdapter));
+
+        // Generate secret and hashlock for atomic swap activation
+        bytes32 secret = keccak256(abi.encodePacked("e2e_secret", block.timestamp));
+        bytes32 hashlock = sha256(abi.encodePacked(secret));
 
         // Get required pegin fee and fund depositor
         uint256 pegInFee = btcVaultRegistry.getPegInFee(vp);
@@ -161,16 +165,24 @@ contract LiquidationE2ESetup is Script, BaseE2E {
 
         vm.startBroadcast(depositorPrivateKey);
         vaultId = btcVaultRegistry.submitPeginRequest{value: pegInFee}(
-            depositor, depositorBtcPubKey, btcPopSignature, unsignedPeginTx, vp, _E2E_LAMPORT_PK_HASH
+            depositor,
+            depositorBtcPubKey,
+            btcPopSignature,
+            unsignedPeginTx,
+            unsignedPeginTx,
+            vp,
+            hashlock,
+            0,
+            _E2E_DUMMY_PAYOUT_ADDRESS,
+            _E2E_LAMPORT_PK_HASH
         );
         vm.stopBroadcast();
 
         _collectPeginACKs(vaultId);
-        string memory txid =
-            _signAndBroadcastPeginTx(unsignedPeginTx, depositorBtcPubKey, prevoutTxid, prevoutVout, utxoAmount);
+        _signAndBroadcastPeginTx(unsignedPeginTx, depositorBtcPubKey, prevoutTxid, prevoutVout, utxoAmount);
 
         vm.startBroadcast(vpPrivKey);
-        _submitInclusionProofAndActivateVault(vaultId, txid);
+        btcVaultRegistry.activateVaultWithSecret(vaultId, secret);
         vm.stopBroadcast();
 
         return vaultId;
@@ -373,8 +385,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     }
 
     function _getUserProxyAddress(address user) internal view returns (address) {
-        bytes32 salt = keccak256(abi.encodePacked(user));
-        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveAdapter));
+        return aaveAdapter.getPosition(user).proxyContract;
     }
 
     function _getPositionInfo(address user)

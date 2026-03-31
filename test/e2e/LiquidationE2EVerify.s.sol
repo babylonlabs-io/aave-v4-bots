@@ -5,7 +5,6 @@ import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
 import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {E2EConstants} from "./E2EConstants.sol";
 
 /// @title LiquidationE2EVerify
@@ -134,8 +133,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
     }
 
     function _getUserProxyAddress(address user) internal view returns (address) {
-        bytes32 salt = keccak256(abi.encodePacked(user));
-        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveAdapter));
+        return aaveAdapter.getPosition(user).proxyContract;
     }
 
     function _getPositionInfo(address user)
