@@ -43,7 +43,7 @@ export const vaultSwapAbi = [
   },
   {
     type: "function",
-    name: "getEscrowedVaultsInfo",
+    name: "previewEscrowedVaults",
     inputs: [{ name: "_escrowedVaults", type: "bytes32[]" }],
     outputs: [
       {
@@ -51,9 +51,12 @@ export const vaultSwapAbi = [
         type: "tuple[]",
         components: [
           { name: "vaultId", type: "bytes32" },
-          { name: "btcAmount", type: "uint256" },
-          { name: "hubDebt", type: "uint256" },
-          { name: "protocolFee", type: "uint256" },
+          { name: "amountVault", type: "uint256" },
+          { name: "amountDebt", type: "uint256" },
+          { name: "amountInterest", type: "uint256" },
+          { name: "amountFee", type: "uint256" },
+          { name: "amountWbtcToAcquire", type: "uint256" },
+          { name: "isProfitable", type: "bool" },
         ],
       },
     ],

@@ -37,7 +37,7 @@ DATABASE_SCHEMA=public
 
 ### `GET /escrowed-vaults`
 
-Returns escrowed vaults with live debt data fetched from the VaultSwap contract via `getEscrowedVaultsInfo()`.
+Returns escrowed vaults with live debt data fetched from the VaultSwap contract via `previewEscrowedVaults()`.
 
 ```json
 {

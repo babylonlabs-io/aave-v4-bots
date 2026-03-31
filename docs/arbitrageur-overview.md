@@ -115,7 +115,7 @@ function previewWbtcToAcquireVaultWithFees(bytes32 vaultId) external view return
 function isVaultProfitableForArbitrageur(bytes32 vaultId) external view returns (bool isProfitable, uint256 accruedInterest, uint256 arbitrageurDiscount, uint256 hubDebt);
 
 // Get info for multiple escrowed vaults
-function getEscrowedVaultsInfo(bytes32[] calldata vaultIds) external view returns (EscrowedVaultInfo[] memory);
+function previewEscrowedVaults(bytes32[] memory _escrowedVaults) external view returns (EscrowedVaultPreviewResult[] memory);
 ```
 
 ### VaultSwap (arbitrageur functions)
