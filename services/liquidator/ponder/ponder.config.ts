@@ -1,6 +1,6 @@
 import { createConfig } from "ponder";
 
-import { adapterAbi } from "./abis/Controller";
+import { adapterAbi } from "./abis/Adapter";
 import { spokeAbi } from "./abis/Spoke";
 
 // Validate required environment variables
