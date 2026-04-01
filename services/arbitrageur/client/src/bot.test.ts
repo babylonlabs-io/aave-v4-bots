@@ -16,9 +16,14 @@ vi.mock("./health", () => ({
 
 const mockVault: EscrowedVault = {
   vaultId: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-  btcAmount: "100000000", // 1 BTC
-  currentDebt: "50000000", // 0.5 WBTC
-  createdAt: "2024-01-01T00:00:00Z",
+  // btcAmount: "100000000", // 1 BTC
+  // currentDebt: "50000000", // 0.5 WBTC
+  // createdAt: "2024-01-01T00:00:00Z",
+  amountVault: "100000000",
+  amountDebt: "50000000",
+  amountFee: "1000000",
+  amountWbtcToAcquire: "50500000", // 0.5 WBTC + 1% slippage
+  isProfitable: true,
 };
 
 function createMockClients() {
@@ -198,8 +203,15 @@ describe("ArbitrageurBot", () => {
     it("uses debt as maxWbtcIn when slippage floor division rounds to zero", async () => {
       const clients = createMockClients();
       const tinyVault: EscrowedVault = {
-        ...mockVault,
-        currentDebt: "1",
+        // ...mockVault,
+        // currentDebt: "1",
+        amountDebt: "1",
+        // amountWbtcToAcquire: "1",
+        amountWbtcToAcquire: "1",
+        isProfitable: true,
+        vaultId: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        amountVault: "100000000",
+        amountFee: "1000000",
       };
       const bot = createBot(clients, { maxSlippageBps: 1 }); // 0.01%
 

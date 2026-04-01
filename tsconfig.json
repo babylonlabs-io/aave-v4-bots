@@ -10,7 +10,8 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "types": ["node"]
   },
   "exclude": ["node_modules", "dist", "external"]
 }

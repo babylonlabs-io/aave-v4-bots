@@ -29,8 +29,8 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
         uint256 liqInitialWbtc = _readInitialWbtcBalance(".e2e-initial-liq-wbtc");
 
         // Get current WBTC balances
-        uint256 arbWbtcNow = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
-        uint256 liquidatorWbtcNow = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
+        uint256 arbWbtcNow = _getWbtcBalance(E2EConstants.ARBITRAGEUR);
+        uint256 liquidatorWbtcNow = _getWbtcBalance(E2EConstants.LIQUIDATOR);
 
         console.log("Arbitrageur:", E2EConstants.ARBITRAGEUR);
         console.log("Arbitrageur WBTC balance (sats):", arbWbtcNow);
@@ -45,12 +45,12 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
         console.log("\nVault ID:", vm.toString(vaultId));
 
-        IBTCVaultsManager.BTCVault memory vault = vaultManager.getBTCVault(vaultId);
-        console.log("Vault status:", uint8(vault.status));
-        console.log("Vault BTC amount:", vault.amount, "sats");
+        (uint8 vaultStatus, uint256 vaultAmount) = _getBTCVaultStatus(vaultId);
+        console.log("Vault status:", vaultStatus);
+        console.log("Vault BTC amount:", vaultAmount, "sats");
 
-        vaultRedeemed = vault.status == IBTCVaultsManager.BTCVaultStatus.Redeemed;
-        vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
+        vaultRedeemed = vaultStatus == uint8(IBTCVaultsManager.BTCVaultStatus.Redeemed);
+        vaultEscrowed = _isVaultEscrowed(vaultId);
 
         console.log("Is vault redeemed:", vaultRedeemed);
         console.log("Is vault escrowed in VaultSwap:", vaultEscrowed);
@@ -68,9 +68,9 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
                 vm.sleep(pollIntervalSeconds * 1000);
                 elapsed += pollIntervalSeconds;
 
-                vault = vaultManager.getBTCVault(vaultId);
-                vaultRedeemed = vault.status == IBTCVaultsManager.BTCVaultStatus.Redeemed;
-                vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
+                (vaultStatus, vaultAmount) = _getBTCVaultStatus(vaultId);
+                vaultRedeemed = vaultStatus == uint8(IBTCVaultsManager.BTCVaultStatus.Redeemed);
+                vaultEscrowed = _isVaultEscrowed(vaultId);
 
                 if (vaultRedeemed || !vaultEscrowed) {
                     console.log("Arbitrage detected after", elapsed, "seconds");
@@ -80,8 +80,8 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
             }
 
             // Re-read final balances
-            arbWbtcNow = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
-            liquidatorWbtcNow = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
+            arbWbtcNow = _getWbtcBalance(E2EConstants.ARBITRAGEUR);
+            liquidatorWbtcNow = _getWbtcBalance(E2EConstants.LIQUIDATOR);
 
             console.log("\n--- After Waiting ---");
             console.log("Arbitrageur WBTC balance:", arbWbtcNow, "sats");
@@ -152,5 +152,42 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
         uint256 parsed = vm.parseUint(content);
         require(parsed > 0, "Missing initial WBTC balances from setup");
         return parsed;
+    }
+
+    /// @dev Get WBTC balance using FFI to fetch live data from RPC
+    function _getWbtcBalance(address user) internal returns (uint256) {
+        bytes memory result = ffi_castCall(
+            address(wbtc),
+            "balanceOf(address)",
+            vm.toString(user)
+        );
+        return abi.decode(result, (uint256));
+    }
+
+    /// @dev Get BTC vault status and amount using FFI
+    function _getBTCVaultStatus(bytes32 vaultId) internal returns (uint8 status, uint256 amount) {
+        bytes memory result = ffi_castCall(
+            address(vaultManager),
+            "getBTCVault(bytes32)",
+            vm.toString(vaultId)
+        );
+        
+        // Decode the result as the BTCVault struct
+        IBTCVaultsManager.BTCVault memory vault = abi.decode(result, (IBTCVaultsManager.BTCVault));
+        
+        status = uint8(vault.status);
+        amount = vault.amount;
+        
+        return (status, amount);
+    }
+
+    /// @dev Check if vault is escrowed using FFI
+    function _isVaultEscrowed(bytes32 vaultId) internal returns (bool) {
+        bytes memory result = ffi_castCall(
+            address(vaultSwap),
+            "isVaultEscrowed(bytes32)",
+            vm.toString(vaultId)
+        );
+        return abi.decode(result, (bool));
     }
 }

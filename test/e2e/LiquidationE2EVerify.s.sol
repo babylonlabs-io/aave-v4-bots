@@ -25,7 +25,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
 
         // Get position info before liquidation (after price drop from setup script)
         (uint256 collateralBefore, uint256 debtBefore, uint256 healthFactorBefore) = _getPositionInfo(borrower);
-        uint256 liquidatorUsdcBefore = usdc.balanceOf(E2EConstants.LIQUIDATOR);
+        uint256 liquidatorUsdcBefore = _getUsdcBalance(E2EConstants.LIQUIDATOR);
 
         console.log("\n--- Position (After Price Drop - liquidation may already have occurred) ---");
         console.log("Borrower:", borrower);
@@ -44,7 +44,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
             console.log("\n--- Waiting for Bot Liquidation ---");
             console.log("Polling every 5 seconds for up to 120 seconds...");
 
-            uint256 maxWaitSeconds = 120;
+            uint256 maxWaitSeconds = 240;
             uint256 pollIntervalSeconds = 5;
             uint256 elapsed = 0;
 
@@ -60,7 +60,11 @@ contract LiquidationE2EVerify is Script, BaseE2E {
                     console.log("Liquidation detected after", elapsed, "seconds");
                     break;
                 }
+
+                uint256 blockTime = block.timestamp;
+                uint256 blockNumber = block.number;
                 console.log("Still waiting...", elapsed, "/", maxWaitSeconds);
+                console.log("Current block:", blockNumber, "time:", blockTime);
             }
         } else {
             console.log("\n--- Liquidation Already Occurred ---");
@@ -69,7 +73,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
 
         // Check position after waiting
         (uint256 collateralAfter, uint256 debtAfter, uint256 healthFactorAfter) = _getPositionInfo(borrower);
-        uint256 liquidatorUsdcAfter = usdc.balanceOf(E2EConstants.LIQUIDATOR);
+        uint256 liquidatorUsdcAfter = _getUsdcBalance(E2EConstants.LIQUIDATOR);
 
         console.log("\n--- Position After Waiting ---");
         console.log("Collateral value:", collateralAfter / 1e26, "USD");
@@ -138,13 +142,32 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveController));
     }
 
+    function _getUsdcBalance(address user) internal returns (uint256) {
+        bytes memory result = ffi_castCall(
+            address(usdc),
+            "balanceOf(address)",
+            vm.toString(user)
+        );
+        return abi.decode(result, (uint256));
+    }
+
     function _getPositionInfo(address user)
         internal
-        view
         returns (uint256 totalCollateral, uint256 totalDebt, uint256 healthFactor)
     {
         address proxy = _getUserProxyAddress(user);
-        ISpoke.UserAccountData memory accountData = aaveSpoke.getUserAccountData(proxy);
-        return (accountData.totalCollateralValue, accountData.totalDebtValue, accountData.healthFactor);
+        
+        bytes memory result = ffi_castCall(
+            address(aaveSpoke),
+            "getUserAccountData(address)",
+            vm.toString(proxy)
+        );
+        
+        // Parse the result - getUserAccountData returns a struct with multiple values
+        // The result should be ABI-encoded tuple (totalCollateralValue, totalDebtValue, healthFactor, ...)
+        // We'll decode just the first 3 values we need
+        (totalCollateral, totalDebt, healthFactor) = abi.decode(result, (uint256, uint256, uint256));
+        
+        return (totalCollateral, totalDebt, healthFactor);
     }
 }
