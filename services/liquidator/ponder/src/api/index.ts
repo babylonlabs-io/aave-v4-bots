@@ -2,9 +2,10 @@ import { db, publicClients } from "ponder:api";
 import schema from "ponder:schema";
 import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
+import { ContractFunctionRevertedError } from "viem";
 import type { Address, PublicClient } from "viem";
 
-import { spokeAbi } from "../../abis/Spoke";
+import { lensAbi } from "../../abis/Lens";
 
 function replaceBigInts<T>(value: T) {
   return replaceBigIntsBase(value, (x) => String(x));
@@ -19,28 +20,23 @@ app.use("/graphql", graphql({ db, schema }));
 // SQL client endpoint
 app.use("/sql/*", client({ db, schema }));
 
-// Health factor threshold (1.0 in WAD = 1e18)
-const HEALTH_FACTOR_THRESHOLD = BigInt(1e18);
-
 /**
  * GET /liquidatable-positions
  *
- * Returns all positions that are liquidatable (health factor < 1.0 AND has debt)
- *
- * Fetches getUserAccountData for each position in parallel via individual RPC calls
+ * Returns all positions that are liquidatable by calling estimateLiquidation
+ * on the AaveIntegrationLens contract. The call reverts for healthy positions
+ * and succeeds for liquidatable ones, returning the required inputs and vaults.
  */
 app.get("/liquidatable-positions", async (c) => {
-  // Get the public client for the network
   const publicClient = Object.values(publicClients)[0] as PublicClient | undefined;
 
   if (!publicClient) {
     return c.json({ error: "No public client configured" }, 500);
   }
 
-  // Get spoke address from env
-  const spokeAddress = process.env.SPOKE_ADDRESS as Address;
-  if (!spokeAddress) {
-    return c.json({ error: "SPOKE_ADDRESS not configured" }, 500);
+  const lensAddress = process.env.LENS_ADDRESS as Address;
+  if (!lensAddress) {
+    return c.json({ error: "LENS_ADDRESS not configured" }, 500);
   }
 
   // Query all positions and proxy mappings from database
@@ -59,14 +55,14 @@ app.get("/liquidatable-positions", async (c) => {
     proxyToBorrower.set(m.proxyAddress.toLowerCase(), m.borrower);
   }
 
-  // Fetch account data for all positions in parallel
+  // Try estimateLiquidation for each position — succeeds only if liquidatable
   const results = await Promise.allSettled(
     positions.map((p) =>
       publicClient.readContract({
-        address: spokeAddress,
-        abi: spokeAbi,
-        functionName: "getUserAccountData",
-        args: [p.proxyAddress],
+        address: lensAddress,
+        abi: lensAbi,
+        functionName: "estimateLiquidation",
+        args: [p.proxyAddress as Address, false],
       })
     )
   );
@@ -74,9 +70,8 @@ app.get("/liquidatable-positions", async (c) => {
   const liquidatable: Array<{
     proxyAddress: string;
     borrower: string;
-    healthFactor: string;
-    totalCollateralValue: string;
-    totalDebtValue: string;
+    inputs: Array<{ token: string; amount: string }>;
+    vaults: string[];
     suppliedShares: string;
   }> = [];
 
@@ -84,8 +79,18 @@ app.get("/liquidatable-positions", async (c) => {
     const result = results[i];
     const p = positions[i];
 
+    // estimateLiquidation reverts for healthy positions — only fulfilled = liquidatable
     if (result.status === "rejected") {
-      console.error(`Failed to fetch account data for ${p.proxyAddress}:`, result.reason);
+      const isExpectedRevert =
+        result.reason instanceof ContractFunctionRevertedError;
+      if (!isExpectedRevert) {
+        console.warn(
+          `estimateLiquidation RPC error for ${p.proxyAddress} (not a revert):`,
+          result.reason instanceof Error
+            ? result.reason.message
+            : result.reason
+        );
+      }
       continue;
     }
 
@@ -95,21 +100,18 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
-    const accountData = result.value;
-    const healthFactor = accountData.healthFactor;
-    const totalDebtValue = accountData.totalDebtValue;
+    const [inputs, vaults] = result.value;
 
-    // Liquidatable if: health factor < 1.0 AND has debt
-    if (healthFactor < HEALTH_FACTOR_THRESHOLD && totalDebtValue > 0n) {
-      liquidatable.push({
-        proxyAddress: p.proxyAddress,
-        borrower,
-        healthFactor: healthFactor.toString(),
-        totalCollateralValue: accountData.totalCollateralValue.toString(),
-        totalDebtValue: totalDebtValue.toString(),
-        suppliedShares: p.suppliedShares.toString(),
-      });
-    }
+    liquidatable.push({
+      proxyAddress: p.proxyAddress,
+      borrower,
+      inputs: inputs.map((inp) => ({
+        token: inp.token,
+        amount: inp.amount.toString(),
+      })),
+      vaults: vaults as string[],
+      suppliedShares: p.suppliedShares.toString(),
+    });
   }
 
   return c.json(
@@ -137,80 +139,6 @@ app.get("/positions", async (c) => {
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
       })),
-      total: positions.length,
-    })
-  );
-});
-
-/**
- * GET /positions-health
- *
- * Returns all positions with their health factors (for debugging)
- */
-app.get("/positions-health", async (c) => {
-  const publicClient = Object.values(publicClients)[0] as PublicClient | undefined;
-
-  if (!publicClient) {
-    return c.json({ error: "No public client configured" }, 500);
-  }
-
-  const spokeAddress = process.env.SPOKE_ADDRESS as Address;
-  if (!spokeAddress) {
-    return c.json({ error: "SPOKE_ADDRESS not configured" }, 500);
-  }
-
-  const positions = await db.query.position.findMany();
-
-  if (positions.length === 0) {
-    return c.json({ positions: [], total: 0 });
-  }
-
-  // Fetch account data for all positions in parallel
-  const accountDataCalls = [];
-  for (const p of positions) {
-    accountDataCalls.push(
-      publicClient.readContract({
-        address: spokeAddress,
-        abi: spokeAbi,
-        functionName: "getUserAccountData",
-        args: [p.proxyAddress],
-      })
-    );
-  }
-  const results = await Promise.allSettled(accountDataCalls);
-
-  const positionsWithHealth = [];
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    const p = positions[i];
-
-    if (result.status === "rejected") {
-      positionsWithHealth.push({
-        proxyAddress: p.proxyAddress,
-        error: "Failed to fetch account data",
-        errorDetails: result.reason instanceof Error ? result.reason.message : "Unknown error",
-      });
-      continue;
-    }
-
-    const accountData = result.value;
-    const healthFactorWad = accountData.healthFactor;
-    const healthFactorFormatted = Number(healthFactorWad) / 1e18;
-
-    positionsWithHealth.push({
-      proxyAddress: p.proxyAddress,
-      healthFactor: healthFactorWad.toString(),
-      healthFactorFormatted,
-      totalCollateralValue: accountData.totalCollateralValue.toString(),
-      totalDebtValue: accountData.totalDebtValue.toString(),
-      isLiquidatable: healthFactorWad < HEALTH_FACTOR_THRESHOLD && accountData.totalDebtValue > 0n,
-      threshold: HEALTH_FACTOR_THRESHOLD.toString(),
-    });
-  }
-
-  return c.json(
-    replaceBigInts({
-      positions: positionsWithHealth,
       total: positions.length,
     })
   );
