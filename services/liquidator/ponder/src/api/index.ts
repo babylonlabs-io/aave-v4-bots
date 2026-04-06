@@ -81,14 +81,11 @@ app.get("/liquidatable-positions", async (c) => {
 
     // estimateLiquidation reverts for healthy positions — only fulfilled = liquidatable
     if (result.status === "rejected") {
-      const isExpectedRevert =
-        result.reason instanceof ContractFunctionRevertedError;
+      const isExpectedRevert = result.reason instanceof ContractFunctionRevertedError;
       if (!isExpectedRevert) {
         console.warn(
           `estimateLiquidation RPC error for ${p.proxyAddress} (not a revert):`,
-          result.reason instanceof Error
-            ? result.reason.message
-            : result.reason
+          result.reason instanceof Error ? result.reason.message : result.reason
         );
       }
       continue;
