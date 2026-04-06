@@ -47,6 +47,7 @@ export interface LiquidationBotConfig {
   wbtcAddress: Address;
   btcRedeemKey: Hex;
   isDirectRedemption: boolean;
+  llpAddress: Address;
   ponderUrl: string;
   txReceiptTimeoutMs: number;
 }
@@ -61,6 +62,7 @@ export class LiquidationBot {
   private wbtcAddress: Address;
   private btcRedeemKey: Hex;
   private isDirectRedemption: boolean;
+  private llpAddress: Address;
   private ponderUrl: string;
   private txReceiptTimeoutMs: number;
 
@@ -74,6 +76,7 @@ export class LiquidationBot {
     this.wbtcAddress = config.wbtcAddress;
     this.btcRedeemKey = config.btcRedeemKey;
     this.isDirectRedemption = config.isDirectRedemption;
+    this.llpAddress = config.llpAddress;
     this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
   }
@@ -192,13 +195,21 @@ export class LiquidationBot {
       // 4. Simulate all liquidations in parallel
       const simulationResults = await Promise.allSettled(
         candidates.map(({ position, inputs }) =>
-          this.publicClient.simulateContract({
-            address: this.controllerAddress,
-            abi: controllerAbi,
-            functionName: "liquidateCorePosition",
-            args: [position.borrower, this.btcRedeemKey, inputs],
-            account: this.walletClient.account,
-          })
+          this.isDirectRedemption
+            ? this.publicClient.simulateContract({
+                address: this.controllerAddress,
+                abi: controllerAbi,
+                functionName: "liquidate",
+                args: [position.borrower, this.btcRedeemKey, inputs],
+                account: this.walletClient.account,
+              })
+            : this.publicClient.simulateContract({
+                address: this.controllerAddress,
+                abi: controllerAbi,
+                functionName: "liquidateWithLLP",
+                args: [position.borrower, this.llpAddress, inputs, []],
+                account: this.walletClient.account,
+              })
         )
       );
 
@@ -243,13 +254,21 @@ export class LiquidationBot {
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, inputs } = validCandidates[i];
         try {
-          const hash = await this.walletClient.writeContract({
-            address: this.controllerAddress,
-            abi: controllerAbi,
-            functionName: "liquidateCorePosition",
-            args: [position.borrower, this.btcRedeemKey, inputs],
-            nonce: nextNonce,
-          });
+          const hash = this.isDirectRedemption
+            ? await this.walletClient.writeContract({
+                address: this.controllerAddress,
+                abi: controllerAbi,
+                functionName: "liquidate",
+                args: [position.borrower, this.btcRedeemKey, inputs],
+                nonce: nextNonce,
+              })
+            : await this.walletClient.writeContract({
+                address: this.controllerAddress,
+                abi: controllerAbi,
+                functionName: "liquidateWithLLP",
+                args: [position.borrower, this.llpAddress, inputs, []],
+                nonce: nextNonce,
+              });
           console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);
           txHashes.push(hash);
           nextNonce += 1;

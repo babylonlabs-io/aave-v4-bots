@@ -54,6 +54,7 @@ async function createBot(config: Config) {
     debtTokenAddresses: config.debtTokenAddresses,
     btcRedeemKey: config.btcRedeemKey,
     isDirectRedemption: config.isDirectRedemption,
+    llpAddress: config.llpAddress,
     ponderUrl: config.ponderUrl,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
   });

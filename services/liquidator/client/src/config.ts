@@ -66,6 +66,9 @@ export function loadConfig(): Config {
 
   const isDirectRedemption = process.env.IS_DIRECT_REDEMPTION === "true";
 
+  const llpAddress = process.env.LLP_ADDRESS || "0x0000000000000000000000000000000000000000";
+  assertAddress("LLP_ADDRESS", llpAddress);
+
   const txReceiptTimeoutMs = Number.parseInt(process.env.TX_RECEIPT_TIMEOUT_MS || "120000", 10);
   if (!Number.isFinite(txReceiptTimeoutMs) || txReceiptTimeoutMs <= 0) {
     throw new Error("Invalid TX_RECEIPT_TIMEOUT_MS: must be a positive integer");
@@ -92,6 +95,7 @@ export function loadConfig(): Config {
     debtTokenAddresses,
     btcRedeemKey: btcRedeemKey as Hex,
     isDirectRedemption,
+    llpAddress: llpAddress as Address,
     metricsPort,
     txReceiptTimeoutMs,
   };

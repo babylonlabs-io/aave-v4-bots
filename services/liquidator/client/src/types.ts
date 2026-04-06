@@ -39,6 +39,9 @@ export interface Config {
   // Whether to use direct BTC redemption (default: false = WBTC via VaultSwap)
   isDirectRedemption: boolean;
 
+  // LLP address for non-direct redemption (VaultSwap address)
+  llpAddress: Address;
+
   // Monitoring
   metricsPort: number;
 
