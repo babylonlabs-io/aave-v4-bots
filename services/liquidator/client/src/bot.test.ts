@@ -63,6 +63,7 @@ function createBot(
     wbtcAddress: "0xwbtc" as `0x${string}`,
     btcRedeemKey: ZERO_BYTES32,
     isDirectRedemption: false,
+    llpAddress: "0xllpaddress000000000000000000000000000000" as `0x${string}`,
     ponderUrl: "http://localhost:42069",
     txReceiptTimeoutMs: 60000,
     ...overrides,
@@ -249,8 +250,7 @@ describe("LiquidationBot", () => {
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 42,
-          functionName: "liquidateCorePosition",
-          args: [mockPosition.borrower, ZERO_BYTES32, mockInputs],
+          functionName: "liquidateWithLLP",
         })
       );
     });
@@ -277,7 +277,7 @@ describe("LiquidationBot", () => {
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
-          functionName: "liquidateCorePosition",
+          functionName: "liquidate",
           args: [mockPosition.borrower, nonZeroRedeemKey, mockInputs],
         })
       );
