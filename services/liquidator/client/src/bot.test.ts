@@ -22,9 +22,8 @@ const mockInputs = [{ token: "0xUSDC" as `0x${string}`, amount: 1000000n }] as c
 const mockPosition: LiquidatablePosition = {
   proxyAddress: "0x1234567890123456789012345678901234567890",
   borrower: "0xborrower0000000000000000000000000000000001",
-  healthFactor: "900000000000000000", // 0.9 (below 1.0)
-  totalCollateralValue: "1000000000000000000",
-  totalDebtValue: "500000000000000000",
+  inputs: [{ token: "0xUSDC", amount: "1000000" }],
+  vaults: ["0xvault1"],
   suppliedShares: "1000000000",
 };
 
