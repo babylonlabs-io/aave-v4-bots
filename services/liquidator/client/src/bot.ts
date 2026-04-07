@@ -178,7 +178,14 @@ export class LiquidationBot {
 
         if (result.status === "fulfilled") {
           const [inputs] = result.value;
-          candidates.push({ position: pos, inputs });
+          // Add 1% buffer to cover interest accrual between Lens query and tx execution.
+          // Anvil auto-mines each tx, so even a single block of interest growth can
+          // trigger MustNotLeaveDust since the Lens returns exact debt amounts.
+          const bufferedInputs = inputs.map((inp) => ({
+            token: inp.token,
+            amount: (inp.amount * 10100n) / 10000n,
+          }));
+          candidates.push({ position: pos, inputs: bufferedInputs });
         } else {
           recordError("lens_estimate_error");
           const reason = result.reason;
