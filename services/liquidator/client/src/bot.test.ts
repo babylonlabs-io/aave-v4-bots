@@ -22,7 +22,7 @@ const mockAmounts = [1000000n] as const;
 const mockPosition: LiquidatablePosition = {
   proxyAddress: "0x1234567890123456789012345678901234567890",
   borrower: "0xborrower0000000000000000000000000000000001",
-  inputs: [{ token: "0xUSDC", amount: "1000000" }],
+  amounts: ["1000000"],
   vaults: ["0xvault1"],
   suppliedShares: "1000000000",
 };

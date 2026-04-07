@@ -3,7 +3,7 @@ import type { Address, Hex } from "viem";
 export interface LiquidatablePosition {
   proxyAddress: Address;
   borrower: Address;
-  inputs: Array<{ token: string; amount: string }>;
+  amounts: string[];
   vaults: string[];
   suppliedShares: string;
 }
