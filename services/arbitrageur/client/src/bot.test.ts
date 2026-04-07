@@ -28,26 +28,30 @@ function createMockClients() {
       writeContract: vi.fn().mockResolvedValue("0xtxhash"),
     },
     publicClient: {
-      readContract: vi.fn().mockImplementation(({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
-        if (functionName === "previewEscrowedVaults") {
-          const vaultIds = args[0] as readonly `0x${string}`[];
-          return Promise.resolve(
-            vaultIds.map((vaultId) => ({
-              vaultId,
-              amountVault: 100000000n,
-              amountDebt: 50000000n,
-              amountInterest: 0n,
-              amountFee: 0n,
-              amountWbtcToAcquire: 50000000n,
-              isProfitable: true,
-            }))
-          );
-        }
-        if (functionName === "allowance") {
-          return Promise.resolve(BigInt("1000000000000")); // High allowance
-        }
-        return Promise.resolve(0n);
-      }),
+      readContract: vi
+        .fn()
+        .mockImplementation(
+          ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+            if (functionName === "previewEscrowedVaults") {
+              const vaultIds = args[0] as readonly `0x${string}`[];
+              return Promise.resolve(
+                vaultIds.map((vaultId) => ({
+                  vaultId,
+                  amountVault: 100000000n,
+                  amountDebt: 50000000n,
+                  amountInterest: 0n,
+                  amountFee: 0n,
+                  amountWbtcToAcquire: 50000000n,
+                  isProfitable: true,
+                }))
+              );
+            }
+            if (functionName === "allowance") {
+              return Promise.resolve(BigInt("1000000000000")); // High allowance
+            }
+            return Promise.resolve(0n);
+          }
+        ),
       estimateContractGas: vi.fn().mockResolvedValue(100000n),
       waitForTransactionReceipt: vi
         .fn()
