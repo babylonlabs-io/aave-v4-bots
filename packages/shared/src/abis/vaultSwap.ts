@@ -12,37 +12,36 @@ export const vaultSwapAbi = [
     outputs: [{ name: "wbtcPaid", type: "uint256" }],
     stateMutability: "nonpayable",
   },
-  // Emergency repay an unprofitable vault (permissionless)
+  // Repay interest on an escrowed vault
   {
     type: "function",
-    name: "emergencyRepayVault",
-    inputs: [{ name: "vaultId", type: "bytes32" }],
-    outputs: [{ name: "wbtcRepaid", type: "uint256" }],
+    name: "repayVaultInterest",
+    inputs: [
+      { name: "vaultId", type: "bytes32" },
+      { name: "wbtcToRepay", type: "uint256" },
+    ],
+    outputs: [{ name: "wbtcPaid", type: "uint256" }],
     stateMutability: "nonpayable",
   },
-  // Preview cost with fee breakdown
+  // Batch preview of escrowed vaults with full debt/profitability info
   {
     type: "function",
-    name: "previewWbtcToAcquireVaultWithFees",
-    inputs: [{ name: "vaultId", type: "bytes32" }],
+    name: "previewEscrowedVaults",
+    inputs: [{ name: "_escrowedVaults", type: "bytes32[]" }],
     outputs: [
-      { name: "wbtcNeeded", type: "uint256" },
-      { name: "principal", type: "uint256" },
-      { name: "interest", type: "uint256" },
-      { name: "protocolFee", type: "uint256" },
-    ],
-    stateMutability: "view",
-  },
-  // Check if vault is still profitable for arbitrageur
-  {
-    type: "function",
-    name: "isVaultProfitableForArbitrageur",
-    inputs: [{ name: "vaultId", type: "bytes32" }],
-    outputs: [
-      { name: "isProfitable", type: "bool" },
-      { name: "accruedInterest", type: "uint256" },
-      { name: "arbitrageurDiscount", type: "uint256" },
-      { name: "hubDebt", type: "uint256" },
+      {
+        name: "vaults",
+        type: "tuple[]",
+        components: [
+          { name: "vaultId", type: "bytes32" },
+          { name: "amountVault", type: "uint256" },
+          { name: "amountDebt", type: "uint256" },
+          { name: "amountInterest", type: "uint256" },
+          { name: "amountFee", type: "uint256" },
+          { name: "amountWbtcToAcquire", type: "uint256" },
+          { name: "isProfitable", type: "bool" },
+        ],
+      },
     ],
     stateMutability: "view",
   },

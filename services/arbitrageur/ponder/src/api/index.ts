@@ -50,13 +50,17 @@ app.get("/escrowed-vaults", async (c) => {
   const createdAtMap = new Map(vaults.map((v) => [v.vaultId, v.createdAt]));
   const toApiVault = (info: {
     vaultId: `0x${string}`;
-    btcAmount: bigint;
-    hubDebt: bigint;
-    protocolFee: bigint;
+    amountVault: bigint;
+    amountDebt: bigint;
+    amountInterest: bigint;
+    amountFee: bigint;
+    amountWbtcToAcquire: bigint;
+    isProfitable: boolean;
   }) => ({
     vaultId: info.vaultId,
-    btcAmount: info.btcAmount.toString(),
-    currentDebt: (info.hubDebt + info.protocolFee).toString(),
+    btcAmount: info.amountVault.toString(),
+    currentDebt: info.amountWbtcToAcquire.toString(),
+    isProfitable: info.isProfitable,
     createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
   });
 
@@ -65,7 +69,7 @@ app.get("/escrowed-vaults", async (c) => {
     const vaultsInfo = await publicClient.readContract({
       address: vaultSwapAddress,
       abi: vaultSwapAbi,
-      functionName: "getEscrowedVaultsInfo",
+      functionName: "previewEscrowedVaults",
       args: [vaultIds],
     });
 
@@ -79,14 +83,14 @@ app.get("/escrowed-vaults", async (c) => {
       })
     );
   } catch (error) {
-    console.error("Batch getEscrowedVaultsInfo failed, falling back to per-vault fetch:", error);
+    console.error("Batch previewEscrowedVaults failed, falling back to per-vault fetch:", error);
 
     const settled = await Promise.allSettled(
       vaultIds.map((vaultId) =>
         publicClient.readContract({
           address: vaultSwapAddress,
           abi: vaultSwapAbi,
-          functionName: "getEscrowedVaultsInfo",
+          functionName: "previewEscrowedVaults",
           args: [[vaultId]],
         })
       )

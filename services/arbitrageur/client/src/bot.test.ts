@@ -28,9 +28,20 @@ function createMockClients() {
       writeContract: vi.fn().mockResolvedValue("0xtxhash"),
     },
     publicClient: {
-      readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
-        if (functionName === "isVaultProfitableForArbitrageur") {
-          return Promise.resolve([true, 0n, 1n, 0n]);
+      readContract: vi.fn().mockImplementation(({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+        if (functionName === "previewEscrowedVaults") {
+          const vaultIds = args[0] as readonly `0x${string}`[];
+          return Promise.resolve(
+            vaultIds.map((vaultId) => ({
+              vaultId,
+              amountVault: 100000000n,
+              amountDebt: 50000000n,
+              amountInterest: 0n,
+              amountFee: 0n,
+              amountWbtcToAcquire: 50000000n,
+              isProfitable: true,
+            }))
+          );
         }
         if (functionName === "allowance") {
           return Promise.resolve(BigInt("1000000000000")); // High allowance
@@ -108,9 +119,20 @@ describe("ArbitrageurBot", () => {
     it("skips vault when not profitable for arbitrageur", async () => {
       const clients = createMockClients();
       clients.publicClient.readContract.mockImplementation(
-        ({ functionName }: { functionName: string }) => {
-          if (functionName === "isVaultProfitableForArbitrageur") {
-            return Promise.resolve([false, 1000n, 10n, 100000n]);
+        ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+          if (functionName === "previewEscrowedVaults") {
+            const vaultIds = args[0] as readonly `0x${string}`[];
+            return Promise.resolve(
+              vaultIds.map((vaultId) => ({
+                vaultId,
+                amountVault: 100000000n,
+                amountDebt: 100000n,
+                amountInterest: 1000n,
+                amountFee: 10n,
+                amountWbtcToAcquire: 100010n,
+                isProfitable: false,
+              }))
+            );
           }
           if (functionName === "allowance") {
             return Promise.resolve(BigInt("1000000000000"));
@@ -156,9 +178,20 @@ describe("ArbitrageurBot", () => {
     it("approves WBTC when allowance insufficient", async () => {
       const clients = createMockClients();
       clients.publicClient.readContract.mockImplementation(
-        ({ functionName }: { functionName: string }) => {
-          if (functionName === "isVaultProfitableForArbitrageur") {
-            return Promise.resolve([true, 0n, 1n, 0n]);
+        ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+          if (functionName === "previewEscrowedVaults") {
+            const vaultIds = args[0] as readonly `0x${string}`[];
+            return Promise.resolve(
+              vaultIds.map((vaultId) => ({
+                vaultId,
+                amountVault: 100000000n,
+                amountDebt: 50000000n,
+                amountInterest: 0n,
+                amountFee: 0n,
+                amountWbtcToAcquire: 50000000n,
+                isProfitable: true,
+              }))
+            );
           }
           if (functionName === "allowance") {
             return Promise.resolve(0n); // No allowance
@@ -177,9 +210,20 @@ describe("ArbitrageurBot", () => {
     it("approves when allowance covers debt but not slippage-adjusted maxWbtcIn", async () => {
       const clients = createMockClients();
       clients.publicClient.readContract.mockImplementation(
-        ({ functionName }: { functionName: string }) => {
-          if (functionName === "isVaultProfitableForArbitrageur") {
-            return Promise.resolve([true, 0n, 1n, 0n]);
+        ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+          if (functionName === "previewEscrowedVaults") {
+            const vaultIds = args[0] as readonly `0x${string}`[];
+            return Promise.resolve(
+              vaultIds.map((vaultId) => ({
+                vaultId,
+                amountVault: 100000000n,
+                amountDebt: 50000000n,
+                amountInterest: 0n,
+                amountFee: 0n,
+                amountWbtcToAcquire: 50000000n,
+                isProfitable: true,
+              }))
+            );
           }
           if (functionName === "allowance") {
             return Promise.resolve(50000000n); // equals currentDebt, but < maxWbtcIn with 1% slippage

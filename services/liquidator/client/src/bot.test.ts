@@ -273,11 +273,16 @@ describe("LiquidationBot", () => {
 
       await bot.run();
 
+      // Bot adds 1% buffer to Lens-returned amounts to cover interest accrual
+      const bufferedInputs = mockInputs.map((inp) => ({
+        token: inp.token,
+        amount: (inp.amount * 10100n) / 10000n,
+      }));
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
-          args: [mockPosition.borrower, nonZeroRedeemKey, mockInputs],
+          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedInputs],
         })
       );
     });

@@ -132,18 +132,24 @@ export class ArbitrageurBot {
     console.log(`   Current Debt: ${formatUnits(currentDebtBigInt, 8)} WBTC`);
 
     try {
-      const [isProfitable, accruedInterest, arbitrageurDiscount, hubDebt] =
-        await this.publicClient.readContract({
-          address: this.vaultSwapAddress,
-          abi: vaultSwapAbi,
-          functionName: "isVaultProfitableForArbitrageur",
-          args: [vaultId as Hex],
-        });
+      const previewResults = await this.publicClient.readContract({
+        address: this.vaultSwapAddress,
+        abi: vaultSwapAbi,
+        functionName: "previewEscrowedVaults",
+        args: [[vaultId as Hex]],
+      });
 
-      if (!isProfitable) {
+      if (previewResults.length === 0) {
+        console.warn(`${this.logTag}Vault ${vaultId} not found in escrow, skipping`);
+        recordError("vault_skipped");
+        return false;
+      }
+
+      const preview = previewResults[0];
+      if (!preview.isProfitable) {
         console.warn(`${this.logTag}Vault ${vaultId} is currently unprofitable, skipping`);
         console.warn(
-          `   Hub debt: ${formatUnits(hubDebt, 8)} WBTC | Interest: ${formatUnits(accruedInterest, 8)} WBTC | Discount: ${formatUnits(arbitrageurDiscount, 8)} WBTC`
+          `   Debt: ${formatUnits(preview.amountDebt, 8)} WBTC | Interest: ${formatUnits(preview.amountInterest, 8)} WBTC | Fee: ${formatUnits(preview.amountFee, 8)} WBTC`
         );
         recordError("vault_skipped");
         return false;
