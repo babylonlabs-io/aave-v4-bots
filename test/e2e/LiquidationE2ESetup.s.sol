@@ -7,10 +7,9 @@ import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
 import {BtcHelpers} from "test-utils/BtcHelpers.sol";
 import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
-import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
-import {IBTCVaultRegistry} from "vault-contracts/interfaces/IBTCVaultRegistry.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {AaveIntegrationLens} from "vault-contracts/applications/aave/AaveIntegrationLens.sol";
+import {TokenAmountLib} from "vault-contracts/lib/helpers/TokenAmountLib.sol";
 import {E2EConstants} from "./E2EConstants.sol";
 
 /// @title LiquidationE2ESetup
@@ -115,13 +114,11 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         _borrowFromPositionScript(E2EConstants.BORROWER_PRIVATE_KEY, borrowAmount, borrower);
         console.log("Borrowed:", borrowAmount / ONE_USDC, "USDC");
 
-        // Check position is healthy
-        (uint256 collateralBefore, uint256 debtBefore, uint256 healthFactorBefore) = _getPositionInfo(borrower);
+        // Check position is healthy (Lens.estimateLiquidation reverts when healthy)
+        address borrowerProxy = aaveAdapter.getPosition(borrower).proxyContract;
         console.log("\n--- Position Before Price Drop ---");
-        console.log("Collateral value:", collateralBefore / 1e26, "USD");
-        console.log("Debt value:", debtBefore / 1e26, "USD");
-        console.log("Health Factor:", healthFactorBefore / 1e16, "/ 100");
-        require(healthFactorBefore > 1e18, "Position should be healthy initially");
+        require(!_isLiquidatable(lens, borrowerProxy), "Position should be healthy initially");
+        console.log("Position is healthy (Lens reverts estimateLiquidation)");
 
         // Simulate price drop
         console.log("\n--- Step 13: Price Drop ---");
@@ -130,10 +127,9 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         vm.stopBroadcast();
         console.log("BTC price dropped by 40%");
 
-        // Verify position is now unhealthy
-        (,, uint256 healthFactorAfter) = _getPositionInfo(borrower);
-        console.log("Health Factor after drop:", healthFactorAfter / 1e16, "/ 100");
-        require(healthFactorAfter < 1e18, "Position should be unhealthy after price drop");
+        // Verify position is now unhealthy (Lens.estimateLiquidation succeeds when liquidatable)
+        require(_isLiquidatable(lens, borrowerProxy), "Position should be unhealthy after price drop");
+        console.log("Position is unhealthy (Lens estimateLiquidation succeeded)");
 
         console.log("\n=== Setup Complete ===");
         console.log("Run LiquidationE2EVerify.s.sol to verify liquidation and arbitrage");
@@ -393,14 +389,17 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveAdapter));
     }
 
-    function _getPositionInfo(address user)
-        internal
-        view
-        returns (uint256 totalCollateral, uint256 totalDebt, uint256 healthFactor)
-    {
-        address proxy = _getUserProxyAddress(user);
-        ISpoke.UserAccountData memory accountData = aaveSpoke.getUserAccountData(proxy);
-        return (accountData.totalCollateralValue, accountData.totalDebtValueRay, accountData.healthFactor);
+    /// @notice Check if a position is liquidatable via the Lens contract.
+    /// @dev Lens.estimateLiquidation reverts when the position is healthy, succeeds when liquidatable.
+    function _isLiquidatable(AaveIntegrationLens lens, address borrowerProxy) internal view returns (bool) {
+        try lens.estimateLiquidation(borrowerProxy, false) returns (
+            TokenAmountLib.TokenAmount[] memory,
+            bytes32[] memory
+        ) {
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     function _getCurrentBlockNumber() internal returns (string memory) {
