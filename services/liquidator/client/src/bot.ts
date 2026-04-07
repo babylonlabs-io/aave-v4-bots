@@ -47,6 +47,7 @@ export interface LiquidationBotConfig {
   wbtcAddress: Address;
   btcRedeemKey: Hex;
   isDirectRedemption: boolean;
+  llpAddress: Address;
   ponderUrl: string;
   txReceiptTimeoutMs: number;
 }
@@ -61,6 +62,7 @@ export class LiquidationBot {
   private wbtcAddress: Address;
   private btcRedeemKey: Hex;
   private isDirectRedemption: boolean;
+  private llpAddress: Address;
   private ponderUrl: string;
   private txReceiptTimeoutMs: number;
 
@@ -74,6 +76,7 @@ export class LiquidationBot {
     this.wbtcAddress = config.wbtcAddress;
     this.btcRedeemKey = config.btcRedeemKey;
     this.isDirectRedemption = config.isDirectRedemption;
+    this.llpAddress = config.llpAddress;
     this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
   }
@@ -175,7 +178,14 @@ export class LiquidationBot {
 
         if (result.status === "fulfilled") {
           const [inputs] = result.value;
-          candidates.push({ position: pos, inputs });
+          // Add 1% buffer to cover interest accrual between Lens query and tx execution.
+          // Anvil auto-mines each tx, so even a single block of interest growth can
+          // trigger MustNotLeaveDust since the Lens returns exact debt amounts.
+          const bufferedInputs = inputs.map((inp) => ({
+            token: inp.token,
+            amount: (inp.amount * 10100n) / 10000n,
+          }));
+          candidates.push({ position: pos, inputs: bufferedInputs });
         } else {
           recordError("lens_estimate_error");
           const reason = result.reason;
@@ -192,13 +202,21 @@ export class LiquidationBot {
       // 4. Simulate all liquidations in parallel
       const simulationResults = await Promise.allSettled(
         candidates.map(({ position, inputs }) =>
-          this.publicClient.simulateContract({
-            address: this.controllerAddress,
-            abi: controllerAbi,
-            functionName: "liquidateCorePosition",
-            args: [position.borrower, this.btcRedeemKey, inputs],
-            account: this.walletClient.account,
-          })
+          this.isDirectRedemption
+            ? this.publicClient.simulateContract({
+                address: this.controllerAddress,
+                abi: controllerAbi,
+                functionName: "liquidate",
+                args: [position.borrower, this.btcRedeemKey, inputs],
+                account: this.walletClient.account,
+              })
+            : this.publicClient.simulateContract({
+                address: this.controllerAddress,
+                abi: controllerAbi,
+                functionName: "liquidateWithLLP",
+                args: [position.borrower, this.llpAddress, inputs, []],
+                account: this.walletClient.account,
+              })
         )
       );
 
@@ -243,13 +261,21 @@ export class LiquidationBot {
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, inputs } = validCandidates[i];
         try {
-          const hash = await this.walletClient.writeContract({
-            address: this.controllerAddress,
-            abi: controllerAbi,
-            functionName: "liquidateCorePosition",
-            args: [position.borrower, this.btcRedeemKey, inputs],
-            nonce: nextNonce,
-          });
+          const hash = this.isDirectRedemption
+            ? await this.walletClient.writeContract({
+                address: this.controllerAddress,
+                abi: controllerAbi,
+                functionName: "liquidate",
+                args: [position.borrower, this.btcRedeemKey, inputs],
+                nonce: nextNonce,
+              })
+            : await this.walletClient.writeContract({
+                address: this.controllerAddress,
+                abi: controllerAbi,
+                functionName: "liquidateWithLLP",
+                args: [position.borrower, this.llpAddress, inputs, []],
+                nonce: nextNonce,
+              });
           console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);
           txHashes.push(hash);
           nextNonce += 1;

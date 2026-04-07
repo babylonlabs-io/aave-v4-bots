@@ -22,9 +22,8 @@ const mockInputs = [{ token: "0xUSDC" as `0x${string}`, amount: 1000000n }] as c
 const mockPosition: LiquidatablePosition = {
   proxyAddress: "0x1234567890123456789012345678901234567890",
   borrower: "0xborrower0000000000000000000000000000000001",
-  healthFactor: "900000000000000000", // 0.9 (below 1.0)
-  totalCollateralValue: "1000000000000000000",
-  totalDebtValue: "500000000000000000",
+  inputs: [{ token: "0xUSDC", amount: "1000000" }],
+  vaults: ["0xvault1"],
   suppliedShares: "1000000000",
 };
 
@@ -63,6 +62,7 @@ function createBot(
     wbtcAddress: "0xwbtc" as `0x${string}`,
     btcRedeemKey: ZERO_BYTES32,
     isDirectRedemption: false,
+    llpAddress: "0xllpaddress000000000000000000000000000000" as `0x${string}`,
     ponderUrl: "http://localhost:42069",
     txReceiptTimeoutMs: 60000,
     ...overrides,
@@ -249,8 +249,7 @@ describe("LiquidationBot", () => {
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 42,
-          functionName: "liquidateCorePosition",
-          args: [mockPosition.borrower, ZERO_BYTES32, mockInputs],
+          functionName: "liquidateWithLLP",
         })
       );
     });
@@ -274,11 +273,16 @@ describe("LiquidationBot", () => {
 
       await bot.run();
 
+      // Bot adds 1% buffer to Lens-returned amounts to cover interest accrual
+      const bufferedInputs = mockInputs.map((inp) => ({
+        token: inp.token,
+        amount: (inp.amount * 10100n) / 10000n,
+      }));
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
-          functionName: "liquidateCorePosition",
-          args: [mockPosition.borrower, nonZeroRedeemKey, mockInputs],
+          functionName: "liquidate",
+          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedInputs],
         })
       );
     });

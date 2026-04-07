@@ -135,7 +135,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
 
     function _getUserProxyAddress(address user) internal view returns (address) {
         bytes32 salt = keccak256(abi.encodePacked(user));
-        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveController));
+        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveAdapter));
     }
 
     function _getPositionInfo(address user)
@@ -145,6 +145,6 @@ contract LiquidationE2EVerify is Script, BaseE2E {
     {
         address proxy = _getUserProxyAddress(user);
         ISpoke.UserAccountData memory accountData = aaveSpoke.getUserAccountData(proxy);
-        return (accountData.totalCollateralValue, accountData.totalDebtValue, accountData.healthFactor);
+        return (accountData.totalCollateralValue, accountData.totalDebtValueRay, accountData.healthFactor);
     }
 }

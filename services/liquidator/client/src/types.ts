@@ -3,9 +3,8 @@ import type { Address, Hex } from "viem";
 export interface LiquidatablePosition {
   proxyAddress: Address;
   borrower: Address;
-  healthFactor: string;
-  totalCollateralValue: string;
-  totalDebtValue: string;
+  inputs: Array<{ token: string; amount: string }>;
+  vaults: string[];
   suppliedShares: string;
 }
 
@@ -39,6 +38,9 @@ export interface Config {
 
   // Whether to use direct BTC redemption (default: false = WBTC via VaultSwap)
   isDirectRedemption: boolean;
+
+  // LLP address for non-direct redemption (VaultSwap address)
+  llpAddress: Address;
 
   // Monitoring
   metricsPort: number;

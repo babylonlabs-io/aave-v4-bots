@@ -1,4 +1,4 @@
-// AaveIntegrationController ABI - methods used by liquidator and arbitrageur bots
+// AaveIntegrationAdapter ABI - methods used by liquidator and arbitrageur bots
 
 export const controllerAbi = [
   // Liquidator
@@ -11,10 +11,10 @@ export const controllerAbi = [
   },
   {
     type: "function",
-    name: "liquidateCorePosition",
+    name: "liquidate",
     inputs: [
       { name: "borrower", type: "address" },
-      { name: "btcRedeemKey", type: "bytes32" },
+      { name: "directBtcRedeemKey", type: "bytes32" },
       {
         name: "inputs",
         type: "tuple[]",
@@ -24,7 +24,33 @@ export const controllerAbi = [
         ],
       },
     ],
-    outputs: [{ name: "seizedAmount", type: "uint256" }],
+    outputs: [{ name: "vaultIds", type: "bytes32[]" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "liquidateWithLLP",
+    inputs: [
+      { name: "borrower", type: "address" },
+      { name: "llp", type: "address" },
+      {
+        name: "inputs",
+        type: "tuple[]",
+        components: [
+          { name: "token", type: "address" },
+          { name: "amount", type: "uint256" },
+        ],
+      },
+      {
+        name: "requestedTokens",
+        type: "tuple[]",
+        components: [
+          { name: "token", type: "address" },
+          { name: "amount", type: "uint256" },
+        ],
+      },
+    ],
+    outputs: [{ name: "vaultIds", type: "bytes32[]" }],
     stateMutability: "nonpayable",
   },
   {
