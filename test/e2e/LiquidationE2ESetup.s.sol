@@ -8,8 +8,7 @@ import {BtcHelpers} from "test-utils/BtcHelpers.sol";
 import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
 import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
-import {IBTCVaultsManager} from "vault-contracts/interfaces/IBTCVaultsManager.sol";
-import {BTCProofOfPossession} from "vault-contracts/lib/pop/BTCProofOfPossession.sol";
+import {IBTCVaultRegistry} from "vault-contracts/interfaces/IBTCVaultRegistry.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {AaveIntegrationLens} from "vault-contracts/applications/aave/AaveIntegrationLens.sol";
 import {E2EConstants} from "./E2EConstants.sol";
@@ -19,7 +18,9 @@ import {E2EConstants} from "./E2EConstants.sol";
 /// @dev Part 1: Creates unhealthy position, starts bot/ponder, persists state
 ///      Run LiquidationE2EVerify.s.sol after this to verify liquidation occurred
 contract LiquidationE2ESetup is Script, BaseE2E {
-    bytes32 internal constant _E2E_LAMPORT_PK_HASH = keccak256("test_lamport_key");
+    bytes32 internal constant _E2E_WOTS_PK_HASH = keccak256("test_wots_key");
+    bytes internal constant _E2E_DUMMY_PAYOUT_ADDRESS =
+        hex"5120aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     /// @notice Main entry point for the setup script
     function run() public {
@@ -52,7 +53,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         console.log("\n--- Step 3: Deploy Lens ---");
         vm.startBroadcast(adminPrivateKey);
         AaveIntegrationLens lens =
-            new AaveIntegrationLens(address(vaultManager), address(aaveController), address(aaveSpoke), vaultBtcId);
+            new AaveIntegrationLens(address(btcVaultRegistry), address(aaveAdapter), address(aaveSpoke), vaultBtcId);
         vm.stopBroadcast();
         console.log("Lens deployed at:", address(lens));
 
@@ -150,28 +151,42 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         returns (bytes32 vaultId)
     {
         address depositor = vm.addr(depositorPrivateKey);
-        bytes32 vaultProviderBtcKey = vaultManager.getVaultProviderBTCKey(vp);
+
+        // Generate unique secret and hashlock for atomic swap
+        bytes32 secret = keccak256(abi.encodePacked("e2e_liq_secret", block.number));
+        bytes32 hashlock = sha256(abi.encodePacked(secret));
+
+        bytes32 vaultProviderBtcKey = btcVaultRegistry.getVaultProviderBTCKey(vp);
         bytes memory btcPopSignature =
-            PopHelpers.getBip322P2wpkh(vm, depositorBtcPubKey, BTCProofOfPossession.ACTION_PEGIN, address(vaultManager));
+            PopHelpers.getBip322P2wpkh(vm, depositorBtcPubKey, PopHelpers.ACTION_PEGIN, address(btcVaultRegistry));
         (bytes memory unsignedPeginTx, string memory prevoutTxid, uint32 prevoutVout, uint64 utxoAmount) =
-            _generateUnsignedPeginTx(depositorBtcPubKey, vaultProviderBtcKey, uint64(amountSats), address(aaveController));
+            _generateUnsignedPeginTx(depositorBtcPubKey, vaultProviderBtcKey, uint64(amountSats), address(aaveAdapter));
 
         // Get required pegin fee and fund depositor
-        uint256 pegInFee = vaultManager.getPegInFee(vp);
+        uint256 pegInFee = btcVaultRegistry.getPegInFee(vp);
         vm.deal(depositor, depositor.balance + pegInFee);
 
         vm.startBroadcast(depositorPrivateKey);
-        vaultId = vaultManager.submitPeginRequest{value: pegInFee}(
-            depositor, depositorBtcPubKey, btcPopSignature, unsignedPeginTx, vp, _E2E_LAMPORT_PK_HASH
+        vaultId = btcVaultRegistry.submitPeginRequest{value: pegInFee}(
+            depositor,
+            depositorBtcPubKey,
+            btcPopSignature,
+            unsignedPeginTx,
+            unsignedPeginTx, // Use same tx as depositorSignedPeginTx for E2E
+            vp,
+            hashlock,
+            0,
+            _E2E_DUMMY_PAYOUT_ADDRESS,
+            _E2E_WOTS_PK_HASH
         );
         vm.stopBroadcast();
 
         _collectPeginACKs(vaultId);
-        string memory txid =
-            _signAndBroadcastPeginTx(unsignedPeginTx, depositorBtcPubKey, prevoutTxid, prevoutVout, utxoAmount);
+        _signAndBroadcastPeginTx(unsignedPeginTx, depositorBtcPubKey, prevoutTxid, prevoutVout, utxoAmount);
 
-        vm.startBroadcast(vpPrivKey);
-        _submitInclusionProofAndActivateVault(vaultId, txid);
+        // Activate vault with secret (atomic swap reveal)
+        vm.startBroadcast(depositorPrivateKey);
+        btcVaultRegistry.activateVaultWithSecret(vaultId, secret, "");
         vm.stopBroadcast();
 
         return vaultId;
@@ -181,7 +196,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         uint256 balanceBefore = usdc.balanceOf(receiver);
 
         vm.startBroadcast(borrowerPrivateKey);
-        aaveController.borrowFromCorePosition(usdcId, amountUsdc, receiver);
+        aaveAdapter.borrowFromCorePosition(usdcId, amountUsdc, receiver);
         vm.stopBroadcast();
 
         uint256 balanceAfter = usdc.balanceOf(receiver);
@@ -221,7 +236,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             vm.toString(address(aaveSpoke)),
             "\n",
             "CONTROLLER_ADDRESS=",
-            vm.toString(address(aaveController)),
+            vm.toString(address(aaveAdapter)),
             "\n",
             "CHAIN_ID=",
             vm.toString(E2EConstants.CHAIN_ID),
@@ -375,7 +390,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
 
     function _getUserProxyAddress(address user) internal view returns (address) {
         bytes32 salt = keccak256(abi.encodePacked(user));
-        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveController));
+        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveAdapter));
     }
 
     function _getPositionInfo(address user)
@@ -385,7 +400,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     {
         address proxy = _getUserProxyAddress(user);
         ISpoke.UserAccountData memory accountData = aaveSpoke.getUserAccountData(proxy);
-        return (accountData.totalCollateralValue, accountData.totalDebtValue, accountData.healthFactor);
+        return (accountData.totalCollateralValue, accountData.totalDebtValueRay, accountData.healthFactor);
     }
 
     function _getCurrentBlockNumber() internal returns (string memory) {
