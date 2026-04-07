@@ -166,10 +166,10 @@ export class LiquidationBot {
         )
       );
 
-      // 3. Build position + inputs pairs, filter failed estimates
+      // 3. Build position + amounts pairs, filter failed estimates
       const candidates: Array<{
         position: LiquidatablePosition;
-        inputs: readonly { token: Address; amount: bigint }[];
+        amounts: readonly bigint[];
       }> = [];
 
       for (let i = 0; i < estimateResults.length; i++) {
@@ -177,15 +177,12 @@ export class LiquidationBot {
         const pos = positions[i];
 
         if (result.status === "fulfilled") {
-          const [inputs] = result.value;
+          const [amounts] = result.value;
           // Add 1% buffer to cover interest accrual between Lens query and tx execution.
           // Anvil auto-mines each tx, so even a single block of interest growth can
           // trigger MustNotLeaveDust since the Lens returns exact debt amounts.
-          const bufferedInputs = inputs.map((inp) => ({
-            token: inp.token,
-            amount: (inp.amount * 10100n) / 10000n,
-          }));
-          candidates.push({ position: pos, inputs: bufferedInputs });
+          const bufferedAmounts = amounts.map((amt) => (amt * 10100n) / 10000n);
+          candidates.push({ position: pos, amounts: bufferedAmounts });
         } else {
           recordError("lens_estimate_error");
           const reason = result.reason;
@@ -200,21 +197,25 @@ export class LiquidationBot {
       }
 
       // 4. Simulate all liquidations in parallel
+      // priorityOrder: default sequential order [0, 1, 2, ...] for reserve processing
+      const defaultPriorityOrder = candidates.length > 0
+        ? candidates[0].amounts.map((_, i) => BigInt(i))
+        : [];
       const simulationResults = await Promise.allSettled(
-        candidates.map(({ position, inputs }) =>
+        candidates.map(({ position, amounts }) =>
           this.isDirectRedemption
             ? this.publicClient.simulateContract({
                 address: this.controllerAddress,
                 abi: controllerAbi,
                 functionName: "liquidate",
-                args: [position.borrower, this.btcRedeemKey, inputs],
+                args: [position.borrower, this.btcRedeemKey, [...amounts], [...defaultPriorityOrder]],
                 account: this.walletClient.account,
               })
             : this.publicClient.simulateContract({
                 address: this.controllerAddress,
                 abi: controllerAbi,
                 functionName: "liquidateWithLLP",
-                args: [position.borrower, this.llpAddress, inputs, []],
+                args: [position.borrower, this.llpAddress, [...amounts], [...defaultPriorityOrder], []],
                 account: this.walletClient.account,
               })
         )
@@ -259,21 +260,21 @@ export class LiquidationBot {
 
       const txHashes: Hex[] = [];
       for (let i = 0; i < validCandidates.length; i++) {
-        const { position, inputs } = validCandidates[i];
+        const { position, amounts } = validCandidates[i];
         try {
           const hash = this.isDirectRedemption
             ? await this.walletClient.writeContract({
                 address: this.controllerAddress,
                 abi: controllerAbi,
                 functionName: "liquidate",
-                args: [position.borrower, this.btcRedeemKey, inputs],
+                args: [position.borrower, this.btcRedeemKey, [...amounts], [...defaultPriorityOrder]],
                 nonce: nextNonce,
               })
             : await this.walletClient.writeContract({
                 address: this.controllerAddress,
                 abi: controllerAbi,
                 functionName: "liquidateWithLLP",
-                args: [position.borrower, this.llpAddress, inputs, []],
+                args: [position.borrower, this.llpAddress, [...amounts], [...defaultPriorityOrder], []],
                 nonce: nextNonce,
               });
           console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);

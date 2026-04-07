@@ -9,14 +9,7 @@ export const lensAbi = [
       { name: "isDirectRedemption", type: "bool" },
     ],
     outputs: [
-      {
-        name: "inputs",
-        type: "tuple[]",
-        components: [
-          { name: "token", type: "address" },
-          { name: "amount", type: "uint256" },
-        ],
-      },
+      { name: "amounts", type: "uint256[]" },
       { name: "vaults", type: "bytes32[]" },
     ],
     stateMutability: "view",
@@ -30,14 +23,7 @@ export const lensAbi = [
       { name: "isDirectRedemption", type: "bool" },
     ],
     outputs: [
-      {
-        name: "inputs",
-        type: "tuple[]",
-        components: [
-          { name: "token", type: "address" },
-          { name: "amount", type: "uint256" },
-        ],
-      },
+      { name: "amounts", type: "uint256[]" },
       { name: "vaults", type: "bytes32[]" },
     ],
     stateMutability: "view",

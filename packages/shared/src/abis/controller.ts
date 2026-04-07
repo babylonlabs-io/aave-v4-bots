@@ -15,14 +15,8 @@ export const controllerAbi = [
     inputs: [
       { name: "borrower", type: "address" },
       { name: "directBtcRedeemKey", type: "bytes32" },
-      {
-        name: "inputs",
-        type: "tuple[]",
-        components: [
-          { name: "token", type: "address" },
-          { name: "amount", type: "uint256" },
-        ],
-      },
+      { name: "amounts", type: "uint256[]" },
+      { name: "priorityOrder", type: "uint256[]" },
     ],
     outputs: [{ name: "vaultIds", type: "bytes32[]" }],
     stateMutability: "nonpayable",
@@ -33,14 +27,8 @@ export const controllerAbi = [
     inputs: [
       { name: "borrower", type: "address" },
       { name: "llp", type: "address" },
-      {
-        name: "inputs",
-        type: "tuple[]",
-        components: [
-          { name: "token", type: "address" },
-          { name: "amount", type: "uint256" },
-        ],
-      },
+      { name: "amounts", type: "uint256[]" },
+      { name: "priorityOrder", type: "uint256[]" },
       {
         name: "requestedTokens",
         type: "tuple[]",
