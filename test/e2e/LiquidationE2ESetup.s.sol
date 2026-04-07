@@ -265,6 +265,9 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             "WBTC_ADDRESS=",
             vm.toString(address(wbtc)),
             "\n",
+            "LLP_ADDRESS=",
+            vm.toString(address(vaultSwap)),
+            "\n",
             "POLLING_INTERVAL_MS=1000\n",
             "METRICS_PORT=9090\n",
             "EOF"
