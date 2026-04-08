@@ -17,12 +17,12 @@ vi.mock("./metrics", () => ({
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
-const mockInputs = [{ token: "0xUSDC" as `0x${string}`, amount: 1000000n }] as const;
+const mockAmounts = [1000000n] as const;
 
 const mockPosition: LiquidatablePosition = {
   proxyAddress: "0x1234567890123456789012345678901234567890",
   borrower: "0xborrower0000000000000000000000000000000001",
-  inputs: [{ token: "0xUSDC", amount: "1000000" }],
+  amounts: ["1000000"],
   vaults: ["0xvault1"],
   suppliedShares: "1000000000",
 };
@@ -37,7 +37,7 @@ function createMockClients() {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
       readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
         if (functionName === "estimateLiquidation") {
-          return Promise.resolve([mockInputs, ["0xvault1"]]);
+          return Promise.resolve([mockAmounts, ["0xvault1"]]);
         }
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
@@ -274,15 +274,12 @@ describe("LiquidationBot", () => {
       await bot.run();
 
       // Bot adds 1% buffer to Lens-returned amounts to cover interest accrual
-      const bufferedInputs = mockInputs.map((inp) => ({
-        token: inp.token,
-        amount: (inp.amount * 10100n) / 10000n,
-      }));
+      const bufferedAmounts = mockAmounts.map((amt) => (amt * 10100n) / 10000n);
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
-          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedInputs],
+          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n]],
         })
       );
     });

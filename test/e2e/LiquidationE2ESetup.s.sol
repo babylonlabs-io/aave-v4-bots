@@ -9,7 +9,6 @@ import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {AaveIntegrationLens} from "vault-contracts/applications/aave/AaveIntegrationLens.sol";
-import {TokenAmountLib} from "vault-contracts/lib/helpers/TokenAmountLib.sol";
 import {E2EConstants} from "./E2EConstants.sol";
 
 /// @title LiquidationE2ESetup
@@ -396,7 +395,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     /// @dev Lens.estimateLiquidation reverts when the position is healthy, succeeds when liquidatable.
     function _isLiquidatable(AaveIntegrationLens lens, address borrowerProxy) internal view returns (bool) {
         try lens.estimateLiquidation(borrowerProxy, false) returns (
-            TokenAmountLib.TokenAmount[] memory,
+            uint256[] memory,
             bytes32[] memory
         ) {
             return true;

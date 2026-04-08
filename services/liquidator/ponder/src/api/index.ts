@@ -70,7 +70,7 @@ app.get("/liquidatable-positions", async (c) => {
   const liquidatable: Array<{
     proxyAddress: string;
     borrower: string;
-    inputs: Array<{ token: string; amount: string }>;
+    amounts: string[];
     vaults: string[];
     suppliedShares: string;
   }> = [];
@@ -97,15 +97,12 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
-    const [inputs, vaults] = result.value;
+    const [amounts, vaults] = result.value;
 
     liquidatable.push({
       proxyAddress: p.proxyAddress,
       borrower,
-      inputs: inputs.map((inp) => ({
-        token: inp.token,
-        amount: inp.amount.toString(),
-      })),
+      amounts: amounts.map((amt) => amt.toString()),
       vaults: vaults as string[],
       suppliedShares: p.suppliedShares.toString(),
     });
