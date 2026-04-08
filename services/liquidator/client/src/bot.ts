@@ -197,38 +197,26 @@ export class LiquidationBot {
       }
 
       // 4. Simulate all liquidations in parallel
-      // priorityOrder: default sequential order [0, 1, 2, ...] for reserve processing
-      const defaultPriorityOrder =
-        candidates.length > 0 ? candidates[0].amounts.map((_, i) => BigInt(i)) : [];
       const simulationResults = await Promise.allSettled(
-        candidates.map(({ position, amounts }) =>
-          this.isDirectRedemption
+        candidates.map(({ position, amounts }) => {
+          // Default sequential priority order per candidate (each may have different reserve count)
+          const priorityOrder = amounts.map((_, i) => BigInt(i));
+          return this.isDirectRedemption
             ? this.publicClient.simulateContract({
                 address: this.controllerAddress,
                 abi: controllerAbi,
                 functionName: "liquidate",
-                args: [
-                  position.borrower,
-                  this.btcRedeemKey,
-                  [...amounts],
-                  [...defaultPriorityOrder],
-                ],
+                args: [position.borrower, this.btcRedeemKey, [...amounts], [...priorityOrder]],
                 account: this.walletClient.account,
               })
             : this.publicClient.simulateContract({
                 address: this.controllerAddress,
                 abi: controllerAbi,
                 functionName: "liquidateWithLLP",
-                args: [
-                  position.borrower,
-                  this.llpAddress,
-                  [...amounts],
-                  [...defaultPriorityOrder],
-                  [],
-                ],
+                args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
                 account: this.walletClient.account,
-              })
-        )
+              });
+        })
       );
 
       const validCandidates: typeof candidates = [];
@@ -271,31 +259,21 @@ export class LiquidationBot {
       const txHashes: Hex[] = [];
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, amounts } = validCandidates[i];
+        const priorityOrder = amounts.map((_, j) => BigInt(j));
         try {
           const hash = this.isDirectRedemption
             ? await this.walletClient.writeContract({
                 address: this.controllerAddress,
                 abi: controllerAbi,
                 functionName: "liquidate",
-                args: [
-                  position.borrower,
-                  this.btcRedeemKey,
-                  [...amounts],
-                  [...defaultPriorityOrder],
-                ],
+                args: [position.borrower, this.btcRedeemKey, [...amounts], [...priorityOrder]],
                 nonce: nextNonce,
               })
             : await this.walletClient.writeContract({
                 address: this.controllerAddress,
                 abi: controllerAbi,
                 functionName: "liquidateWithLLP",
-                args: [
-                  position.borrower,
-                  this.llpAddress,
-                  [...amounts],
-                  [...defaultPriorityOrder],
-                  [],
-                ],
+                args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
                 nonce: nextNonce,
               });
           console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);
