@@ -30,7 +30,7 @@ COPY services/liquidator/client/ ./services/liquidator/client/
 FROM node:22-alpine AS runner
 
 # Install pnpm for running tsx and wget for healthchecks
-RUN apk add --no-cache wget && \
+RUN apk add --no-cache wget~=1.25 && \
     corepack enable && corepack prepare pnpm@9.13.2 --activate
 
 # Create non-root user for security
