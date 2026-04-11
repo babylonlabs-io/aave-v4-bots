@@ -12,7 +12,7 @@ import {
 
 import {
   type RetryConfig,
-  controllerAbi,
+  adapterAbi,
   erc20Abi,
   fetchWithRetry,
   lensAbi,
@@ -41,7 +41,7 @@ export interface LiquidationBotConfig {
   logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
-  controllerAddress: Address;
+  adapterAddress: Address;
   lensAddress: Address;
   debtTokenAddresses?: Address[];
   wbtcAddress: Address;
@@ -54,7 +54,7 @@ export class LiquidationBot {
   private logTag: string;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
-  private controllerAddress: Address;
+  private adapterAddress: Address;
   private lensAddress: Address;
   private debtTokenAddresses: Address[];
   private wbtcAddress: Address;
@@ -66,7 +66,7 @@ export class LiquidationBot {
     this.logTag = config.logTag;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
-    this.controllerAddress = config.controllerAddress;
+    this.adapterAddress = config.adapterAddress;
     this.lensAddress = config.lensAddress;
     this.debtTokenAddresses = config.debtTokenAddresses ?? [];
     this.wbtcAddress = config.wbtcAddress;
@@ -77,14 +77,18 @@ export class LiquidationBot {
 
   /**
    * Discover debt tokens from the Spoke contract's borrowable reserves.
-   * Reads Spoke address from the Controller, then enumerates reserves.
+   * Reads Spoke address from the Adapter, then enumerates reserves.
    */
   async discoverDebtTokens(): Promise<void> {
     console.log(`${this.logTag}Discovering debt tokens from Spoke...`);
 
+    function isBorrowable(reserve: { flags: number }): boolean {
+      return (reserve.flags & 4) !== 0;
+    }
+
     const spokeAddress = await this.publicClient.readContract({
-      address: this.controllerAddress,
-      abi: controllerAbi,
+      address: this.adapterAddress,
+      abi: adapterAbi,
       functionName: "BTC_VAULT_CORE_SPOKE",
     });
 
@@ -108,7 +112,7 @@ export class LiquidationBot {
         args: [i],
       });
 
-      if (reserve.borrowable) {
+      if (isBorrowable(reserve)) {
         discovered.push(reserve.underlying);
 
         const symbol = await this.publicClient.readContract({
@@ -155,7 +159,7 @@ export class LiquidationBot {
             address: this.lensAddress,
             abi: lensAbi,
             functionName: "estimateLiquidation",
-            args: [p.proxyAddress],
+            args: [p.proxyAddress, true],
           })
         )
       );
@@ -163,7 +167,7 @@ export class LiquidationBot {
       // 3. Build position + inputs pairs, filter failed estimates
       const candidates: Array<{
         position: LiquidatablePosition;
-        inputs: readonly { token: Address; amount: bigint }[];
+        amounts: bigint[];
       }> = [];
 
       for (let i = 0; i < estimateResults.length; i++) {
@@ -171,8 +175,8 @@ export class LiquidationBot {
         const pos = positions[i];
 
         if (result.status === "fulfilled") {
-          const [inputs] = result.value;
-          candidates.push({ position: pos, inputs });
+          const [amounts] = result.value;
+          candidates.push({ position: pos, amounts: amounts.map((a) => BigInt(a)) });
         } else {
           recordError("lens_estimate_error");
           const reason = result.reason;
@@ -188,12 +192,12 @@ export class LiquidationBot {
 
       // 4. Simulate all liquidations in parallel
       const simulationResults = await Promise.allSettled(
-        candidates.map(({ position, inputs }) =>
+        candidates.map(({ position, amounts }) =>
           this.publicClient.simulateContract({
-            address: this.controllerAddress,
-            abi: controllerAbi,
-            functionName: "liquidateCorePosition",
-            args: [position.borrower, this.btcRedeemKey, inputs],
+            address: this.adapterAddress,
+            abi: adapterAbi,
+            functionName: "liquidate",
+            args: [position.borrower, this.btcRedeemKey, amounts, Array.from({ length: amounts.length }, (_, i) => BigInt(i))],
             account: this.walletClient.account,
           })
         )
@@ -238,13 +242,13 @@ export class LiquidationBot {
 
       const txHashes: Hex[] = [];
       for (let i = 0; i < validCandidates.length; i++) {
-        const { position, inputs } = validCandidates[i];
+        const { position, amounts } = validCandidates[i];
         try {
           const hash = await this.walletClient.writeContract({
-            address: this.controllerAddress,
-            abi: controllerAbi,
-            functionName: "liquidateCorePosition",
-            args: [position.borrower, this.btcRedeemKey, inputs],
+            address: this.adapterAddress,
+            abi: adapterAbi,
+            functionName: "liquidate",
+            args: [position.borrower, this.btcRedeemKey, amounts, Array.from({ length: amounts.length }, (_, i) => BigInt(i))],
             nonce: nextNonce,
           });
           console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);
@@ -338,7 +342,7 @@ export class LiquidationBot {
   }
 
   /**
-   * Ensure liquidator has approved Controller to spend all debt tokens
+   * Ensure liquidator has approved Adapter to spend all debt tokens
    */
   async ensureApproval(): Promise<void> {
     const liquidator = this.walletClient.account.address;
@@ -351,7 +355,7 @@ export class LiquidationBot {
         address: tokenAddress,
         abi: erc20Abi,
         functionName: "allowance",
-        args: [liquidator, this.controllerAddress],
+        args: [liquidator, this.adapterAddress],
       });
 
       if (allowance < maxApproval / 2n) {
@@ -362,13 +366,13 @@ export class LiquidationBot {
           args: [],
         });
 
-        console.log(`${this.logTag}Approving ${symbol} for Controller...`);
+        console.log(`${this.logTag}Approving ${symbol} for Adapter...`);
 
         const hash = await this.walletClient.writeContract({
           address: tokenAddress,
           abi: erc20Abi,
           functionName: "approve",
-          args: [this.controllerAddress, maxApproval],
+          args: [this.adapterAddress, maxApproval],
         });
 
         const receipt = await this.publicClient.waitForTransactionReceipt({

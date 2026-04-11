@@ -1,12 +1,12 @@
 import { createConfig } from "ponder";
 
-import { controllerAbi } from "./abis/Controller";
+import { adapterAbi } from "./abis/Adapter";
 import { spokeAbi } from "./abis/Spoke";
 
 // Validate required environment variables
 const PONDER_RPC_URL = process.env.PONDER_RPC_URL;
 const SPOKE_ADDRESS = process.env.SPOKE_ADDRESS;
-const CONTROLLER_ADDRESS = process.env.CONTROLLER_ADDRESS;
+const ADAPTER_ADDRESS = process.env.ADAPTER_ADDRESS;
 const CHAIN_ID = Number(process.env.CHAIN_ID || 1);
 const START_BLOCK = Number(process.env.START_BLOCK || 0);
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -20,8 +20,8 @@ if (!SPOKE_ADDRESS) {
   throw new Error("SPOKE_ADDRESS environment variable is required");
 }
 
-if (!CONTROLLER_ADDRESS) {
-  throw new Error("CONTROLLER_ADDRESS environment variable is required");
+if (!ADAPTER_ADDRESS) {
+  throw new Error("ADAPTER_ADDRESS environment variable is required");
 }
 
 export default createConfig({
@@ -42,11 +42,11 @@ export default createConfig({
         },
       },
     },
-    Controller: {
-      abi: controllerAbi,
+    Adapter: {
+      abi: adapterAbi,
       chain: {
         chain: {
-          address: CONTROLLER_ADDRESS as `0x${string}`,
+          address: ADAPTER_ADDRESS as `0x${string}`,
           startBlock: START_BLOCK,
         },
       },

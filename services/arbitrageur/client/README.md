@@ -12,7 +12,7 @@ Polls the Ponder indexer for escrowed vaults and acquires them using WBTC.
 ## Acquisition Flow
 
 ```
-Bot                          VaultSwap                    Controller
+Bot                          VaultSwap                    ADAPTER
  |                               |                            |
  | swapWbtcForVault(vaultId) -->|                            |
  |                               | pull WBTC from buyer       |

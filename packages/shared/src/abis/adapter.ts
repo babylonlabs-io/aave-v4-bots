@@ -1,0 +1,1687 @@
+// AaveIntegrationController ABI - methods used by liquidator and arbitrageur bots
+
+export const adapterAbi = [
+        {
+            "type": "constructor",
+            "inputs": [
+                {
+                    "name": "vaultBTC_",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "coreSpoke_",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "btcVaultRegistry_",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "applicationRegistry_",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "proxyManager_",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "coreVaultBtcReserveId_",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "coreWbtcReserveId_",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "adapterConfig_",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "APP_REGISTRY",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "address",
+                    "internalType": "contract IApplicationRegistry"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "BTC_VAULT_CORE_SPOKE",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "address",
+                    "internalType": "contract IAaveSpoke"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "BTC_VAULT_CORE_VAULT_BTC_RESERVE_ID",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "BTC_VAULT_CORE_WBTC_RESERVE_ID",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "BTC_VAULT_REGISTRY",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "address",
+                    "internalType": "contract IBTCVaultRegistry"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "DEFAULT_ADMIN_ROLE",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "UPGRADE_INTERFACE_VERSION",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "string",
+                    "internalType": "string"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "VAULT_BTC",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "address",
+                    "internalType": "contract IVaultBTC"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "activateVault",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "vault",
+                    "type": "tuple",
+                    "internalType": "struct IBTCVaultRegistry.BTCVaultBasicInfo",
+                    "components": [
+                        {
+                            "name": "depositor",
+                            "type": "address",
+                            "internalType": "address"
+                        },
+                        {
+                            "name": "depositorBtcPubKey",
+                            "type": "bytes32",
+                            "internalType": "bytes32"
+                        },
+                        {
+                            "name": "amount",
+                            "type": "uint256",
+                            "internalType": "uint256"
+                        },
+                        {
+                            "name": "vaultProvider",
+                            "type": "address",
+                            "internalType": "address"
+                        },
+                        {
+                            "name": "status",
+                            "type": "uint8",
+                            "internalType": "enum IBTCVaultRegistry.BTCVaultStatus"
+                        },
+                        {
+                            "name": "applicationEntryPoint",
+                            "type": "address",
+                            "internalType": "address"
+                        },
+                        {
+                            "name": "createdAt",
+                            "type": "uint256",
+                            "internalType": "uint256"
+                        }
+                    ]
+                },
+                {
+                    "name": "activationMetadata",
+                    "type": "bytes",
+                    "internalType": "bytes"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "applicationRecipient",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "borrowFromCorePosition",
+            "inputs": [
+                {
+                    "name": "debtReserveId",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "amount",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "receiver",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "borrowedShares",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "borrowedAmount",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "freeze",
+            "inputs": [],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "getFairnessPaymentTokenConfig",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "reserveId",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "token",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "getInterestFeeIndex",
+            "inputs": [
+                {
+                    "name": "reserveId",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "interestFeeIndex",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "getPosition",
+            "inputs": [
+                {
+                    "name": "user",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "position",
+                    "type": "tuple",
+                    "internalType": "struct IAaveAdapter.MarketPosition",
+                    "components": [
+                        {
+                            "name": "vaultIds",
+                            "type": "bytes32[]",
+                            "internalType": "bytes32[]"
+                        },
+                        {
+                            "name": "totalCollateralBTC",
+                            "type": "uint256",
+                            "internalType": "uint256"
+                        },
+                        {
+                            "name": "proxyContract",
+                            "type": "address",
+                            "internalType": "address"
+                        }
+                    ]
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "getRoleAdmin",
+            "inputs": [
+                {
+                    "name": "role",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "getVaultUsageStatus",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "status",
+                    "type": "uint8",
+                    "internalType": "enum AaveAdapterBTCVaultHandler.VaultUsageStatus"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "grantRole",
+            "inputs": [
+                {
+                    "name": "role",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "account",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "hasRole",
+            "inputs": [
+                {
+                    "name": "role",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "account",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "bool",
+                    "internalType": "bool"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "initialize",
+            "inputs": [
+                {
+                    "name": "initialTBVAdmin",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "_applicationRecipient",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "_liquidationRedemptionFeeBps",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "_initialInterestFeeBps",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "interestFeeBps",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "liquidate",
+            "inputs": [
+                {
+                    "name": "borrower",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "directBtcRedeemKey",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "amounts",
+                    "type": "uint256[]",
+                    "internalType": "uint256[]"
+                },
+                {
+                    "name": "priorityOrder",
+                    "type": "uint256[]",
+                    "internalType": "uint256[]"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "vaultIds",
+                    "type": "bytes32[]",
+                    "internalType": "bytes32[]"
+                }
+            ],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "liquidateWithLLP",
+            "inputs": [
+                {
+                    "name": "borrower",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "llp",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "amounts",
+                    "type": "uint256[]",
+                    "internalType": "uint256[]"
+                },
+                {
+                    "name": "priorityOrder",
+                    "type": "uint256[]",
+                    "internalType": "uint256[]"
+                },
+                {
+                    "name": "requestedTokens",
+                    "type": "tuple[]",
+                    "internalType": "struct TokenAmountLib.TokenAmount[]",
+                    "components": [
+                        {
+                            "name": "token",
+                            "type": "address",
+                            "internalType": "address"
+                        },
+                        {
+                            "name": "amount",
+                            "type": "uint256",
+                            "internalType": "uint256"
+                        }
+                    ]
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "vaultIds",
+                    "type": "bytes32[]",
+                    "internalType": "bytes32[]"
+                }
+            ],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "liquidationRedemptionFeeBps",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "pause",
+            "inputs": [],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "pauseState",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "uint8",
+                    "internalType": "enum ITBVPausable.PauseState"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "proxiableUUID",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "redeemVaultFromLLP",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "btcRedeemKey",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "renounceRole",
+            "inputs": [
+                {
+                    "name": "role",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "account",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "reorderVaults",
+            "inputs": [
+                {
+                    "name": "permuted",
+                    "type": "bytes32[]",
+                    "internalType": "bytes32[]"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "repayToCorePosition",
+            "inputs": [
+                {
+                    "name": "borrower",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "debtReserveId",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "amount",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "repaidFee",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "repaidShares",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "repaidAmount",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "revokeRole",
+            "inputs": [
+                {
+                    "name": "role",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "account",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "setApplicationRecipient",
+            "inputs": [
+                {
+                    "name": "_applicationRecipient",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "setInterestFeeBps",
+            "inputs": [
+                {
+                    "name": "feeBps",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "setLiquidationRedemptionFeeBps",
+            "inputs": [
+                {
+                    "name": "feeBps",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "supportsInterface",
+            "inputs": [
+                {
+                    "name": "interfaceId",
+                    "type": "bytes4",
+                    "internalType": "bytes4"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "bool",
+                    "internalType": "bool"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "unfreeze",
+            "inputs": [],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "unpause",
+            "inputs": [],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "upgradeToAndCall",
+            "inputs": [
+                {
+                    "name": "newImplementation",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "data",
+                    "type": "bytes",
+                    "internalType": "bytes"
+                }
+            ],
+            "outputs": [],
+            "stateMutability": "payable"
+        },
+        {
+            "type": "function",
+            "name": "vaultOwner",
+            "inputs": [
+                {
+                    "name": "",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "withdrawCollaterals",
+            "inputs": [
+                {
+                    "name": "vaultsToWithdraw",
+                    "type": "bytes32[]",
+                    "internalType": "bytes32[]"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "amountWithdrawn",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "event",
+            "name": "AdapterApplicationRecipientUpdated",
+            "inputs": [
+                {
+                    "name": "applicationFeeRecipient",
+                    "type": "address",
+                    "indexed": false,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "AdapterLiquidationRedemptionFeeUpdated",
+            "inputs": [
+                {
+                    "name": "liquidationRedemptionFeeBps",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "BTCVaultCoreSpokeLiquidated",
+            "inputs": [
+                {
+                    "name": "depositor",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "liquidator",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "amountCollateralSeized",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "valueCollateralSeized",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "valueDebtRepaid",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "BorrowedFromPosition",
+            "inputs": [
+                {
+                    "name": "borrower",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "debtReserveId",
+                    "type": "uint256",
+                    "indexed": true,
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "receiver",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "borrowAmount",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "CollateralAdded",
+            "inputs": [
+                {
+                    "name": "positionAccount",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "CollateralWithdrawn",
+            "inputs": [
+                {
+                    "name": "positionAccount",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "FairnessPaymentFailed",
+            "inputs": [
+                {
+                    "name": "positionAccount",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "liquidator",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "protocolRecipient",
+                    "type": "address",
+                    "indexed": false,
+                    "internalType": "address"
+                },
+                {
+                    "name": "amount",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "FairnessPaymentPaid",
+            "inputs": [
+                {
+                    "name": "positionAccount",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "liquidator",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "amount",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "Frozen",
+            "inputs": [
+                {
+                    "name": "freezer",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "Initialized",
+            "inputs": [
+                {
+                    "name": "version",
+                    "type": "uint8",
+                    "indexed": false,
+                    "internalType": "uint8"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "InterestFeeUpdated",
+            "inputs": [
+                {
+                    "name": "newInterestFeeBps",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "LiquidationSettledViaLLP",
+            "inputs": [
+                {
+                    "name": "llp",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "liquidator",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "borrower",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "vaultIds",
+                    "type": "bytes32[]",
+                    "indexed": false,
+                    "internalType": "bytes32[]"
+                },
+                {
+                    "name": "payouts",
+                    "type": "tuple[]",
+                    "indexed": false,
+                    "internalType": "struct TokenAmountLib.TokenAmount[]",
+                    "components": [
+                        {
+                            "name": "token",
+                            "type": "address",
+                            "internalType": "address"
+                        },
+                        {
+                            "name": "amount",
+                            "type": "uint256",
+                            "internalType": "uint256"
+                        }
+                    ]
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "Paused",
+            "inputs": [
+                {
+                    "name": "pauser",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "RepaidFromPosition",
+            "inputs": [
+                {
+                    "name": "borrower",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "debtReserveId",
+                    "type": "uint256",
+                    "indexed": true,
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "repayAmount",
+                    "type": "uint256",
+                    "indexed": false,
+                    "internalType": "uint256"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "RoleAdminChanged",
+            "inputs": [
+                {
+                    "name": "role",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "previousAdminRole",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "newAdminRole",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "RoleGranted",
+            "inputs": [
+                {
+                    "name": "role",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "account",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "sender",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "RoleRevoked",
+            "inputs": [
+                {
+                    "name": "role",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "account",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "sender",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "Unfrozen",
+            "inputs": [
+                {
+                    "name": "unfreezer",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "Unpaused",
+            "inputs": [
+                {
+                    "name": "pauser",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "Upgraded",
+            "inputs": [
+                {
+                    "name": "implementation",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "UserProxyCreated",
+            "inputs": [
+                {
+                    "name": "user",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "proxy",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "VaultLiquidated",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "liquidator",
+                    "type": "address",
+                    "indexed": false,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "VaultMarkedCollateralized",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "VaultMarkedLLPOwned",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "VaultMarkedRedeemed",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "VaultOwnershipChanged",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "indexed": true,
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "newOwner",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
+            "name": "VaultsReordered",
+            "inputs": [
+                {
+                    "name": "borrower",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                },
+                {
+                    "name": "newVaults",
+                    "type": "bytes32[]",
+                    "indexed": false,
+                    "internalType": "bytes32[]"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "error",
+            "name": "AddressEmptyCode",
+            "inputs": [
+                {
+                    "name": "target",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "ERC1967InvalidImplementation",
+            "inputs": [
+                {
+                    "name": "implementation",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "ERC1967NonPayable",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "EmptyArray",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "FailedCall",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "FairnessDebtRepaymentTargetNotMet",
+            "inputs": [
+                {
+                    "name": "target",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "actual",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "IncompleteWithdrawal",
+            "inputs": [
+                {
+                    "name": "expected",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "actual",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "InvalidActivationMetadataVersion",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "InvalidAmount",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "InvalidAmountsLength",
+            "inputs": [
+                {
+                    "name": "amountsLength",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "reserveCount",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "InvalidBTCVaultUsageStatus",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "InvalidInterestFeeBps",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "InvalidOraclePrice",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "InvalidPositionResolver",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "InvalidPriorityOrderLength",
+            "inputs": [
+                {
+                    "name": "priorityOrderLength",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "amountsLength",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "InvalidProxyContract",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "InvalidReserveId",
+            "inputs": [
+                {
+                    "name": "reserveId",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "InvalidVaultsPermutation",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "InvalidVaultsToRemove",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "LLPDisabled",
+            "inputs": [
+                {
+                    "name": "llp",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "NoDebtToLiquidate",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "OnlyBTCVaultRegistry",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "PositionAboveMaximum",
+            "inputs": [
+                {
+                    "name": "actual",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "maximum",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "PositionNotLiquidatable",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "PrefixLengthExceedsArray",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "SafeERC20FailedOperation",
+            "inputs": [
+                {
+                    "name": "token",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "TBV_AlreadyFrozen",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_AlreadyPaused",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_CannotUnfreezeWhilePaused",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_CannotUnpauseWhileFrozen",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_Frozen",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_NotFrozen",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_NotPaused",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_Paused",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_Unauthorized",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "UUPSUnauthorizedCallContext",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "UUPSUnsupportedProxiableUUID",
+            "inputs": [
+                {
+                    "name": "slot",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "Unauthorized",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "VaultCountExceedsMaximum",
+            "inputs": [
+                {
+                    "name": "actual",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "maximum",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ]
+        },
+        {
+            "type": "error",
+            "name": "ZeroAddress",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "ZeroAmount",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "ZeroBorrowAmount",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "ZeroBtcKey",
+            "inputs": []
+        }
+    ] as const;

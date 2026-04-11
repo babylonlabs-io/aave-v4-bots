@@ -7,13 +7,13 @@ Polls the Ponder indexer for unhealthy positions and executes liquidations.
 1. **Poll** - Fetches `/liquidatable-positions` from Ponder every N seconds
 2. **Estimate** - Calls `estimateLiquidation(proxyAddress)` on the Lens to compute exact inputs
 3. **Simulate** - Simulates all liquidations in parallel to filter valid ones
-4. **Approve** - Ensures debt token approval for Controller (one-time)
-5. **Liquidate** - Calls `AaveIntegrationController.liquidateCorePosition(borrower, btcRedeemKey, inputs)`
+4. **Approve** - Ensures debt token approval for AaveAdapter (one-time)
+5. **Liquidate** - Calls `AaveAdapter.liquidate(borrower, btcRedeemKey, inputs)`
 
 ## Liquidation Flow
 
 ```
-Bot                    Lens                Controller               VaultSwap
+Bot                    Lens                AaveAdapter               VaultSwap
  │                       │                      │                       │
  │ estimateLiquidation()▶│                      │                       │
  │◀── inputs[], vaults[] │                      │                       │

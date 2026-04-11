@@ -13,12 +13,12 @@ export const vaultSwapAbi = [
                     "internalType": "address"
                 },
                 {
-                    "name": "btcVaultsManager_",
+                    "name": "btcVaultRegistry_",
                     "type": "address",
                     "internalType": "address"
                 },
                 {
-                    "name": "controller_",
+                    "name": "adapter_",
                     "type": "address",
                     "internalType": "address"
                 },
@@ -37,29 +37,16 @@ export const vaultSwapAbi = [
         },
         {
             "type": "function",
-            "name": "APPLICATION_ADMIN",
+            "name": "ADAPTER",
             "inputs": [],
             "outputs": [
                 {
                     "name": "",
-                    "type": "bytes32",
-                    "internalType": "bytes32"
+                    "type": "address",
+                    "internalType": "address"
                 }
             ],
-            "stateMutability": "pure"
-        },
-        {
-            "type": "function",
-            "name": "APPLICATION_PAUSING_GUARDIAN",
-            "inputs": [],
-            "outputs": [
-                {
-                    "name": "",
-                    "type": "bytes32",
-                    "internalType": "bytes32"
-                }
-            ],
-            "stateMutability": "pure"
+            "stateMutability": "view"
         },
         {
             "type": "function",
@@ -76,26 +63,13 @@ export const vaultSwapAbi = [
         },
         {
             "type": "function",
-            "name": "BTC_VAULTS_MANAGER",
+            "name": "BTC_VAULT_REGISTRY",
             "inputs": [],
             "outputs": [
                 {
                     "name": "",
                     "type": "address",
-                    "internalType": "contract IBTCVaultsManager"
-                }
-            ],
-            "stateMutability": "view"
-        },
-        {
-            "type": "function",
-            "name": "CONTROLLER",
-            "inputs": [],
-            "outputs": [
-                {
-                    "name": "",
-                    "type": "address",
-                    "internalType": "address"
+                    "internalType": "contract IBTCVaultRegistry"
                 }
             ],
             "stateMutability": "view"
@@ -121,20 +95,7 @@ export const vaultSwapAbi = [
                 {
                     "name": "",
                     "type": "address",
-                    "internalType": "contract ITBVAaveHub"
-                }
-            ],
-            "stateMutability": "view"
-        },
-        {
-            "type": "function",
-            "name": "TIMELOCK_UPGRADER",
-            "inputs": [],
-            "outputs": [
-                {
-                    "name": "",
-                    "type": "bytes32",
-                    "internalType": "bytes32"
+                    "internalType": "contract IAaveHub"
                 }
             ],
             "stateMutability": "view"
@@ -148,6 +109,19 @@ export const vaultSwapAbi = [
                     "name": "",
                     "type": "string",
                     "internalType": "string"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "VAULT_BTC_UNIT",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "uint256",
+                    "internalType": "uint256"
                 }
             ],
             "stateMutability": "view"
@@ -168,6 +142,19 @@ export const vaultSwapAbi = [
         {
             "type": "function",
             "name": "WBTC_ASSET_ID",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "WBTC_BTC_UNIT",
             "inputs": [],
             "outputs": [
                 {
@@ -206,26 +193,7 @@ export const vaultSwapAbi = [
         },
         {
             "type": "function",
-            "name": "emergencyRepayVault",
-            "inputs": [
-                {
-                    "name": "vaultId",
-                    "type": "bytes32",
-                    "internalType": "bytes32"
-                }
-            ],
-            "outputs": [
-                {
-                    "name": "wbtcRepaid",
-                    "type": "uint256",
-                    "internalType": "uint256"
-                }
-            ],
-            "stateMutability": "nonpayable"
-        },
-        {
-            "type": "function",
-            "name": "fullPause",
+            "name": "freeze",
             "inputs": [],
             "outputs": [],
             "stateMutability": "nonpayable"
@@ -245,6 +213,19 @@ export const vaultSwapAbi = [
                     "name": "",
                     "type": "bytes32",
                     "internalType": "bytes32"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "getSettlementTokens",
+            "inputs": [],
+            "outputs": [
+                {
+                    "name": "tokens",
+                    "type": "address[]",
+                    "internalType": "address[]"
                 }
             ],
             "stateMutability": "view"
@@ -321,6 +302,25 @@ export const vaultSwapAbi = [
         },
         {
             "type": "function",
+            "name": "isSettlementToken",
+            "inputs": [
+                {
+                    "name": "token",
+                    "type": "address",
+                    "internalType": "address"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "",
+                    "type": "bool",
+                    "internalType": "bool"
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
             "name": "isVaultEscrowed",
             "inputs": [
                 {
@@ -337,6 +337,13 @@ export const vaultSwapAbi = [
                 }
             ],
             "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "pause",
+            "inputs": [],
+            "outputs": [],
+            "stateMutability": "nonpayable"
         },
         {
             "type": "function",
@@ -365,7 +372,7 @@ export const vaultSwapAbi = [
                 {
                     "name": "vaults",
                     "type": "tuple[]",
-                    "internalType": "struct IVaultSwap.EscrowedVaultPreviewResult[]",
+                    "internalType": "struct IBTCVaultSwap.EscrowedVaultPreviewResult[]",
                     "components": [
                         {
                             "name": "vaultId",
@@ -379,6 +386,11 @@ export const vaultSwapAbi = [
                         },
                         {
                             "name": "amountDebt",
+                            "type": "uint256",
+                            "internalType": "uint256"
+                        },
+                        {
+                            "name": "amountInterest",
                             "type": "uint256",
                             "internalType": "uint256"
                         },
@@ -398,6 +410,25 @@ export const vaultSwapAbi = [
                             "internalType": "bool"
                         }
                     ]
+                }
+            ],
+            "stateMutability": "view"
+        },
+        {
+            "type": "function",
+            "name": "previewVaultInterest",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "interest",
+                    "type": "uint256",
+                    "internalType": "uint256"
                 }
             ],
             "stateMutability": "view"
@@ -431,6 +462,30 @@ export const vaultSwapAbi = [
                 }
             ],
             "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
+            "name": "repayVaultInterest",
+            "inputs": [
+                {
+                    "name": "vaultId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                },
+                {
+                    "name": "wbtcToRepay",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "wbtcPaid",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ],
             "stateMutability": "nonpayable"
         },
         {
@@ -497,9 +552,60 @@ export const vaultSwapAbi = [
         },
         {
             "type": "function",
-            "name": "softPause",
-            "inputs": [],
-            "outputs": [],
+            "name": "settleLiquidation",
+            "inputs": [
+                {
+                    "name": "liquidator",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "",
+                    "type": "address",
+                    "internalType": "address"
+                },
+                {
+                    "name": "vaultIds",
+                    "type": "bytes32[]",
+                    "internalType": "bytes32[]"
+                },
+                {
+                    "name": "requestedTokens",
+                    "type": "tuple[]",
+                    "internalType": "struct TokenAmountLib.TokenAmount[]",
+                    "components": [
+                        {
+                            "name": "token",
+                            "type": "address",
+                            "internalType": "address"
+                        },
+                        {
+                            "name": "amount",
+                            "type": "uint256",
+                            "internalType": "uint256"
+                        }
+                    ]
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "payout",
+                    "type": "tuple[]",
+                    "internalType": "struct TokenAmountLib.TokenAmount[]",
+                    "components": [
+                        {
+                            "name": "token",
+                            "type": "address",
+                            "internalType": "address"
+                        },
+                        {
+                            "name": "amount",
+                            "type": "uint256",
+                            "internalType": "uint256"
+                        }
+                    ]
+                }
+            ],
             "stateMutability": "nonpayable"
         },
         {
@@ -520,30 +626,6 @@ export const vaultSwapAbi = [
                 }
             ],
             "stateMutability": "view"
-        },
-        {
-            "type": "function",
-            "name": "swapVaultsForWbtc",
-            "inputs": [
-                {
-                    "name": "vaultIds",
-                    "type": "bytes32[]",
-                    "internalType": "bytes32[]"
-                },
-                {
-                    "name": "liquidator",
-                    "type": "address",
-                    "internalType": "address"
-                }
-            ],
-            "outputs": [
-                {
-                    "name": "totalWbtcOut",
-                    "type": "uint256",
-                    "internalType": "uint256"
-                }
-            ],
-            "stateMutability": "nonpayable"
         },
         {
             "type": "function",
@@ -600,6 +682,13 @@ export const vaultSwapAbi = [
         },
         {
             "type": "function",
+            "name": "unfreeze",
+            "inputs": [],
+            "outputs": [],
+            "stateMutability": "nonpayable"
+        },
+        {
+            "type": "function",
             "name": "unpause",
             "inputs": [],
             "outputs": [],
@@ -638,6 +727,19 @@ export const vaultSwapAbi = [
         },
         {
             "type": "event",
+            "name": "Frozen",
+            "inputs": [
+                {
+                    "name": "freezer",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
             "name": "Initialized",
             "inputs": [
                 {
@@ -651,14 +753,8 @@ export const vaultSwapAbi = [
         },
         {
             "type": "event",
-            "name": "PausedWith",
+            "name": "Paused",
             "inputs": [
-                {
-                    "name": "state",
-                    "type": "uint8",
-                    "indexed": true,
-                    "internalType": "enum ITBVPausable.PauseState"
-                },
                 {
                     "name": "pauser",
                     "type": "address",
@@ -790,6 +886,19 @@ export const vaultSwapAbi = [
         },
         {
             "type": "event",
+            "name": "Unfrozen",
+            "inputs": [
+                {
+                    "name": "unfreezer",
+                    "type": "address",
+                    "indexed": true,
+                    "internalType": "address"
+                }
+            ],
+            "anonymous": false
+        },
+        {
+            "type": "event",
             "name": "Unpaused",
             "inputs": [
                 {
@@ -816,7 +925,7 @@ export const vaultSwapAbi = [
         },
         {
             "type": "event",
-            "name": "VaultEmergencyRepaid",
+            "name": "VaultInterestRepaid",
             "inputs": [
                 {
                     "name": "vaultId",
@@ -831,7 +940,7 @@ export const vaultSwapAbi = [
                     "internalType": "address"
                 },
                 {
-                    "name": "wbtcRepaid",
+                    "name": "wbtcPaid",
                     "type": "uint256",
                     "indexed": false,
                     "internalType": "uint256"
@@ -883,6 +992,22 @@ export const vaultSwapAbi = [
         },
         {
             "type": "error",
+            "name": "AmountMismatch",
+            "inputs": [
+                {
+                    "name": "expected",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                },
+                {
+                    "name": "actual",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                }
+            ]
+        },
+        {
+            "type": "error",
             "name": "ERC1967InvalidImplementation",
             "inputs": [
                 {
@@ -904,12 +1029,32 @@ export const vaultSwapAbi = [
         },
         {
             "type": "error",
+            "name": "InsufficientSettlementAmount",
+            "inputs": []
+        },
+        {
+            "type": "error",
             "name": "InvalidFeeConfiguration",
             "inputs": []
         },
         {
             "type": "error",
             "name": "InvalidOraclePrice",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "NoAccruedInterest",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "OnlyAdapter",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "RepaymentWouldRestoreZeroShares",
             "inputs": []
         },
         {
@@ -957,7 +1102,27 @@ export const vaultSwapAbi = [
         },
         {
             "type": "error",
+            "name": "TBV_AlreadyFrozen",
+            "inputs": []
+        },
+        {
+            "type": "error",
             "name": "TBV_AlreadyPaused",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_CannotUnfreezeWhilePaused",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_CannotUnpauseWhileFrozen",
+            "inputs": []
+        },
+        {
+            "type": "error",
+            "name": "TBV_NotFrozen",
             "inputs": []
         },
         {
@@ -993,22 +1158,17 @@ export const vaultSwapAbi = [
         },
         {
             "type": "error",
-            "name": "Unauthorized",
+            "name": "UnauthorizedAppVaultKeeper",
             "inputs": []
         },
         {
             "type": "error",
-            "name": "VaultKeeperNotAuthorized",
+            "name": "UnsupportedSettlementToken",
             "inputs": []
         },
         {
             "type": "error",
             "name": "VaultNotEscrowed",
-            "inputs": []
-        },
-        {
-            "type": "error",
-            "name": "VaultStillProfitable",
             "inputs": []
         },
         {
@@ -1021,4 +1181,4 @@ export const vaultSwapAbi = [
             "name": "ZeroAmount",
             "inputs": []
         }
-    ]
+    ] as const;

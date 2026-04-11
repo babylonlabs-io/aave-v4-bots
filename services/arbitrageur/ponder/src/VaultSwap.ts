@@ -10,6 +10,8 @@ ponder.on("VaultSwap:AddedVault", async ({ event, context }) => {
   const vaultId = event.args.vaultId;
   const timestamp = event.block.timestamp;
 
+  console.log(`Adding vault ${vaultId} to escrowed_vaults at timestamp ${timestamp}...`);
+
   await context.db
     .insert(escrowedVault)
     .values({

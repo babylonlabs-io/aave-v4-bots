@@ -47,7 +47,8 @@ app.get("/escrowed-vaults", async (c) => {
 
   // Build vault ID array and createdAt lookup
   const vaultIds = vaults.map((v) => v.vaultId);
-  const createdAtMap = new Map(vaults.map((v) => [v.vaultId, v.createdAt]));
+
+  console.log(`Fetching info for ${vaultIds.length} escrowed vaults from contract...`);
   const toApiVault = (info: {
     vaultId: `0x${string}`;
     amountVault: bigint;

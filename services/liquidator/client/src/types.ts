@@ -27,7 +27,7 @@ export interface Config {
   rpcUrl: string;
 
   // Contract addresses
-  controllerAddress: Address;
+  adapterAddress: Address;
   lensAddress: Address;
   wbtcAddress: Address;
 

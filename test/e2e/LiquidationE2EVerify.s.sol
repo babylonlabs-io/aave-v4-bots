@@ -3,16 +3,17 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
 import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {E2EConstants} from "./E2EConstants.sol";
+import {BaseBot} from "./abstract/BaseBot.sol";
+import {ArrayHelper} from "./lib/ArrayHelper.sol";
 
 /// @title LiquidationE2EVerify
 /// @notice E2E script to verify the liquidation bot performed the liquidation
 /// @dev Part 2: Waits for bot to liquidate, then checks on-chain state
 ///      Run this AFTER LiquidationE2ESetup.s.sol
-contract LiquidationE2EVerify is Script, BaseE2E {
+contract LiquidationE2EVerify is Script, BaseBot {
     /// @notice Main entry point for the verification script
     function run() public {
         // Load deployed contracts
@@ -53,8 +54,7 @@ contract LiquidationE2EVerify is Script, BaseE2E {
                 elapsed += pollIntervalSeconds;
 
                 (uint256 col, uint256 debt,) = _getPositionInfo(borrower);
-                bool positionChanged =
-                    (col == 0 && debt == 0) || ((col < collateralBefore) && (debt < debtBefore));
+                bool positionChanged = (col == 0 && debt == 0) || ((col < collateralBefore) && (debt < debtBefore));
 
                 if (positionChanged) {
                     console.log("Liquidation detected after", elapsed, "seconds");
@@ -139,15 +139,11 @@ contract LiquidationE2EVerify is Script, BaseE2E {
 
     function _getUserProxyAddress(address user) internal view returns (address) {
         bytes32 salt = keccak256(abi.encodePacked(user));
-        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveController));
+        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveAdapter));
     }
 
     function _getUsdcBalance(address user) internal returns (uint256) {
-        bytes memory result = ffi_castCall(
-            address(usdc),
-            "balanceOf(address)",
-            vm.toString(user)
-        );
+        bytes memory result = ffi_castCall(address(usdc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
         return abi.decode(result, (uint256));
     }
 
@@ -156,18 +152,16 @@ contract LiquidationE2EVerify is Script, BaseE2E {
         returns (uint256 totalCollateral, uint256 totalDebt, uint256 healthFactor)
     {
         address proxy = _getUserProxyAddress(user);
-        
-        bytes memory result = ffi_castCall(
-            address(aaveSpoke),
-            "getUserAccountData(address)",
-            vm.toString(proxy)
-        );
-        
+
+        bytes memory result =
+            ffi_castCall(address(aaveSpoke), "getUserAccountData(address)", ArrayHelper.create(vm.toString(proxy)));
+
         // Parse the result - getUserAccountData returns a struct with multiple values
         // The result should be ABI-encoded tuple (totalCollateralValue, totalDebtValue, healthFactor, ...)
         // We'll decode just the first 3 values we need
-        (totalCollateral, totalDebt, healthFactor) = abi.decode(result, (uint256, uint256, uint256));
-        
+        (,, healthFactor, totalCollateral, totalDebt,,) =
+            abi.decode(result, (uint256, uint256, uint256, uint256, uint256, uint256, uint256));
+        totalDebt = totalDebt / 1e27;
         return (totalCollateral, totalDebt, healthFactor);
     }
 }

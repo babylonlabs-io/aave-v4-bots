@@ -1,4 +1,4 @@
-export { controllerAbi } from "./controller";
+export { adapterAbi } from "./adapter";
 export { lensAbi } from "./lens";
 export { vaultSwapAbi } from "./vaultSwap";
 export { spokeAbi } from "./spoke";

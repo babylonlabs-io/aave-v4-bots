@@ -20,7 +20,7 @@ export const position = onchainTable("position", (t) => ({
 
 /**
  * Maps proxy addresses to borrower (EOA) addresses.
- * - Populated from UserProxyCreated events on Controller
+ * - Populated from UserProxyCreated events on Adapter
  * - Used to resolve borrower address for liquidateCorePosition calls
  */
 export const proxyMapping = onchainTable("proxy_mapping", (t) => ({

@@ -16,7 +16,7 @@ export function loadConfig(): Config {
     "LIQUIDATOR_PRIVATE_KEY",
     "PONDER_URL",
     "CLIENT_RPC_URL",
-    "CONTROLLER_ADDRESS",
+    "ADAPTER_ADDRESS",
     "LENS_ADDRESS",
     "WBTC_ADDRESS",
   ];
@@ -32,10 +32,10 @@ export function loadConfig(): Config {
     throw new Error("Invalid LIQUIDATOR_PRIVATE_KEY: must be 0x-prefixed 32-byte hex");
   }
 
-  const controllerAddress = process.env.CONTROLLER_ADDRESS!;
+  const adapterAddress = process.env.ADAPTER_ADDRESS!;
   const lensAddress = process.env.LENS_ADDRESS!;
   const wbtcAddress = process.env.WBTC_ADDRESS!;
-  assertAddress("CONTROLLER_ADDRESS", controllerAddress);
+  assertAddress("ADAPTER_ADDRESS", adapterAddress);
   assertAddress("LENS_ADDRESS", lensAddress);
   assertAddress("WBTC_ADDRESS", wbtcAddress);
 
@@ -84,7 +84,7 @@ export function loadConfig(): Config {
     pollingIntervalMs,
     ponderUrl: process.env.PONDER_URL!,
     rpcUrl: process.env.CLIENT_RPC_URL!,
-    controllerAddress,
+    adapterAddress,
     lensAddress,
     wbtcAddress,
     debtTokenAddresses,

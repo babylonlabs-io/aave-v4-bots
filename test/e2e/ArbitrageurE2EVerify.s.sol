@@ -3,9 +3,10 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
-import {IBTCVaultsManager} from "vault-contracts/interfaces/IBTCVaultsManager.sol";
+import {IBTCVaultRegistry} from "vault-contracts/interfaces/IBTCVaultRegistry.sol";
+import {BaseBot} from "./abstract/BaseBot.sol";
 import {E2EConstants} from "./E2EConstants.sol";
+import {ArrayHelper} from "./lib/ArrayHelper.sol";
 
 /// @title ArbitrageurE2EVerify
 /// @notice E2E script to verify the arbitrageur bot acquired vaults from VaultSwap
@@ -14,7 +15,7 @@ import {E2EConstants} from "./E2EConstants.sol";
 ///      becomes Redeemed and the vault is no longer escrowed. We verify by comparing WBTC
 ///      balances against the known initial funding amounts from the setup script.
 ///      Run this AFTER LiquidationE2EVerify.s.sol
-contract ArbitrageurE2EVerify is Script, BaseE2E {
+contract ArbitrageurE2EVerify is Script, BaseBot {
     /// @notice Main entry point for the verification script
     function run() public {
         // Load deployed contracts
@@ -49,7 +50,7 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
         console.log("Vault status:", vaultStatus);
         console.log("Vault BTC amount:", vaultAmount, "sats");
 
-        vaultRedeemed = vaultStatus == uint8(IBTCVaultsManager.BTCVaultStatus.Redeemed);
+        vaultRedeemed = vaultStatus == uint8(IBTCVaultRegistry.BTCVaultStatus.Redeemed);
         vaultEscrowed = _isVaultEscrowed(vaultId);
 
         console.log("Is vault redeemed:", vaultRedeemed);
@@ -69,7 +70,7 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
                 elapsed += pollIntervalSeconds;
 
                 (vaultStatus, vaultAmount) = _getBTCVaultStatus(vaultId);
-                vaultRedeemed = vaultStatus == uint8(IBTCVaultsManager.BTCVaultStatus.Redeemed);
+                vaultRedeemed = vaultStatus == uint8(IBTCVaultRegistry.BTCVaultStatus.Redeemed);
                 vaultEscrowed = _isVaultEscrowed(vaultId);
 
                 if (vaultRedeemed || !vaultEscrowed) {
@@ -156,38 +157,29 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
     /// @dev Get WBTC balance using FFI to fetch live data from RPC
     function _getWbtcBalance(address user) internal returns (uint256) {
-        bytes memory result = ffi_castCall(
-            address(wbtc),
-            "balanceOf(address)",
-            vm.toString(user)
-        );
+        bytes memory result = ffi_castCall(address(wbtc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
         return abi.decode(result, (uint256));
     }
 
     /// @dev Get BTC vault status and amount using FFI
     function _getBTCVaultStatus(bytes32 vaultId) internal returns (uint8 status, uint256 amount) {
         bytes memory result = ffi_castCall(
-            address(vaultManager),
-            "getBTCVault(bytes32)",
-            vm.toString(vaultId)
+            address(btcVaultRegistry), "getBtcVaultBasicInfo(bytes32)", ArrayHelper.create(vm.toString(vaultId))
         );
-        
+
         // Decode the result as the BTCVault struct
-        IBTCVaultsManager.BTCVault memory vault = abi.decode(result, (IBTCVaultsManager.BTCVault));
-        
+        IBTCVaultRegistry.BTCVaultBasicInfo memory vault = abi.decode(result, (IBTCVaultRegistry.BTCVaultBasicInfo));
+
         status = uint8(vault.status);
         amount = vault.amount;
-        
+
         return (status, amount);
     }
 
     /// @dev Check if vault is escrowed using FFI
     function _isVaultEscrowed(bytes32 vaultId) internal returns (bool) {
-        bytes memory result = ffi_castCall(
-            address(vaultSwap),
-            "isVaultEscrowed(bytes32)",
-            vm.toString(vaultId)
-        );
+        bytes memory result =
+            ffi_castCall(address(vaultSwap), "isVaultEscrowed(bytes32)", ArrayHelper.create(vm.toString(vaultId)));
         return abi.decode(result, (bool));
     }
 }
