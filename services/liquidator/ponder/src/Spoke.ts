@@ -53,13 +53,13 @@ ponder.on("Spoke:Withdraw", async ({ event, context }) => {
 
 /**
  * LiquidationCall event handler
- * - Partial liquidation: decrement suppliedShares by collateralSharesToLiquidate
+ * - Partial liquidation: decrement suppliedShares by collateralSharesLiquidated
  * - Full liquidation: delete when remaining shares <= 0
  * - Skip if position doesn't exist (e.g. START_BLOCK is after the Supply event)
  */
 ponder.on("Spoke:LiquidationCall", async ({ event, context }) => {
   const proxyAddress = event.args.user;
-  const collateralSharesToLiquidate = event.args.collateralSharesToLiquidate;
+  const collateralSharesToLiquidate = event.args.collateralSharesLiquidated;
   const timestamp = event.block.timestamp;
 
   const existingRecord = await context.db.find(position, { proxyAddress });

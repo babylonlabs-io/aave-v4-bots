@@ -21,11 +21,11 @@ export const spokeAbi = [
           { name: "hub", type: "address" },
           { name: "assetId", type: "uint16" },
           { name: "decimals", type: "uint8" },
-          { name: "dynamicConfigKey", type: "uint24" },
-          { name: "paused", type: "bool" },
-          { name: "frozen", type: "bool" },
-          { name: "borrowable", type: "bool" },
           { name: "collateralRisk", type: "uint24" },
+          // Bitmap: 0x01=paused, 0x02=frozen, 0x04=borrowable (see
+          // lib/aave-v4/src/spoke/libraries/ReserveFlagsMap.sol).
+          { name: "flags", type: "uint8" },
+          { name: "dynamicConfigKey", type: "uint32" },
         ],
       },
     ],

@@ -13,15 +13,6 @@ export const vaultSwapAbi = [
     name: "RemovedVault",
     inputs: [{ name: "vaultId", type: "bytes32", indexed: true }],
   },
-  {
-    type: "event",
-    name: "VaultEmergencyRepaid",
-    inputs: [
-      { name: "vaultId", type: "bytes32", indexed: true },
-      { name: "payer", type: "address", indexed: true },
-      { name: "wbtcRepaid", type: "uint256", indexed: false },
-    ],
-  },
 
   // ═══════════════════════════════════════════════════════════════════════════
   //                              VIEW FUNCTIONS
@@ -32,13 +23,6 @@ export const vaultSwapAbi = [
     name: "isVaultEscrowed",
     inputs: [{ name: "vaultId", type: "bytes32" }],
     outputs: [{ name: "", type: "bool" }],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "previewWbtcToAcquireVault",
-    inputs: [{ name: "vaultId", type: "bytes32" }],
-    outputs: [{ name: "wbtcNeeded", type: "uint256" }],
     stateMutability: "view",
   },
   {

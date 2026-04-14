@@ -114,7 +114,11 @@ export class LiquidationBot {
         args: [i],
       });
 
-      if (reserve.borrowable) {
+      // ReserveFlags bitmap: 0x01=paused, 0x02=frozen, 0x04=borrowable.
+      // See contracts/lib/aave-v4/src/spoke/libraries/ReserveFlagsMap.sol.
+      const BORROWABLE_MASK = 0x04;
+      const isBorrowable = (reserve.flags & BORROWABLE_MASK) !== 0;
+      if (isBorrowable) {
         discovered.push(reserve.underlying);
 
         const symbol = await this.publicClient.readContract({
