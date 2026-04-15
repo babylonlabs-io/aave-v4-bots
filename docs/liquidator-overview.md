@@ -50,7 +50,7 @@ Liquidator                    Lens                Controller                  Va
 
 ### Step by Step
 
-1. **Identify Target**: Find positions where `healthFactor < 1.0` and `totalDebtValue > 0`
+1. **Identify Target**: Find positions where `healthFactor < 1.0` and `totalDebtValueRay > 0`
 2. **Estimate Inputs**: Call `estimateLiquidation(proxyAddress)` on the Lens to get the exact `TokenAmount[]` inputs needed
 3. **Execute Liquidation**: Call `liquidateCorePosition(borrower, btcRedeemKey, inputs)` on the Controller. The liquidator repays the debt and receives WBTC (when `btcRedeemKey = bytes32(0)`, the Controller atomically swaps seized vaults for WBTC via VaultSwap)
 
@@ -79,7 +79,7 @@ The liquidation bot automates position monitoring and liquidation execution.
 ### Bot Operation
 
 1. **Poll**: Query `/liquidatable-positions` from Ponder indexer at configured interval
-2. **Filter**: Indexer returns positions where `healthFactor < 1e18` (< 1.0) and `totalDebtValue > 0`, including the borrower EOA address
+2. **Filter**: Indexer returns positions where `healthFactor < 1e18` (< 1.0) and `totalDebtValueRay > 0`, including the borrower EOA address
 3. **Estimate**: Call `estimateLiquidation(proxyAddress)` on the Lens to compute exact inputs for each position
 4. **Simulate**: Simulate all liquidations in parallel to filter to valid ones
 5. **Approve**: Ensure debt token approval for Controller (one-time setup)
@@ -132,9 +132,6 @@ function liquidateCorePosition(
     bytes32 btcRedeemKey,
     TokenAmount[] memory inputs
 ) external returns (uint256 seizedAmount);
-
-// Get borrower EOA for a proxy address
-function getUserOfProxy(address proxy) external view returns (address);
 ```
 
 ### Spoke (position data)
@@ -143,7 +140,7 @@ function getUserOfProxy(address proxy) external view returns (address);
 // Get account health data
 function getUserAccountData(address user) external view returns (
     uint256 totalCollateralValue,
-    uint256 totalDebtValue,
+    uint256 totalDebtValueRay,
     uint256 availableBorrowsValue,
     uint256 currentLiquidationThreshold,
     uint256 ltv,

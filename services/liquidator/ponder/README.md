@@ -54,7 +54,7 @@ Returns positions with health factor < 1.0 that have debt.
       "borrower": "0x...",
       "healthFactor": "950000000000000000",
       "totalCollateralValue": "1000000000",
-      "totalDebtValue": "500000000",
+      "totalDebtValueRay": "500000000",
       "suppliedShares": "1000000000000000000"
     }
   ],

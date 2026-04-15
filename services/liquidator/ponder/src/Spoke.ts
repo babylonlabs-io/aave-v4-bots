@@ -59,13 +59,13 @@ ponder.on("Spoke:Withdraw", async ({ event, context }) => {
  */
 ponder.on("Spoke:LiquidationCall", async ({ event, context }) => {
   const proxyAddress = event.args.user;
-  const collateralSharesToLiquidate = event.args.collateralSharesLiquidated;
+  const collateralSharesLiquidated = event.args.collateralSharesLiquidated;
   const timestamp = event.block.timestamp;
 
   const existingRecord = await context.db.find(position, { proxyAddress });
   if (!existingRecord) return;
 
-  const newShares = applyLiquidation(existingRecord.suppliedShares, collateralSharesToLiquidate);
+  const newShares = applyLiquidation(existingRecord.suppliedShares, collateralSharesLiquidated);
 
   if (newShares === null) {
     await context.db.delete(position, { proxyAddress });
