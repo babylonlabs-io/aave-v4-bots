@@ -9,7 +9,7 @@ export const vaultSwapAbi = [
       { name: "vaultId", type: "bytes32" },
       { name: "maxWbtcIn", type: "uint256" },
     ],
-    outputs: [{ name: "wbtcPaid", type: "uint256" }],
+    outputs: [{ name: "amountWbtcIn", type: "uint256" }],
     stateMutability: "nonpayable",
   },
   // Repay interest on an escrowed vault

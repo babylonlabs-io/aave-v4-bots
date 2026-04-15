@@ -105,10 +105,7 @@ To run an arbitrageur bot, you need:
 // Check if a specific vault is in escrow
 function isVaultEscrowed(bytes32 vaultId) external view returns (bool);
 
-// Get WBTC needed to acquire a vault (includes accrued interest)
-function previewWbtcToAcquireVault(bytes32 vaultId) external view returns (uint256);
-
-// Get detailed cost breakdown for acquiring a vault
+// Get detailed cost breakdown for acquiring a vault (includes accrued interest)
 function previewWbtcToAcquireVaultWithFees(bytes32 vaultId) external view returns (uint256 wbtcNeeded, uint256 principal, uint256 interest, uint256 protocolFee);
 
 // Check if a vault is profitable for arbitrageurs
@@ -122,7 +119,7 @@ function getEscrowedVaultsInfo(bytes32[] calldata vaultIds) external view return
 
 ```solidity
 // Acquire vault ownership by paying WBTC (redemption is atomic)
-function swapWbtcForVault(bytes32 vaultId, uint256 maxWbtcIn) external returns (uint256 wbtcPaid);
+function swapWbtcForVault(bytes32 vaultId, uint256 maxWbtcIn) external returns (uint256 amountWbtcIn);
 
 // Emergency repay a vault's debt to release it from escrow
 function emergencyRepayVault(bytes32 vaultId) external returns (uint256 wbtcRepaid);
