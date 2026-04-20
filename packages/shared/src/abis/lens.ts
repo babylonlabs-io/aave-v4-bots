@@ -1,4 +1,4 @@
-// AaveIntegrationLens ABI - read-only helper for estimating liquidation inputs
+// AaveAdapterLens ABI - read-only helper for estimating liquidation inputs
 
 export const lensAbi = [
   {

@@ -8,7 +8,7 @@ Polls the Ponder indexer for unhealthy positions and executes liquidations.
 2. **Estimate** - Calls `estimateLiquidation(proxyAddress)` on the Lens to compute exact inputs
 3. **Simulate** - Simulates all liquidations in parallel to filter valid ones
 4. **Approve** - Ensures debt token approval for Controller (one-time)
-5. **Liquidate** - Calls `AaveIntegrationController.liquidateCorePosition(borrower, btcRedeemKey, inputs)`
+5. **Liquidate** - Calls `AaveAdapter.liquidateCorePosition(borrower, btcRedeemKey, inputs)`
 
 ## Liquidation Flow
 
@@ -41,10 +41,10 @@ PONDER_URL=http://localhost:42069
 # RPC URL
 CLIENT_RPC_URL=http://localhost:8545
 
-# AaveIntegrationController address
+# AaveAdapter address
 CONTROLLER_ADDRESS=0x...
 
-# AaveIntegrationLens address
+# AaveAdapterLens address
 LENS_ADDRESS=0x...
 
 # WBTC token address

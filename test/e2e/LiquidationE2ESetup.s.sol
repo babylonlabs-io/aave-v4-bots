@@ -8,7 +8,7 @@ import {BtcHelpers} from "test-utils/BtcHelpers.sol";
 import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
-import {AaveIntegrationLens} from "vault-contracts/applications/aave/AaveIntegrationLens.sol";
+import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
 import {E2EConstants} from "./E2EConstants.sol";
 
 /// @title LiquidationE2ESetup
@@ -47,11 +47,11 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         console.log("Arbitrageur funded with 10 ETH and 10 WBTC");
         _saveInitialWbtcBalances();
 
-        // Deploy AaveIntegrationLens for liquidation estimation
+        // Deploy AaveAdapterLens for liquidation estimation
         console.log("\n--- Step 3: Deploy Lens ---");
         vm.startBroadcast(adminPrivateKey);
-        AaveIntegrationLens lens =
-            new AaveIntegrationLens(address(btcVaultRegistry), address(aaveAdapter), address(aaveSpoke), vaultBtcId);
+        AaveAdapterLens lens =
+            new AaveAdapterLens(address(btcVaultRegistry), address(aaveAdapter), address(aaveSpoke), vaultBtcId);
         vm.stopBroadcast();
         console.log("Lens deployed at:", address(lens));
 
@@ -393,7 +393,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
 
     /// @notice Check if a position is liquidatable via the Lens contract.
     /// @dev Lens.estimateLiquidation reverts when the position is healthy, succeeds when liquidatable.
-    function _isLiquidatable(AaveIntegrationLens lens, address borrowerProxy) internal view returns (bool) {
+    function _isLiquidatable(AaveAdapterLens lens, address borrowerProxy) internal view returns (bool) {
         try lens.estimateLiquidation(borrowerProxy, false) returns (
             uint256[] memory,
             bytes32[] memory
