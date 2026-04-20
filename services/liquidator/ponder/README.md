@@ -44,7 +44,7 @@ DATABASE_SCHEMA=public
 
 ### `GET /liquidatable-positions`
 
-Returns positions with health factor < 1.0 that have debt.
+Returns positions for which `AaveAdapterLens.estimateLiquidation()` succeeds (i.e. the Lens does not revert as healthy). Each entry includes the pre-computed `amounts` and `vaults` needed to call `liquidate`/`liquidateWithLLP`.
 
 ```json
 {
@@ -52,9 +52,8 @@ Returns positions with health factor < 1.0 that have debt.
     {
       "proxyAddress": "0x...",
       "borrower": "0x...",
-      "healthFactor": "950000000000000000",
-      "totalCollateralValue": "1000000000",
-      "totalDebtValueRay": "500000000",
+      "amounts": ["500000000"],
+      "vaults": ["0x..."],
       "suppliedShares": "1000000000000000000"
     }
   ],
@@ -66,10 +65,6 @@ Returns positions with health factor < 1.0 that have debt.
 ### `GET /positions`
 
 Returns all tracked positions (debugging).
-
-### `GET /positions-health`
-
-Returns all positions with their current health factors (debugging).
 
 ### `GET /graphql`
 
