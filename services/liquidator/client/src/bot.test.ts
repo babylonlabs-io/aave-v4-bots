@@ -454,9 +454,9 @@ describe("LiquidationBot", () => {
       clients.publicClient.readContract
         .mockResolvedValueOnce("0xspoke") // BTC_VAULT_CORE_SPOKE
         .mockResolvedValueOnce(2n) // getReserveCount
-        .mockResolvedValueOnce({ borrowable: true, underlying: "0xtoken1" }) // getReserve(0)
+        .mockResolvedValueOnce({ flags: 0x04, underlying: "0xtoken1" }) // getReserve(0) - borrowable bit set
         .mockResolvedValueOnce("USDC") // symbol
-        .mockResolvedValueOnce({ borrowable: false, underlying: "0xtoken2" }); // getReserve(1)
+        .mockResolvedValueOnce({ flags: 0x00, underlying: "0xtoken2" }); // getReserve(1) - not borrowable
 
       const bot = createBot(clients);
 

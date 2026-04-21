@@ -24,7 +24,7 @@ app.use("/sql/*", client({ db, schema }));
  * GET /liquidatable-positions
  *
  * Returns all positions that are liquidatable by calling estimateLiquidation
- * on the AaveIntegrationLens contract. The call reverts for healthy positions
+ * on the AaveAdapterLens contract. The call reverts for healthy positions
  * and succeeds for liquidatable ones, returning the required inputs and vaults.
  */
 app.get("/liquidatable-positions", async (c) => {

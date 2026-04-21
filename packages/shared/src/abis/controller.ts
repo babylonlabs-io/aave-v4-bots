@@ -1,4 +1,4 @@
-// AaveIntegrationAdapter ABI - methods used by liquidator and arbitrageur bots
+// AaveAdapter ABI - methods used by liquidator and arbitrageur bots
 
 export const controllerAbi = [
   // Liquidator
@@ -42,19 +42,20 @@ export const controllerAbi = [
     stateMutability: "nonpayable",
   },
   {
-    type: "function",
-    name: "getUserOfProxy",
-    inputs: [{ name: "proxy", type: "address" }],
-    outputs: [{ name: "user", type: "address" }],
-    stateMutability: "view",
+    type: "event",
+    name: "VaultOwnershipChanged",
+    inputs: [
+      { name: "vaultId", type: "bytes32", indexed: true },
+      { name: "newOwner", type: "address", indexed: true },
+    ],
+    anonymous: false,
   },
   {
     type: "event",
-    name: "VaultOwnershipTransferred",
+    name: "UserProxyCreated",
     inputs: [
-      { name: "vaultId", type: "bytes32", indexed: true },
-      { name: "previousOwner", type: "address", indexed: true },
-      { name: "newOwner", type: "address", indexed: true },
+      { name: "user", type: "address", indexed: true },
+      { name: "proxy", type: "address", indexed: true },
     ],
     anonymous: false,
   },
