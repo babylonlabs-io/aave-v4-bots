@@ -1,0 +1,85 @@
+# ==============================================================================
+# esbuild Go stdlib CVEs
+# ------------------------------------------------------------------------------
+# esbuild is a JS bundler written in Go, shipped as a precompiled binary.
+# These CVEs are in the Go stdlib embedded in the binary, but esbuild does not
+# make network connections, handle TLS, or process untrusted IP addresses — so
+# they are not exploitable in this context.
+# Upstream: ponder -> vite@5.4.21 -> esbuild@0.21.5 (Go 1.20.12). No patched
+# 0.21.x exists. Will resolve when ponder upgrades to vite 6+ (esbuild 0.25+).
+# ==============================================================================
+
+# net/netip: Unexpected behavior from Is methods for IPv4-mapped IPv6 addresses
+CVE-2024-24790
+
+# crypto/tls: Incorrect certificate validation during TLS session resumption
+CVE-2025-68121
+
+# net/http, x/net/http2: unlimited number of CONTINUATION frames causes DoS
+CVE-2023-45288
+
+# encoding/gob: Decoder.Decode on deeply nested structures
+CVE-2024-34156
+
+# database/sql: Postgres Scan Race Condition
+CVE-2025-47907
+
+# archive/tar: Unbounded allocation when parsing GNU sparse map
+CVE-2025-58183
+
+# net/url: Memory exhaustion in query parameter parsing
+CVE-2025-61726
+
+# archive/zip: Excessive CPU consumption when building archive index
+CVE-2025-61728
+
+# crypto/x509: DoS via excessive resource consumption
+CVE-2025-61729
+
+# net/url: Incorrect parsing of IPv6 host literals
+CVE-2026-25679
+
+# crypto/x509: Unbounded work during chain building
+CVE-2026-32280
+
+# internal/syscall/unix: Root.Chmod can follow symlinks out of the root
+CVE-2026-32282
+
+# ==============================================================================
+# Trivy package.json spec-only findings (not installed code)
+# ------------------------------------------------------------------------------
+# Trivy flags dependency specifiers declared in transitive packages'
+# package.json files even when they are devDeps that never get installed at
+# runtime. pnpm-lock.yaml resolves these to fixed versions via overrides, but
+# Trivy's node-pkg analyzer reads package.json strings verbatim. These are
+# false positives for runtime risk.
+# ==============================================================================
+
+# glob 10.4.5 declared as devDep in typescript@5.9.3; actual installed glob is 10.5.0.
+CVE-2025-64756
+
+# minimatch 9.0.5 declared by glob@10.5.0 as devDep; actual installed minimatch is 9.0.9.
+CVE-2026-26996
+CVE-2026-27903
+CVE-2026-27904
+
+# picomatch 4.0.2/4.0.3 declared by vite and rollup as devDep specs.
+CVE-2026-33671
+
+# tar 6.x/7.4.x declared by readable-stream / other transitive devDep specs.
+CVE-2026-23745
+CVE-2026-23950
+CVE-2026-24842
+CVE-2026-26960
+CVE-2026-29786
+CVE-2026-31802
+
+# ==============================================================================
+# ponder-pinned transitive
+# ------------------------------------------------------------------------------
+# ponder@0.16.6 pins drizzle-orm@0.41.0 exactly. Cannot override without
+# breaking ponder. Will resolve when ponder bumps drizzle-orm.
+# ==============================================================================
+
+# drizzle-orm < 0.45.2 SQL injection via JSON path keys
+CVE-2026-39356
