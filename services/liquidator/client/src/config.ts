@@ -74,7 +74,7 @@ export function loadConfig(): Config {
     throw new Error("Invalid TX_RECEIPT_TIMEOUT_MS: must be a positive integer");
   }
 
-  const pollingIntervalMs = Number.parseInt(process.env.POLLING_INTERVAL_MS || "10000", 10);
+  const pollingIntervalMs = Number.parseInt(process.env.POLLING_INTERVAL_MS || "12000", 10);
   if (!Number.isFinite(pollingIntervalMs) || pollingIntervalMs <= 0) {
     throw new Error("Invalid POLLING_INTERVAL_MS: must be a positive integer");
   }

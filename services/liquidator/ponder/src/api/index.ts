@@ -55,17 +55,22 @@ app.get("/liquidatable-positions", async (c) => {
     proxyToBorrower.set(m.proxyAddress.toLowerCase(), m.borrower);
   }
 
-  // Try estimateLiquidation for each position — succeeds only if liquidatable
-  const results = await Promise.allSettled(
-    positions.map((p) =>
-      publicClient.readContract({
-        address: lensAddress,
-        abi: lensAbi,
-        functionName: "estimateLiquidation",
-        args: [p.proxyAddress as Address, false],
-      })
-    )
-  );
+  // Batch all estimateLiquidation calls into a single Multicall3 RPC.
+  // estimateLiquidation reverts for healthy positions; with allowFailure=true,
+  // each per-call revert surfaces as { status: "failure" } without aborting the batch.
+  const multicallAddress = (process.env.MULTICALL3_ADDRESS ||
+    "0xcA11bde05977b3631167028862bE2a173976CA11") as Address;
+
+  const results = await publicClient.multicall({
+    contracts: positions.map((p) => ({
+      address: lensAddress,
+      abi: lensAbi,
+      functionName: "estimateLiquidation" as const,
+      args: [p.proxyAddress as Address, false] as const,
+    })),
+    allowFailure: true,
+    multicallAddress,
+  });
 
   const liquidatable: Array<{
     proxyAddress: string;
@@ -79,13 +84,14 @@ app.get("/liquidatable-positions", async (c) => {
     const result = results[i];
     const p = positions[i];
 
-    // estimateLiquidation reverts for healthy positions — only fulfilled = liquidatable
-    if (result.status === "rejected") {
-      const isExpectedRevert = result.reason instanceof ContractFunctionRevertedError;
+    if (result.status === "failure") {
+      // Most failures are expected reverts ("Position is not undercollateralized").
+      // Anything else (e.g. multicall infrastructure error) is logged.
+      const isExpectedRevert = result.error instanceof ContractFunctionRevertedError;
       if (!isExpectedRevert) {
         console.warn(
-          `estimateLiquidation RPC error for ${p.proxyAddress} (not a revert):`,
-          result.reason instanceof Error ? result.reason.message : result.reason
+          `estimateLiquidation multicall error for ${p.proxyAddress} (not a revert):`,
+          result.error instanceof Error ? result.error.message : result.error
         );
       }
       continue;
@@ -97,7 +103,7 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
-    const [amounts, vaults] = result.value;
+    const [amounts, vaults] = result.result;
 
     liquidatable.push({
       proxyAddress: p.proxyAddress,

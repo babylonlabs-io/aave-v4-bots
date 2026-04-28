@@ -451,18 +451,28 @@ describe("LiquidationBot", () => {
     it("discovers borrowable reserves from Spoke", async () => {
       const clients = createMockClients();
 
-      clients.publicClient.readContract
-        .mockResolvedValueOnce("0xspoke") // BTC_VAULT_CORE_SPOKE
-        .mockResolvedValueOnce(2n) // getReserveCount
-        .mockResolvedValueOnce({ flags: 0x04, underlying: "0xtoken1" }) // getReserve(0) - borrowable bit set
-        .mockResolvedValueOnce("USDC") // symbol
-        .mockResolvedValueOnce({ flags: 0x00, underlying: "0xtoken2" }); // getReserve(1) - not borrowable
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
+          if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
+          if (functionName === "getReserveCount") return Promise.resolve(2n);
+          if (functionName === "getReserve") {
+            const idx = (args?.[0] as bigint) ?? 0n;
+            if (idx === 0n) return Promise.resolve({ flags: 0x04, underlying: "0xtoken1" });
+            return Promise.resolve({ flags: 0x00, underlying: "0xtoken2" });
+          }
+          if (functionName === "symbol") return Promise.resolve("USDC");
+          if (functionName === "decimals") return Promise.resolve(6);
+          return Promise.resolve(0n);
+        }
+      );
 
       const bot = createBot(clients);
 
       await bot.discoverDebtTokens();
 
-      expect(clients.publicClient.readContract).toHaveBeenCalledTimes(5);
+      // BTC_VAULT_CORE_SPOKE + getReserveCount + 2× getReserve + symbol + decimals
+      // (decimals is read alongside symbol via getTokenMeta cache).
+      expect(clients.publicClient.readContract).toHaveBeenCalledTimes(6);
     });
 
     it("handles zero reserves gracefully", async () => {
@@ -484,12 +494,16 @@ describe("LiquidationBot", () => {
     it("logs debt token and WBTC balances", async () => {
       const clients = createMockClients();
 
-      clients.publicClient.readContract
-        .mockResolvedValueOnce(1000000n) // debt token balance
-        .mockResolvedValueOnce("USDC") // debt token symbol
-        .mockResolvedValueOnce(6) // debt token decimals
-        .mockResolvedValueOnce(50000000n) // WBTC balance
-        .mockResolvedValueOnce("WBTC"); // WBTC symbol
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName, address }: { functionName: string; address: string }) => {
+          if (functionName === "symbol")
+            return Promise.resolve(address === "0xwbtc" ? "WBTC" : "USDC");
+          if (functionName === "decimals") return Promise.resolve(address === "0xwbtc" ? 8 : 6);
+          if (functionName === "balanceOf")
+            return Promise.resolve(address === "0xwbtc" ? 50000000n : 1000000n);
+          return Promise.resolve(0n);
+        }
+      );
 
       const bot = createBot(clients, {
         debtTokenAddresses: ["0xtoken1" as `0x${string}`],
@@ -499,6 +513,35 @@ describe("LiquidationBot", () => {
 
       const { recordTokenBalance } = await import("./metrics");
       expect(recordTokenBalance).toHaveBeenCalled();
+    });
+
+    it("caches symbol and decimals across calls (steady-state RPC reduction)", async () => {
+      const clients = createMockClients();
+
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName, address }: { functionName: string; address: string }) => {
+          if (functionName === "symbol")
+            return Promise.resolve(address === "0xwbtc" ? "WBTC" : "USDC");
+          if (functionName === "decimals") return Promise.resolve(address === "0xwbtc" ? 8 : 6);
+          if (functionName === "balanceOf")
+            return Promise.resolve(address === "0xwbtc" ? 50000000n : 1000000n);
+          return Promise.resolve(0n);
+        }
+      );
+
+      const bot = createBot(clients, {
+        debtTokenAddresses: ["0xtoken1" as `0x${string}`],
+      });
+
+      await bot.logBalances();
+      const callsAfterFirst = clients.publicClient.readContract.mock.calls.length;
+
+      await bot.logBalances();
+      const callsAfterSecond = clients.publicClient.readContract.mock.calls.length;
+
+      // Second cycle should only re-read balanceOf for each token (1 debt + 1 WBTC = 2),
+      // not symbol/decimals (cached).
+      expect(callsAfterSecond - callsAfterFirst).toBe(2);
     });
   });
 });

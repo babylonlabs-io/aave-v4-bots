@@ -100,7 +100,7 @@ describe("config validation", () => {
       const { loadConfig } = await import("./config");
       const config = loadConfig();
 
-      expect(config.pollingIntervalMs).toBe(10000);
+      expect(config.pollingIntervalMs).toBe(12000);
       expect(config.btcRedeemKey).toBe(
         "0x0000000000000000000000000000000000000000000000000000000000000000"
       );
