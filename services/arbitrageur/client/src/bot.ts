@@ -346,18 +346,22 @@ export class ArbitrageurBot {
     const arbitrageur = this.walletClient.account.address;
 
     try {
-      const { symbol, decimals } = await this.getWbtcMeta();
-      const balance = await withRetry(
-        () =>
-          this.publicClient.readContract({
-            address: this.wbtcAddress,
-            abi: erc20Abi,
-            functionName: "balanceOf",
-            args: [arbitrageur],
-          }),
-        this.retryConfig,
-        "balance check"
-      );
+      // Run metadata + balanceOf in parallel: cold-start is no slower than
+      // before (still 3 concurrent reads); steady-state is just balanceOf.
+      const [{ symbol, decimals }, balance] = await Promise.all([
+        this.getWbtcMeta(),
+        withRetry(
+          () =>
+            this.publicClient.readContract({
+              address: this.wbtcAddress,
+              abi: erc20Abi,
+              functionName: "balanceOf",
+              args: [arbitrageur],
+            }),
+          this.retryConfig,
+          "balance check"
+        ),
+      ]);
 
       const formattedBalance = formatUnits(balance, decimals);
       console.log(`${this.logTag}Arbitrageur balance: ${formattedBalance} ${symbol}`);

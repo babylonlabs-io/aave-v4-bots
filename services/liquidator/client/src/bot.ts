@@ -448,29 +448,33 @@ export class LiquidationBot {
     console.log(`${this.logTag}Token balances:`);
 
     // Debt tokens — symbol/decimals are immutable, fetched once and cached.
+    // Kick metadata + balanceOf in parallel so cold-start matches the original
+    // 3-RPC concurrency; subsequent cycles only fire balanceOf (cache hit).
     for (const tokenAddress of this.debtTokenAddresses) {
-      const { symbol, decimals } = await this.getTokenMeta(tokenAddress);
-      const balance = await this.publicClient.readContract({
-        address: tokenAddress,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [liquidator],
-      });
+      const [{ symbol, decimals }, balance] = await Promise.all([
+        this.getTokenMeta(tokenAddress),
+        this.publicClient.readContract({
+          address: tokenAddress,
+          abi: erc20Abi,
+          functionName: "balanceOf",
+          args: [liquidator],
+        }),
+      ]);
 
       recordTokenBalance(symbol, tokenAddress, balance, decimals);
       console.log(`   ${symbol}: ${formatUnits(balance, decimals)}`);
     }
 
     // WBTC balance
-    const { symbol: wbtcSymbol, decimals: wbtcDecimals } = await this.getTokenMeta(
-      this.wbtcAddress
-    );
-    const wbtcBalance = await this.publicClient.readContract({
-      address: this.wbtcAddress,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [liquidator],
-    });
+    const [{ symbol: wbtcSymbol, decimals: wbtcDecimals }, wbtcBalance] = await Promise.all([
+      this.getTokenMeta(this.wbtcAddress),
+      this.publicClient.readContract({
+        address: this.wbtcAddress,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [liquidator],
+      }),
+    ]);
 
     recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, wbtcDecimals);
     console.log(`   ${wbtcSymbol}: ${formatUnits(wbtcBalance, wbtcDecimals)}`);
