@@ -1,37 +1,72 @@
 # Liquidation Client
 
-Polls the Ponder indexer for unhealthy positions and executes liquidations.
+Polls the Ponder indexer for unhealthy positions and executes liquidations
+against the AaveAdapter contract.
 
 ## How It Works
 
-1. **Poll** - Fetches `/liquidatable-positions` from Ponder every N seconds
-2. **Estimate** - Calls `estimateLiquidation(proxyAddress)` on the Lens to compute exact inputs
-3. **Simulate** - Simulates all liquidations in parallel to filter valid ones
-4. **Approve** - Ensures debt token approval for Controller (one-time)
-5. **Liquidate** - Calls `AaveAdapter.liquidateCorePosition(borrower, btcRedeemKey, inputs)`
+1. **Discover debt tokens** — at boot, either reads `DEBT_TOKEN_ADDRESSES` or
+   enumerates the Spoke's reserves and selects those flagged borrowable.
+2. **Approve** — once at boot, sets `MAX_UINT256` allowance on every debt
+   token for the AaveAdapter contract.
+3. **Poll** — fetches `/liquidatable-positions` from the indexer every
+   `POLLING_INTERVAL_MS`.
+4. **Estimate** — for each candidate, calls
+   `AaveAdapterLens.estimateLiquidation(proxy, isDirectRedemption)` to get
+   `(uint256[] amounts, bytes32[] vaults)`. Each amount is bumped by 1% to
+   absorb interest accrued between estimate and broadcast.
+5. **Simulate** — simulates every candidate against the adapter; drops any
+   that revert.
+6. **Liquidate** — calls one of two adapter functions depending on
+   `IS_DIRECT_REDEMPTION`:
+   - `IS_DIRECT_REDEMPTION=true` →
+     `AaveAdapter.liquidate(borrower, BTC_REDEEM_KEY, amounts, priorityOrder)`.
+     Seized vault is redeemed directly to `BTC_REDEEM_KEY`.
+   - default (`false`) →
+     `AaveAdapter.liquidateWithLLP(borrower, LLP_ADDRESS, amounts, priorityOrder, [])`.
+     Seized vault is escrowed in the LLP (BTCVaultSwap) for an arbitrageur to
+     acquire later. The empty `requestedTokens` array means the liquidator
+     does not request any LLP-side payout in this tx.
+
+`priorityOrder` is always `[0, 1, …, n-1]`.
 
 ## Liquidation Flow
 
 ```
-Bot                    Lens                Controller               VaultSwap
- │                       │                      │                       │
- │ estimateLiquidation()▶│                      │                       │
- │◀── inputs[], vaults[] │                      │                       │
- │                       │                      │                       │
- │ liquidateCorePosition(borrower, redeemKey, inputs) ──▶│              │
- │                       │                      │── repay debt ────────▶│
- │                       │                      │── seize + swap ──────▶│ (if redeemKey=0)
- │◀──────────── WBTC received ─────────────────│◀── WBTC ─────────────│
+Bot                Lens                AaveAdapter           Spoke / LLP
+ │                   │                       │                     │
+ │ estimateLiquidation()                                            │
+ │ ──────────────────▶                                              │
+ │ ◀── amounts[], vaults[]                                          │
+ │                                                                  │
+ │ liquidate(...) ───────────────────────────▶                      │
+ │   OR liquidateWithLLP(...)                │                      │
+ │                                           │── liquidationCall ──▶│
+ │                                           │  (Spoke moves shares)│
+ │                                           │                      │
+ │                  direct mode:             │                      │
+ │                  vault redeemed to        │                      │
+ │                  BTC_REDEEM_KEY in same tx│                      │
+ │                                                                  │
+ │                  LLP mode:                                       │
+ │                  vault escrowed in BTCVaultSwap, liquidator      │
+ │                  receives WBTC immediately (drawn from Hub at    │
+ │                  sell discount); arbitrageur later acquires.     │
+ │                                                                  │
+ │ ◀──────────────── tx receipt ────────────────────────────────────│
 ```
 
-The liquidator:
-- Calls the Lens to pre-compute exact inputs (debt repayments + fairness payment + protocol fee)
-- Repays the position's debt (needs debt tokens, e.g., USDC)
-- Receives WBTC atomically when `btcRedeemKey = bytes32(0)` (Controller handles vault swap internally)
+Direct mode redeems the seized vault to the liquidator's BTC key in the same
+tx. LLP mode escrows the vault in BTCVaultSwap and immediately pays the
+liquidator WBTC at a sell discount (drawn from the Hub); an arbitrageur
+later pays the Hub debt + protocol fee to acquire the vault, which restores
+the Hub draw.
 
 ## Environment Variables
 
 ```bash
+# Required ---------------------------------------------------------------
+
 # Private key of liquidator (needs debt tokens)
 LIQUIDATOR_PRIVATE_KEY=0x...
 
@@ -42,7 +77,7 @@ PONDER_URL=http://localhost:42069
 CLIENT_RPC_URL=http://localhost:8545
 
 # AaveAdapter address
-CONTROLLER_ADDRESS=0x...
+ADAPTER_ADDRESS=0x...
 
 # AaveAdapterLens address
 LENS_ADDRESS=0x...
@@ -50,53 +85,60 @@ LENS_ADDRESS=0x...
 # WBTC token address
 WBTC_ADDRESS=0x...
 
-# Debt token addresses, comma-separated (optional, auto-discovered from Spoke)
-DEBT_TOKEN_ADDRESSES=0x...,0x...
+# Optional ---------------------------------------------------------------
 
-# BTC redeem key for direct redemption (default: bytes32(0) for WBTC payout)
-# BTC_REDEEM_KEY=0x0000000000000000000000000000000000000000000000000000000000000000
+# Comma-separated debt tokens. If unset, auto-discovered from the Spoke.
+# DEBT_TOKEN_ADDRESSES=0xUSDC...,0xUSDT...
 
-# Poll interval (default: 10s)
-POLLING_INTERVAL_MS=10000
+# Selects redemption mode. "true" → direct (calls liquidate); anything
+# else → LLP escrow (calls liquidateWithLLP). Default: false.
+# IS_DIRECT_REDEMPTION=false
+
+# When IS_DIRECT_REDEMPTION=true, vault is redeemed to this BTC key.
+# Default: bytes32(0). Required to be non-zero in direct mode.
+# BTC_REDEEM_KEY=0x...
+
+# When IS_DIRECT_REDEMPTION=false, the LLP (BTCVaultSwap) address.
+# Default: address(0). Required to be non-zero in LLP mode.
+# LLP_ADDRESS=0x...
+
+# Poll interval (default: 10000 ms)
+# POLLING_INTERVAL_MS=10000
+
+# Receipt wait timeout (default: 120000 ms)
+# TX_RECEIPT_TIMEOUT_MS=120000
 
 # Metrics port (default: 9090)
-METRICS_PORT=9090
+# METRICS_PORT=9090
 ```
 
-## CLI Commands
+## CLI
 
 ```bash
-# Start polling mode (default)
-pnpm liquidate
+pnpm liquidator:run        # poll mode (the only mode)
 ```
+
+Any argv other than `poll` exits 1.
 
 ## Monitoring
 
-The client exposes metrics and health endpoints on `METRICS_PORT` (default 9090):
+The client exposes an HTTP server on `METRICS_PORT` (default 9090):
 
-- `GET /health` - Health check with ponder/RPC reachability
-- `GET /metrics` - Prometheus metrics
-- `GET /ready` - Readiness probe
+- `GET /health`, `GET /healthz` — health JSON. 200 for healthy/degraded,
+  503 for unhealthy. Body: `{ status, uptime, lastPollAt, ponderReachable,
+  rpcReachable, latestBlockNumber }`.
+- `GET /ready`, `GET /readyz` — 200 only when both Ponder and RPC
+  reachable; 503 otherwise.
+- `GET /metrics` — Prometheus exposition.
+
+The Ponder reachability probe hits `${PONDER_URL}/positions`, which returns
+the full position table. Aggressive probe intervals will scan that table on
+every check.
 
 ## Testing
 
 ```bash
-# Run tests
 pnpm test
-
-# Watch mode
 pnpm test:watch
-
-# Coverage report
 pnpm test:coverage
-```
-
-## Running
-
-```bash
-# From root
-pnpm liquidate
-
-# Or directly
-tsx src/index.ts
 ```

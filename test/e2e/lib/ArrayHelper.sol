@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+/// @title ArrayHelper
+/// @notice Inline `string[] memory` literal builders. Solidity has no syntax for
+///         memory string-array literals, so callers either declare a temp and
+///         assign per index, or use these helpers.
+library ArrayHelper {
+    function create(string memory s) internal pure returns (string[] memory arr) {
+        arr = new string[](1);
+        arr[0] = s;
+    }
+
+    function create(string memory s1, string memory s2) internal pure returns (string[] memory arr) {
+        arr = new string[](2);
+        arr[0] = s1;
+        arr[1] = s2;
+    }
+}

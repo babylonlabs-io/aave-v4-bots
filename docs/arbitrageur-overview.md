@@ -2,144 +2,222 @@
 
 ## Overview
 
-The Aave v4 integration with Babylon's Trustless Bitcoin Vaults enables BTC holders to use their Bitcoin as collateral for borrowing on Ethereum. When borrowers become undercollateralized, their positions can be liquidated. However, liquidating BTC vault collateral presents unique challenges that the **VaultSwap** and **arbitrageur system** are designed to solve.
+The Aave v4 integration with Babylon's Trustless Bitcoin Vaults enables
+BTC holders to use their Bitcoin as collateral for borrowing on
+Ethereum. When borrowers become undercollateralized, their positions
+can be liquidated. However, redeeming the underlying BTC from a vault
+is restricted, which creates work for two cooperating roles —
+liquidators and arbitrageurs — connected by the **BTCVaultSwap**
+contract.
 
 ## The Problem
 
-Liquidations in Aave v4 are permissionless, anyone can liquidate an undercollateralized position. However, redeeming the underlying BTC from a vault requires:
+Liquidations are permissionless: anyone with debt tokens can liquidate
+an undercollateralized position. But redeeming the underlying BTC is
+not:
 
-1. **Registered Application Keepers**: Only pre-registered entities can initiate vault redemption through the protocol
-2. **Multi-day Settlement Delay**: BTC redemption involves a challenge period of approximately three days, making flash loan liquidations impossible
+1. **Registered Application Keepers** — only pre-registered entities
+   can initiate vault redemption.
+2. **Multi-day Settlement Delay** — BTC redemption involves a
+   challenge period of about three days.
 
-These constraints mean permissionless liquidators cannot directly receive BTC. They need immediate liquidity to continue operating.
+Permissionless liquidators therefore cannot directly take BTC
+redemption into their own hands. They need immediate WBTC liquidity to
+keep operating.
 
-## The Solution: VaultSwap
+## The Solution: BTCVaultSwap
 
-Aave v4 uses a Hub and Spoke architecture where the Hub manages core lending logic and Spokes handle asset-specific operations. **VaultSwap** provides instant liquidity for liquidators while preserving the security model of the Babylon vault protocol.
+`BTCVaultSwap` is the Liquidation Liquidity Provider (LLP) deployed in
+this integration. When a liquidator calls
+`AaveAdapter.liquidateWithLLP(...)`:
 
-### How It Works
+1. The Adapter repays the borrower's debt and seizes the vault.
+2. The vault is transferred to BTCVaultSwap.
+3. BTCVaultSwap **draws WBTC from the Aave Hub at a sell discount**
+   (`sellDiscountBps`) and pays it to the liquidator immediately.
+4. The vault sits in escrow with a debt to the Hub equal to the WBTC
+   drawn.
 
-![Liquidation Flow](./assets/liquidationFlow.png)
-
-### Liquidation Flow
-
-1. **Liquidation**: A permissionless liquidator identifies an undercollateralized position and executes liquidation on Aave v4, receiving ownership of the BTC vault(s)
-
-2. **Instant Swap**: The liquidator swaps seized vaults via `VaultSwap` and receives WBTC immediately. The WBTC is provided by the Aave Hub as a loan.
-
-3. **Escrow State**: The vault is now held in escrow, waiting to be acquired by a registered arbitrageur. If a position contained multiple vaults, each is escrowed individually.
+The arbitrageur is the second half of the system: a registered keeper
+who later acquires the escrowed vault by paying the Hub debt + a
+protocol fee, and redeems the vault to their own BTC key.
 
 ## Arbitrageur Role
 
-Arbitrageurs are **pre-registered Aave v4 application keepers** who have the exclusive right to purchase escrowed vaults. Registration is handled through partnership agreements with the protocol.
+Arbitrageurs are **pre-registered Aave application keepers** who have
+the exclusive right to acquire escrowed vaults via
+`BTCVaultSwap.swapWbtcForVault`. Registration is gated by the
+`ApplicationRegistry` contract.
 
 ### Why Registration Is Required
 
-- Only registered keepers can later redeem vaults for actual BTC through the Babylon protocol
-- This ensures arbitrageurs can realize their profit by completing the redemption flow
-- Registration involves off-chain setup for the vault keeper infrastructure
+- Only registered keepers can redeem vaults for actual BTC through the
+  Babylon protocol.
+- Registration involves off-chain setup of the keeper's Bitcoin-side
+  signing infrastructure.
 
 ### Arbitrageur Economics
 
-When acquiring a vault, arbitrageurs pay less than the full BTC value. For example:
+When acquiring a vault, arbitrageurs pay slightly less than the full
+WBTC-equivalent of the vault BTC. The exact spread depends on
+`sellDiscountBps` (how much the Hub took off when paying the
+liquidator) and `discountCommissionBps` (the protocol fee on
+profitable vaults).
 
 | Component | Example (1 BTC vault) |
 |-----------|----------------------|
-| Vault BTC Value | 1.00 BTC |
-| Arbitrageur Pays | ~0.97 WBTC |
-| **Gross Profit** | **~0.03 BTC** |
+| Vault BTC value | 1.00 BTC |
+| Liquidator received (paid by Hub at sell discount) | ~0.97 WBTC |
+| Arbitrageur pays (Hub debt + fee) | ~0.98 WBTC |
+| Arbitrageur receives | 1.00 BTC (after BTC settlement) |
+| Protocol fee | ~0.01 WBTC |
 
-> **Note**: The exact discount percentage is not yet finalized and will be defined as a fixed protocol parameter before mainnet launch.
-
-The WBTC payment is distributed as follows:
-- **Loan Repayment**: Repays the WBTC borrowed from Aave Hub when the liquidator swapped
-- **Protocol Fees**: Split between Babylon Labs and Aave v4 as liquidation fees
+> **Note**: `sellDiscountBps` and `discountCommissionBps` are protocol
+> parameters held on the `BTCVaultSwap` contract; check the deployment
+> for current values.
 
 ### Interest Accrual
 
-The debt on an escrowed vault accrues interest over time. The function `previewWbtcToAcquireVaultWithFees(vaultId)` returns the current amount needed to acquire a vault, including principal, interest, and protocol fees. This means:
+While a vault is escrowed, the Hub debt accrues interest. The
+arbitrageur pays the **current** Hub debt + protocol fee, so the
+longer a vault sits in escrow, the more it costs to acquire — and the
+profit margin shrinks. This incentivises arbitrageurs to act quickly.
 
-- Arbitrageurs are incentivized to acquire vaults quickly
-- Waiting too long reduces the profit margin
-- Multiple arbitrageurs may compete for the same vault
+The contract function
+`BTCVaultSwap.previewEscrowedVaults(bytes32[])` returns, for each
+vault:
+
+| Field | Meaning |
+|-------|---------|
+| `amountVault` | Original BTC in the vault (sats) |
+| `amountDebt` | Current Hub debt = principal + accrued interest |
+| `amountInterest` | Interest accrued above the escrow-time principal |
+| `amountFee` | Protocol fee (only set when profitable) |
+| `amountWbtcToAcquire` | What the arbitrageur pays = `amountDebt + amountFee` |
+| `isProfitable` | `true` iff vault WBTC-equivalent > `amountDebt` |
 
 ## Arbitrageur Bot
 
-The arbitrageur bot automates the process of monitoring and acquiring escrowed vaults.
-
-### Architecture
-
-![Arbitrageur Bot Architecture](./assets/arbitrageurArchitecture.png)
+The bot automates monitoring and acquisition of escrowed vaults.
 
 ### Bot Operation
 
-1. **Polling**: The bot periodically queries the Ponder indexer for available escrowed vaults
+1. **Polling** — every `POLLING_INTERVAL_MS`, the bot fetches
+   `/escrowed-vaults` from the Ponder indexer. The endpoint enriches
+   indexed vault IDs by calling `previewEscrowedVaults` on chain.
+2. **Re-check on chain** — for each vault, the bot calls
+   `previewEscrowedVaults([vaultId])` directly before swapping. The
+   bot trusts the on-chain answer, not the indexer's cached one.
+3. **Acquire** — if profitable, the bot:
+   - Ensures WBTC approval for BTCVaultSwap.
+   - Calls `swapWbtcForVault(vaultId, maxWbtcIn)` where
+     `maxWbtcIn = currentDebt + currentDebt * MAX_SLIPPAGE_BPS / 10000`.
+   - Waits for receipt up to `TX_RECEIPT_TIMEOUT_MS`.
 
-2. **Evaluation**: For each vault, the bot retrieves the current debt (principal + interest + fees) via the indexer's enriched API
-
-3. **Execution**: If the vault is profitable, the bot:
-   - Ensures WBTC approval for the VaultSwap contract
-   - Calls `swapWbtcForVault` with the vault ID and maximum WBTC willing to pay
-   - Waits for transaction confirmation (acquisition and redemption are atomic)
+The vault is redeemed to the arbitrageur's keeper-registered BTC key
+inside the same transaction.
 
 ### Configuration
 
-| Parameter | Description |
-|-----------|-------------|
-| `POLLING_INTERVAL_MS` | How often to check for new vaults (default: 30s) |
-| `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance in basis points |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `POLLING_INTERVAL_MS` | How often to check for escrowed vaults | `30000` |
+| `MAX_SLIPPAGE_BPS` | Slippage tolerance (basis points) over `currentDebt` | `100` (1%) |
+| `VAULT_PROCESSING_DELAY_MS` | Delay between processing successive vaults | `5000` |
+| `TX_RECEIPT_TIMEOUT_MS` | Receipt wait timeout | `120000` |
 
 ### Requirements
 
-To run an arbitrageur bot, you need:
-
-- **Registration**: Partnership agreement with the protocol for keeper registration
-- **WBTC Capital**: Sufficient WBTC to front vault acquisitions
-- **Infrastructure**: Reliable RPC access and monitoring
+- **Registration** — partnership agreement with the protocol, registered
+  as an application keeper.
+- **WBTC Capital** — sufficient WBTC to front vault acquisitions.
+- **Infrastructure** — reliable RPC access and monitoring.
 
 ## Contract Interfaces
 
-### VaultSwap (view functions)
+### BTCVaultSwap (view functions)
 
 ```solidity
-// Check if a specific vault is in escrow
+// Whether a specific vault is currently in escrow
 function isVaultEscrowed(bytes32 vaultId) external view returns (bool);
 
-// Get detailed cost breakdown for acquiring a vault (includes accrued interest)
-function previewWbtcToAcquireVaultWithFees(bytes32 vaultId) external view returns (uint256 wbtcNeeded, uint256 principal, uint256 interest, uint256 protocolFee);
+// Preview cost and profitability for a batch of escrowed vaults
+struct EscrowedVaultPreviewResult {
+    bytes32 vaultId;
+    uint256 amountVault;          // original vault BTC (sats)
+    uint256 amountDebt;           // current Hub debt (= principal + interest)
+    uint256 amountInterest;       // interest accrued above escrow-time principal
+    uint256 amountFee;            // protocol fee (0 if !isProfitable)
+    uint256 amountWbtcToAcquire;  // amountDebt + amountFee
+    bool    isProfitable;
+}
 
-// Check if a vault is profitable for arbitrageurs
-function isVaultProfitableForArbitrageur(bytes32 vaultId) external view returns (bool isProfitable, uint256 accruedInterest, uint256 arbitrageurDiscount, uint256 hubDebt);
+function previewEscrowedVaults(bytes32[] calldata vaultIds)
+    external
+    view
+    returns (EscrowedVaultPreviewResult[] memory);
 
-// Get info for multiple escrowed vaults
-function getEscrowedVaultsInfo(bytes32[] calldata vaultIds) external view returns (EscrowedVaultInfo[] memory);
+// Preview interest accrued for a single escrowed vault
+function previewVaultInterest(bytes32 vaultId)
+    external
+    view
+    returns (uint256 interest);
 ```
 
-### VaultSwap (arbitrageur functions)
+### BTCVaultSwap (state-changing functions)
 
 ```solidity
-// Acquire vault ownership by paying WBTC (redemption is atomic)
-function swapWbtcForVault(bytes32 vaultId, uint256 maxWbtcIn) external returns (uint256 amountWbtcIn);
+// Acquire a vault and have it redeemed to msg.sender's BTC key in same tx.
+// Caller must be a registered application keeper.
+function swapWbtcForVault(bytes32 vaultId, uint256 maxWbtcIn)
+    external
+    returns (uint256 amountWbtcIn);
 
-// Emergency repay a vault's debt to release it from escrow
-function emergencyRepayVault(bytes32 vaultId) external returns (uint256 wbtcRepaid);
+// Same as above, but the redemption is to onBehalfOf's BTC key.
+function swapWbtcForVaultOnBehalf(
+    bytes32 vaultId,
+    uint256 maxWbtcIn,
+    address onBehalfOf
+) external returns (uint256 amountWbtcIn);
+
+// Pay down accrued interest on an escrowed vault without acquiring it.
+// Useful for keeping a vault profitable when the arbitrageur is willing
+// to wait.
+function repayVaultInterest(bytes32 vaultId, uint256 wbtcToRepay)
+    external
+    returns (uint256 wbtcPaid);
 ```
 
 ### Events
 
 ```solidity
-// Emitted when a vault is added to escrow (available for acquisition)
+// Emitted when a vault enters escrow (after liquidation)
 event AddedVault(bytes32 indexed vaultId);
 
-// Emitted when a vault is removed from escrow (acquired or emergency repaid)
+// Emitted when a vault leaves escrow (acquired by arbitrageur)
 event RemovedVault(bytes32 indexed vaultId);
+
+// Emitted when an arbitrageur acquires a vault
+event WbtcSwappedForVault(
+    address indexed payer,
+    address indexed onBehalfOf,
+    bytes32 vaultId,
+    uint256 wbtcAmount
+);
+
+// Emitted when interest is repaid against an escrowed vault
+event VaultInterestRepaid(
+    bytes32 indexed vaultId,
+    address indexed payer,
+    uint256 wbtcPaid
+);
 ```
 
 ## Summary
 
 | Actor | Action | Result |
 |-------|--------|--------|
-| **Liquidator** | Liquidates position, swaps vault for WBTC | Receives instant WBTC liquidity |
-| **VaultSwap** | Holds vault in escrow, borrows from Hub | Bridges permissionless liquidation to registered redemption |
-| **Arbitrageur** | Monitors and acquires escrowed vaults | Pays discounted price, vault is atomically redeemed |
-| **Aave Hub** | Provides WBTC liquidity | Loan repaid when arbitrageur acquires |
+| **Liquidator** | `liquidateWithLLP(...)` on AaveAdapter | Vault escrowed in BTCVaultSwap; liquidator paid WBTC at sell discount, drawn from Hub |
+| **BTCVaultSwap** | Holds vault in escrow with Hub debt outstanding | Bridges permissionless liquidation to registered redemption |
+| **Arbitrageur** | `swapWbtcForVault(...)` | Pays Hub debt + protocol fee; vault redeemed to arbitrageur's BTC key in same tx |
+| **Aave Hub** | Provided WBTC at liquidation, reclaimed at acquisition | Net debt zero after the round-trip |

@@ -1,12 +1,22 @@
-# Ponder Indexer
+# Ponder Indexer (Arbitrageur)
 
-Indexes VaultSwap events and exposes API endpoints for querying escrowed vaults.
+Indexes BTCVaultSwap events and exposes API endpoints for the arbitrageur
+client.
 
 ## Events Tracked
 
-### VaultSwap Contract
-- `AddedVault` - Adds vault to escrowed list (vault enters escrow after liquidation)
-- `RemovedVault` - Removes vault from escrowed list (vault acquired by arbitrageur or emergency repaid)
+### BTCVaultSwap
+- `AddedVault` — adds the `vaultId` to `escrowed_vault` (with the block
+  timestamp as `createdAt`). Inserts use `onConflictDoNothing`.
+- `RemovedVault` — deletes the row by `vaultId`.
+
+These are the only events indexed.
+
+## Schema
+
+| Table | Columns |
+|---|---|
+| `escrowed_vault` | `vaultId hex pk`, `createdAt bigint` |
 
 ## Environment Variables
 
@@ -14,19 +24,20 @@ Indexes VaultSwap events and exposes API endpoints for querying escrowed vaults.
 # RPC URL for indexing
 PONDER_RPC_URL=http://localhost:8545
 
-# VaultSwap contract address
+# BTCVaultSwap contract address
 VAULT_SWAP_ADDRESS=0x...
 
-# Block to start indexing from
+# Block to start indexing from (default: 0)
 START_BLOCK=0
 
 # Polling interval in ms (default: 1000)
 PONDER_POLLING_INTERVAL=1000
 
-# Chain ID
+# Chain ID (default: 1)
 CHAIN_ID=1
 
-# PostgreSQL connection (port 5433 to avoid conflict with liquidation bot)
+# PostgreSQL connection. If unset, Ponder falls back to its default
+# in-memory database — indexer state is lost on restart.
 DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
 
 # Database schema (required for Ponder v0.13+)
@@ -37,7 +48,14 @@ DATABASE_SCHEMA=public
 
 ### `GET /escrowed-vaults`
 
-Returns escrowed vaults with live debt data fetched from the VaultSwap contract via `getEscrowedVaultsInfo()`.
+Returns every escrowed vault, enriched with live state from the contract.
+The handler reads all DB rows, then issues a single
+`BTCVaultSwap.previewEscrowedVaults(bytes32[])` call with the full list.
+
+If that batch call fails, the handler falls back to per-vault
+`previewEscrowedVaults([vaultId])` calls in parallel and reports any
+that failed in `failedVaultsCount`. The endpoint returns 200 if at
+least one vault enriched, 500 if all failed.
 
 ```json
 {
@@ -45,28 +63,57 @@ Returns escrowed vaults with live debt data fetched from the VaultSwap contract 
     {
       "vaultId": "0x...",
       "btcAmount": "100000000",
-      "currentDebt": "100000022",
+      "currentDebt": "100200000",
+      "isProfitable": true,
       "createdAt": "1234567890"
     }
+  ],
+  "total": 1,
+  "failedVaultsCount": 0
+}
+```
+
+Field meanings:
+
+| API field | Source on the contract tuple |
+|---|---|
+| `vaultId` | `vaultId` (bytes32 hex) |
+| `btcAmount` | `amountVault` (sats) |
+| `currentDebt` | `amountWbtcToAcquire` (= `amountDebt + amountFee`) |
+| `isProfitable` | `isProfitable` |
+| `createdAt` | block timestamp from the indexer DB |
+
+The contract tuple's `amountDebt`, `amountInterest`, and `amountFee`
+fields are not exposed — only the renamed `currentDebt` (acquisition
+cost) and the profitability flag are surfaced.
+
+### `GET /escrowed-vaults-raw`
+
+Raw indexer rows without on-chain enrichment. Used for debugging.
+
+```json
+{
+  "vaults": [
+    { "vaultId": "0x...", "createdAt": "1234567890" }
   ],
   "total": 1
 }
 ```
 
-### `GET /escrowed-vaults-raw`
-
-Returns raw indexed vault data without live debt enrichment (debugging).
-
 ### `GET /graphql`
 
-GraphQL endpoint for custom queries.
+Ponder GraphQL endpoint over the schema.
+
+### `* /sql/*`
+
+Ponder SQL client.
 
 ## Running
 
 ```bash
-# From root
+# from repo root
 pnpm arbitrageur:indexer
 
-# Or directly
+# or directly
 pnpm dev
 ```

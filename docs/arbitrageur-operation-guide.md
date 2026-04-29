@@ -231,7 +231,6 @@ PONDER_URL=http://localhost:42070
 CLIENT_RPC_URL=https://eth-mainnet.example.com
 
 # Contract addresses
-CONTROLLER_ADDRESS=0x...
 VAULT_SWAP_ADDRESS=0x...
 WBTC_ADDRESS=0x...
 
@@ -269,8 +268,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `ARBITRAGEUR_PRIVATE_KEY` | Private key for signing transactions | Required |
 | `PONDER_URL` | Indexer API endpoint | Required |
 | `CLIENT_RPC_URL` | RPC for transaction execution | Required |
-| `CONTROLLER_ADDRESS` | AaveAdapter address | Required |
-| `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |
+| `VAULT_SWAP_ADDRESS` | BTCVaultSwap contract address | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
 | `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | `100` (1%) |
 | `POLLING_INTERVAL_MS` | How often to check for vaults | `30000` |
@@ -287,8 +285,7 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 
 | Contract | Purpose |
 |----------|---------|
-| `VAULT_SWAP_ADDRESS` | Execute `swapWbtcForVault()` to acquire vaults |
-| `CONTROLLER_ADDRESS` | AaveAdapter for vault management |
+| `VAULT_SWAP_ADDRESS` | BTCVaultSwap — `swapWbtcForVault()` and `previewEscrowedVaults()` |
 | `WBTC_ADDRESS` | WBTC token for acquisition payments |
 
 ## 6. Wallet Setup
@@ -472,14 +469,22 @@ When acquiring a vault, the arbitrageur pays less than the full BTC value:
 
 ### 9.2. Interest Accrual
 
-The debt on an escrowed vault accrues interest over time:
+The Hub debt on an escrowed vault accrues interest over time. The
+contract function `BTCVaultSwap.previewEscrowedVaults(bytes32[])`
+returns, for each vault, a tuple including:
 
-```
-currentDebt = principal + accruedInterest + protocolFee
-```
+| Field | Meaning |
+|---|---|
+| `amountVault` | Original BTC in the vault (sats) |
+| `amountDebt` | Current Hub debt = principal + accrued interest |
+| `amountInterest` | Interest accrued above the escrow-time principal |
+| `amountFee` | Protocol fee (only set when profitable) |
+| `amountWbtcToAcquire` | What the arbitrageur pays = `amountDebt + amountFee` |
+| `isProfitable` | `true` iff vault BTC value (oracle) > `amountDebt` |
 
-The `previewWbtcToAcquireVaultWithFees(vaultId)` function returns the current WBTC
-required, broken down into principal, interest, and protocol fee components.
+The Ponder API surfaces this as `currentDebt` (= `amountWbtcToAcquire`)
+and `isProfitable`. Slippage is applied to `currentDebt`:
+`maxWbtcIn = currentDebt + currentDebt * MAX_SLIPPAGE_BPS / 10000`.
 
 > **Note**: Vault acquisition is first-come-first-served. The first successful
 > `swapWbtcForVault()` transaction wins the vault.
@@ -502,14 +507,14 @@ required, broken down into principal, interest, and protocol fee components.
 
 | Error Type | Trigger | Action |
 |------------|---------|--------|
-| `poll_error` | Exception in poll cycle | Check logs for stack trace |
+| `poll_error` | Exception escaped the poll cycle | Check logs for stack trace |
 | `ponder_fetch_error` | Failed to fetch from indexer | Verify Ponder is running |
-| `gas_estimation_failed` | Gas estimation failed | Contract would revert, will retry |
-| `tx_timeout` | Transaction receipt timeout | Check network, increase timeout |
-| `acquire_error` | Failed to acquire vault | Check WBTC balance, approval |
-| `swap_reverted` | Swap transaction reverted | Vault likely acquired by another |
-| `contract_revert` | Generic contract revert | Check transaction for reason |
-| `vault_skipped` | Profitability guard failed | Normal skip; verify debt/interest changes |
+| `vault_skipped` | Vault no longer in escrow at preview time, or `isProfitable=false` | Normal skip — the indexer is one block behind reality, or the vault was already acquired |
+| `gas_estimation_failed` | `estimateContractGas` reverted | Contract would revert; usually transient |
+| `tx_timeout` | Receipt wait exceeded `TX_RECEIPT_TIMEOUT_MS` | Check network, increase timeout |
+| `swap_reverted` | Receipt status was `reverted` | Vault likely acquired by another |
+| `contract_revert` | `writeContract` rejected with a contract revert | Check transaction for reason |
+| `acquire_error` | Other unhandled exception during acquisition | Check WBTC balance, approval |
 
 **Viewing logs:**
 

@@ -14,4 +14,4 @@ export { type MetricsServerConfig, setPublicClient, startMetricsServer } from ".
 export { type RetryConfig, withRetry, fetchWithRetry } from "./retry";
 
 // ABIs
-export { controllerAbi, lensAbi, vaultSwapAbi, spokeAbi, erc20Abi } from "./abis";
+export { adapterAbi, lensAbi, vaultSwapAbi, spokeAbi, erc20Abi } from "./abis";

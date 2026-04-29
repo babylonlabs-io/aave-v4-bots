@@ -216,5 +216,5 @@ pnpm test:coverage          # With coverage
 
 ## Service Documentation
 
-- [Liquidator Documentation](./docs/liquidator.md)
-- [Arbitrageur Documentation](./docs/arbitrageur.md)
+- Liquidator: [overview](./docs/liquidator-overview.md), [operation guide](./docs/liquidator-operation-guide.md), [metrics](./docs/liquidator-metrics.md)
+- Arbitrageur: [overview](./docs/arbitrageur-overview.md), [operation guide](./docs/arbitrageur-operation-guide.md), [metrics](./docs/arbitrageur-metrics.md)
