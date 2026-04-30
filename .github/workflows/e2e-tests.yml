@@ -75,15 +75,15 @@ jobs:
           git submodule update --init --recursive
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1 https://github.com/foundry-rs/foundry-toolchain/releases/tag/v1
+        uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0 https://github.com/foundry-rs/foundry-toolchain/releases/tag/v1.8.0
 
       - name: Install Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 https://github.com/actions/setup-node/releases/tag/v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 https://github.com/actions/setup-node/releases/tag/v4.4.0
         with:
           node-version: '20'
 
       - name: Install pnpm
-        uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2 https://github.com/pnpm/action-setup/releases/tag/v2
+        uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2.4.1 https://github.com/pnpm/action-setup/releases/tag/v2.4.1
         with:
           version: 9
 
