@@ -66,6 +66,18 @@ export const wbtcBalance = new Gauge({
   registers: [registry],
 });
 
+/**
+ * Total outbound JSON-RPC method calls, labeled by method.
+ * Each increment corresponds to one RPC-provider charge (most providers bill
+ * per JSON-RPC method, regardless of HTTP-level batching).
+ */
+export const rpcCallsTotal = new Counter({
+  name: "eth_rpc_calls_total",
+  help: "Total outbound JSON-RPC method calls (one increment per provider charge)",
+  labelNames: ["method"] as const,
+  registers: [registry],
+});
+
 // ============================================
 // Metric Helper Functions
 // ============================================
@@ -86,6 +98,10 @@ export function recordPollDuration(durationMs: number): void {
 
 export function recordWbtcBalance(balanceSatoshis: bigint): void {
   wbtcBalance.set(Number(balanceSatoshis));
+}
+
+export function recordRpcCall(method: string): void {
+  rpcCallsTotal.inc({ method });
 }
 
 /**

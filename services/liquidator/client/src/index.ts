@@ -4,12 +4,14 @@ import { config as dotenvConfig } from "dotenv";
 // Load .env.liquidator from root directory
 dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
-import { http, type Chain, type Hex, createPublicClient, createWalletClient } from "viem";
+import { type Chain, type Hex, createPublicClient, createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
+import { instrumentedHttp } from "@repo/shared";
 import { LiquidationBot } from "./bot";
 import { loadConfig } from "./config";
 import { updateLastPollTime } from "./health";
+import { recordRpcCall } from "./metrics";
 import { setPublicClient, startMetricsServer } from "./server";
 import type { Config } from "./types";
 
@@ -17,9 +19,13 @@ async function createBot(config: Config) {
   const account = privateKeyToAccount(config.liquidatorPrivateKey);
   console.log(`Liquidator address: ${account.address}`);
 
+  // Every viem call routes through `instrumentedHttp` so that each outbound
+  // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.
+  const transport = instrumentedHttp(config.rpcUrl, recordRpcCall);
+
   // Create custom chain - auto-detect chainId from RPC
   const tempClient = createPublicClient({
-    transport: http(config.rpcUrl),
+    transport,
   });
   const chainId = await tempClient.getChainId();
   console.log(`Chain ID: ${chainId}`);
@@ -35,12 +41,12 @@ async function createBot(config: Config) {
 
   const publicClient = createPublicClient({
     chain,
-    transport: http(config.rpcUrl),
+    transport,
   });
 
   const walletClient = createWalletClient({
     chain,
-    transport: http(config.rpcUrl),
+    transport,
     account,
   });
 
