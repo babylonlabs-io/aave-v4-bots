@@ -26,7 +26,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         init(vm);
 
         // Load admin private key for broadcasting transactions
-        uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVKEY");
+        uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
 
         console.log("\n=== E2E Liquidation Setup ===");
 
@@ -199,7 +199,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     }
 
     function _setUpLiquidityScript() internal {
-        uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVKEY");
+        uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
 
         vm.startBroadcast(adminPrivateKey);
 
@@ -230,7 +230,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             "SPOKE_ADDRESS=",
             vm.toString(address(aaveSpoke)),
             "\n",
-            "CONTROLLER_ADDRESS=",
+            "ADAPTER_ADDRESS=",
             vm.toString(address(aaveAdapter)),
             "\n",
             "CHAIN_ID=",
@@ -334,8 +334,10 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     function _saveInitialWbtcBalances() internal {
         uint256 arbInitialWbtc = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
         uint256 liqInitialWbtc = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
+        uint256 liqInitialUsdc = usdc.balanceOf(E2EConstants.LIQUIDATOR);
         vm.writeFile(".e2e-initial-arb-wbtc", vm.toString(arbInitialWbtc));
         vm.writeFile(".e2e-initial-liq-wbtc", vm.toString(liqInitialWbtc));
+        vm.writeFile(".e2e-initial-liq-usdc", vm.toString(liqInitialUsdc));
     }
 
     function _startLiquidatorPonder() internal returns (string memory) {
@@ -394,10 +396,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     /// @notice Check if a position is liquidatable via the Lens contract.
     /// @dev Lens.estimateLiquidation reverts when the position is healthy, succeeds when liquidatable.
     function _isLiquidatable(AaveAdapterLens lens, address borrowerProxy) internal view returns (bool) {
-        try lens.estimateLiquidation(borrowerProxy, false) returns (
-            uint256[] memory,
-            bytes32[] memory
-        ) {
+        try lens.estimateLiquidation(borrowerProxy, false) returns (uint256[] memory, bytes32[] memory) {
             return true;
         } catch {
             return false;

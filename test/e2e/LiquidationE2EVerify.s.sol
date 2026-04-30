@@ -3,60 +3,49 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
-import {ISpoke} from "aave-v4/spoke/interfaces/ISpoke.sol";
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {BaseBot} from "./abstract/BaseBot.sol";
 import {E2EConstants} from "./E2EConstants.sol";
+import {ArrayHelper} from "./lib/ArrayHelper.sol";
 
 /// @title LiquidationE2EVerify
-/// @notice E2E script to verify the liquidation bot performed the liquidation
-/// @dev Part 2: Waits for bot to liquidate, then checks on-chain state
-///      Run this AFTER LiquidationE2ESetup.s.sol
-contract LiquidationE2EVerify is Script, BaseE2E {
-    /// @notice Main entry point for the verification script
+/// @notice Asserts the liquidation bot really executed the LLP-mode flow.
+/// @dev Compares NOW (live, via FFI cast call) against INITIAL (snapshots
+///      saved by LiquidationE2ESetup before the bot was started). Without
+///      the initial snapshots this script can't tell that liquidation
+///      happened — the bot is faster than this script's startup, so any
+///      "before" reading taken here would already be post-liquidation.
+///      The polling loop is kept for slow-CI cases.
+///
+///      Pass criteria (all three required):
+///        - position fully liquidated on Spoke (col == 0 && debt == 0)
+///        - liquidator's WBTC balance increased (LLP path payout)
+///        - liquidator's USDC balance decreased (debt repayment)
+contract LiquidationE2EVerify is Script, BaseBot {
     function run() public {
-        // Load deployed contracts
         init(vm);
 
         console.log("\n=== E2E Liquidation Verification ===");
 
-        // Get borrower address (same as setup script)
         address borrower = vm.addr(E2EConstants.BORROWER_PRIVATE_KEY);
 
-        // Get position info before liquidation (after price drop from setup script)
-        (uint256 collateralBefore, uint256 debtBefore, uint256 healthFactorBefore) = _getPositionInfo(borrower);
-        uint256 liquidatorUsdcBefore = usdc.balanceOf(E2EConstants.LIQUIDATOR);
+        uint256 initialWbtc = _readInitialBalance(".e2e-initial-liq-wbtc");
+        uint256 initialUsdc = _readInitialBalance(".e2e-initial-liq-usdc");
 
-        console.log("\n--- Position (After Price Drop - liquidation may already have occurred) ---");
-        console.log("Borrower:", borrower);
-        console.log("Collateral value:", collateralBefore / 1e26, "USD");
-        console.log("Debt value:", debtBefore / 1e26, "USD");
-        console.log("Health Factor:", healthFactorBefore / 1e16, "/ 100");
-        console.log("Liquidator USDC balance:", liquidatorUsdcBefore / ONE_USDC, "USDC");
-
-        // Check if liquidation already fully occurred before this script started.
-        // We intentionally do not treat "HF >= 1" as terminal because partial liquidation
-        // can make the position healthy while still leaving debt/collateral.
-        bool liquidationAlreadyOccurred = (collateralBefore == 0 && debtBefore == 0);
-
-        // Poll until bot liquidates or timeout (only if not yet liquidated)
-        if (!liquidationAlreadyOccurred) {
+        // Wait for the bot to liquidate the position (or confirm it already did).
+        (uint256 col, uint256 debt, uint256 hf) = _getPositionInfo(borrower);
+        if (col > 0 || debt > 0) {
             console.log("\n--- Waiting for Bot Liquidation ---");
-            console.log("Polling every 5 seconds for up to 120 seconds...");
+            console.log("Polling every 5 seconds for up to 240 seconds...");
 
-            uint256 maxWaitSeconds = 120;
+            uint256 maxWaitSeconds = 240;
             uint256 pollIntervalSeconds = 5;
             uint256 elapsed = 0;
-
             while (elapsed < maxWaitSeconds) {
                 vm.sleep(pollIntervalSeconds * 1000);
                 elapsed += pollIntervalSeconds;
 
-                (uint256 col, uint256 debt,) = _getPositionInfo(borrower);
-                bool positionChanged =
-                    (col == 0 && debt == 0) || ((col < collateralBefore) && (debt < debtBefore));
-
-                if (positionChanged) {
+                (col, debt, hf) = _getPositionInfo(borrower);
+                if (col == 0 && debt == 0) {
                     console.log("Liquidation detected after", elapsed, "seconds");
                     break;
                 }
@@ -64,87 +53,108 @@ contract LiquidationE2EVerify is Script, BaseE2E {
             }
         } else {
             console.log("\n--- Liquidation Already Occurred ---");
-            console.log("Skipping wait period");
+            console.log("(Bot is faster than verify startup; reading post-liquidation state)");
         }
 
-        // Check position after waiting
-        (uint256 collateralAfter, uint256 debtAfter, uint256 healthFactorAfter) = _getPositionInfo(borrower);
-        uint256 liquidatorUsdcAfter = usdc.balanceOf(E2EConstants.LIQUIDATOR);
+        // Snapshot live values once.
+        uint256 nowWbtc = _getWbtcBalance(E2EConstants.LIQUIDATOR);
+        uint256 nowUsdc = _getUsdcBalance(E2EConstants.LIQUIDATOR);
 
-        console.log("\n--- Position After Waiting ---");
-        console.log("Collateral value:", collateralAfter / 1e26, "USD");
-        console.log("Debt value:", debtAfter / 1e26, "USD");
-        console.log("Health Factor:", healthFactorAfter / 1e16, "/ 100");
-        console.log("Liquidator USDC balance:", liquidatorUsdcAfter / ONE_USDC, "USDC");
+        // ── Display state with explicit INITIAL → NOW deltas ──────────────
+        console.log("\n--- Borrower Position (live) ---");
+        console.log("Borrower:        ", borrower);
+        console.log("Collateral (USD):", col / 1e26);
+        console.log("Debt (USD):      ", debt / 1e26);
+        console.log("Health Factor:   ", hf / 1e16, "/ 100");
 
-        // Verify liquidation occurred
+        console.log("\n--- Liquidator USDC ---");
+        console.log("Initial:", initialUsdc / ONE_USDC, "USDC");
+        console.log("Now:    ", nowUsdc / ONE_USDC, "USDC");
+        console.log(
+            "Spent:  ",
+            initialUsdc > nowUsdc ? (initialUsdc - nowUsdc) / ONE_USDC : 0,
+            "USDC"
+        );
+
+        console.log("\n--- Liquidator WBTC ---");
+        console.log("Initial (sats):", initialWbtc);
+        console.log("Now (sats):    ", nowWbtc);
+        console.log("Gained (sats): ", nowWbtc > initialWbtc ? nowWbtc - initialWbtc : 0);
+
+        // ── Pass / fail ───────────────────────────────────────────────────
+        bool positionLiquidated = (col == 0 && debt == 0);
+        bool liquidatorSpentUsdc = nowUsdc < initialUsdc;
+        bool liquidatorReceivedWbtc = nowWbtc > initialWbtc;
+
         console.log("\n--- Verification Results ---");
 
-        // Check if position was fully liquidated (both collateral and debt are 0)
-        bool fullyLiquidated = (collateralAfter == 0 && debtAfter == 0);
-
-        // Check if position was partially liquidated
-        bool debtReduced = debtAfter < debtBefore;
-        bool collateralReduced = collateralAfter < collateralBefore;
-        bool liquidatorSpentUsdc = liquidatorUsdcAfter < liquidatorUsdcBefore;
-        console.log("Collateral delta:", int256(collateralAfter) - int256(collateralBefore));
-        console.log("Debt delta:", int256(debtAfter) - int256(debtBefore));
-        console.log("Liquidator USDC delta:", int256(liquidatorUsdcAfter) - int256(liquidatorUsdcBefore));
-
-        if (fullyLiquidated) {
-            console.log("[PASS] Position fully liquidated (collateral and debt both 0)");
-            console.log("[PASS] Collateral reduced by:", collateralBefore / 1e26, "USD");
-            console.log("[PASS] Debt reduced by:", debtBefore / 1e26, "USD");
+        if (positionLiquidated) {
+            console.log("[PASS] Borrower position fully liquidated on Spoke");
         } else {
-            if (debtReduced) {
-                console.log("[PASS] Debt reduced by:", (debtBefore - debtAfter) / 1e26, "USD");
-            } else {
-                console.log("[FAIL] Debt NOT reduced");
-            }
-
-            if (collateralReduced) {
-                console.log("[PASS] Collateral reduced by:", (collateralBefore - collateralAfter) / 1e26, "USD");
-            } else {
-                console.log("[FAIL] Collateral NOT reduced");
-            }
+            console.log("[FAIL] Borrower position NOT liquidated (collateral or debt > 0)");
         }
-
         if (liquidatorSpentUsdc) {
-            console.log("[PASS] Liquidator spent:", (liquidatorUsdcBefore - liquidatorUsdcAfter) / ONE_USDC, "USDC");
+            console.log("[PASS] Liquidator spent USDC repaying debt");
         } else {
-            console.log("[WARN] Liquidator USDC did not decrease");
+            console.log("[FAIL] Liquidator USDC balance unchanged from initial");
+        }
+        if (liquidatorReceivedWbtc) {
+            console.log("[PASS] Liquidator received WBTC from LLP (sell-discount payout)");
+        } else {
+            console.log("[FAIL] Liquidator WBTC balance unchanged from initial");
         }
 
-        // Final verdict
-        // Pass when either:
-        // 1) borrower position changed due to liquidation, or
-        // 2) liquidator spent USDC in this run (covers transient state-read inconsistencies).
-        bool liquidationOccurred = fullyLiquidated || (debtReduced && collateralReduced) || liquidatorSpentUsdc;
-
-        if (liquidationOccurred) {
+        if (positionLiquidated && liquidatorSpentUsdc && liquidatorReceivedWbtc) {
             console.log("\n=== E2E Liquidation Test PASSED ===\n");
         } else {
             console.log("\n=== E2E Liquidation Test FAILED ===\n");
-            if (liquidatorSpentUsdc) {
-                console.log("[WARN] USDC spending observed without borrower position liquidation");
-            }
-            console.log("Check /tmp/ponder.log and /tmp/bot.log for details");
+            console.log("Check /tmp/liq-ponder.log and /tmp/liq-bot.log for details");
             revert("Liquidation did not occur as expected");
         }
     }
 
+    /// @dev Canonical proxy lookup (matches LiquidationE2ESetup). The
+    ///      previous `Clones.predictDeterministicAddress` formula did not
+    ///      match what the new adapter actually deploys, which produced
+    ///      false-positive PASS readings (col=0/debt=0 from the wrong
+    ///      account).
     function _getUserProxyAddress(address user) internal view returns (address) {
-        bytes32 salt = keccak256(abi.encodePacked(user));
-        return Clones.predictDeterministicAddress(address(btcVaultCoreSpokeProxyImpl), salt, address(aaveAdapter));
+        return aaveAdapter.getPosition(user).proxyContract;
     }
 
+    function _getUsdcBalance(address user) internal returns (uint256) {
+        bytes memory result =
+            ffi_castCall(address(usdc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
+        return abi.decode(result, (uint256));
+    }
+
+    function _getWbtcBalance(address user) internal returns (uint256) {
+        bytes memory result =
+            ffi_castCall(address(wbtc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
+        return abi.decode(result, (uint256));
+    }
+
+    /// @dev Read live position info via FFI so the polling loop sees
+    ///      changes the bot makes outside this script's local EVM.
+    ///      ISpoke.UserAccountData is 7 uint256s in this order:
+    ///      (riskPremium, avgCollateralFactor, healthFactor,
+    ///      totalCollateralValue, totalDebtValueRay, activeCollateralCount,
+    ///      borrowCount).
     function _getPositionInfo(address user)
         internal
-        view
         returns (uint256 totalCollateral, uint256 totalDebt, uint256 healthFactor)
     {
         address proxy = _getUserProxyAddress(user);
-        ISpoke.UserAccountData memory accountData = aaveSpoke.getUserAccountData(proxy);
-        return (accountData.totalCollateralValue, accountData.totalDebtValueRay, accountData.healthFactor);
+        bytes memory result =
+            ffi_castCall(address(aaveSpoke), "getUserAccountData(address)", ArrayHelper.create(vm.toString(proxy)));
+        (,, healthFactor, totalCollateral, totalDebt,,) =
+            abi.decode(result, (uint256, uint256, uint256, uint256, uint256, uint256, uint256));
+    }
+
+    function _readInitialBalance(string memory filename) internal view returns (uint256) {
+        string memory content = vm.readFile(filename);
+        uint256 parsed = vm.parseUint(content);
+        require(parsed > 0, "Missing initial balance from setup");
+        return parsed;
     }
 }

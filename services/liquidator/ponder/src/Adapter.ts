@@ -4,9 +4,9 @@ import { proxyMapping } from "ponder:schema";
 /**
  * UserProxyCreated event handler
  * - Maps proxy address to borrower (EOA) address
- * - Used to resolve borrower for liquidateCorePosition calls
+ * - Used to resolve borrower for liquidate / liquidateWithLLP calls
  */
-ponder.on("Controller:UserProxyCreated", async ({ event, context }) => {
+ponder.on("Adapter:UserProxyCreated", async ({ event, context }) => {
   const borrower = event.args.user;
   const proxyAddress = event.args.proxy;
   const timestamp = event.block.timestamp;

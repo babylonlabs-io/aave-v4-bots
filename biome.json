@@ -44,7 +44,11 @@
       "services/*/client/src/abis/**",
       "services/*/ponder/abis/**",
       "contracts/**",
-      "external"
+      "external",
+      ".venv-e2e/**",
+      "broadcast/**",
+      "cache/**",
+      "out/**"
     ]
   }
 }

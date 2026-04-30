@@ -101,21 +101,24 @@ The service consists of two components:
 │  - Polls indexer at configured interval │
 │  - Estimates inputs via Lens contract   │
 │  - Simulates liquidations               │
-│  - Executes liquidateCorePosition()     │
+│  - Calls liquidate() or                 │
+│    liquidateWithLLP() on AaveAdapter    │
 │  - Exposes /metrics, /health, /ready    │
 └────────────────────┬────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────┐
-│      Aave Integration Lens              │
-│  - Pre-computes liquidation inputs      │
+│            AaveAdapterLens              │
+│  - Pre-computes liquidation amounts     │
 └────────────────────┬────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────┐
-│      Aave Integration Controller        │
-│  - Entry point for liquidations         │
-│  - Atomic WBTC swap when redeemKey=0    │
+│              AaveAdapter                │
+│  - Direct mode: redeems vault to BTC    │
+│    key in same tx                       │
+│  - LLP mode: escrows vault in           │
+│    BTCVaultSwap for arbitrageur         │
 └────────────────────┬────────────────────┘
                      │
                      ▼
@@ -205,7 +208,7 @@ PONDER_RPC_URL=https://eth-mainnet.example.com
 SPOKE_ADDRESS=0x...
 
 # AaveAdapter address
-CONTROLLER_ADDRESS=0x...
+ADAPTER_ADDRESS=0x...
 
 # Chain ID
 CHAIN_ID=1
@@ -225,7 +228,7 @@ DATABASE_SCHEMA=public
 |-----------|-------------|---------|
 | `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Required |
 | `SPOKE_ADDRESS` | Babylon's Aave Core Spoke contract | Required |
-| `CONTROLLER_ADDRESS` | AaveAdapter contract | Required |
+| `ADAPTER_ADDRESS` | AaveAdapter contract | Required |
 | `CHAIN_ID` | Network chain ID | `1` |
 | `START_BLOCK` | Block to begin indexing | `0` |
 | `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | `1000` |
@@ -249,21 +252,35 @@ PONDER_URL=http://localhost:42069
 CLIENT_RPC_URL=https://eth-mainnet.example.com
 
 # Contract addresses
-CONTROLLER_ADDRESS=0x...
-LENS_ADDRESS=0x...
+ADAPTER_ADDRESS=0x...       # AaveAdapter
+LENS_ADDRESS=0x...          # AaveAdapterLens
 WBTC_ADDRESS=0x...
 
 # ====== Optional ======
 
-# Debt token addresses (comma-separated)
-# Auto-discovered from Spoke if not set
+# Debt token addresses (comma-separated). If unset, auto-discovered from
+# the Spoke's borrowable reserves.
 # DEBT_TOKEN_ADDRESSES=0xUSDC...,0xUSDT...
 
-# BTC redeem key for direct BTC redemption (default: bytes32(0) for WBTC payout)
-# BTC_REDEEM_KEY=0x0000000000000000000000000000000000000000000000000000000000000000
+# Selects the redemption mode:
+#   true  → calls AaveAdapter.liquidate(borrower, BTC_REDEEM_KEY, ...)
+#           and redeems the seized vault directly to BTC_REDEEM_KEY
+#   false → calls AaveAdapter.liquidateWithLLP(borrower, LLP_ADDRESS, ...)
+#           and escrows the seized vault in the LLP for an arbitrageur
+# IS_DIRECT_REDEMPTION=false
 
-# Position check frequency (default: 10000ms)
+# Required if IS_DIRECT_REDEMPTION=true. Must be non-zero in direct mode.
+# BTC_REDEEM_KEY=0x...
+
+# Required if IS_DIRECT_REDEMPTION=false. The LLP (BTCVaultSwap) address.
+# Must be non-zero in LLP mode.
+# LLP_ADDRESS=0x...
+
+# Position check frequency (default: 10000 ms)
 POLLING_INTERVAL_MS=10000
+
+# Receipt wait timeout (default: 120000 ms)
+TX_RECEIPT_TIMEOUT_MS=120000
 
 # Metrics server port (default: 9090)
 METRICS_PORT=9090
@@ -274,12 +291,15 @@ METRICS_PORT=9090
 | `LIQUIDATOR_PRIVATE_KEY` | Private key for signing transactions | Required |
 | `PONDER_URL` | Indexer API endpoint | Required |
 | `CLIENT_RPC_URL` | RPC for transaction execution | Required |
-| `CONTROLLER_ADDRESS` | AaveAdapter address | Required |
+| `ADAPTER_ADDRESS` | AaveAdapter address | Required |
 | `LENS_ADDRESS` | AaveAdapterLens address | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
 | `DEBT_TOKEN_ADDRESSES` | Override auto-discovery (comma-separated) | Auto-discovered |
-| `BTC_REDEEM_KEY` | BTC redeem key for direct redemption (`bytes32(0)` = WBTC payout) | `bytes32(0)` |
+| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | `false` |
+| `BTC_REDEEM_KEY` | BTC key vaults are redeemed to in direct mode | `bytes32(0)` |
+| `LLP_ADDRESS` | LLP (BTCVaultSwap) address used in LLP mode | `address(0)` |
 | `POLLING_INTERVAL_MS` | How often to check positions | `10000` |
+| `TX_RECEIPT_TIMEOUT_MS` | How long to wait for each tx receipt | `120000` |
 | `METRICS_PORT` | HTTP server port for metrics/health | `9090` |
 
 ### 5.4. Contract Addresses
@@ -288,9 +308,9 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 
 | Contract | Purpose |
 |----------|---------|
-| `SPOKE_ADDRESS` | Core Spoke - tracks positions via Supply/Withdraw events |
-| `CONTROLLER_ADDRESS` | Entry point for `liquidateCorePosition()` calls |
-| `LENS_ADDRESS` | AaveAdapterLens - pre-computes liquidation inputs via `estimateLiquidation()` |
+| `SPOKE_ADDRESS` | Core Spoke — tracks positions via Supply/Withdraw events |
+| `ADAPTER_ADDRESS` | AaveAdapter — entry point for `liquidate()` / `liquidateWithLLP()` calls |
+| `LENS_ADDRESS` | AaveAdapterLens — pre-computes liquidation amounts via `estimateLiquidation()` |
 | `WBTC_ADDRESS` | WBTC token for balance monitoring |
 
 ## 6. Wallet Setup
@@ -449,14 +469,12 @@ Available at `GET http://localhost:9090/metrics`
 **Query indexer endpoints:**
 
 ```bash
-# All positions
+# All positions in the indexer's table
 curl http://localhost:42069/positions
 
-# Liquidatable positions only
+# Positions for which Lens.estimateLiquidation succeeds, enriched with
+# the amounts/vaults the bot will pass to liquidate / liquidateWithLLP
 curl http://localhost:42069/liquidatable-positions
-
-# Positions with live health factors
-curl http://localhost:42069/positions-health
 ```
 
 ## 9. Troubleshooting
@@ -475,9 +493,10 @@ curl http://localhost:42069/positions-health
 
 | Error Type | Trigger | Action |
 |------------|---------|--------|
-| `poll_error` | Exception in poll cycle | Check logs for stack trace |
+| `poll_error` | Exception escaped the poll cycle | Check logs for stack trace |
 | `ponder_fetch_error` | Failed to fetch from indexer | Verify Ponder is running |
-| `tx_send_error` | Failed to send transaction | Check RPC connectivity, wallet balance |
+| `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate | Usually transient; position state changed |
+| `tx_send_error` | Failed to broadcast the liquidation transaction | Check RPC connectivity, wallet balance |
 | `tx_reverted` | Transaction reverted on-chain | Position may already be liquidated |
 | `receipt_fetch_error` | Failed to fetch transaction receipt | Check RPC connectivity |
 

@@ -12,7 +12,7 @@ import {
 
 import {
   type RetryConfig,
-  controllerAbi,
+  adapterAbi,
   erc20Abi,
   fetchWithRetry,
   lensAbi,
@@ -41,7 +41,7 @@ export interface LiquidationBotConfig {
   logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
-  controllerAddress: Address;
+  adapterAddress: Address;
   lensAddress: Address;
   debtTokenAddresses?: Address[];
   wbtcAddress: Address;
@@ -56,7 +56,7 @@ export class LiquidationBot {
   private logTag: string;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
-  private controllerAddress: Address;
+  private adapterAddress: Address;
   private lensAddress: Address;
   private debtTokenAddresses: Address[];
   private wbtcAddress: Address;
@@ -70,7 +70,7 @@ export class LiquidationBot {
     this.logTag = config.logTag;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
-    this.controllerAddress = config.controllerAddress;
+    this.adapterAddress = config.adapterAddress;
     this.lensAddress = config.lensAddress;
     this.debtTokenAddresses = config.debtTokenAddresses ?? [];
     this.wbtcAddress = config.wbtcAddress;
@@ -83,14 +83,14 @@ export class LiquidationBot {
 
   /**
    * Discover debt tokens from the Spoke contract's borrowable reserves.
-   * Reads Spoke address from the Controller, then enumerates reserves.
+   * Reads Spoke address from the AaveAdapter, then enumerates reserves.
    */
   async discoverDebtTokens(): Promise<void> {
     console.log(`${this.logTag}Discovering debt tokens from Spoke...`);
 
     const spokeAddress = await this.publicClient.readContract({
-      address: this.controllerAddress,
-      abi: controllerAbi,
+      address: this.adapterAddress,
+      abi: adapterAbi,
       functionName: "BTC_VAULT_CORE_SPOKE",
     });
 
@@ -207,15 +207,15 @@ export class LiquidationBot {
           const priorityOrder = amounts.map((_, i) => BigInt(i));
           return this.isDirectRedemption
             ? this.publicClient.simulateContract({
-                address: this.controllerAddress,
-                abi: controllerAbi,
+                address: this.adapterAddress,
+                abi: adapterAbi,
                 functionName: "liquidate",
                 args: [position.borrower, this.btcRedeemKey, [...amounts], [...priorityOrder]],
                 account: this.walletClient.account,
               })
             : this.publicClient.simulateContract({
-                address: this.controllerAddress,
-                abi: controllerAbi,
+                address: this.adapterAddress,
+                abi: adapterAbi,
                 functionName: "liquidateWithLLP",
                 args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
                 account: this.walletClient.account,
@@ -267,15 +267,15 @@ export class LiquidationBot {
         try {
           const hash = this.isDirectRedemption
             ? await this.walletClient.writeContract({
-                address: this.controllerAddress,
-                abi: controllerAbi,
+                address: this.adapterAddress,
+                abi: adapterAbi,
                 functionName: "liquidate",
                 args: [position.borrower, this.btcRedeemKey, [...amounts], [...priorityOrder]],
                 nonce: nextNonce,
               })
             : await this.walletClient.writeContract({
-                address: this.controllerAddress,
-                abi: controllerAbi,
+                address: this.adapterAddress,
+                abi: adapterAbi,
                 functionName: "liquidateWithLLP",
                 args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
                 nonce: nextNonce,
@@ -371,7 +371,7 @@ export class LiquidationBot {
   }
 
   /**
-   * Ensure liquidator has approved Controller to spend all debt tokens
+   * Ensure liquidator has approved AaveAdapter to spend all debt tokens
    */
   async ensureApproval(): Promise<void> {
     const liquidator = this.walletClient.account.address;
@@ -384,7 +384,7 @@ export class LiquidationBot {
         address: tokenAddress,
         abi: erc20Abi,
         functionName: "allowance",
-        args: [liquidator, this.controllerAddress],
+        args: [liquidator, this.adapterAddress],
       });
 
       if (allowance < maxApproval / 2n) {
@@ -395,13 +395,13 @@ export class LiquidationBot {
           args: [],
         });
 
-        console.log(`${this.logTag}Approving ${symbol} for Controller...`);
+        console.log(`${this.logTag}Approving ${symbol} for AaveAdapter...`);
 
         const hash = await this.walletClient.writeContract({
           address: tokenAddress,
           abi: erc20Abi,
           functionName: "approve",
-          args: [this.controllerAddress, maxApproval],
+          args: [this.adapterAddress, maxApproval],
         });
 
         const receipt = await this.publicClient.waitForTransactionReceipt({

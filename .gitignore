@@ -47,3 +47,7 @@ CLAUDE.md
 
 tmp/
 contracts/deployments/local.json
+
+# Local e2e runner artefacts
+.venv-e2e/
+.e2e-*

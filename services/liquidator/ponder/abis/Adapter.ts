@@ -1,4 +1,4 @@
-export const controllerAbi = [
+export const adapterAbi = [
   {
     type: "event",
     name: "VaultOwnershipChanged",

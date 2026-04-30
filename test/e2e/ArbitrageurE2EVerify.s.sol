@@ -3,9 +3,10 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
 import {BTCVaultTypes} from "vault-contracts/lib/BTCVaultTypes.sol";
+import {BaseBot} from "./abstract/BaseBot.sol";
 import {E2EConstants} from "./E2EConstants.sol";
+import {ArrayHelper} from "./lib/ArrayHelper.sol";
 
 /// @title ArbitrageurE2EVerify
 /// @notice E2E script to verify the arbitrageur bot acquired vaults from VaultSwap
@@ -13,8 +14,11 @@ import {E2EConstants} from "./E2EConstants.sol";
 ///      With the new atomic flow, swapWbtcForVault redeems internally, so the vault status
 ///      becomes Redeemed and the vault is no longer escrowed. We verify by comparing WBTC
 ///      balances against the known initial funding amounts from the setup script.
-///      Run this AFTER LiquidationE2EVerify.s.sol
-contract ArbitrageurE2EVerify is Script, BaseE2E {
+///      Run this AFTER LiquidationE2EVerify.s.sol.
+///      Reads chain state via FFI `cast call` so the polling loop sees
+///      the bot's transactions (forge's local EVM caches forked storage
+///      and would otherwise show stale values).
+contract ArbitrageurE2EVerify is Script, BaseBot {
     /// @notice Main entry point for the verification script
     function run() public {
         // Load deployed contracts
@@ -29,8 +33,8 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
         uint256 liqInitialWbtc = _readInitialWbtcBalance(".e2e-initial-liq-wbtc");
 
         // Get current WBTC balances
-        uint256 arbWbtcNow = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
-        uint256 liquidatorWbtcNow = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
+        uint256 arbWbtcNow = _getWbtcBalance(E2EConstants.ARBITRAGEUR);
+        uint256 liquidatorWbtcNow = _getWbtcBalance(E2EConstants.LIQUIDATOR);
 
         console.log("Arbitrageur:", E2EConstants.ARBITRAGEUR);
         console.log("Arbitrageur WBTC balance (sats):", arbWbtcNow);
@@ -45,13 +49,12 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
 
         console.log("\nVault ID:", vm.toString(vaultId));
 
-        (,, uint256 vaultAmount,, BTCVaultTypes.BTCVaultStatus vaultStatus,,) =
-            btcVaultRegistry.btcVaultsBasicInfo(vaultId);
+        (BTCVaultTypes.BTCVaultStatus vaultStatus, uint256 vaultAmount) = _getVaultStatusAndAmount(vaultId);
         console.log("Vault status:", uint8(vaultStatus));
         console.log("Vault BTC amount:", vaultAmount, "sats");
 
         vaultRedeemed = vaultStatus == BTCVaultTypes.BTCVaultStatus.Redeemed;
-        vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
+        vaultEscrowed = _isVaultEscrowed(vaultId);
 
         console.log("Is vault redeemed:", vaultRedeemed);
         console.log("Is vault escrowed in VaultSwap:", vaultEscrowed);
@@ -69,9 +72,9 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
                 vm.sleep(pollIntervalSeconds * 1000);
                 elapsed += pollIntervalSeconds;
 
-                (,,,, vaultStatus,,) = btcVaultRegistry.btcVaultsBasicInfo(vaultId);
+                (vaultStatus,) = _getVaultStatusAndAmount(vaultId);
                 vaultRedeemed = vaultStatus == BTCVaultTypes.BTCVaultStatus.Redeemed;
-                vaultEscrowed = vaultSwap.isVaultEscrowed(vaultId);
+                vaultEscrowed = _isVaultEscrowed(vaultId);
 
                 if (vaultRedeemed || !vaultEscrowed) {
                     console.log("Arbitrage detected after", elapsed, "seconds");
@@ -81,8 +84,8 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
             }
 
             // Re-read final balances
-            arbWbtcNow = wbtc.balanceOf(E2EConstants.ARBITRAGEUR);
-            liquidatorWbtcNow = wbtc.balanceOf(E2EConstants.LIQUIDATOR);
+            arbWbtcNow = _getWbtcBalance(E2EConstants.ARBITRAGEUR);
+            liquidatorWbtcNow = _getWbtcBalance(E2EConstants.LIQUIDATOR);
 
             console.log("\n--- After Waiting ---");
             console.log("Arbitrageur WBTC balance:", arbWbtcNow, "sats");
@@ -153,5 +156,30 @@ contract ArbitrageurE2EVerify is Script, BaseE2E {
         uint256 parsed = vm.parseUint(content);
         require(parsed > 0, "Missing initial WBTC balances from setup");
         return parsed;
+    }
+
+    function _getWbtcBalance(address user) internal returns (uint256) {
+        bytes memory result = ffi_castCall(address(wbtc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
+        return abi.decode(result, (uint256));
+    }
+
+    function _isVaultEscrowed(bytes32 vaultId) internal returns (bool) {
+        bytes memory result =
+            ffi_castCall(address(vaultSwap), "isVaultEscrowed(bytes32)", ArrayHelper.create(vm.toString(vaultId)));
+        return abi.decode(result, (bool));
+    }
+
+    /// @dev Read via FFI. The public mapping getter `btcVaultsBasicInfo(bytes32)` flattens
+    ///      `BTCVaultBasicInfo { depositor, depositorBtcPubKey, amount, vaultProvider, status,
+    ///      applicationEntryPoint, createdAt }` into a 7-element ABI tuple in field order.
+    function _getVaultStatusAndAmount(bytes32 vaultId)
+        internal
+        returns (BTCVaultTypes.BTCVaultStatus status, uint256 amount)
+    {
+        bytes memory result = ffi_castCall(
+            address(btcVaultRegistry), "btcVaultsBasicInfo(bytes32)", ArrayHelper.create(vm.toString(vaultId))
+        );
+        (,, amount,, status,,) =
+            abi.decode(result, (address, bytes32, uint256, address, BTCVaultTypes.BTCVaultStatus, address, uint256));
     }
 }

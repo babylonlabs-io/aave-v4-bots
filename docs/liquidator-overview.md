@@ -2,88 +2,148 @@
 
 ## Overview
 
-The Aave v4 integration with Babylon's Trustless Bitcoin Vaults protocol allows BTC holders to trustlessly use their BTC as collateral to borrow on Ethereum. When a borrower's position becomes undercollateralized (health factor < 1.0), it becomes eligible for liquidation. The liquidator repays the borrower's debt and seizes the collateral.
+The Aave v4 integration with Babylon's Trustless Bitcoin Vaults protocol
+allows BTC holders to use their BTC as collateral to borrow on Ethereum.
+When a borrower's position becomes undercollateralized (health factor <
+1.0), it becomes eligible for liquidation. The liquidator repays the
+borrower's debt and seizes the collateral.
 
-The Bitcoin contained in a trustless BTC vault cannot be split on the BTC side, but the Aave-side liquidation logic can still liquidate only part of a position's collateral shares in a given call. In practice, a position may be liquidated incrementally across multiple events until its tracked shares reach zero.
+The Bitcoin contained in a trustless BTC vault cannot be split on the BTC
+side, but the Aave-side liquidation logic can still liquidate only part
+of a position's collateral shares in a given call. In practice, a
+position may be liquidated incrementally across multiple events until
+its tracked shares reach zero.
 
 ## Permissionless Liquidation
 
-Liquidating positions backed by BTC vaults is fully permissionless. Any address with sufficient debt tokens can call `liquidateCorePosition()` on the Controller.
+Any address with sufficient debt tokens can call one of two functions on
+the `AaveAdapter` contract to liquidate an undercollateralized position:
 
-This design choice enables:
+- `liquidate(borrower, btcRedeemKey, amounts, priorityOrder)` — direct
+  redemption. The seized vault is redeemed in the same transaction to
+  the BTC key supplied in `btcRedeemKey`. Suits liquidators that hold a
+  registered BTC keeper key.
+- `liquidateWithLLP(borrower, llp, amounts, priorityOrder, requestedTokens)` —
+  LLP-mediated. The seized vault is transferred to a Liquidation
+  Liquidity Provider (in this integration: BTCVaultSwap). The LLP draws
+  WBTC from the Aave Hub at a sell discount and pays it to the
+  liquidator immediately, leaving the vault escrowed for an arbitrageur
+  to acquire later.
 
-- **Flash Loan Liquidations**: Liquidators can borrow debt tokens, execute liquidation (which atomically swaps vaults for WBTC when `btcRedeemKey = bytes32(0)`), repay the flash loan, and profit in a single transaction. No upfront capital required.
-- **MEV Searchers**: Automated systems can compete for liquidation opportunities without any onboarding.
-- **Protocol Health**: More liquidators means faster position cleanup and better protocol solvency.
+This dual path is what makes liquidation permissionless even though
+redeeming a BTC vault is not. Liquidators who are not registered BTC
+keepers use the LLP path, get WBTC right away, and let the arbitrageur
+handle the eventual BTC redemption.
 
 ## Accessing Vault Contents
 
-While liquidation is permissionless, accessing the underlying collateral is subject to the following constraints:
+While liquidation is permissionless, redeeming the underlying BTC is
+subject to:
 
-- **Restricted Claimer Set**: The entities that can withdraw Bitcoin from the BTC vault must be defined at the time of the vault's creation, as they need to pre-sign a set of Bitcoin transactions associated with it.
-- **Delayed Withdrawal**: BTC Vault contents are not released immediately; they require a challenge period of 2-3 days before the withdrawal is finalized.
+- **Restricted Claimer Set** — the entities that can withdraw Bitcoin
+  from a BTC vault are defined at vault creation, since they pre-sign a
+  set of Bitcoin transactions.
+- **Delayed Withdrawal** — BTC vault contents go through a challenge
+  period (2-3 days) before redemption finalizes.
 
-Consequently, while anyone can trigger a liquidation, only authorized entities can claim the vault's contents. To preserve the spirit of permissionless liquidations, the architecture allows these authorized claimers to "buy" liquidated vaults from public liquidators at a discount. This mechanism fosters a thriving liquidator ecosystem despite the underlying withdrawal limitations.
+This is why the LLP path exists: liquidators receive instant WBTC
+liquidity (at a discount) without needing keeper status, and registered
+arbitrageurs handle the eventual redemption.
 
 ## Key Contracts
 
-- **Aave Integration Controller**: Entry point for liquidations. Interacts with the Core Spoke to handle debt repayment and vault seizure. When `btcRedeemKey = bytes32(0)`, atomically swaps seized vaults for WBTC via VaultSwap.
-- **Aave Integration Lens**: Read-only contract that pre-computes the exact `TokenAmount[]` inputs needed for a liquidation (debt repayments, fairness payment, protocol fee).
-- **VaultSwap**: Only pre-registered keepers can redeem BTC from vaults. The VaultSwap contract enables liquidators to instantly receive WBTC without keeper registration (called atomically by the Controller).
+- **AaveAdapter** — entry point for liquidations. Calls into the Core
+  Spoke to repay debt and seize collateral. Routes the seized vault
+  either to direct redemption or to an LLP based on which liquidation
+  function was called.
+- **AaveAdapterLens** — read-only contract that pre-computes the
+  `(amounts, vaults)` inputs needed for a liquidation call.
+- **BTCVaultSwap** — the LLP. Pays the liquidator WBTC at a sell
+  discount when called by the adapter, holds the vault in escrow, and
+  later accepts WBTC from a registered arbitrageur to release the
+  vault.
 
 ## Liquidation Flow
 
-<!-- TODO: Add architecture diagram (liquidatorArchitecture.png) -->
-
 ```
-Liquidator                    Lens                Controller                  VaultSwap
-    │                           │                      │                          │
-    │ estimateLiquidation() ───▶│                      │                          │
-    │◀─── inputs[], vaults[] ───│                      │                          │
-    │                           │                      │                          │
-    │ liquidateCorePosition(borrower, redeemKey, inputs) ──▶│                     │
-    │                           │                      │── repay debt to Aave ───▶│
-    │                           │                      │── seize vaults ─────────▶│
-    │                           │                      │── swap vaults for WBTC ─▶│ (if redeemKey=0)
-    │◀────────── WBTC received ────────────────────────│◀── WBTC ────────────────│
+Liquidator              Lens                AaveAdapter              Spoke / LLP
+    │                     │                       │                       │
+    │ estimateLiquidation()                                                │
+    │ ─────────────────▶                                                   │
+    │ ◀── amounts[], vaults[]                                              │
+    │                                                                      │
+    │ liquidate(...) OR liquidateWithLLP(...)                              │
+    │ ─────────────────────────────────▶                                   │
+    │                                       │── repay debt + seize ──────▶│ (Spoke)
+    │                                       │                              │
+    │            direct mode:                                              │
+    │            vault redeemed to BTC_REDEEM_KEY in same tx               │
+    │                                                                      │
+    │            LLP mode:                                                 │
+    │            vault → BTCVaultSwap; Hub draws WBTC at sell discount,    │
+    │            liquidator receives WBTC; arbitrageur later acquires.     │
+    │                                                                      │
+    │ ◀────────────────── tx receipt ──────────────────────────────────────│
 ```
 
 ### Step by Step
 
-1. **Identify Target**: Find positions where `healthFactor < 1.0` and `totalDebtValueRay > 0`
-2. **Estimate Inputs**: Call `estimateLiquidation(proxyAddress)` on the Lens to get the exact `TokenAmount[]` inputs needed
-3. **Execute Liquidation**: Call `liquidateCorePosition(borrower, btcRedeemKey, inputs)` on the Controller. The liquidator repays the debt and receives WBTC (when `btcRedeemKey = bytes32(0)`, the Controller atomically swaps seized vaults for WBTC via VaultSwap)
+1. **Identify Target** — find positions for which
+   `Lens.estimateLiquidation(proxyAddress, isDirectRedemption)` returns
+   without reverting (the Lens reverts on healthy positions). The
+   indexer pre-filters by calling the Lens with `isDirectRedemption=false`;
+   the bot re-estimates with its own mode before broadcast.
+2. **Estimate Inputs** — the Lens returns `(uint256[] amounts, bytes32[] vaults)`.
+   The bot inflates each amount by 1% to absorb interest accrual between
+   the read and the broadcast.
+3. **Simulate** — every candidate is simulated against the adapter; any
+   that revert are dropped.
+4. **Execute** — based on `IS_DIRECT_REDEMPTION` config, the bot calls
+   either `liquidate(...)` or `liquidateWithLLP(borrower, LLP_ADDRESS, amounts, priorityOrder, [])`.
+   `priorityOrder` is always `[0, 1, …, n-1]`. The empty `requestedTokens`
+   array on the LLP path means the liquidator does not constrain the
+   payout token.
 
 ### Redemption Modes
 
-| Mode | `btcRedeemKey` | Result |
-|------|----------------|--------|
-| **WBTC payout** (default) | `bytes32(0)` | Controller atomically swaps vaults for WBTC via VaultSwap |
-| **Direct BTC redemption** | Non-zero key | Vaults redeemed directly to BTC address (requires vault keeper status) |
+| Mode | Adapter function | Vault destination | Liquidator receives |
+|------|------------------|-------------------|---------------------|
+| Direct redemption | `liquidate` | Redeemed to `btcRedeemKey` in same tx | BTC (off-chain, after BTC settlement) |
+| LLP escrow (default) | `liquidateWithLLP` | Escrowed in BTCVaultSwap | WBTC immediately (at sell discount) |
 
-> **Note**: Most liquidators will use the default WBTC payout mode. Direct BTC redemption requires pre-registration as a vault keeper.
+> **Note**: Direct mode requires `BTC_REDEEM_KEY` to point at a
+> registered keeper key; the Adapter rejects `bytes32(0)`. LLP mode
+> requires `LLP_ADDRESS` to be the BTCVaultSwap deployment; the Adapter
+> rejects `address(0)`.
 
 ## Liquidation Bot
 
-The liquidation bot automates position monitoring and liquidation execution.
-
-### Architecture
-
-![Liquidator Bot Architecture](./assets/liquidationArchitecture.png)
+The bot automates monitoring and execution.
 
 ### Components
 
-- **Ponder Indexer**: Indexes `Supply`, `Withdraw`, `LiquidationCall`, and `UserProxyCreated` events. Tracks all active positions and proxy-to-borrower mappings.
-- **Liquidation Bot**: Polls the indexer for liquidatable positions and executes liquidations.
+- **Ponder Indexer** — indexes Spoke events (`Supply`, `Withdraw`,
+  `LiquidationCall`) and the Adapter event (`UserProxyCreated`).
+  Tracks active positions and the proxy → borrower mapping.
+- **Liquidation Client** — polls the indexer's
+  `/liquidatable-positions` endpoint and executes liquidations.
 
 ### Bot Operation
 
-1. **Poll**: Query `/liquidatable-positions` from Ponder indexer at configured interval
-2. **Filter**: Indexer returns positions where `healthFactor < 1e18` (< 1.0) and `totalDebtValueRay > 0`, including the borrower EOA address
-3. **Estimate**: Call `estimateLiquidation(proxyAddress)` on the Lens to compute exact inputs for each position
-4. **Simulate**: Simulate all liquidations in parallel to filter to valid ones
-5. **Approve**: Ensure debt token approval for Controller (one-time setup)
-6. **Liquidate**: Call `liquidateCorePosition(borrower, btcRedeemKey, inputs)` for each eligible position with explicit nonces
+1. **Discover debt tokens** — at boot, either reads
+   `DEBT_TOKEN_ADDRESSES` or enumerates Spoke reserves and selects
+   those flagged borrowable.
+2. **Approve** — once at boot, sets `MAX_UINT256` allowance on every
+   debt token for the AaveAdapter.
+3. **Poll** — fetches `/liquidatable-positions` from Ponder every
+   `POLLING_INTERVAL_MS`.
+4. **Estimate** — calls
+   `AaveAdapterLens.estimateLiquidation(proxy, isDirectRedemption)` per
+   candidate; bumps each amount by 1%.
+5. **Simulate** — simulates every candidate against the Adapter; drops
+   reverts.
+6. **Liquidate** — calls `liquidate` or `liquidateWithLLP` based on
+   `IS_DIRECT_REDEMPTION`, with sequential nonces.
 
 ### Configuration
 
@@ -92,75 +152,96 @@ The liquidation bot automates position monitoring and liquidation execution.
 | `LIQUIDATOR_PRIVATE_KEY` | Private key of liquidator wallet | Required |
 | `CLIENT_RPC_URL` | Ethereum RPC endpoint | Required |
 | `PONDER_URL` | Ponder indexer API URL | Required |
-| `CONTROLLER_ADDRESS` | AaveAdapter contract | Required |
-| `LENS_ADDRESS` | AaveAdapterLens contract | Required |
+| `ADAPTER_ADDRESS` | AaveAdapter address | Required |
+| `LENS_ADDRESS` | AaveAdapterLens address | Required |
 | `WBTC_ADDRESS` | WBTC token address | Required |
-| `DEBT_TOKEN_ADDRESSES` | Debt token addresses (comma-separated, optional) | Auto-discovered |
-| `BTC_REDEEM_KEY` | BTC redeem key for direct redemption (`bytes32(0)` = WBTC payout) | `bytes32(0)` |
-| `POLLING_INTERVAL_MS` | Position check frequency | `10000` (10s) |
+| `DEBT_TOKEN_ADDRESSES` | Comma-separated; auto-discovered if unset | Auto-discovered |
+| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | `false` |
+| `BTC_REDEEM_KEY` | BTC key for direct mode (must be non-zero) | `bytes32(0)` |
+| `LLP_ADDRESS` | LLP (BTCVaultSwap) address for LLP mode (must be non-zero) | `address(0)` |
+| `POLLING_INTERVAL_MS` | Position check frequency | `10000` |
+| `TX_RECEIPT_TIMEOUT_MS` | Receipt wait timeout | `120000` |
 | `METRICS_PORT` | Prometheus metrics port | `9090` |
 
 ### Requirements
 
-- **Debt Tokens**: Sufficient balance to repay positions (unless using flash loans)
-- **ETH**: For transaction gas
-- **Infrastructure**: Reliable RPC access
+- **Debt Tokens** — sufficient balance to repay positions (unless using
+  flash loans).
+- **ETH** — for transaction gas.
+- **Infrastructure** — reliable RPC access.
 
 ## Contract Interfaces
 
-### Lens (pre-computation)
+### AaveAdapterLens
 
 ```solidity
-// Estimate liquidation inputs for a position
-function estimateLiquidation(address borrowerProxy)
-    external view returns (TokenAmount[] memory inputs, bytes32[] memory vaults);
+// Estimate liquidation for a position
+function estimateLiquidation(address borrowerProxy, bool isDirectRedemption)
+    external
+    view
+    returns (uint256[] memory amounts, bytes32[] memory vaults);
 
 // Estimate with custom reserve priority ordering
 function estimateLiquidationWithPriority(
     address borrowerProxy,
+    bool isDirectRedemption,
     uint256[] memory priorityLoanTokenIds
-) external view returns (TokenAmount[] memory inputs, bytes32[] memory vaults);
+) external view returns (uint256[] memory amounts, bytes32[] memory vaults);
 ```
 
-### Controller (liquidation functions)
+### AaveAdapter
 
 ```solidity
-// Liquidate an undercollateralized position
-// When btcRedeemKey = bytes32(0), atomically swaps vaults for WBTC
-function liquidateCorePosition(
+// Direct-redemption path. Requires btcRedeemKey != bytes32(0).
+function liquidate(
     address borrower,
     bytes32 btcRedeemKey,
-    TokenAmount[] memory inputs
-) external returns (uint256 seizedAmount);
+    uint256[] memory amounts,
+    uint256[] memory priorityOrder
+) external;
+
+// LLP-mediated path. Requires llp != address(0).
+function liquidateWithLLP(
+    address borrower,
+    address llp,
+    uint256[] memory amounts,
+    uint256[] memory priorityOrder,
+    TokenAmount[] memory requestedTokens
+) external;
 ```
 
-### Spoke (position data)
+### Spoke
 
 ```solidity
-// Get account health data
-function getUserAccountData(address user) external view returns (
-    uint256 totalCollateralValue,
-    uint256 totalDebtValueRay,
-    uint256 availableBorrowsValue,
-    uint256 currentLiquidationThreshold,
-    uint256 ltv,
-    uint256 healthFactor
-);
+// Account state used to determine health
+struct UserAccountData {
+    uint256 riskPremium;
+    uint256 avgCollateralFactor;
+    uint256 healthFactor;
+    uint256 totalCollateralValue;
+    uint256 totalDebtValueRay;
+    uint256 activeCollateralCount;
+    uint256 borrowCount;
+}
+
+function getUserAccountData(address user)
+    external
+    view
+    returns (UserAccountData memory);
 ```
 
 ### Events
 
 ```solidity
-// Emitted when a user proxy is created
+// Adapter — emitted when a user proxy is created
 event UserProxyCreated(address indexed user, address indexed proxy);
 
-// Emitted on liquidation
-event BTCVaultCoreSpokeLiquidated(
-    address indexed borrowerProxy,
+// Spoke — emitted on every (partial or full) liquidation
+event LiquidationCall(
+    address indexed user,
     address indexed liquidator,
-    address depositor,
-    uint256 debtRepaid,
-    uint256 seizedAmount
+    uint256 collateralSharesLiquidated,
+    /* … other fields … */
 );
 ```
 
@@ -168,8 +249,11 @@ event BTCVaultCoreSpokeLiquidated(
 
 | Actor | Action | Result |
 |-------|--------|--------|
-| **Liquidator** | Calls `estimateLiquidation()` on Lens | Gets exact inputs (debt repayments + fees) |
-| **Liquidator** | Calls `liquidateCorePosition(borrower, redeemKey, inputs)` | Repays debt, receives WBTC atomically (when `redeemKey = bytes32(0)`) |
-| **Controller** | Executes liquidation + atomic WBTC swap | Seizes vaults, swaps via VaultSwap, sends WBTC to liquidator |
+| **Liquidator** | Calls `Lens.estimateLiquidation()` | Gets `(amounts, vaults)` for the target |
+| **Liquidator** | Calls `liquidate(...)` (direct mode) | Position liquidated, vault redeemed to liquidator's BTC key |
+| **Liquidator** | Calls `liquidateWithLLP(...)` (LLP mode) | Position liquidated, vault escrowed, liquidator paid WBTC at sell discount |
+| **Arbitrageur** | Pays WBTC to LLP via `swapWbtcForVault` | Vault released and redeemed to arbitrageur; Hub draw restored |
 
-Liquidation is permissionless. Flash loans enable zero-capital liquidation strategies. Atomic WBTC payout eliminates multi-step complexity and capital lock.
+Liquidation is permissionless. Operators without keeper status use the
+LLP path and receive WBTC instantly; the arbitrageur completes the
+redemption later, restoring the Hub draw.

@@ -1,16 +1,27 @@
-# Ponder Indexer
+# Ponder Indexer (Liquidator)
 
-Indexes Aave V4 Spoke events and exposes API endpoints for querying positions.
+Indexes Aave v4 Spoke and AaveAdapter events and exposes API endpoints
+for the liquidation client.
 
 ## Events Tracked
 
-### Spoke Contract
-- `Supply` - Creates/updates position with supplied shares
-- `Withdraw` - Decrements position shares
-- `LiquidationCall` - Removes liquidated position
+### Spoke
+- `Supply` — creates/updates a `position` row, accumulating supplied shares.
+- `Withdraw` — decrements supplied shares; deletes the row when shares ≤ 0.
+- `LiquidationCall` — decrements by `collateralSharesLiquidated`; deletes
+  the row when shares ≤ 0.
 
-### Controller Contract
-- `UserProxyCreated` - Maps borrower EOA to proxy address for liquidation calls
+### AaveAdapter
+
+- `UserProxyCreated` — populates `proxy_mapping` (proxyAddress → borrower)
+  so the API can look up the EOA for each liquidatable position.
+
+## Schema
+
+| Table | Columns |
+|---|---|
+| `position` | `proxyAddress hex pk`, `suppliedShares bigint`, `createdAt bigint`, `updatedAt bigint` |
+| `proxy_mapping` | `proxyAddress hex pk`, `borrower hex`, `createdAt bigint` |
 
 ## Environment Variables
 
@@ -22,29 +33,45 @@ PONDER_RPC_URL=http://localhost:8545
 SPOKE_ADDRESS=0x...
 
 # AaveAdapter address
-CONTROLLER_ADDRESS=0x...
+ADAPTER_ADDRESS=0x...
 
-# Chain ID
+# Chain ID (default: 1)
 CHAIN_ID=1
 
-# Block to start indexing from
+# Block to start indexing from (default: 0)
 START_BLOCK=0
 
 # Polling interval in ms (default: 1000)
 PONDER_POLLING_INTERVAL=1000
 
-# PostgreSQL connection
+# PostgreSQL connection. If unset, Ponder falls back to an in-memory
+# pglite database — indexer state is lost on restart.
 DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder
 
-# Database schema (required for Ponder v0.13+ with PostgreSQL)
+# Database schema (required for Ponder v0.13+)
 DATABASE_SCHEMA=public
+
+# Required at request time by /liquidatable-positions; the route returns
+# 500 if it is not set when called.
+LENS_ADDRESS=0x...
 ```
 
 ## API Endpoints
 
 ### `GET /liquidatable-positions`
 
-Returns positions for which `AaveAdapterLens.estimateLiquidation()` succeeds (i.e. the Lens does not revert as healthy). Each entry includes the pre-computed `amounts` and `vaults` needed to call `liquidate`/`liquidateWithLLP`.
+For every position in the indexer's table, calls
+`AaveAdapterLens.estimateLiquidation(proxyAddress, false)` on `LENS_ADDRESS`
+via `eth_call`. The Lens reverts when a position is healthy; only
+fulfilled results are returned.
+
+> Note: `isDirectRedemption` is hardcoded to `false` here. Operators
+> running the bot with `IS_DIRECT_REDEMPTION=true` may see candidates
+> filtered out at the indexer that would have been liquidatable in
+> direct mode, and vice versa. The bot re-estimates per candidate with
+> its actual mode before broadcasting.
+
+Response:
 
 ```json
 {
@@ -62,20 +89,28 @@ Returns positions for which `AaveAdapterLens.estimateLiquidation()` succeeds (i.
 }
 ```
 
+`amounts` and `vaults` are passed straight to
+`AaveAdapter.liquidate` / `liquidateWithLLP`.
+
 ### `GET /positions`
 
-Returns all tracked positions (debugging).
+Returns the raw position table, used for debugging and as the bot's
+Ponder health probe target. Returns every row.
 
 ### `GET /graphql`
 
-GraphQL endpoint for custom queries.
+Ponder GraphQL endpoint over the schema.
+
+### `* /sql/*`
+
+Ponder SQL client.
 
 ## Running
 
 ```bash
-# From root
-pnpm indexer
+# from repo root
+pnpm liquidator:indexer
 
-# Or directly
+# or directly
 pnpm dev
 ```

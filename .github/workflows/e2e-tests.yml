@@ -32,9 +32,6 @@ jobs:
       FOUNDRY_PROFILE: e2e
       # Deployment configuration
       DEPLOYER_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-      ADMIN_ADDRESS: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-      PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-      ADMIN_PRIVKEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
       DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
       BTC_INIT_BLOCK_HEIGHT: "2017"
       BTC_INIT_EXPECTED_TARGET: "0x207fffff"
@@ -65,6 +62,7 @@ jobs:
       PROTOCOL_PAUSER: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
       APP_PAUSER: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
       AUTOMATED_RISK_STEWARD: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+      PROTOCOL_FEE_RECIPIENT: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 https://github.com/actions/checkout/releases/tag/v6.0.2
@@ -77,7 +75,7 @@ jobs:
           git submodule update --init --recursive
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1 https://github.com/foundry-rs/foundry-toolchain/releases/tag/v1
+        uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1 https://github.com/foundry-rs/foundry-toolchain/releases/tag/v1
 
       - name: Install Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 https://github.com/actions/setup-node/releases/tag/v4
@@ -141,7 +139,20 @@ jobs:
           ./test/e2e/scripts/btc-helper.sh info
 
       - name: Start Anvil
+        # AnvilSetUp.s.sol zeroes the next block's base fee internally, so the
+        # deployment scripts still get cheap blocks. Aggressive Anvil flags
+        # (--gas-price 0 --block-base-fee-per-gas 0 --disable-min-priority-fee)
+        # break viem's tx-fee auto-estimation in the bot client (TipAboveFeeCap),
+        # so we leave Anvil at its defaults.
         run: anvil --silent &
+
+      - name: Deploy CreateX factory and initialise Anvil
+        run: |
+          cd contracts
+          forge script script/deployment/AnvilSetUp.s.sol:AnvilSetUp \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --skip-simulation
 
       - name: Deploy and setup E2E environment
         run: |
@@ -149,7 +160,7 @@ jobs:
           forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
-            --private-key $PRIVATE_KEY \
+            --private-key $DEPLOYER_PRIVATE_KEY \
             --skip-simulation \
             --slow
 
@@ -158,7 +169,7 @@ jobs:
           forge script test/e2e/LiquidationE2ESetup.s.sol:LiquidationE2ESetup \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
-            --private-key $PRIVATE_KEY \
+            --private-key $DEPLOYER_PRIVATE_KEY \
             --ffi \
             --skip-simulation \
             --slow
@@ -168,7 +179,7 @@ jobs:
           forge script test/e2e/LiquidationE2EVerify.s.sol:LiquidationE2EVerify \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
-            --private-key $PRIVATE_KEY \
+            --private-key $DEPLOYER_PRIVATE_KEY \
             --ffi \
             --skip-simulation \
             --slow
@@ -178,7 +189,7 @@ jobs:
           forge script test/e2e/ArbitrageurE2EVerify.s.sol:ArbitrageurE2EVerify \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
-            --private-key $PRIVATE_KEY \
+            --private-key $DEPLOYER_PRIVATE_KEY \
             --ffi \
             --skip-simulation \
             --slow
