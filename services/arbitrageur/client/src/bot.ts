@@ -29,6 +29,11 @@ export interface ArbitrageurBotConfig {
   txReceiptTimeoutMs: number;
 }
 
+interface TokenMeta {
+  symbol: string;
+  decimals: number;
+}
+
 export class ArbitrageurBot {
   private logTag: string;
   private walletClient: WalletClient<Transport, Chain, Account>;
@@ -40,6 +45,7 @@ export class ArbitrageurBot {
   private vaultProcessingDelayMs: number;
   private retryConfig: RetryConfig;
   private txReceiptTimeoutMs: number;
+  private wbtcMeta?: TokenMeta;
 
   constructor(config: ArbitrageurBotConfig) {
     this.logTag = config.logTag;
@@ -303,37 +309,59 @@ export class ArbitrageurBot {
   }
 
   /**
+   * Resolve and cache WBTC symbol + decimals.
+   * ERC-20 metadata is immutable per address — fetched once, reused forever.
+   */
+  private async getWbtcMeta(): Promise<TokenMeta> {
+    if (this.wbtcMeta) return this.wbtcMeta;
+
+    const [symbol, decimals] = await withRetry(
+      () =>
+        Promise.all([
+          this.publicClient.readContract({
+            address: this.wbtcAddress,
+            abi: erc20Abi,
+            functionName: "symbol",
+            args: [],
+          }),
+          this.publicClient.readContract({
+            address: this.wbtcAddress,
+            abi: erc20Abi,
+            functionName: "decimals",
+            args: [],
+          }),
+        ]),
+      this.retryConfig,
+      "wbtc metadata"
+    );
+
+    this.wbtcMeta = { symbol, decimals };
+    return this.wbtcMeta;
+  }
+
+  /**
    * Log arbitrageur's WBTC balance
    */
   async logBalance(): Promise<void> {
     const arbitrageur = this.walletClient.account.address;
 
     try {
-      const [balance, symbol, decimals] = await withRetry(
-        () =>
-          Promise.all([
+      // Run metadata + balanceOf in parallel: cold-start is no slower than
+      // before (still 3 concurrent reads); steady-state is just balanceOf.
+      const [{ symbol, decimals }, balance] = await Promise.all([
+        this.getWbtcMeta(),
+        withRetry(
+          () =>
             this.publicClient.readContract({
               address: this.wbtcAddress,
               abi: erc20Abi,
               functionName: "balanceOf",
               args: [arbitrageur],
             }),
-            this.publicClient.readContract({
-              address: this.wbtcAddress,
-              abi: erc20Abi,
-              functionName: "symbol",
-              args: [],
-            }),
-            this.publicClient.readContract({
-              address: this.wbtcAddress,
-              abi: erc20Abi,
-              functionName: "decimals",
-              args: [],
-            }),
-          ]),
-        this.retryConfig,
-        "balance check"
-      );
+          this.retryConfig,
+          "balance check"
+        ),
+      ]);
 
       const formattedBalance = formatUnits(balance, decimals);
       console.log(`${this.logTag}Arbitrageur balance: ${formattedBalance} ${symbol}`);

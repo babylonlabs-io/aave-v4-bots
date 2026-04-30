@@ -7,7 +7,7 @@ const PONDER_RPC_URL = process.env.PONDER_RPC_URL;
 const VAULT_SWAP_ADDRESS = process.env.VAULT_SWAP_ADDRESS;
 const START_BLOCK = Number(process.env.START_BLOCK || 0);
 const DATABASE_URL = process.env.DATABASE_URL;
-const POLLING_INTERVAL = Number(process.env.PONDER_POLLING_INTERVAL || 1000);
+const POLLING_INTERVAL = Number(process.env.PONDER_POLLING_INTERVAL || 4000);
 const CHAIN_ID = Number(process.env.CHAIN_ID || 1);
 
 if (!PONDER_RPC_URL) {
