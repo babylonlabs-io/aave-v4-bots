@@ -26,7 +26,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
         init(vm);
 
         // Load admin private key for broadcasting transactions
-        uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVKEY");
+        uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
 
         console.log("\n=== E2E Liquidation Setup ===");
 
@@ -199,7 +199,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     }
 
     function _setUpLiquidityScript() internal {
-        uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVKEY");
+        uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
 
         vm.startBroadcast(adminPrivateKey);
 

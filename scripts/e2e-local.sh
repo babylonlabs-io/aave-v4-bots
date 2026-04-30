@@ -90,9 +90,6 @@ export PATH="$VENV_DIR/bin:$PATH"
 # ── Config matching .github/workflows/e2e-tests.yml ──────────────────────────
 export FOUNDRY_PROFILE=e2e
 export DEPLOYER_ADDRESS="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-export ADMIN_ADDRESS="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
-export PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-export ADMIN_PRIVKEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 export DEPLOYER_PRIVATE_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
 export BTC_INIT_BLOCK_HEIGHT="2017"
@@ -307,7 +304,7 @@ else
 fi
 
 # ── Forge scripts ────────────────────────────────────────────────────────────
-COMMON_FLAGS=(--rpc-url "$RPC_URL" --broadcast --private-key "$PRIVATE_KEY" --skip-simulation --slow)
+COMMON_FLAGS=(--rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY" --skip-simulation --slow)
 
 # CreateX factory + base-fee zeroing + DEPLOYER/VAULT_PROVIDER funding.
 # Required by the new CreateX-based deployment scripts. No private key needed —
