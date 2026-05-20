@@ -8,24 +8,31 @@ against the AaveAdapter contract.
 1. **Discover debt tokens** — at boot, either reads `DEBT_TOKEN_ADDRESSES` or
    enumerates the Spoke's reserves and selects those flagged borrowable.
 2. **Approve** — once at boot, sets `MAX_UINT256` allowance on every debt
-   token for the AaveAdapter contract.
+   token and on WBTC for the AaveAdapter contract. WBTC approval is required
+   because the adapter pulls the fairness payment and direct-redemption fee
+   directly from `msg.sender` during liquidation.
 3. **Poll** — fetches `/liquidatable-positions` from the indexer every
    `POLLING_INTERVAL_MS`.
 4. **Estimate** — for each candidate, calls
    `AaveAdapterLens.estimateLiquidation(proxy, isDirectRedemption)` to get
-   `(uint256[] amounts, bytes32[] vaults)`. Each amount is bumped by 1% to
-   absorb interest accrued between estimate and broadcast.
+   `(uint256[] amounts, uint256 wbtcPayment, bytes32[] vaults)`. `amounts`
+   are bumped by 1% to absorb interest accrued between estimate and
+   broadcast. `wbtcPayment` is informational — the adapter pulls it from
+   `msg.sender`, so the bot only needs sufficient WBTC balance and approval.
 5. **Simulate** — simulates every candidate against the adapter; drops any
    that revert.
 6. **Liquidate** — calls one of two adapter functions depending on
    `IS_DIRECT_REDEMPTION`:
    - `IS_DIRECT_REDEMPTION=true` →
-     `AaveAdapter.liquidate(borrower, BTC_REDEEM_KEY, amounts, priorityOrder)`.
-     Seized vault is redeemed directly to `BTC_REDEEM_KEY`.
+     `AaveAdapter.liquidate(borrower, BTC_REDEEM_KEY, amounts, priorityOrder, minVaultBtcOut, numVaultsToLiquidate)`.
+     Seized vaults are redeemed directly to `BTC_REDEEM_KEY`. The bot passes
+     `minVaultBtcOut=0` (no slippage protection — simulation catches bad
+     liquidations) and `numVaultsToLiquidate=type(uint256).max` (unbounded
+     vault prefix).
    - default (`false`) →
      `AaveAdapter.liquidateWithLLP(borrower, LLP_ADDRESS, amounts, priorityOrder, [])`.
-     Seized vault is escrowed in the LLP (BTCVaultSwap) for an arbitrageur to
-     acquire later. The empty `requestedTokens` array means the liquidator
+     Seized vaults are escrowed in the LLP (BTCVaultSwap) for an arbitrageur
+     to acquire later. The empty `requestedTokens` array means the liquidator
      does not request any LLP-side payout in this tx.
 
 `priorityOrder` is always `[0, 1, …, n-1]`.
@@ -37,7 +44,7 @@ Bot                Lens                AaveAdapter           Spoke / LLP
  │                   │                       │                     │
  │ estimateLiquidation()                                            │
  │ ──────────────────▶                                              │
- │ ◀── amounts[], vaults[]                                          │
+ │ ◀── amounts[], wbtcPayment, vaults[]                             │
  │                                                                  │
  │ liquidate(...) ───────────────────────────▶                      │
  │   OR liquidateWithLLP(...)                │                      │

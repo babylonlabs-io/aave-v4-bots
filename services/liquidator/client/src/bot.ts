@@ -8,6 +8,7 @@ import {
   type Transport,
   type WalletClient,
   formatUnits,
+  maxUint256,
 } from "viem";
 
 import {
@@ -213,6 +214,9 @@ export class LiquidationBot {
           // Add 1% buffer to cover interest accrual between Lens query and tx execution.
           // Anvil auto-mines each tx, so even a single block of interest growth can
           // trigger MustNotLeaveDust since the Lens returns exact debt amounts.
+          // The Lens also returns a separate `wbtcPayment` (fairness + redemption fee);
+          // the adapter pulls it directly from msg.sender, so the bot only needs WBTC
+          // approved + balance — no need to thread the amount through.
           const bufferedAmounts = amounts.map((amt) => (amt * 10100n) / 10000n);
           candidates.push({ position: pos, amounts: bufferedAmounts });
         } else {
@@ -238,7 +242,14 @@ export class LiquidationBot {
                 address: this.adapterAddress,
                 abi: adapterAbi,
                 functionName: "liquidate",
-                args: [position.borrower, this.btcRedeemKey, [...amounts], [...priorityOrder]],
+                args: [
+                  position.borrower,
+                  this.btcRedeemKey,
+                  [...amounts],
+                  [...priorityOrder],
+                  0n,
+                  maxUint256,
+                ],
                 account: this.walletClient.account,
               })
             : this.publicClient.simulateContract({
@@ -298,7 +309,14 @@ export class LiquidationBot {
                 address: this.adapterAddress,
                 abi: adapterAbi,
                 functionName: "liquidate",
-                args: [position.borrower, this.btcRedeemKey, [...amounts], [...priorityOrder]],
+                args: [
+                  position.borrower,
+                  this.btcRedeemKey,
+                  [...amounts],
+                  [...priorityOrder],
+                  0n,
+                  maxUint256,
+                ],
                 nonce: nextNonce,
               })
             : await this.walletClient.writeContract({
@@ -399,7 +417,9 @@ export class LiquidationBot {
   }
 
   /**
-   * Ensure liquidator has approved AaveAdapter to spend all debt tokens
+   * Ensure liquidator has approved AaveAdapter to spend all debt tokens and WBTC.
+   * WBTC is approved unconditionally so the adapter can pull the fairness payment
+   * and direct-redemption fee (`wbtcPayment` from the Lens) during liquidation.
    */
   async ensureApproval(): Promise<void> {
     const liquidator = this.walletClient.account.address;
@@ -407,7 +427,11 @@ export class LiquidationBot {
       "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     );
 
-    for (const tokenAddress of this.debtTokenAddresses) {
+    const tokensToApprove = Array.from(
+      new Set<Address>([...this.debtTokenAddresses, this.wbtcAddress])
+    );
+
+    for (const tokenAddress of tokensToApprove) {
       const allowance = await this.publicClient.readContract({
         address: tokenAddress,
         abi: erc20Abi,

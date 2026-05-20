@@ -169,6 +169,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
             unsignedPeginTx,
             unsignedPeginTx, // Use same tx as depositorSignedPeginTx for E2E
             vp,
+            type(uint16).max, // maxAcceptableCommissionBps — accept any VP commission in E2E
             hashlock,
             0,
             _E2E_DUMMY_PAYOUT_ADDRESS,
@@ -396,7 +397,7 @@ contract LiquidationE2ESetup is Script, BaseE2E {
     /// @notice Check if a position is liquidatable via the Lens contract.
     /// @dev Lens.estimateLiquidation reverts when the position is healthy, succeeds when liquidatable.
     function _isLiquidatable(AaveAdapterLens lens, address borrowerProxy) internal view returns (bool) {
-        try lens.estimateLiquidation(borrowerProxy, false) returns (uint256[] memory, bytes32[] memory) {
+        try lens.estimateLiquidation(borrowerProxy, false) returns (uint256[] memory, uint256, bytes32[] memory) {
             return true;
         } catch {
             return false;
