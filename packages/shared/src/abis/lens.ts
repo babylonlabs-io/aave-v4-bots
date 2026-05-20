@@ -10,6 +10,7 @@ export const lensAbi = [
     ],
     outputs: [
       { name: "amounts", type: "uint256[]" },
+      { name: "wbtcPayment", type: "uint256" },
       { name: "vaults", type: "bytes32[]" },
     ],
     stateMutability: "view",
@@ -24,6 +25,7 @@ export const lensAbi = [
     ],
     outputs: [
       { name: "amounts", type: "uint256[]" },
+      { name: "wbtcPayment", type: "uint256" },
       { name: "vaults", type: "bytes32[]" },
     ],
     stateMutability: "view",

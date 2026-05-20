@@ -93,11 +93,17 @@ app.get("/liquidatable-positions", async (c) => {
   }
 
   // estimateLiquidation reverts for healthy positions and returns
-  // [amounts, vaults] for liquidatable ones. We unify both paths to a
+  // [amounts, wbtcPayment, vaults] for liquidatable ones. The wbtcPayment is
+  // pulled directly from msg.sender by the adapter at liquidation time, so the
+  // API response doesn't need to expose it — the client just needs enough WBTC
+  // approved + balance. We unify both paths to a
   // { status: "success" | "failure", value/error } shape so the loop below
   // doesn't care which one ran.
   type Probe =
-    | { status: "success"; value: readonly [readonly bigint[], readonly `0x${string}`[]] }
+    | {
+        status: "success";
+        value: readonly [readonly bigint[], bigint, readonly `0x${string}`[]];
+      }
     | { status: "failure"; error: unknown };
 
   let probes: Probe[];
@@ -167,7 +173,7 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
-    const [amounts, vaults] = probe.value;
+    const [amounts, , vaults] = probe.value;
 
     liquidatable.push({
       proxyAddress: p.proxyAddress,

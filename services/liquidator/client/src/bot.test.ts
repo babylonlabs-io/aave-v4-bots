@@ -1,3 +1,4 @@
+import { maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiquidationBot, type LiquidationBotConfig } from "./bot";
 import type { LiquidatablePosition } from "./types";
@@ -37,7 +38,9 @@ function createMockClients() {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
       readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
         if (functionName === "estimateLiquidation") {
-          return Promise.resolve([mockAmounts, ["0xvault1"]]);
+          // [amounts, wbtcPayment, vaults] — wbtcPayment is the WBTC the
+          // adapter pulls from msg.sender for fairness + redemption fee.
+          return Promise.resolve([mockAmounts, 0n, ["0xvault1"]]);
         }
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
@@ -279,7 +282,10 @@ describe("LiquidationBot", () => {
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
-          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n]],
+          // minVaultBtcOut=0n disables BTC-out slippage protection; numVaultsToLiquidate=
+          // maxUint256 is the sentinel for "unbounded prefix" (the new params from the
+          // bumped adapter).
+          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n], 0n, maxUint256],
         })
       );
     });
@@ -436,14 +442,32 @@ describe("LiquidationBot", () => {
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
 
-    it("does nothing when no debt tokens configured", async () => {
+    it("still approves WBTC when no debt tokens configured", async () => {
       const clients = createMockClients();
+      // 0n allowance forces approval path; symbol/decimals reads happen during
+      // logging via getTokenMeta. The single readContract spy covers all three.
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName }: { functionName: string }) => {
+          if (functionName === "allowance") return Promise.resolve(0n);
+          if (functionName === "symbol") return Promise.resolve("WBTC");
+          if (functionName === "decimals") return Promise.resolve(8);
+          return Promise.resolve(0n);
+        }
+      );
       const bot = createBot(clients, { debtTokenAddresses: [] });
 
+      // WBTC approval is unconditional — the adapter pulls WBTC from msg.sender
+      // for fairness + direct-redemption fee, independent of whether WBTC is a
+      // borrowable debt token on the Spoke.
       await bot.ensureApproval();
 
-      expect(clients.publicClient.readContract).not.toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
+      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: "0xwbtc",
+          functionName: "approve",
+        })
+      );
     });
   });
 

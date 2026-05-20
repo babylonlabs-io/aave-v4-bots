@@ -90,7 +90,11 @@ Response:
 ```
 
 `amounts` and `vaults` are passed straight to
-`AaveAdapter.liquidate` / `liquidateWithLLP`.
+`AaveAdapter.liquidate` / `liquidateWithLLP`. The Lens also returns a
+`wbtcPayment` (fairness + direct-redemption fee), which the adapter pulls
+from `msg.sender` at liquidation time — the API does not expose it because
+the client re-queries the Lens directly before each liquidation, and only
+needs to ensure sufficient WBTC balance and approval.
 
 ### `GET /positions`
 
