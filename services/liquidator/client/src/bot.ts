@@ -37,6 +37,10 @@ const DEFAULT_FETCH_RETRY: RetryConfig = {
   backoffMultiplier: 2,
 };
 
+// Sentinel for `numVaultsToLiquidate` meaning "no cap"; matches the contract's
+// type(uint256).max check in AaveAdapter._liquidateVaults.
+const UNBOUNDED_VAULT_COUNT = 2n ** 256n - 1n;
+
 export interface LiquidationBotConfig {
   logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
@@ -238,7 +242,14 @@ export class LiquidationBot {
                 address: this.adapterAddress,
                 abi: adapterAbi,
                 functionName: "liquidate",
-                args: [position.borrower, this.btcRedeemKey, [...amounts], [...priorityOrder]],
+                args: [
+                  position.borrower,
+                  this.btcRedeemKey,
+                  [...amounts],
+                  [...priorityOrder],
+                  0n,
+                  UNBOUNDED_VAULT_COUNT,
+                ],
                 account: this.walletClient.account,
               })
             : this.publicClient.simulateContract({
@@ -298,7 +309,14 @@ export class LiquidationBot {
                 address: this.adapterAddress,
                 abi: adapterAbi,
                 functionName: "liquidate",
-                args: [position.borrower, this.btcRedeemKey, [...amounts], [...priorityOrder]],
+                args: [
+                  position.borrower,
+                  this.btcRedeemKey,
+                  [...amounts],
+                  [...priorityOrder],
+                  0n,
+                  UNBOUNDED_VAULT_COUNT,
+                ],
                 nonce: nextNonce,
               })
             : await this.walletClient.writeContract({

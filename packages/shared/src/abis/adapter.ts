@@ -17,6 +17,8 @@ export const adapterAbi = [
       { name: "directBtcRedeemKey", type: "bytes32" },
       { name: "amounts", type: "uint256[]" },
       { name: "priorityOrder", type: "uint256[]" },
+      { name: "minVaultBtcOut", type: "uint256" },
+      { name: "numVaultsToLiquidate", type: "uint256" },
     ],
     outputs: [{ name: "vaultIds", type: "bytes32[]" }],
     stateMutability: "nonpayable",

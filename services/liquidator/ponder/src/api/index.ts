@@ -97,7 +97,10 @@ app.get("/liquidatable-positions", async (c) => {
   // { status: "success" | "failure", value/error } shape so the loop below
   // doesn't care which one ran.
   type Probe =
-    | { status: "success"; value: readonly [readonly bigint[], readonly `0x${string}`[]] }
+    | {
+        status: "success";
+        value: readonly [readonly bigint[], bigint, readonly `0x${string}`[]];
+      }
     | { status: "failure"; error: unknown };
 
   let probes: Probe[];
@@ -167,7 +170,7 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
-    const [amounts, vaults] = probe.value;
+    const [amounts, , vaults] = probe.value;
 
     liquidatable.push({
       proxyAddress: p.proxyAddress,

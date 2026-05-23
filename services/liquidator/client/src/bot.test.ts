@@ -37,7 +37,7 @@ function createMockClients() {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
       readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
         if (functionName === "estimateLiquidation") {
-          return Promise.resolve([mockAmounts, ["0xvault1"]]);
+          return Promise.resolve([mockAmounts, 0n, ["0xvault1"]]);
         }
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
@@ -275,11 +275,12 @@ describe("LiquidationBot", () => {
 
       // Bot adds 1% buffer to Lens-returned amounts to cover interest accrual
       const bufferedAmounts = mockAmounts.map((amt) => (amt * 10100n) / 10000n);
+      const uint256Max = 2n ** 256n - 1n;
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
-          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n]],
+          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n], 0n, uint256Max],
         })
       );
     });
