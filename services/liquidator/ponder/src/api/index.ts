@@ -21,6 +21,24 @@ function isExpectedContractRevert(error: unknown): boolean {
   return false;
 }
 
+// viem's ABI-decoding errors (PositionOutOfBoundsError, AbiDecodingDataSizeTooSmallError,
+// AbiDecodingZeroDataError, etc.) indicate the bot's ABI doesn't match the deployed
+// contract — a deployment-config bug that silently drops every position. Name-match
+// instead of importing each class so this stays viem-version agnostic.
+function isAbiDecodeError(error: unknown): boolean {
+  if (!(error instanceof BaseError)) return false;
+  return error.walk((e) => {
+    const name = (e as { name?: unknown })?.name;
+    return typeof name === "string" && (name.includes("OutOfBounds") || name.includes("AbiDecoding"));
+  }) !== null;
+}
+
+// Per-proxy consecutive non-revert failure counter. ABI decode errors escalate
+// immediately; other non-revert errors escalate after NON_REVERT_FAILURE_THRESHOLD
+// hits so dashboards/alerting can react to a position the bot is permanently blind to.
+const NON_REVERT_FAILURE_THRESHOLD = Number(process.env.NON_REVERT_FAILURE_THRESHOLD ?? "3");
+const consecutiveProbeFailures = new Map<string, number>();
+
 // Multicall3 is canonically deployed at this address on most public chains, but
 // not on bare Anvil instances or freshly-bootstrapped private chains. Probe once
 // per process and cache the result; if it's missing, fall back to per-position
@@ -156,16 +174,34 @@ app.get("/liquidatable-positions", async (c) => {
     const probe = probes[i];
     const p = positions[i];
 
+    const proxyKey = p.proxyAddress.toLowerCase();
+
     if (probe.status === "failure") {
       // Healthy positions revert by design; anything else is a real RPC error.
-      if (!isExpectedContractRevert(probe.error)) {
+      if (isExpectedContractRevert(probe.error)) {
+        consecutiveProbeFailures.delete(proxyKey);
+        continue;
+      }
+      const count = (consecutiveProbeFailures.get(proxyKey) ?? 0) + 1;
+      consecutiveProbeFailures.set(proxyKey, count);
+      const decode = isAbiDecodeError(probe.error);
+      const message = probe.error instanceof Error ? probe.error.message : String(probe.error);
+      if (decode || count >= NON_REVERT_FAILURE_THRESHOLD) {
+        console.error(
+          `estimateLiquidation ${decode ? "decode" : "non-revert"} error for ${p.proxyAddress}` +
+            ` (consecutive=${count}${decode ? "; likely ABI drift between deployed contract and bot ABI" : ""}):`,
+          message
+        );
+      } else {
         console.warn(
-          `estimateLiquidation error for ${p.proxyAddress} (not a contract revert):`,
-          probe.error instanceof Error ? probe.error.message : probe.error
+          `estimateLiquidation error for ${p.proxyAddress} (not a contract revert, consecutive=${count}):`,
+          message
         );
       }
       continue;
     }
+
+    consecutiveProbeFailures.delete(proxyKey);
 
     const borrower = proxyToBorrower.get(p.proxyAddress.toLowerCase());
     if (!borrower) {
