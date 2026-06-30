@@ -11,7 +11,8 @@ import {
   maxUint256,
 } from "viem";
 
-import { type RetryConfig, erc20Abi, fetchWithRetry, vaultSwapAbi, withRetry } from "@repo/shared";
+import { erc20Abi, vaultSwapAbi } from "@repo/abis";
+import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { updateLastPollTime } from "./health";
 import { recordError, recordPollDuration, recordVaultAcquired, recordWbtcBalance } from "./metrics";
 import type { EscrowedVault, PonderResponse } from "./types";

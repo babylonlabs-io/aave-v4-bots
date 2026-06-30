@@ -4,7 +4,7 @@ node_modules/
 # Build outputs
 dist/
 .ponder/
-services/*/ponder/generated/
+services/ponder/generated/
 
 # Environment
 .env

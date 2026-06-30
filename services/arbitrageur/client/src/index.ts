@@ -7,7 +7,7 @@ dotenvConfig({ path: resolve(process.cwd(), ".env.arbitrageur") });
 import { type Chain, type PublicClient, createPublicClient, createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { instrumentedHttp } from "@repo/shared";
+import { instrumentedHttp } from "@repo/chain";
 import { ArbitrageurBot } from "./bot";
 import { type Config, loadConfig } from "./config";
 import { recordRpcCall } from "./metrics";

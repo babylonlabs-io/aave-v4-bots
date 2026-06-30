@@ -25,7 +25,7 @@ services:
   liquidator-ponder:
     build:
       context: .
-      dockerfile: docker/liquidator-ponder.Dockerfile
+      dockerfile: docker/ponder.Dockerfile
     container_name: liquidator-ponder
     env_file:
       - .env.liquidator
@@ -99,7 +99,7 @@ services:
   arbitrageur-ponder:
     build:
       context: .
-      dockerfile: docker/arbitrageur-ponder.Dockerfile
+      dockerfile: docker/ponder.Dockerfile
     container_name: arbitrageur-ponder
     env_file:
       - .env.arbitrageur

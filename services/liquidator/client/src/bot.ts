@@ -11,14 +11,8 @@ import {
   maxUint256,
 } from "viem";
 
-import {
-  type RetryConfig,
-  adapterAbi,
-  erc20Abi,
-  fetchWithRetry,
-  lensAbi,
-  spokeAbi,
-} from "@repo/shared";
+import { adapterAbi, erc20Abi, lensAbi, spokeAbi } from "@repo/abis";
+import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import {
   recordError,
   recordLiquidationFailed,

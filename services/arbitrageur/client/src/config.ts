@@ -1,36 +1,13 @@
+import {
+  addressSchema,
+  nonNegativeIntSchema,
+  parseEnv,
+  positiveIntSchema,
+  privateKeySchema,
+  urlSchema,
+} from "@repo/config";
 import type { Address, Hex } from "viem";
 import { z } from "zod";
-
-/**
- * Address schema (0x + 40 hex chars)
- */
-const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/, "Invalid address");
-
-/**
- * Private key schema (0x + 64 hex chars)
- */
-const privateKeySchema = z.string().regex(/^0x[a-fA-F0-9]{64}$/, "Invalid private key");
-
-/**
- * URL schema
- */
-const urlSchema = z.string().url("Invalid URL");
-
-/**
- * Positive integer schema for numeric env vars
- */
-const positiveIntSchema = z
-  .string()
-  .refine((val) => !Number.isNaN(Number.parseInt(val, 10)), "Must be a valid integer")
-  .refine((val) => Number.parseInt(val, 10) > 0, "Must be a positive integer");
-
-/**
- * Non-negative integer schema for numeric env vars
- */
-const nonNegativeIntSchema = z
-  .string()
-  .refine((val) => !Number.isNaN(Number.parseInt(val, 10)), "Must be a valid integer")
-  .refine((val) => Number.parseInt(val, 10) >= 0, "Must be a non-negative integer");
 
 /**
  * Environment variables schema
@@ -97,23 +74,7 @@ export interface Config {
  * Fails fast with clear error messages if validation fails.
  */
 export function loadConfig(): Config {
-  const result = envSchema.safeParse(process.env);
-
-  if (!result.success) {
-    console.error("Configuration validation failed:");
-    console.error("");
-
-    for (const error of result.error.errors) {
-      const path = error.path.join(".");
-      console.error(`  ✗ ${path}: ${error.message}`);
-    }
-
-    console.error("");
-    console.error("Please check your .env file and ensure all required variables are set.");
-    process.exit(1);
-  }
-
-  const env = result.data;
+  const env = parseEnv(envSchema);
 
   return {
     arbitrageurPrivateKey: env.ARBITRAGEUR_PRIVATE_KEY as Hex,

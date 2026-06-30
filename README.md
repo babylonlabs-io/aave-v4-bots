@@ -41,22 +41,26 @@ cp env.arbitrageur.example .env.arbitrageur
 # Edit each with your values
 ```
 
-**Ponder Indexers** require their own `.env.local` files in their respective directories:
+**Ponder Indexer** — a single unified indexer (`services/ponder`) serves both
+services. The index mode is derived from which addresses are set: `ADAPTER_ADDRESS`
++ `SPOKE_ADDRESS` enable liquidation, `VAULT_SWAP_ADDRESS` enables arbitrage; set
+one, the other, or both. Run it via the root scripts, which load the matching root
+env file:
 
 ```bash
-# For liquidator ponder - copy relevant vars from .env.liquidator
-cp .env.liquidator services/liquidator/ponder/.env.local
-
-# For arbitrageur ponder - copy relevant vars from .env.arbitrageur
-cp .env.arbitrageur services/arbitrageur/ponder/.env.local
+pnpm liquidator:indexer    # @services/ponder on :42069, liquidation mode (.env.liquidator)
+pnpm arbitrageur:indexer   # @services/ponder on :42070, arbitrage mode (.env.arbitrageur)
+pnpm indexer               # @services/ponder on :42069, both modes (one shared instance)
 ```
 
-| Component          | Env File Location                        | Loaded From      |
-| ------------------ | ---------------------------------------- | ---------------- |
-| Liquidator Client  | `.env.liquidator`                        | Root directory   |
-| Liquidator Ponder  | `services/liquidator/ponder/.env.local`  | Ponder directory |
-| Arbitrageur Client | `.env.arbitrageur`                       | Root directory   |
-| Arbitrageur Ponder | `services/arbitrageur/ponder/.env.local` | Ponder directory |
+For running it directly (`cd services/ponder && pnpm dev`), Ponder loads
+`services/ponder/.env.local`.
+
+| Component          | Env File Location            | Loaded From      |
+| ------------------ | ---------------------------- | ---------------- |
+| Liquidator Client  | `.env.liquidator`            | Root directory   |
+| Arbitrageur Client | `.env.arbitrageur`           | Root directory   |
+| Ponder (direct)    | `services/ponder/.env.local` | Ponder directory |
 
 ### 2. Install Dependencies
 
@@ -170,32 +174,28 @@ pnpm test:coverage          # With coverage
 │
 ├── services/
 │   ├── liquidator/
-│   │   ├── client/             # @services/liquidator-client
-│   │   │   └── src/
-│   │   │       ├── bot.ts      # LiquidationBot class
-│   │   │       ├── config.ts   # Configuration
-│   │   │       └── metrics.ts  # Prometheus metrics
-│   │   └── ponder/             # @services/liquidator-ponder
-│   │       ├── ponder.config.ts
-│   │       ├── ponder.schema.ts
+│   │   └── client/             # @services/liquidator-client
 │   │       └── src/
+│   │           ├── bot.ts      # LiquidationBot class
+│   │           ├── config.ts   # Configuration
+│   │           └── metrics.ts  # Prometheus metrics
 │   │
-│   └── arbitrageur/
-│       ├── client/             # @services/arbitrageur-client
-│       │   └── src/
-│       │       ├── bot.ts      # ArbitrageurBot class
-│       │       ├── config.ts   # Configuration (with Zod)
-│       │       └── metrics.ts  # Prometheus metrics
-│       └── ponder/             # @services/arbitrageur-ponder
-│           ├── ponder.config.ts
-│           ├── ponder.schema.ts
-│           └── src/
+│   ├── arbitrageur/
+│   │   └── client/             # @services/arbitrageur-client
+│   │       └── src/
+│   │           ├── bot.ts      # ArbitrageurBot class
+│   │           ├── config.ts   # Configuration (with Zod)
+│   │           └── metrics.ts  # Prometheus metrics
+│   │
+│   └── ponder/                 # @services/ponder — unified indexer (both modes)
+│       ├── ponder.config.ts    #   conditional contracts by mode
+│       ├── ponder.schema.ts    #   union schema
+│       └── src/                #   flags.ts + guarded handlers + merged api
 │
 ├── docker/
 │   ├── liquidator-client.Dockerfile
-│   ├── liquidator-ponder.Dockerfile
 │   ├── arbitrageur-client.Dockerfile
-│   └── arbitrageur-ponder.Dockerfile
+│   └── ponder.Dockerfile       # unified indexer image (both modes)
 │
 ├── .github/workflows/
 │   ├── ci.yml                  # Lint, typecheck, test

@@ -18,7 +18,7 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/liquidator-ponder.Dockerfile
+      dockerfile: ./docker/ponder.Dockerfile
       repoName: liquidation-aave-indexer
       push_to_dockerhub: false
     permissions:
@@ -47,7 +47,7 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/arbitrageur-ponder.Dockerfile
+      dockerfile: ./docker/ponder.Dockerfile
       repoName: arbitrageur-aave-indexer
       push_to_dockerhub: false
     permissions:

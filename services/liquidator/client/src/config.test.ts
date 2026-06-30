@@ -2,10 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("config validation", () => {
   const originalEnv = process.env;
+  // loadConfig fails fast via process.exit(1) (parseEnv); make that observable.
+  const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+    throw new Error("process.exit called");
+  });
 
   beforeEach(() => {
     vi.resetModules();
     process.env = { ...originalEnv };
+    mockExit.mockClear();
   });
 
   afterEach(() => {
@@ -22,61 +27,46 @@ describe("config validation", () => {
   };
 
   describe("required fields", () => {
-    it("should throw when LIQUIDATOR_PRIVATE_KEY is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.LIQUIDATOR_PRIVATE_KEY = undefined;
+    for (const key of [
+      "LIQUIDATOR_PRIVATE_KEY",
+      "PONDER_URL",
+      "CLIENT_RPC_URL",
+      "ADAPTER_ADDRESS",
+      "LENS_ADDRESS",
+      "WBTC_ADDRESS",
+    ] as const) {
+      it(`should fail when ${key} is missing`, async () => {
+        process.env = { ...validEnv };
+        process.env[key] = undefined;
 
-      const { loadConfig } = await import("./config");
+        const { loadConfig } = await import("./config");
 
-      expect(() => loadConfig()).toThrow(
-        "Missing required environment variable: LIQUIDATOR_PRIVATE_KEY"
-      );
-    });
+        expect(() => loadConfig()).toThrow("process.exit called");
+        expect(mockExit).toHaveBeenCalledWith(1);
+      });
+    }
+  });
 
-    it("should throw when PONDER_URL is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.PONDER_URL = undefined;
+  describe("format validation", () => {
+    const badCases: Array<[string, string]> = [
+      ["LIQUIDATOR_PRIVATE_KEY", "0x1234"],
+      ["ADAPTER_ADDRESS", "not-an-address"],
+      ["BTC_REDEEM_KEY", "not-a-hex"],
+      ["BTC_REDEEM_KEY", "0x1234"],
+      ["TX_RECEIPT_TIMEOUT_MS", "0"],
+      ["PONDER_URL", "not-a-url"],
+    ];
 
-      const { loadConfig } = await import("./config");
+    for (const [key, value] of badCases) {
+      it(`should fail when ${key} = ${value}`, async () => {
+        process.env = { ...validEnv, [key]: value };
 
-      expect(() => loadConfig()).toThrow("Missing required environment variable: PONDER_URL");
-    });
+        const { loadConfig } = await import("./config");
 
-    it("should throw when CLIENT_RPC_URL is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.CLIENT_RPC_URL = undefined;
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("Missing required environment variable: CLIENT_RPC_URL");
-    });
-
-    it("should throw when ADAPTER_ADDRESS is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.ADAPTER_ADDRESS = undefined;
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("Missing required environment variable: ADAPTER_ADDRESS");
-    });
-
-    it("should throw when LENS_ADDRESS is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.LENS_ADDRESS = undefined;
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("Missing required environment variable: LENS_ADDRESS");
-    });
-
-    it("should throw when WBTC_ADDRESS is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.WBTC_ADDRESS = undefined;
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("Missing required environment variable: WBTC_ADDRESS");
-    });
+        expect(() => loadConfig()).toThrow("process.exit called");
+        expect(mockExit).toHaveBeenCalledWith(1);
+      });
+    }
   });
 
   describe("successful config loading", () => {
@@ -155,46 +145,6 @@ describe("config validation", () => {
 
       expect(config.btcRedeemKey).toBe(
         "0x0000000000000000000000000000000000000000000000000000000000000000"
-      );
-    });
-
-    it("should throw for invalid BTC_REDEEM_KEY format", async () => {
-      process.env = { ...validEnv, BTC_REDEEM_KEY: "not-a-hex" };
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
-    });
-
-    it("should throw for short BTC_REDEEM_KEY", async () => {
-      process.env = { ...validEnv, BTC_REDEEM_KEY: "0x1234" };
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
-    });
-
-    it("should throw for invalid ADAPTER_ADDRESS", async () => {
-      process.env = { ...validEnv, ADAPTER_ADDRESS: "not-an-address" };
-      const { loadConfig } = await import("./config");
-      expect(() => loadConfig()).toThrow(
-        "Invalid ADAPTER_ADDRESS: must be a 0x-prefixed 20-byte hex address"
-      );
-    });
-
-    it("should throw for invalid private key format", async () => {
-      process.env = { ...validEnv, LIQUIDATOR_PRIVATE_KEY: "0x1234" };
-      const { loadConfig } = await import("./config");
-      expect(() => loadConfig()).toThrow(
-        "Invalid LIQUIDATOR_PRIVATE_KEY: must be 0x-prefixed 32-byte hex"
-      );
-    });
-
-    it("should throw for invalid TX_RECEIPT_TIMEOUT_MS", async () => {
-      process.env = { ...validEnv, TX_RECEIPT_TIMEOUT_MS: "0" };
-      const { loadConfig } = await import("./config");
-      expect(() => loadConfig()).toThrow(
-        "Invalid TX_RECEIPT_TIMEOUT_MS: must be a positive integer"
       );
     });
   });
