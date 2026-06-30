@@ -19,6 +19,14 @@ if (!PONDER_RPC_URL) {
   throw new Error("PONDER_RPC_URL environment variable is required");
 }
 
+// A half-configured liquidation mode is almost certainly a typo, not an intent to
+// disable it — fail loudly rather than silently indexing nothing for liquidation.
+if (!!SPOKE_ADDRESS !== !!ADAPTER_ADDRESS) {
+  throw new Error(
+    "Liquidation indexing requires BOTH SPOKE_ADDRESS and ADAPTER_ADDRESS (set both or neither)."
+  );
+}
+
 if (!INDEX_LIQUIDATION && !INDEX_ARBITRAGE) {
   throw new Error(
     "Enable at least one index mode: set ADAPTER_ADDRESS + SPOKE_ADDRESS (liquidation) " +

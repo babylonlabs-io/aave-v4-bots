@@ -16,13 +16,15 @@ WORKDIR /app
 # Copy workspace configuration
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 
-# Copy ponder package.json
+# Copy package.json files for the ponder and its workspace deps
+COPY packages/abis/package.json ./packages/abis/
 COPY services/ponder/package.json ./services/ponder/
 
 # Install dependencies (workspace-aware)
 RUN pnpm install --frozen-lockfile --filter @services/ponder
 
-# Copy ponder source code and config
+# Copy ponder source code + config and its workspace deps
+COPY packages/abis/ ./packages/abis/
 COPY services/ponder/ ./services/ponder/
 
 # ============================================
@@ -45,6 +47,7 @@ COPY --from=builder /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-lock.yaml ./
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/services/ponder ./services/ponder
 
 # Set ownership

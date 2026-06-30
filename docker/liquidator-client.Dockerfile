@@ -13,15 +13,21 @@ WORKDIR /app
 # Copy workspace configuration
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 
-# Copy package.json files for all required packages
-COPY packages/shared/package.json ./packages/shared/
+# Copy package.json files for all required workspace packages
+COPY packages/abis/package.json ./packages/abis/
+COPY packages/chain/package.json ./packages/chain/
+COPY packages/config/package.json ./packages/config/
+COPY packages/observability/package.json ./packages/observability/
 COPY services/liquidator/client/package.json ./services/liquidator/client/
 
 # Install dependencies (workspace-aware)
 RUN pnpm install --frozen-lockfile --filter @services/liquidator-client...
 
 # Copy source code
-COPY packages/shared/ ./packages/shared/
+COPY packages/abis/ ./packages/abis/
+COPY packages/chain/ ./packages/chain/
+COPY packages/config/ ./packages/config/
+COPY packages/observability/ ./packages/observability/
 COPY services/liquidator/client/ ./services/liquidator/client/
 
 # ============================================

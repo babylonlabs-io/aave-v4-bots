@@ -56,7 +56,14 @@ export function parseEnv<T extends z.ZodTypeAny>(
   schema: T,
   env: NodeJS.ProcessEnv = process.env
 ): z.infer<T> {
-  const result = schema.safeParse(env);
+  // Treat an empty-string env var as unset, so `.optional().default(...)` applies
+  // (matches the conventional `process.env.X || default` behavior).
+  const cleaned: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && value !== "") cleaned[key] = value;
+  }
+
+  const result = schema.safeParse(cleaned);
 
   if (!result.success) {
     console.error("Configuration validation failed:");

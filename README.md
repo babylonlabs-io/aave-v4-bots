@@ -44,17 +44,19 @@ cp env.arbitrageur.example .env.arbitrageur
 **Ponder Indexer** — a single unified indexer (`services/ponder`) serves both
 services. The index mode is derived from which addresses are set: `ADAPTER_ADDRESS`
 + `SPOKE_ADDRESS` enable liquidation, `VAULT_SWAP_ADDRESS` enables arbitrage; set
-one, the other, or both. Run it via the root scripts, which load the matching root
-env file:
+one, the other, or both. The root scripts only set `PONDER_PORT`; the indexer reads
+its env from `services/ponder/.env.local` (Ponder auto-loads it) or from the
+environment you export:
 
 ```bash
-pnpm liquidator:indexer    # @services/ponder on :42069, liquidation mode (.env.liquidator)
-pnpm arbitrageur:indexer   # @services/ponder on :42070, arbitrage mode (.env.arbitrageur)
-pnpm indexer               # @services/ponder on :42069, both modes (one shared instance)
+pnpm liquidator:indexer    # @services/ponder on :42069 (liquidation mode if SPOKE+ADAPTER set)
+pnpm arbitrageur:indexer   # @services/ponder on :42070 (arbitrage mode if VAULT_SWAP set)
+pnpm indexer               # @services/ponder on :42069 (both modes when all addresses set)
 ```
 
-For running it directly (`cd services/ponder && pnpm dev`), Ponder loads
-`services/ponder/.env.local`.
+So either `cp .env.liquidator services/ponder/.env.local` for a liquidation
+instance, or export the vars before running. (The e2e harness sources the root
+`.env.*` itself before invoking these scripts.)
 
 | Component          | Env File Location            | Loaded From      |
 | ------------------ | ---------------------------- | ---------------- |

@@ -147,6 +147,24 @@ describe("config validation", () => {
         "0x0000000000000000000000000000000000000000000000000000000000000000"
       );
     });
+
+    it("should treat empty-string optional vars as unset (apply defaults)", async () => {
+      process.env = {
+        ...validEnv,
+        BTC_REDEEM_KEY: "",
+        POLLING_INTERVAL_MS: "",
+        METRICS_PORT: "",
+      };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.btcRedeemKey).toBe(
+        "0x0000000000000000000000000000000000000000000000000000000000000000"
+      );
+      expect(config.pollingIntervalMs).toBe(12000);
+      expect(config.metricsPort).toBe(9090);
+    });
   });
 
   describe("debt token addresses", () => {
