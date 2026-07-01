@@ -22,16 +22,17 @@ export const bytes32Schema = z
 /** A valid URL. */
 export const urlSchema = z.string().url("must be a valid URL");
 
-/** A string that parses to an integer > 0. */
+/** A string that parses to an integer > 0. `/^\d+$/` rejects truncatable inputs
+ * like "1abc" or "1.5" that `Number.parseInt` would silently accept. */
 export const positiveIntSchema = z
   .string()
-  .refine((v) => !Number.isNaN(Number.parseInt(v, 10)), "must be a valid integer")
+  .regex(/^\d+$/, "must be a valid integer")
   .refine((v) => Number.parseInt(v, 10) > 0, "must be a positive integer");
 
-/** A string that parses to an integer >= 0. */
+/** A string that parses to an integer >= 0 (see `positiveIntSchema` on the regex). */
 export const nonNegativeIntSchema = z
   .string()
-  .refine((v) => !Number.isNaN(Number.parseInt(v, 10)), "must be a valid integer")
+  .regex(/^\d+$/, "must be a valid integer")
   .refine((v) => Number.parseInt(v, 10) >= 0, "must be a non-negative integer");
 
 /**

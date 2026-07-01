@@ -55,6 +55,9 @@ describe("config validation", () => {
       ["BTC_REDEEM_KEY", "0x1234"],
       ["TX_RECEIPT_TIMEOUT_MS", "0"],
       ["PONDER_URL", "not-a-url"],
+      // Malformed numbers must be rejected, not silently truncated by parseInt.
+      ["POLLING_INTERVAL_MS", "1abc"],
+      ["METRICS_PORT", "1.5"],
     ];
 
     for (const [key, value] of badCases) {
