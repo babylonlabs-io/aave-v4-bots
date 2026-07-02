@@ -13,6 +13,7 @@ import {
 
 import { erc20Abi, vaultSwapAbi } from "@repo/abis";
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
+import { maxWbtcInWithSlippage } from "@repo/domain";
 import { updateLastPollTime } from "./health";
 import { recordError, recordPollDuration, recordVaultAcquired, recordWbtcBalance } from "./metrics";
 import type { EscrowedVault, PonderResponse } from "./types";
@@ -163,8 +164,7 @@ export class ArbitrageurBot {
       }
 
       // Calculate maxWbtcIn with slippage buffer
-      const slippageBuffer = (currentDebtBigInt * BigInt(this.maxSlippageBps)) / 10000n;
-      const maxWbtcIn = currentDebtBigInt + slippageBuffer;
+      const maxWbtcIn = maxWbtcInWithSlippage(currentDebtBigInt, this.maxSlippageBps);
 
       // Ensure WBTC approval covers the slippage-adjusted max spend amount
       await this.ensureApproval(maxWbtcIn);

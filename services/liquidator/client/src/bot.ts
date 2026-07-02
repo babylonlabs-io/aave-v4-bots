@@ -13,6 +13,7 @@ import {
 
 import { adapterAbi, erc20Abi, lensAbi, spokeAbi } from "@repo/abis";
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
+import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
 import {
   recordError,
   recordLiquidationFailed,
@@ -141,11 +142,7 @@ export class LiquidationBot {
         args: [i],
       });
 
-      // ReserveFlags bitmap: 0x01=paused, 0x02=frozen, 0x04=borrowable.
-      // See contracts/lib/aave-v4/src/spoke/libraries/ReserveFlagsMap.sol.
-      const BORROWABLE_MASK = 0x04;
-      const isBorrowable = (reserve.flags & BORROWABLE_MASK) !== 0;
-      if (isBorrowable) {
+      if (isBorrowableReserve(reserve.flags)) {
         discovered.push(reserve.underlying);
 
         const { symbol } = await this.getTokenMeta(reserve.underlying);
@@ -205,14 +202,11 @@ export class LiquidationBot {
 
         if (result.status === "fulfilled") {
           const [amounts] = result.value;
-          // Add 1% buffer to cover interest accrual between Lens query and tx execution.
-          // Anvil auto-mines each tx, so even a single block of interest growth can
-          // trigger MustNotLeaveDust since the Lens returns exact debt amounts.
-          // The Lens also returns a separate `wbtcPayment` (fairness + redemption fee);
-          // the adapter pulls it directly from msg.sender, so the bot only needs WBTC
-          // approved + balance — no need to thread the amount through.
-          const bufferedAmounts = amounts.map((amt) => (amt * 10100n) / 10000n);
-          candidates.push({ position: pos, amounts: bufferedAmounts });
+          // Buffer each amount (default 1%) to cover interest accrual between the Lens
+          // read and execution. The Lens also returns a separate `wbtcPayment` (fairness
+          // + redemption fee) the adapter pulls from msg.sender, so the bot only needs
+          // WBTC approved + balance — no need to thread the amount through.
+          candidates.push({ position: pos, amounts: bufferAmounts(amounts) });
         } else {
           recordError("lens_estimate_error");
           const reason = result.reason;
@@ -230,7 +224,7 @@ export class LiquidationBot {
       const simulationResults = await Promise.allSettled(
         candidates.map(({ position, amounts }) => {
           // Default sequential priority order per candidate (each may have different reserve count)
-          const priorityOrder = amounts.map((_, i) => BigInt(i));
+          const priorityOrder = sequentialPriorityOrder(amounts.length);
           return this.isDirectRedemption
             ? this.publicClient.simulateContract({
                 address: this.adapterAddress,
@@ -296,7 +290,7 @@ export class LiquidationBot {
       const txHashes: Hex[] = [];
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, amounts } = validCandidates[i];
-        const priorityOrder = amounts.map((_, j) => BigInt(j));
+        const priorityOrder = sequentialPriorityOrder(amounts.length);
         try {
           const hash = this.isDirectRedemption
             ? await this.walletClient.writeContract({
