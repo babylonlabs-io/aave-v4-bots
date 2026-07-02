@@ -32,7 +32,7 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/liquidator-client.Dockerfile
+      dockerfile: ./docker/liquidator.Dockerfile
       repoName: liquidation-aave-client
       push_to_dockerhub: false
     permissions:
@@ -61,7 +61,7 @@ jobs:
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/arbitrageur-client.Dockerfile
+      dockerfile: ./docker/arbitrageur.Dockerfile
       repoName: arbitrageur-aave-client
       push_to_dockerhub: false
     permissions:

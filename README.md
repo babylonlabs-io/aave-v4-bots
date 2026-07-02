@@ -193,8 +193,8 @@ pnpm test:coverage          # With coverage
 │       └── src/                #   flags.ts + guarded handlers + merged api
 │
 ├── docker/
-│   ├── liquidator-client.Dockerfile
-│   ├── arbitrageur-client.Dockerfile
+│   ├── liquidator.Dockerfile
+│   ├── arbitrageur.Dockerfile
 │   └── ponder.Dockerfile       # unified indexer image (both modes)
 │
 ├── .github/workflows/

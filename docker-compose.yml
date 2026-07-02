@@ -51,7 +51,7 @@ services:
   liquidator-client:
     build:
       context: .
-      dockerfile: docker/liquidator-client.Dockerfile
+      dockerfile: docker/liquidator.Dockerfile
     container_name: liquidator-client
     env_file:
       - .env.liquidator
@@ -125,7 +125,7 @@ services:
   arbitrageur-client:
     build:
       context: .
-      dockerfile: docker/arbitrageur-client.Dockerfile
+      dockerfile: docker/arbitrageur.Dockerfile
     container_name: arbitrageur-client
     env_file:
       - .env.arbitrageur

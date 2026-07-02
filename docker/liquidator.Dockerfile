@@ -1,5 +1,5 @@
 # ============================================
-# Arbitrageur Client - Multi-stage Dockerfile
+# Liquidator - Multi-stage Dockerfile
 # ============================================
 
 # Stage 1: Build dependencies
@@ -23,10 +23,10 @@ COPY packages/engine/package.json ./packages/engine/
 COPY packages/execution/package.json ./packages/execution/
 COPY packages/metrics/package.json ./packages/metrics/
 COPY packages/observability/package.json ./packages/observability/
-COPY services/arbitrageur/package.json ./services/arbitrageur/
+COPY services/liquidator/package.json ./services/liquidator/
 
 # Install dependencies (workspace-aware)
-RUN pnpm install --frozen-lockfile --filter @services/arbitrageur...
+RUN pnpm install --frozen-lockfile --filter @services/liquidator...
 
 # Copy source code
 COPY packages/abis/ ./packages/abis/
@@ -38,7 +38,7 @@ COPY packages/engine/ ./packages/engine/
 COPY packages/execution/ ./packages/execution/
 COPY packages/metrics/ ./packages/metrics/
 COPY packages/observability/ ./packages/observability/
-COPY services/arbitrageur/ ./services/arbitrageur/
+COPY services/liquidator/ ./services/liquidator/
 
 # ============================================
 # Stage 2: Production runtime
@@ -51,7 +51,7 @@ RUN apk add --no-cache wget=~1.25 && \
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 arbitrageur
+    adduser --system --uid 1001 liquidator
 
 WORKDIR /app
 
@@ -61,18 +61,18 @@ COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-lock.yaml ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
-COPY --from=builder /app/services/arbitrageur ./services/arbitrageur
+COPY --from=builder /app/services/liquidator ./services/liquidator
 
 # Set ownership
-RUN chown -R arbitrageur:nodejs /app
+RUN chown -R liquidator:nodejs /app
 
-USER arbitrageur
+USER liquidator
 
-WORKDIR /app/services/arbitrageur
+WORKDIR /app/services/liquidator
 
 # Health check for metrics server
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:9091/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:9090/health || exit 1
 
 # Default command: start polling mode
 CMD ["pnpm", "start"]
