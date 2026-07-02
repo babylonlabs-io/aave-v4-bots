@@ -104,11 +104,17 @@ async function main() {
     logger.info(`Polling every ${config.pollingIntervalMs / 1000}s...`);
     logger.info("---");
 
-    // Run loop — awaits each run before sleeping to prevent overlapping executions
+    // Run loop — awaits each run before sleeping to prevent overlapping executions.
+    // Wrap the cycle so an unexpected throw logs and reschedules instead of
+    // crashing the process (parity with the arbitrageur's poll loop).
     while (true) {
       logger.info(`[${new Date().toISOString()}] Checking...`);
-      await bot.run();
-      await bot.logBalances();
+      try {
+        await bot.run();
+        await bot.logBalances();
+      } catch (error) {
+        logger.error("Unexpected error in poll cycle:", error);
+      }
       updateLastPollTime();
       logger.info("---");
       await new Promise((r) => setTimeout(r, config.pollingIntervalMs));

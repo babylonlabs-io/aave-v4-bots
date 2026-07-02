@@ -544,6 +544,16 @@ describe("LiquidationEngine", () => {
       expect(metrics.recordTokenBalance).toHaveBeenCalled();
     });
 
+    it("swallows a balance-read failure so the poll loop keeps running", async () => {
+      const clients = createMockClients();
+      clients.publicClient.readContract.mockRejectedValue(new Error("RPC blip"));
+      const bot = createBot(clients, { debtTokenAddresses: ["0xtoken1" as `0x${string}`] });
+
+      // Must not throw — a transient RPC error during balance logging must not
+      // escape to the poll loop and crash the process.
+      await expect(bot.logBalances()).resolves.not.toThrow();
+    });
+
     it("caches symbol and decimals across calls (steady-state RPC reduction)", async () => {
       const clients = createMockClients();
 

@@ -432,28 +432,34 @@ export class LiquidationEngine {
   async logBalances(): Promise<void> {
     const liquidator = this.walletClient.account.address;
 
-    this.logger.info("Token balances:");
+    // Best-effort: a balance read failing on an RPC blip must not crash the poll
+    // loop (mirrors ArbitrageEngine.logBalance). run() has its own try/catch.
+    try {
+      this.logger.info("Token balances:");
 
-    // Debt tokens — symbol/decimals are immutable, fetched once and cached.
-    // Kick metadata + balanceOf in parallel so cold-start matches the original
-    // 3-RPC concurrency; subsequent cycles only fire balanceOf (cache hit).
-    for (const tokenAddress of this.debtTokenAddresses) {
-      const [{ symbol, decimals }, balance] = await Promise.all([
-        this.getTokenMeta(tokenAddress),
-        readBalance(this.publicClient, tokenAddress, liquidator),
+      // Debt tokens — symbol/decimals are immutable, fetched once and cached.
+      // Kick metadata + balanceOf in parallel so cold-start matches the original
+      // 3-RPC concurrency; subsequent cycles only fire balanceOf (cache hit).
+      for (const tokenAddress of this.debtTokenAddresses) {
+        const [{ symbol, decimals }, balance] = await Promise.all([
+          this.getTokenMeta(tokenAddress),
+          readBalance(this.publicClient, tokenAddress, liquidator),
+        ]);
+
+        this.metrics.recordTokenBalance(symbol, tokenAddress, balance, decimals);
+        this.logger.info(`   ${symbol}: ${formatUnits(balance, decimals)}`);
+      }
+
+      // WBTC balance
+      const [{ symbol: wbtcSymbol, decimals: wbtcDecimals }, wbtcBalance] = await Promise.all([
+        this.getTokenMeta(this.wbtcAddress),
+        readBalance(this.publicClient, this.wbtcAddress, liquidator),
       ]);
 
-      this.metrics.recordTokenBalance(symbol, tokenAddress, balance, decimals);
-      this.logger.info(`   ${symbol}: ${formatUnits(balance, decimals)}`);
+      this.metrics.recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, wbtcDecimals);
+      this.logger.info(`   ${wbtcSymbol}: ${formatUnits(wbtcBalance, wbtcDecimals)}`);
+    } catch (error) {
+      this.logger.error("Failed to fetch balances:", error);
     }
-
-    // WBTC balance
-    const [{ symbol: wbtcSymbol, decimals: wbtcDecimals }, wbtcBalance] = await Promise.all([
-      this.getTokenMeta(this.wbtcAddress),
-      readBalance(this.publicClient, this.wbtcAddress, liquidator),
-    ]);
-
-    this.metrics.recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, wbtcDecimals);
-    this.logger.info(`   ${wbtcSymbol}: ${formatUnits(wbtcBalance, wbtcDecimals)}`);
   }
 }
