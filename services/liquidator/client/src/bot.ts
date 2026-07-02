@@ -11,7 +11,8 @@ import {
   maxUint256,
 } from "viem";
 
-import { adapterAbi, erc20Abi, lensAbi, spokeAbi } from "@repo/abis";
+import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
+import { TokenMetaCache, approveMax, readAllowance, readBalance } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
 import {
@@ -48,11 +49,6 @@ export interface LiquidationBotConfig {
   txReceiptTimeoutMs: number;
 }
 
-interface TokenMeta {
-  symbol: string;
-  decimals: number;
-}
-
 export class LiquidationBot {
   private logTag: string;
   private walletClient: WalletClient<Transport, Chain, Account>;
@@ -66,7 +62,7 @@ export class LiquidationBot {
   private llpAddress: Address;
   private ponderUrl: string;
   private txReceiptTimeoutMs: number;
-  private tokenMetaCache = new Map<Address, TokenMeta>();
+  private tokenMetaCache = new TokenMetaCache();
 
   constructor(config: LiquidationBotConfig) {
     this.logTag = config.logTag;
@@ -83,30 +79,9 @@ export class LiquidationBot {
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
   }
 
-  /**
-   * Resolve and cache a token's symbol and decimals.
-   * ERC-20 metadata is immutable per address — fetched once, reused forever.
-   */
-  private async getTokenMeta(tokenAddress: Address): Promise<TokenMeta> {
-    const cached = this.tokenMetaCache.get(tokenAddress);
-    if (cached) return cached;
-
-    const [symbol, decimals] = await Promise.all([
-      this.publicClient.readContract({
-        address: tokenAddress,
-        abi: erc20Abi,
-        functionName: "symbol",
-      }),
-      this.publicClient.readContract({
-        address: tokenAddress,
-        abi: erc20Abi,
-        functionName: "decimals",
-      }),
-    ]);
-
-    const meta: TokenMeta = { symbol, decimals };
-    this.tokenMetaCache.set(tokenAddress, meta);
-    return meta;
+  /** Resolve a token's symbol/decimals via the shared, cached reader. */
+  private getTokenMeta(tokenAddress: Address) {
+    return this.tokenMetaCache.get(this.publicClient, tokenAddress);
   }
 
   /**
@@ -411,33 +386,25 @@ export class LiquidationBot {
    */
   async ensureApproval(): Promise<void> {
     const liquidator = this.walletClient.account.address;
-    const maxApproval = BigInt(
-      "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-    );
 
     const tokensToApprove = Array.from(
       new Set<Address>([...this.debtTokenAddresses, this.wbtcAddress])
     );
 
     for (const tokenAddress of tokensToApprove) {
-      const allowance = await this.publicClient.readContract({
-        address: tokenAddress,
-        abi: erc20Abi,
-        functionName: "allowance",
-        args: [liquidator, this.adapterAddress],
-      });
+      const allowance = await readAllowance(
+        this.publicClient,
+        tokenAddress,
+        liquidator,
+        this.adapterAddress
+      );
 
-      if (allowance < maxApproval / 2n) {
+      if (allowance < maxUint256 / 2n) {
         const { symbol } = await this.getTokenMeta(tokenAddress);
 
         console.log(`${this.logTag}Approving ${symbol} for AaveAdapter...`);
 
-        const hash = await this.walletClient.writeContract({
-          address: tokenAddress,
-          abi: erc20Abi,
-          functionName: "approve",
-          args: [this.adapterAddress, maxApproval],
-        });
+        const hash = await approveMax(this.walletClient, tokenAddress, this.adapterAddress);
 
         const receipt = await this.publicClient.waitForTransactionReceipt({
           hash,
@@ -465,12 +432,7 @@ export class LiquidationBot {
     for (const tokenAddress of this.debtTokenAddresses) {
       const [{ symbol, decimals }, balance] = await Promise.all([
         this.getTokenMeta(tokenAddress),
-        this.publicClient.readContract({
-          address: tokenAddress,
-          abi: erc20Abi,
-          functionName: "balanceOf",
-          args: [liquidator],
-        }),
+        readBalance(this.publicClient, tokenAddress, liquidator),
       ]);
 
       recordTokenBalance(symbol, tokenAddress, balance, decimals);
@@ -480,12 +442,7 @@ export class LiquidationBot {
     // WBTC balance
     const [{ symbol: wbtcSymbol, decimals: wbtcDecimals }, wbtcBalance] = await Promise.all([
       this.getTokenMeta(this.wbtcAddress),
-      this.publicClient.readContract({
-        address: this.wbtcAddress,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [liquidator],
-      }),
+      readBalance(this.publicClient, this.wbtcAddress, liquidator),
     ]);
 
     recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, wbtcDecimals);

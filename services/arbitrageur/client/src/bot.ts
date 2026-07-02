@@ -8,10 +8,16 @@ import {
   type Transport,
   type WalletClient,
   formatUnits,
-  maxUint256,
 } from "viem";
 
-import { erc20Abi, vaultSwapAbi } from "@repo/abis";
+import { vaultSwapAbi } from "@repo/abis";
+import {
+  type TokenMeta,
+  approveMax,
+  readAllowance,
+  readBalance,
+  readTokenMeta,
+} from "@repo/capital";
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
 import { updateLastPollTime } from "./health";
@@ -29,11 +35,6 @@ export interface ArbitrageurBotConfig {
   vaultProcessingDelayMs: number;
   retryConfig: RetryConfig;
   txReceiptTimeoutMs: number;
-}
-
-interface TokenMeta {
-  symbol: string;
-  decimals: number;
 }
 
 export class ArbitrageurBot {
@@ -276,13 +277,7 @@ export class ArbitrageurBot {
 
     // Check current allowance for VaultSwap contract with retry
     const allowance = await withRetry(
-      () =>
-        this.publicClient.readContract({
-          address: this.wbtcAddress,
-          abi: erc20Abi,
-          functionName: "allowance",
-          args: [arbitrageur, this.vaultSwapAddress],
-        }),
+      () => readAllowance(this.publicClient, this.wbtcAddress, arbitrageur, this.vaultSwapAddress),
       this.retryConfig,
       "allowance check"
     );
@@ -291,12 +286,7 @@ export class ArbitrageurBot {
     if (allowance < requiredAmount) {
       console.log(`${this.logTag}Approving WBTC for VaultSwap...`);
 
-      const hash = await this.walletClient.writeContract({
-        address: this.wbtcAddress,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [this.vaultSwapAddress, maxUint256],
-      });
+      const hash = await approveMax(this.walletClient, this.wbtcAddress, this.vaultSwapAddress);
 
       const receipt = await this.waitForReceiptWithTimeout(hash, "approval");
       if (!receipt) {
@@ -316,27 +306,11 @@ export class ArbitrageurBot {
   private async getWbtcMeta(): Promise<TokenMeta> {
     if (this.wbtcMeta) return this.wbtcMeta;
 
-    const [symbol, decimals] = await withRetry(
-      () =>
-        Promise.all([
-          this.publicClient.readContract({
-            address: this.wbtcAddress,
-            abi: erc20Abi,
-            functionName: "symbol",
-            args: [],
-          }),
-          this.publicClient.readContract({
-            address: this.wbtcAddress,
-            abi: erc20Abi,
-            functionName: "decimals",
-            args: [],
-          }),
-        ]),
+    this.wbtcMeta = await withRetry(
+      () => readTokenMeta(this.publicClient, this.wbtcAddress),
       this.retryConfig,
       "wbtc metadata"
     );
-
-    this.wbtcMeta = { symbol, decimals };
     return this.wbtcMeta;
   }
 
@@ -352,13 +326,7 @@ export class ArbitrageurBot {
       const [{ symbol, decimals }, balance] = await Promise.all([
         this.getWbtcMeta(),
         withRetry(
-          () =>
-            this.publicClient.readContract({
-              address: this.wbtcAddress,
-              abi: erc20Abi,
-              functionName: "balanceOf",
-              args: [arbitrageur],
-            }),
+          () => readBalance(this.publicClient, this.wbtcAddress, arbitrageur),
           this.retryConfig,
           "balance check"
         ),
