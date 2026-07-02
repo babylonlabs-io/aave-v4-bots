@@ -1,4 +1,7 @@
+import { createLogger } from "@repo/logger";
 import type { Address, Hex, PublicClient } from "viem";
+
+const logger = createLogger();
 
 // Transaction execution primitives — nonce sourcing and receipt-waiting. The
 // service keeps its own send loop / nonce sequencing / retry orchestration; these
@@ -39,7 +42,7 @@ export async function waitForReceipt(
 }
 
 /**
- * `waitForReceipt` that also logs a `console.warn` on timeout (prefixed with an
+ * `waitForReceipt` that also logs a warning on timeout (prefixed with an
  * optional `context` label, matching `@repo/chain`'s `withRetry`). Returns `null` on
  * timeout, re-throws other errors.
  */
@@ -52,7 +55,7 @@ export async function waitForReceiptWithTimeout(
   const receipt = await waitForReceipt(client, hash, timeoutMs);
   if (receipt === null) {
     const prefix = context ? `${context} ` : "";
-    console.warn(`${prefix}Timeout waiting for transaction ${hash} after ${timeoutMs}ms`);
+    logger.warn(`${prefix}Timeout waiting for transaction ${hash} after ${timeoutMs}ms`);
   }
   return receipt;
 }

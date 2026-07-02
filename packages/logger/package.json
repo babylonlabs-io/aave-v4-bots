@@ -1,5 +1,5 @@
 {
-  "name": "@repo/observability",
+  "name": "@repo/logger",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -10,10 +10,6 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
-  },
-  "dependencies": {
-    "@repo/logger": "workspace:*",
-    "viem": "^2.37.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",

@@ -8,14 +8,17 @@ import { type Chain, type Hex, createPublicClient, createWalletClient } from "vi
 import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
+import { createLogger } from "@repo/logger";
 import { setPublicClient, startMetricsServer, updateLastPollTime } from "@repo/observability";
 import { LiquidationBot } from "./bot";
 import { type Config, loadConfig } from "./config";
 import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
 
+const logger = createLogger({ prefix: "[Bot] " });
+
 async function createBot(config: Config) {
   const account = privateKeyToAccount(config.liquidatorPrivateKey);
-  console.log(`Liquidator address: ${account.address}`);
+  logger.info(`Liquidator address: ${account.address}`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound
   // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.
@@ -26,7 +29,7 @@ async function createBot(config: Config) {
     transport,
   });
   const chainId = await tempClient.getChainId();
-  console.log(`Chain ID: ${chainId}`);
+  logger.info(`Chain ID: ${chainId}`);
 
   const chain: Chain = {
     id: chainId,
@@ -49,7 +52,6 @@ async function createBot(config: Config) {
   });
 
   const bot = new LiquidationBot({
-    logTag: "[Bot] ",
     walletClient,
     publicClient,
     adapterAddress: config.adapterAddress,
@@ -71,7 +73,7 @@ async function main() {
   const config = loadConfig();
 
   if (command === "poll") {
-    console.log("Aave V4 Liquidation Bot Starting...");
+    logger.info("Aave V4 Liquidation Bot Starting...");
     const { bot, publicClient } = await createBot(config);
 
     // Start metrics server
@@ -86,7 +88,7 @@ async function main() {
 
     // Discover or use configured debt tokens
     if (config.debtTokenAddresses) {
-      console.log(
+      logger.info(
         `Using ${config.debtTokenAddresses.length} debt token(s) from DEBT_TOKEN_ADDRESSES env var`
       );
     } else {
@@ -96,39 +98,39 @@ async function main() {
     await bot.ensureApproval();
     await bot.logBalances();
 
-    console.log(
+    logger.info(
       `Redemption mode: ${config.isDirectRedemption ? "direct BTC" : "WBTC via VaultSwap"}`
     );
-    console.log(`Polling every ${config.pollingIntervalMs / 1000}s...`);
-    console.log("---");
+    logger.info(`Polling every ${config.pollingIntervalMs / 1000}s...`);
+    logger.info("---");
 
     // Run loop — awaits each run before sleeping to prevent overlapping executions
     while (true) {
-      console.log(`[${new Date().toISOString()}] Checking...`);
+      logger.info(`[${new Date().toISOString()}] Checking...`);
       await bot.run();
       await bot.logBalances();
       updateLastPollTime();
-      console.log("---");
+      logger.info("---");
       await new Promise((r) => setTimeout(r, config.pollingIntervalMs));
     }
   } else {
-    console.error(`Unknown command: ${command}`);
-    console.error("Available commands: poll (default)");
+    logger.error(`Unknown command: ${command}`);
+    logger.error("Available commands: poll (default)");
     process.exit(1);
   }
 }
 
 process.on("SIGINT", () => {
-  console.log("\nShutting down...");
+  logger.info("\nShutting down...");
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-  console.log("\nShutting down...");
+  logger.info("\nShutting down...");
   process.exit(0);
 });
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  logger.error("Fatal error:", error);
   process.exit(1);
 });

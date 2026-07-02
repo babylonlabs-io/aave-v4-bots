@@ -21,6 +21,7 @@ COPY packages/config/package.json ./packages/config/
 COPY packages/domain/package.json ./packages/domain/
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/execution/package.json ./packages/execution/
+COPY packages/logger/package.json ./packages/logger/
 COPY packages/metrics/package.json ./packages/metrics/
 COPY packages/observability/package.json ./packages/observability/
 COPY services/liquidator/package.json ./services/liquidator/
@@ -36,6 +37,7 @@ COPY packages/config/ ./packages/config/
 COPY packages/domain/ ./packages/domain/
 COPY packages/engine/ ./packages/engine/
 COPY packages/execution/ ./packages/execution/
+COPY packages/logger/ ./packages/logger/
 COPY packages/metrics/ ./packages/metrics/
 COPY packages/observability/ ./packages/observability/
 COPY services/liquidator/ ./services/liquidator/

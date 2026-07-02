@@ -1,17 +1,26 @@
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "@repo/engine";
+import { createLogger } from "@repo/logger";
 import { updateLastPollTime } from "@repo/observability";
 
 import { metrics } from "./metrics";
 
-export type ArbitrageurBotConfig = Omit<ArbitrageEngineConfig, "metrics" | "onPollComplete">;
+export type ArbitrageurBotConfig = Omit<
+  ArbitrageEngineConfig,
+  "metrics" | "logger" | "onPollComplete"
+>;
 
 /**
  * Composition wrapper: the shared `ArbitrageEngine` wired with this service's
- * Prometheus metrics and health poll-timestamp hook. The pipeline logic lives in
- * `@repo/engine`.
+ * Prometheus metrics, a tagged logger, and the health poll-timestamp hook. The
+ * pipeline logic lives in `@repo/engine`.
  */
 export class ArbitrageurBot extends ArbitrageEngine {
   constructor(config: ArbitrageurBotConfig) {
-    super({ ...config, metrics, onPollComplete: updateLastPollTime });
+    super({
+      ...config,
+      metrics,
+      logger: createLogger({ prefix: "[Arbitrageur] " }),
+      onPollComplete: updateLastPollTime,
+    });
   }
 }

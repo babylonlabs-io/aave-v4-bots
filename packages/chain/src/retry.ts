@@ -1,3 +1,7 @@
+import { createLogger } from "@repo/logger";
+
+const logger = createLogger();
+
 /**
  * Retry configuration
  */
@@ -59,7 +63,7 @@ export async function withRetry<T>(
 
       const delay = calculateDelay(attempt, config);
       const contextStr = context ? `[${context}] ` : "";
-      console.warn(
+      logger.warn(
         `${contextStr}Attempt ${attempt + 1}/${config.maxAttempts} failed: ${lastError.message}. Retrying in ${Math.round(delay)}ms...`
       );
 

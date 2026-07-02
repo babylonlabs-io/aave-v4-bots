@@ -16,6 +16,7 @@ import { TokenMetaCache, approveMax, readAllowance, readBalance } from "@repo/ca
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
 import { nextNonce } from "@repo/execution";
+import type { Logger } from "@repo/logger";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {
@@ -60,15 +61,15 @@ export interface LiquidationEngineParams {
 }
 
 export interface LiquidationEngineConfig extends LiquidationEngineParams {
-  logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   metrics: LiquidationMetrics;
+  logger: Logger;
 }
 
 export class LiquidationEngine {
-  private logTag: string;
   private metrics: LiquidationMetrics;
+  private logger: Logger;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private adapterAddress: Address;
@@ -83,8 +84,8 @@ export class LiquidationEngine {
   private tokenMetaCache = new TokenMetaCache();
 
   constructor(config: LiquidationEngineConfig) {
-    this.logTag = config.logTag;
     this.metrics = config.metrics;
+    this.logger = config.logger;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.adapterAddress = config.adapterAddress;
@@ -108,7 +109,7 @@ export class LiquidationEngine {
    * Reads Spoke address from the AaveAdapter, then enumerates reserves.
    */
   async discoverDebtTokens(): Promise<void> {
-    console.log(`${this.logTag}Discovering debt tokens from Spoke...`);
+    this.logger.info("Discovering debt tokens from Spoke...");
 
     const spokeAddress = await this.publicClient.readContract({
       address: this.adapterAddress,
@@ -116,7 +117,7 @@ export class LiquidationEngine {
       functionName: "BTC_VAULT_CORE_SPOKE",
     });
 
-    console.log(`${this.logTag}Spoke address: ${spokeAddress}`);
+    this.logger.info(`Spoke address: ${spokeAddress}`);
 
     const reserveCount = await this.publicClient.readContract({
       address: spokeAddress,
@@ -124,7 +125,7 @@ export class LiquidationEngine {
       functionName: "getReserveCount",
     });
 
-    console.log(`${this.logTag}Found ${reserveCount} reserve(s)`);
+    this.logger.info(`Found ${reserveCount} reserve(s)`);
 
     const discovered: Address[] = [];
 
@@ -141,12 +142,12 @@ export class LiquidationEngine {
 
         const { symbol } = await this.getTokenMeta(reserve.underlying);
 
-        console.log(`${this.logTag}  Reserve ${i}: ${symbol} (${reserve.underlying}) - borrowable`);
+        this.logger.info(`  Reserve ${i}: ${symbol} (${reserve.underlying}) - borrowable`);
       }
     }
 
     if (discovered.length === 0) {
-      console.warn(`${this.logTag}No borrowable reserves found on Spoke`);
+      this.logger.warn("No borrowable reserves found on Spoke");
     }
 
     this.debtTokenAddresses = discovered;
@@ -166,11 +167,11 @@ export class LiquidationEngine {
       this.metrics.recordPositionsLiquidatable(positions.length);
 
       if (positions.length === 0) {
-        console.log(`${this.logTag}No liquidatable positions found`);
+        this.logger.info("No liquidatable positions found");
         return;
       }
 
-      console.log(`${this.logTag}Found ${positions.length} liquidatable position(s)`);
+      this.logger.info(`Found ${positions.length} liquidatable position(s)`);
 
       // 2. Estimate liquidation inputs via Lens for each position
       const estimateResults = await Promise.allSettled(
@@ -205,12 +206,12 @@ export class LiquidationEngine {
           this.metrics.recordError("lens_estimate_error");
           const reason = result.reason;
           const errorMsg = reason instanceof Error ? reason.message : "Unknown error";
-          console.warn(`${this.logTag}Lens estimate failed for ${pos.proxyAddress}: ${errorMsg}`);
+          this.logger.warn(`Lens estimate failed for ${pos.proxyAddress}: ${errorMsg}`);
         }
       }
 
       if (candidates.length === 0) {
-        console.log(`${this.logTag}No positions passed Lens estimation`);
+        this.logger.info("No positions passed Lens estimation");
         return;
       }
 
@@ -259,20 +260,16 @@ export class LiquidationEngine {
           } else if (reason instanceof Error) {
             errorMsg = reason.message;
           }
-          console.warn(
-            `${this.logTag}Simulation failed for ${candidate.position.proxyAddress}: ${errorMsg}`
-          );
+          this.logger.warn(`Simulation failed for ${candidate.position.proxyAddress}: ${errorMsg}`);
         }
       }
 
       if (validCandidates.length === 0) {
-        console.log(`${this.logTag}No positions passed simulation`);
+        this.logger.info("No positions passed simulation");
         return;
       }
 
-      console.log(
-        `${this.logTag}${validCandidates.length}/${positions.length} positions passed simulation`
-      );
+      this.logger.info(`${validCandidates.length}/${positions.length} positions passed simulation`);
 
       // 5. Send all liquidation txs with explicit nonces.
       // Re-sync nonce after send failures to avoid gaps/stuck sequence.
@@ -305,20 +302,18 @@ export class LiquidationEngine {
                 args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
                 nonce,
               });
-          console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);
+          this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
           txHashes.push(hash);
           nonce += 1;
         } catch (error) {
           this.metrics.recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
-          console.error(
-            `${this.logTag}Failed to send liquidation for ${position.borrower}: ${errorMsg}`
-          );
+          this.logger.error(`Failed to send liquidation for ${position.borrower}: ${errorMsg}`);
           try {
             nonce = await nextNonce(this.publicClient, this.walletClient.account.address);
           } catch (nonceError) {
-            console.error(
-              `${this.logTag}Failed to re-sync nonce, skipping remaining candidates:`,
+            this.logger.error(
+              "Failed to re-sync nonce, skipping remaining candidates:",
               nonceError
             );
             break;
@@ -327,12 +322,12 @@ export class LiquidationEngine {
       }
 
       if (txHashes.length === 0) {
-        console.log(`${this.logTag}No liquidation txs were sent`);
+        this.logger.info("No liquidation txs were sent");
         return;
       }
 
       // 6. Batch-wait for all receipts
-      console.log(`${this.logTag}Waiting for ${txHashes.length} liquidation receipt(s)...`);
+      this.logger.info(`Waiting for ${txHashes.length} liquidation receipt(s)...`);
       const receipts = await Promise.allSettled(
         txHashes.map((hash) =>
           this.publicClient.waitForTransactionReceipt({ hash, timeout: this.txReceiptTimeoutMs })
@@ -345,23 +340,23 @@ export class LiquidationEngine {
           const receipt = result.value;
           if (receipt.status === "success") {
             this.metrics.recordLiquidationSuccess();
-            console.log(
-              `${this.logTag}Liquidation confirmed in block ${receipt.blockNumber}: ${txHashes[i]}`
+            this.logger.info(
+              `Liquidation confirmed in block ${receipt.blockNumber}: ${txHashes[i]}`
             );
           } else {
             this.metrics.recordLiquidationFailed();
             this.metrics.recordError("tx_reverted");
-            console.error(`${this.logTag}Liquidation reverted: ${txHashes[i]}`);
+            this.logger.error(`Liquidation reverted: ${txHashes[i]}`);
           }
         } else {
           this.metrics.recordLiquidationFailed();
           this.metrics.recordError("receipt_fetch_error");
-          console.error(`${this.logTag}Failed to get receipt for ${txHashes[i]}: ${result.reason}`);
+          this.logger.error(`Failed to get receipt for ${txHashes[i]}: ${result.reason}`);
         }
       }
     } catch (error) {
       this.metrics.recordError("poll_error");
-      console.error(`${this.logTag}Error in bot run:`, error);
+      this.logger.error("Error in bot run:", error);
     } finally {
       this.metrics.recordPollDuration(Date.now() - startTime);
     }
@@ -387,7 +382,7 @@ export class LiquidationEngine {
       return data.liquidatable;
     } catch (error) {
       this.metrics.recordError("ponder_fetch_error");
-      console.error(`${this.logTag}Failed to fetch liquidatable positions:`, error);
+      this.logger.error("Failed to fetch liquidatable positions:", error);
       return [];
     }
   }
@@ -415,7 +410,7 @@ export class LiquidationEngine {
       if (allowance < maxUint256 / 2n) {
         const { symbol } = await this.getTokenMeta(tokenAddress);
 
-        console.log(`${this.logTag}Approving ${symbol} for AaveAdapter...`);
+        this.logger.info(`Approving ${symbol} for AaveAdapter...`);
 
         const hash = await approveMax(this.walletClient, tokenAddress, this.adapterAddress);
 
@@ -426,7 +421,7 @@ export class LiquidationEngine {
         if (receipt.status !== "success") {
           throw new Error(`Approval transaction reverted for ${symbol}`);
         }
-        console.log(`${this.logTag}Approved ${symbol}`);
+        this.logger.info(`Approved ${symbol}`);
       }
     }
   }
@@ -437,7 +432,7 @@ export class LiquidationEngine {
   async logBalances(): Promise<void> {
     const liquidator = this.walletClient.account.address;
 
-    console.log(`${this.logTag}Token balances:`);
+    this.logger.info("Token balances:");
 
     // Debt tokens — symbol/decimals are immutable, fetched once and cached.
     // Kick metadata + balanceOf in parallel so cold-start matches the original
@@ -449,7 +444,7 @@ export class LiquidationEngine {
       ]);
 
       this.metrics.recordTokenBalance(symbol, tokenAddress, balance, decimals);
-      console.log(`   ${symbol}: ${formatUnits(balance, decimals)}`);
+      this.logger.info(`   ${symbol}: ${formatUnits(balance, decimals)}`);
     }
 
     // WBTC balance
@@ -459,6 +454,6 @@ export class LiquidationEngine {
     ]);
 
     this.metrics.recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, wbtcDecimals);
-    console.log(`   ${wbtcSymbol}: ${formatUnits(wbtcBalance, wbtcDecimals)}`);
+    this.logger.info(`   ${wbtcSymbol}: ${formatUnits(wbtcBalance, wbtcDecimals)}`);
   }
 }

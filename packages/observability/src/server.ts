@@ -1,7 +1,10 @@
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { PublicClient } from "viem";
 
+import { createLogger } from "@repo/logger";
 import { type HealthCheckDependencies, runHealthChecks } from "./health";
+
+const logger = createLogger();
 
 export interface MetricsServerConfig {
   port: number;
@@ -62,26 +65,26 @@ export function startMetricsServer(config: MetricsServerConfig): void {
         res.end(JSON.stringify({ error: "Not found" }));
       }
     } catch (error) {
-      console.error("[Metrics Server] Error handling request:", error);
+      logger.error("[Metrics Server] Error handling request:", error);
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Internal server error" }));
     }
   });
 
   server.listen(config.port, () => {
-    console.log(`[Metrics Server] Listening on port ${config.port}`);
-    console.log("[Metrics Server]   /health  - Health check endpoint");
-    console.log("[Metrics Server]   /metrics - Prometheus metrics");
-    console.log("[Metrics Server]   /ready   - Readiness probe");
+    logger.info(`[Metrics Server] Listening on port ${config.port}`);
+    logger.info("[Metrics Server]   /health  - Health check endpoint");
+    logger.info("[Metrics Server]   /metrics - Prometheus metrics");
+    logger.info("[Metrics Server]   /ready   - Readiness probe");
   });
 
   server.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EADDRINUSE") {
-      console.error(
+      logger.error(
         `[Metrics Server] Failed to bind to port ${config.port}: address already in use.`
       );
       process.exit(1);
     }
-    console.error("[Metrics Server] Server error:", error);
+    logger.error("[Metrics Server] Server error:", error);
   });
 }

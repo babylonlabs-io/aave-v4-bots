@@ -1,4 +1,7 @@
+import { createLogger } from "@repo/logger";
 import { z } from "zod";
+
+const logger = createLogger();
 
 // Shared, validated env-var field schemas + a fail-fast parser. Each service
 // composes these into its own env schema (per docs/production-architecture-proposal.md
@@ -67,13 +70,13 @@ export function parseEnv<T extends z.ZodTypeAny>(
   const result = schema.safeParse(cleaned);
 
   if (!result.success) {
-    console.error("Configuration validation failed:");
-    console.error("");
+    logger.error("Configuration validation failed:");
+    logger.error("");
     for (const error of result.error.errors) {
-      console.error(`  ✗ ${error.path.join(".")}: ${error.message}`);
+      logger.error(`  ✗ ${error.path.join(".")}: ${error.message}`);
     }
-    console.error("");
-    console.error("Please check your .env file and ensure all required variables are set.");
+    logger.error("");
+    logger.error("Please check your .env file and ensure all required variables are set.");
     process.exit(1);
   }
 

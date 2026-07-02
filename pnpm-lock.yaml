@@ -52,9 +52,15 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
 
   packages/chain:
     dependencies:
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../logger
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -65,9 +71,15 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
 
   packages/config:
     dependencies:
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../logger
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -108,6 +120,9 @@ importers:
       '@repo/execution':
         specifier: workspace:*
         version: link:../execution
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../logger
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -118,9 +133,15 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
 
   packages/execution:
     dependencies:
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../logger
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -131,6 +152,21 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
+
+  packages/logger:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.2
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
 
   packages/metrics:
     dependencies:
@@ -153,6 +189,9 @@ importers:
 
   packages/observability:
     dependencies:
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../logger
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -190,6 +229,9 @@ importers:
       '@repo/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../../packages/logger
       '@repo/metrics':
         specifier: workspace:*
         version: link:../../packages/metrics
@@ -242,6 +284,9 @@ importers:
       '@repo/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../../packages/logger
       '@repo/metrics':
         specifier: workspace:*
         version: link:../../packages/metrics
@@ -276,6 +321,9 @@ importers:
       '@repo/abis':
         specifier: workspace:*
         version: link:../../packages/abis
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../../packages/logger
       hono:
         specifier: ^4.5.0
         version: 4.10.8

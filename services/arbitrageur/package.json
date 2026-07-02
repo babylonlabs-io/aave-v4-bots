@@ -19,6 +19,7 @@
     "@repo/domain": "workspace:*",
     "@repo/engine": "workspace:*",
     "@repo/execution": "workspace:*",
+    "@repo/logger": "workspace:*",
     "@repo/metrics": "workspace:*",
     "@repo/observability": "workspace:*",
     "dotenv": "^16.5.0",

@@ -1,20 +1,21 @@
-import type { EscrowedVault } from "@repo/engine";
+import type { Logger } from "@repo/logger";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ArbitrageurBot, type ArbitrageurBotConfig } from "./bot";
+import { ArbitrageEngine, type ArbitrageEngineConfig } from "./engine";
+import type { EscrowedVault } from "./types";
 
-// Mock the metrics port to avoid side effects
-vi.mock("./metrics", () => ({
-  metrics: {
+// Stub metrics port — the engine reports through it; tests assert on it directly.
+// Recreated per test so call counts don't leak between cases.
+function createMetrics() {
+  return {
     recordVaultAcquired: vi.fn(),
     recordError: vi.fn(),
     recordPollDuration: vi.fn(),
     recordWbtcBalance: vi.fn(),
-  },
-}));
+  };
+}
+const silentLogger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-vi.mock("@repo/observability", () => ({
-  updateLastPollTime: vi.fn(),
-}));
+let metrics: ReturnType<typeof createMetrics>;
 
 const mockVault: EscrowedVault = {
   vaultId: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
@@ -64,12 +65,11 @@ function createMockClients() {
 
 function createBot(
   clients: ReturnType<typeof createMockClients>,
-  overrides: Partial<ArbitrageurBotConfig> = {}
-): ArbitrageurBot {
-  return new ArbitrageurBot({
-    logTag: "[TEST] ",
-    walletClient: clients.walletClient as unknown as ArbitrageurBotConfig["walletClient"],
-    publicClient: clients.publicClient as unknown as ArbitrageurBotConfig["publicClient"],
+  overrides: Partial<ArbitrageEngineConfig> = {}
+): ArbitrageEngine {
+  return new ArbitrageEngine({
+    walletClient: clients.walletClient as unknown as ArbitrageEngineConfig["walletClient"],
+    publicClient: clients.publicClient as unknown as ArbitrageEngineConfig["publicClient"],
     vaultSwapAddress: "0xvaultswap",
     wbtcAddress: "0xwbtc",
     ponderUrl: "http://localhost:42070",
@@ -77,13 +77,16 @@ function createBot(
     vaultProcessingDelayMs: 0,
     retryConfig: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, backoffMultiplier: 1 },
     txReceiptTimeoutMs: 1000,
+    metrics,
+    logger: silentLogger,
     ...overrides,
   });
 }
 
-describe("ArbitrageurBot", () => {
+describe("ArbitrageEngine", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    metrics = createMetrics();
   });
 
   afterEach(() => {

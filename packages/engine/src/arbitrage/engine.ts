@@ -21,6 +21,7 @@ import {
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
 import { waitForReceiptWithTimeout } from "@repo/execution";
+import type { Logger } from "@repo/logger";
 import type { EscrowedVault, PonderResponse } from "./types";
 
 /** Observability port — the engine reports through it; the service supplies metrics. */
@@ -47,18 +48,18 @@ export interface ArbitrageEngineParams {
 }
 
 export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
-  logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   retryConfig: RetryConfig;
   metrics: ArbitrageMetrics;
+  logger: Logger;
   /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
   onPollComplete?: () => void;
 }
 
 export class ArbitrageEngine {
-  private logTag: string;
   private metrics: ArbitrageMetrics;
+  private logger: Logger;
   private onPollComplete?: () => void;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
@@ -72,8 +73,8 @@ export class ArbitrageEngine {
   private wbtcMeta?: TokenMeta;
 
   constructor(config: ArbitrageEngineConfig) {
-    this.logTag = config.logTag;
     this.metrics = config.metrics;
+    this.logger = config.logger;
     this.onPollComplete = config.onPollComplete;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
@@ -97,11 +98,11 @@ export class ArbitrageEngine {
       const vaults = await this.fetchEscrowedVaults();
 
       if (vaults.length === 0) {
-        console.log(`${this.logTag}No escrowed vaults available`);
+        this.logger.info("No escrowed vaults available");
         return;
       }
 
-      console.log(`${this.logTag}Found ${vaults.length} escrowed vault(s)`);
+      this.logger.info(`Found ${vaults.length} escrowed vault(s)`);
 
       // 2. Process each vault one by one
       for (const vault of vaults) {
@@ -113,7 +114,7 @@ export class ArbitrageEngine {
         }
       }
     } catch (error) {
-      console.error(`${this.logTag}Error in bot run:`, error);
+      this.logger.error("Error in bot run:", error);
       this.metrics.recordError("poll_error");
     } finally {
       // Record poll duration and update last poll time
@@ -144,7 +145,7 @@ export class ArbitrageEngine {
       }
       return data.vaults;
     } catch (error) {
-      console.error(`${this.logTag}Failed to fetch escrowed vaults:`, error);
+      this.logger.error("Failed to fetch escrowed vaults:", error);
       this.metrics.recordError("ponder_fetch_error");
       return [];
     }
@@ -158,10 +159,10 @@ export class ArbitrageEngine {
     const currentDebtBigInt = BigInt(currentDebt);
     const btcAmountBigInt = BigInt(btcAmount);
 
-    console.log(`${this.logTag}Attempting to acquire vault:`);
-    console.log(`   Vault ID: ${vaultId}`);
-    console.log(`   BTC Amount: ${formatUnits(btcAmountBigInt, 8)} WBTC`);
-    console.log(`   Current Debt: ${formatUnits(currentDebtBigInt, 8)} WBTC`);
+    this.logger.info("Attempting to acquire vault:");
+    this.logger.info(`   Vault ID: ${vaultId}`);
+    this.logger.info(`   BTC Amount: ${formatUnits(btcAmountBigInt, 8)} WBTC`);
+    this.logger.info(`   Current Debt: ${formatUnits(currentDebtBigInt, 8)} WBTC`);
 
     try {
       const previewResults = await this.publicClient.readContract({
@@ -172,15 +173,15 @@ export class ArbitrageEngine {
       });
 
       if (previewResults.length === 0) {
-        console.warn(`${this.logTag}Vault ${vaultId} not found in escrow, skipping`);
+        this.logger.warn(`Vault ${vaultId} not found in escrow, skipping`);
         this.metrics.recordError("vault_skipped");
         return false;
       }
 
       const preview = previewResults[0];
       if (!preview.isProfitable) {
-        console.warn(`${this.logTag}Vault ${vaultId} is currently unprofitable, skipping`);
-        console.warn(
+        this.logger.warn(`Vault ${vaultId} is currently unprofitable, skipping`);
+        this.logger.warn(
           `   Debt: ${formatUnits(preview.amountDebt, 8)} WBTC | Interest: ${formatUnits(preview.amountInterest, 8)} WBTC | Fee: ${formatUnits(preview.amountFee, 8)} WBTC`
         );
         this.metrics.recordError("vault_skipped");
@@ -193,8 +194,8 @@ export class ArbitrageEngine {
       // Ensure WBTC approval covers the slippage-adjusted max spend amount
       await this.ensureApproval(maxWbtcIn);
 
-      console.log(
-        `${this.logTag}Max WBTC willing to pay: ${formatUnits(maxWbtcIn, 8)} (${this.maxSlippageBps / 100}% slippage)`
+      this.logger.info(
+        `Max WBTC willing to pay: ${formatUnits(maxWbtcIn, 8)} (${this.maxSlippageBps / 100}% slippage)`
       );
 
       // Estimate gas first to catch potential failures early
@@ -208,8 +209,8 @@ export class ArbitrageEngine {
         });
       } catch (gasError) {
         const errorMsg = gasError instanceof Error ? gasError.message : String(gasError);
-        console.error(`${this.logTag}Gas estimation failed for vault ${vaultId}, skipping`);
-        console.error(`   Error: ${errorMsg}`);
+        this.logger.error(`Gas estimation failed for vault ${vaultId}, skipping`);
+        this.logger.error(`   Error: ${errorMsg}`);
         this.metrics.recordError("gas_estimation_failed");
         return false;
       }
@@ -222,28 +223,28 @@ export class ArbitrageEngine {
         args: [vaultId as Hex, maxWbtcIn],
       });
 
-      console.log(`${this.logTag}Swap transaction sent: ${hash}`);
+      this.logger.info(`Swap transaction sent: ${hash}`);
 
       // Wait for confirmation with timeout
       const receipt = await waitForReceiptWithTimeout(
         this.publicClient,
         hash,
         this.txReceiptTimeoutMs,
-        `${this.logTag}swap`
+        "swap"
       );
 
       if (!receipt) {
-        console.warn(`${this.logTag}Transaction receipt timeout for vault ${vaultId}`);
+        this.logger.warn(`Transaction receipt timeout for vault ${vaultId}`);
         this.metrics.recordError("tx_timeout");
         return false;
       }
 
       if (receipt.status === "success") {
-        console.log(`${this.logTag}Vault acquired and redeemed in block ${receipt.blockNumber}`);
+        this.logger.info(`Vault acquired and redeemed in block ${receipt.blockNumber}`);
         this.metrics.recordVaultAcquired(currentDebtBigInt);
         return true;
       }
-      console.error(`${this.logTag}Swap transaction reverted`);
+      this.logger.error("Swap transaction reverted");
       this.metrics.recordError("swap_reverted");
       return false;
     } catch (error) {
@@ -256,8 +257,8 @@ export class ArbitrageEngine {
         this.metrics.recordError("acquire_error");
       }
 
-      console.error(`${this.logTag}Failed to acquire vault ${vaultId}`);
-      console.error(`   Error: ${errorMsg}`);
+      this.logger.error(`Failed to acquire vault ${vaultId}`);
+      this.logger.error(`   Error: ${errorMsg}`);
       return false;
     }
   }
@@ -277,7 +278,7 @@ export class ArbitrageEngine {
 
     // If allowance is insufficient, approve max
     if (allowance < requiredAmount) {
-      console.log(`${this.logTag}Approving WBTC for VaultSwap...`);
+      this.logger.info("Approving WBTC for VaultSwap...");
 
       const hash = await approveMax(this.walletClient, this.wbtcAddress, this.vaultSwapAddress);
 
@@ -285,7 +286,7 @@ export class ArbitrageEngine {
         this.publicClient,
         hash,
         this.txReceiptTimeoutMs,
-        `${this.logTag}approval`
+        "approval"
       );
       if (!receipt) {
         throw new Error("Approval transaction timed out");
@@ -293,7 +294,7 @@ export class ArbitrageEngine {
       if (receipt.status !== "success") {
         throw new Error("Approval transaction reverted");
       }
-      console.log(`${this.logTag}Approval confirmed`);
+      this.logger.info("Approval confirmed");
     }
   }
 
@@ -331,10 +332,10 @@ export class ArbitrageEngine {
       ]);
 
       const formattedBalance = formatUnits(balance, decimals);
-      console.log(`${this.logTag}Arbitrageur balance: ${formattedBalance} ${symbol}`);
+      this.logger.info(`Arbitrageur balance: ${formattedBalance} ${symbol}`);
       this.metrics.recordWbtcBalance(balance);
     } catch (error) {
-      console.error(`${this.logTag}Failed to fetch balance:`, error);
+      this.logger.error("Failed to fetch balance:", error);
     }
   }
 

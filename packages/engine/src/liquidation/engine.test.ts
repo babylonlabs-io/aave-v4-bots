@@ -1,11 +1,13 @@
-import type { LiquidatablePosition } from "@repo/engine";
+import type { Logger } from "@repo/logger";
 import { maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LiquidationBot, type LiquidationBotConfig } from "./bot";
+import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
+import type { LiquidatablePosition } from "./types";
 
-// Mock the metrics port to avoid side effects
-vi.mock("./metrics", () => ({
-  metrics: {
+// Stub metrics port — the engine reports through it; tests assert on it directly.
+// Recreated per test so call counts don't leak between cases.
+function createMetrics() {
+  return {
     recordPositionsChecked: vi.fn(),
     recordPositionsLiquidatable: vi.fn(),
     recordLiquidationSuccess: vi.fn(),
@@ -14,8 +16,11 @@ vi.mock("./metrics", () => ({
     recordError: vi.fn(),
     recordPollDuration: vi.fn(),
     recordTokenBalance: vi.fn(),
-  },
-}));
+  };
+}
+const silentLogger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+let metrics: ReturnType<typeof createMetrics>;
 
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
@@ -56,12 +61,11 @@ function createMockClients() {
 
 function createBot(
   clients: ReturnType<typeof createMockClients>,
-  overrides: Partial<LiquidationBotConfig> = {}
-): LiquidationBot {
-  return new LiquidationBot({
-    logTag: "[TEST] ",
-    walletClient: clients.walletClient as unknown as LiquidationBotConfig["walletClient"],
-    publicClient: clients.publicClient as unknown as LiquidationBotConfig["publicClient"],
+  overrides: Partial<LiquidationEngineConfig> = {}
+): LiquidationEngine {
+  return new LiquidationEngine({
+    walletClient: clients.walletClient as unknown as LiquidationEngineConfig["walletClient"],
+    publicClient: clients.publicClient as unknown as LiquidationEngineConfig["publicClient"],
     adapterAddress: "0xadapter" as `0x${string}`,
     lensAddress: "0xlens" as `0x${string}`,
     wbtcAddress: "0xwbtc" as `0x${string}`,
@@ -70,13 +74,16 @@ function createBot(
     llpAddress: "0xllpaddress000000000000000000000000000000" as `0x${string}`,
     ponderUrl: "http://localhost:42069",
     txReceiptTimeoutMs: 60000,
+    metrics,
+    logger: silentLogger,
     ...overrides,
   });
 }
 
-describe("LiquidationBot", () => {
+describe("LiquidationEngine", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    metrics = createMetrics();
   });
 
   afterEach(() => {
@@ -363,7 +370,6 @@ describe("LiquidationBot", () => {
 
     it("records failed liquidation when receipt shows reverted", async () => {
       const clients = createMockClients();
-      const { metrics } = await import("./metrics");
 
       clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
         status: "reverted",
@@ -390,7 +396,6 @@ describe("LiquidationBot", () => {
 
     it("records successful liquidation when receipt confirms", async () => {
       const clients = createMockClients();
-      const { metrics } = await import("./metrics");
 
       const bot = createBot(clients);
 
@@ -536,8 +541,6 @@ describe("LiquidationBot", () => {
       });
 
       await expect(bot.logBalances()).resolves.not.toThrow();
-
-      const { metrics } = await import("./metrics");
       expect(metrics.recordTokenBalance).toHaveBeenCalled();
     });
 

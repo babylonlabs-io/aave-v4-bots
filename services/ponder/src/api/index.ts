@@ -1,10 +1,13 @@
 import { db, publicClients } from "ponder:api";
 import schema from "ponder:schema";
 import { lensAbi, vaultSwapAbi } from "@repo/abis";
+import { createLogger } from "@repo/logger";
 import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
 import { BaseError, ContractFunctionRevertedError } from "viem";
 import type { Address, PublicClient } from "viem";
+
+const logger = createLogger();
 
 function replaceBigInts<T>(value: T) {
   return replaceBigIntsBase(value, (x) => String(x));
@@ -35,13 +38,13 @@ async function isMulticallSupported(publicClient: PublicClient): Promise<boolean
     const code = await publicClient.getCode({ address: MULTICALL3_ADDRESS });
     multicallSupported = !!code && code !== "0x";
     if (!multicallSupported) {
-      console.warn(
+      logger.warn(
         `Multicall3 not deployed at ${MULTICALL3_ADDRESS}; falling back to per-position readContract. Set MULTICALL3_ADDRESS or deploy Multicall3 to recover the batched-RPC savings.`
       );
     }
     return multicallSupported;
   } catch (error) {
-    console.warn("Multicall3 probe failed; falling back to per-position readContract:", error);
+    logger.warn("Multicall3 probe failed; falling back to per-position readContract:", error);
     multicallSupported = false;
     return false;
   }
@@ -160,7 +163,7 @@ app.get("/liquidatable-positions", async (c) => {
     if (probe.status === "failure") {
       // Healthy positions revert by design; anything else is a real RPC error.
       if (!isExpectedContractRevert(probe.error)) {
-        console.warn(
+        logger.warn(
           `estimateLiquidation error for ${p.proxyAddress} (not a contract revert):`,
           probe.error instanceof Error ? probe.error.message : probe.error
         );
@@ -170,7 +173,7 @@ app.get("/liquidatable-positions", async (c) => {
 
     const borrower = proxyToBorrower.get(p.proxyAddress.toLowerCase());
     if (!borrower) {
-      console.error(`No borrower mapping found for proxy ${p.proxyAddress}`);
+      logger.error(`No borrower mapping found for proxy ${p.proxyAddress}`);
       continue;
     }
 
@@ -281,7 +284,7 @@ app.get("/escrowed-vaults", async (c) => {
       })
     );
   } catch (error) {
-    console.error("Batch previewEscrowedVaults failed, falling back to per-vault fetch:", error);
+    logger.error("Batch previewEscrowedVaults failed, falling back to per-vault fetch:", error);
 
     const settled = await Promise.allSettled(
       vaultIds.map((vaultId) =>
@@ -304,7 +307,7 @@ app.get("/escrowed-vaults", async (c) => {
         enrichedVaults.push(toApiVault(result.value[0]));
       } else {
         failed += 1;
-        console.error(
+        logger.error(
           `Failed to fetch vault info for ${vaultId}:`,
           result.status === "rejected" ? result.reason : "empty response"
         );

@@ -7,7 +7,9 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@repo/abis": "workspace:*",
@@ -15,10 +17,12 @@
     "@repo/chain": "workspace:*",
     "@repo/domain": "workspace:*",
     "@repo/execution": "workspace:*",
+    "@repo/logger": "workspace:*",
     "viem": "^2.37.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.0"
   }
 }

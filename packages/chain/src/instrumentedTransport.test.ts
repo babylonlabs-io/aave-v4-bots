@@ -1,7 +1,7 @@
 import { createPublicClient } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { instrumentedHttp } from "@repo/chain";
+import { instrumentedHttp } from "./instrumentedTransport";
 
 describe("instrumentedHttp", () => {
   it("invokes the observer once per JSON-RPC method call", async () => {

@@ -8,13 +8,16 @@ import { type Chain, type PublicClient, createPublicClient, createWalletClient }
 import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
+import { createLogger } from "@repo/logger";
 import { setPublicClient, startMetricsServer } from "@repo/observability";
 import { ArbitrageurBot } from "./bot";
 import { type Config, loadConfig } from "./config";
 import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
 
+const logger = createLogger({ prefix: "[Arbitrageur] " });
+
 function printUsage(): void {
-  console.log(`
+  logger.info(`
 Aave V4 Arbitrageur Bot
 
 Usage:
@@ -33,7 +36,7 @@ interface BotWithClients {
 
 async function createBot(config: Config): Promise<BotWithClients> {
   const account = privateKeyToAccount(config.arbitrageurPrivateKey);
-  console.log(`Arbitrageur address: ${account.address}`);
+  logger.info(`Arbitrageur address: ${account.address}`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound
   // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.
@@ -44,7 +47,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
     transport,
   });
   const chainId = await tempClient.getChainId();
-  console.log(`Chain ID: ${chainId}`);
+  logger.info(`Chain ID: ${chainId}`);
 
   const chain: Chain = {
     id: chainId,
@@ -67,7 +70,6 @@ async function createBot(config: Config): Promise<BotWithClients> {
   });
 
   const bot = new ArbitrageurBot({
-    logTag: "[Arbitrageur] ",
     walletClient,
     publicClient,
     vaultSwapAddress: config.vaultSwapAddress,
@@ -88,8 +90,8 @@ async function createBot(config: Config): Promise<BotWithClients> {
 }
 
 async function runPollingMode(config: Config): Promise<void> {
-  console.log("Aave V4 Arbitrageur Bot Starting...");
-  console.log("===================================");
+  logger.info("Aave V4 Arbitrageur Bot Starting...");
+  logger.info("===================================");
 
   const { bot, publicClient } = await createBot(config);
 
@@ -103,27 +105,27 @@ async function runPollingMode(config: Config): Promise<void> {
     getMetricsContentType,
   });
 
-  console.log(`Max slippage: ${config.maxSlippageBps / 100}%`);
-  console.log(`Retry attempts: ${config.retryMaxAttempts}`);
-  console.log(`Transaction timeout: ${config.txReceiptTimeoutMs / 1000}s`);
+  logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);
+  logger.info(`Retry attempts: ${config.retryMaxAttempts}`);
+  logger.info(`Transaction timeout: ${config.txReceiptTimeoutMs / 1000}s`);
 
   // Log initial balance
   await bot.logBalance();
 
-  console.log(`Polling every ${config.pollingIntervalMs / 1000}s...`);
-  console.log(`Delay between vaults: ${config.vaultProcessingDelayMs / 1000}s`);
-  console.log("---");
+  logger.info(`Polling every ${config.pollingIntervalMs / 1000}s...`);
+  logger.info(`Delay between vaults: ${config.vaultProcessingDelayMs / 1000}s`);
+  logger.info("---");
 
   // Polling loop using recursive setTimeout to prevent overlapping cycles
   const poll = async () => {
-    console.log("---");
-    console.log(`[${new Date().toISOString()}] Checking for escrowed vaults...`);
+    logger.info("---");
+    logger.info(`[${new Date().toISOString()}] Checking for escrowed vaults...`);
 
     try {
       await bot.run();
       await bot.logBalance();
     } catch (error) {
-      console.error("[Arbitrageur] Unexpected error in poll cycle:", error);
+      logger.error("Unexpected error in poll cycle:", error);
     }
 
     // Schedule next poll after current one completes
@@ -154,7 +156,7 @@ async function main() {
       break;
 
     default:
-      console.error(`Unknown command: ${command}`);
+      logger.error(`Unknown command: ${command}`);
       printUsage();
       process.exit(1);
   }
@@ -162,16 +164,16 @@ async function main() {
 
 // Graceful shutdown
 process.on("SIGINT", () => {
-  console.log("\nShutting down...");
+  logger.info("\nShutting down...");
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-  console.log("\nShutting down...");
+  logger.info("\nShutting down...");
   process.exit(0);
 });
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  logger.error("Fatal error:", error);
   process.exit(1);
 });
