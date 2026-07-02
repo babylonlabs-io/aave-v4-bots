@@ -21,11 +21,17 @@ import {
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
 import { waitForReceiptWithTimeout } from "@repo/execution";
-import { updateLastPollTime } from "./health";
-import { recordError, recordPollDuration, recordVaultAcquired, recordWbtcBalance } from "./metrics";
 import type { EscrowedVault, PonderResponse } from "./types";
 
-export interface ArbitrageurBotConfig {
+/** Observability port — the engine reports through it; the service supplies metrics. */
+export interface ArbitrageMetrics {
+  recordError(type: string): void;
+  recordPollDuration(durationMs: number): void;
+  recordVaultAcquired(debt: bigint): void;
+  recordWbtcBalance(balance: bigint): void;
+}
+
+export interface ArbitrageEngineConfig {
   logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
@@ -36,10 +42,15 @@ export interface ArbitrageurBotConfig {
   vaultProcessingDelayMs: number;
   retryConfig: RetryConfig;
   txReceiptTimeoutMs: number;
+  metrics: ArbitrageMetrics;
+  /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
+  onPollComplete?: () => void;
 }
 
-export class ArbitrageurBot {
+export class ArbitrageEngine {
   private logTag: string;
+  private metrics: ArbitrageMetrics;
+  private onPollComplete?: () => void;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private vaultSwapAddress: Address;
@@ -51,8 +62,10 @@ export class ArbitrageurBot {
   private txReceiptTimeoutMs: number;
   private wbtcMeta?: TokenMeta;
 
-  constructor(config: ArbitrageurBotConfig) {
+  constructor(config: ArbitrageEngineConfig) {
     this.logTag = config.logTag;
+    this.metrics = config.metrics;
+    this.onPollComplete = config.onPollComplete;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.vaultSwapAddress = config.vaultSwapAddress;
@@ -92,12 +105,12 @@ export class ArbitrageurBot {
       }
     } catch (error) {
       console.error(`${this.logTag}Error in bot run:`, error);
-      recordError("poll_error");
+      this.metrics.recordError("poll_error");
     } finally {
       // Record poll duration and update last poll time
       const duration = Date.now() - startTime;
-      recordPollDuration(duration);
-      updateLastPollTime();
+      this.metrics.recordPollDuration(duration);
+      this.onPollComplete?.();
     }
   }
 
@@ -123,7 +136,7 @@ export class ArbitrageurBot {
       return data.vaults;
     } catch (error) {
       console.error(`${this.logTag}Failed to fetch escrowed vaults:`, error);
-      recordError("ponder_fetch_error");
+      this.metrics.recordError("ponder_fetch_error");
       return [];
     }
   }
@@ -151,7 +164,7 @@ export class ArbitrageurBot {
 
       if (previewResults.length === 0) {
         console.warn(`${this.logTag}Vault ${vaultId} not found in escrow, skipping`);
-        recordError("vault_skipped");
+        this.metrics.recordError("vault_skipped");
         return false;
       }
 
@@ -161,7 +174,7 @@ export class ArbitrageurBot {
         console.warn(
           `   Debt: ${formatUnits(preview.amountDebt, 8)} WBTC | Interest: ${formatUnits(preview.amountInterest, 8)} WBTC | Fee: ${formatUnits(preview.amountFee, 8)} WBTC`
         );
-        recordError("vault_skipped");
+        this.metrics.recordError("vault_skipped");
         return false;
       }
 
@@ -188,7 +201,7 @@ export class ArbitrageurBot {
         const errorMsg = gasError instanceof Error ? gasError.message : String(gasError);
         console.error(`${this.logTag}Gas estimation failed for vault ${vaultId}, skipping`);
         console.error(`   Error: ${errorMsg}`);
-        recordError("gas_estimation_failed");
+        this.metrics.recordError("gas_estimation_failed");
         return false;
       }
 
@@ -212,26 +225,26 @@ export class ArbitrageurBot {
 
       if (!receipt) {
         console.warn(`${this.logTag}Transaction receipt timeout for vault ${vaultId}`);
-        recordError("tx_timeout");
+        this.metrics.recordError("tx_timeout");
         return false;
       }
 
       if (receipt.status === "success") {
         console.log(`${this.logTag}Vault acquired and redeemed in block ${receipt.blockNumber}`);
-        recordVaultAcquired(currentDebtBigInt);
+        this.metrics.recordVaultAcquired(currentDebtBigInt);
         return true;
       }
       console.error(`${this.logTag}Swap transaction reverted`);
-      recordError("swap_reverted");
+      this.metrics.recordError("swap_reverted");
       return false;
     } catch (error) {
       let errorMsg = "Unknown error";
       if (error instanceof ContractFunctionRevertedError) {
         errorMsg = `${error.data?.errorName || "Contract reverted"}`;
-        recordError("contract_revert");
+        this.metrics.recordError("contract_revert");
       } else if (error instanceof Error) {
         errorMsg = error.message;
-        recordError("acquire_error");
+        this.metrics.recordError("acquire_error");
       }
 
       console.error(`${this.logTag}Failed to acquire vault ${vaultId}`);
@@ -310,7 +323,7 @@ export class ArbitrageurBot {
 
       const formattedBalance = formatUnits(balance, decimals);
       console.log(`${this.logTag}Arbitrageur balance: ${formattedBalance} ${symbol}`);
-      recordWbtcBalance(balance);
+      this.metrics.recordWbtcBalance(balance);
     } catch (error) {
       console.error(`${this.logTag}Failed to fetch balance:`, error);
     }

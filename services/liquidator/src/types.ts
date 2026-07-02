@@ -1,18 +1,7 @@
 import type { Address, Hex } from "viem";
 
-export interface LiquidatablePosition {
-  proxyAddress: Address;
-  borrower: Address;
-  amounts: string[];
-  vaults: string[];
-  suppliedShares: string;
-}
-
-export interface PonderResponse {
-  liquidatable: LiquidatablePosition[];
-  total: number;
-  checked: number;
-}
+// Engine data models live in @repo/engine; re-exported here for local imports/tests.
+export type { LiquidatablePosition } from "@repo/engine";
 
 export interface Config {
   // Liquidator

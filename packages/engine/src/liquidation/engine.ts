@@ -16,16 +16,6 @@ import { TokenMetaCache, approveMax, readAllowance, readBalance } from "@repo/ca
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
 import { nextNonce } from "@repo/execution";
-import {
-  recordError,
-  recordLiquidationFailed,
-  recordLiquidationSuccess,
-  recordPollDuration,
-  recordPositionsChecked,
-  recordPositionsLiquidatable,
-  recordSimulationFailed,
-  recordTokenBalance,
-} from "./metrics";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {
@@ -35,7 +25,19 @@ const DEFAULT_FETCH_RETRY: RetryConfig = {
   backoffMultiplier: 2,
 };
 
-export interface LiquidationBotConfig {
+/** Observability port — the engine reports through it; the service supplies metrics. */
+export interface LiquidationMetrics {
+  recordError(type: string): void;
+  recordLiquidationSuccess(): void;
+  recordLiquidationFailed(): void;
+  recordSimulationFailed(): void;
+  recordPollDuration(durationMs: number): void;
+  recordPositionsChecked(count: number): void;
+  recordPositionsLiquidatable(count: number): void;
+  recordTokenBalance(symbol: string, address: Address, balance: bigint, decimals: number): void;
+}
+
+export interface LiquidationEngineConfig {
   logTag: string;
   walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
@@ -48,10 +50,12 @@ export interface LiquidationBotConfig {
   llpAddress: Address;
   ponderUrl: string;
   txReceiptTimeoutMs: number;
+  metrics: LiquidationMetrics;
 }
 
-export class LiquidationBot {
+export class LiquidationEngine {
   private logTag: string;
+  private metrics: LiquidationMetrics;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private adapterAddress: Address;
@@ -65,8 +69,9 @@ export class LiquidationBot {
   private txReceiptTimeoutMs: number;
   private tokenMetaCache = new TokenMetaCache();
 
-  constructor(config: LiquidationBotConfig) {
+  constructor(config: LiquidationEngineConfig) {
     this.logTag = config.logTag;
+    this.metrics = config.metrics;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.adapterAddress = config.adapterAddress;
@@ -145,7 +150,7 @@ export class LiquidationBot {
       // 1. Fetch liquidatable positions from Ponder
       const positions = await this.fetchLiquidatablePositions();
 
-      recordPositionsLiquidatable(positions.length);
+      this.metrics.recordPositionsLiquidatable(positions.length);
 
       if (positions.length === 0) {
         console.log(`${this.logTag}No liquidatable positions found`);
@@ -184,7 +189,7 @@ export class LiquidationBot {
           // WBTC approved + balance — no need to thread the amount through.
           candidates.push({ position: pos, amounts: bufferAmounts(amounts) });
         } else {
-          recordError("lens_estimate_error");
+          this.metrics.recordError("lens_estimate_error");
           const reason = result.reason;
           const errorMsg = reason instanceof Error ? reason.message : "Unknown error";
           console.warn(`${this.logTag}Lens estimate failed for ${pos.proxyAddress}: ${errorMsg}`);
@@ -233,7 +238,7 @@ export class LiquidationBot {
         if (result.status === "fulfilled") {
           validCandidates.push(candidate);
         } else {
-          recordSimulationFailed();
+          this.metrics.recordSimulationFailed();
           const reason = result.reason;
           let errorMsg = "Unknown error";
           if (reason instanceof ContractFunctionRevertedError) {
@@ -291,7 +296,7 @@ export class LiquidationBot {
           txHashes.push(hash);
           nonce += 1;
         } catch (error) {
-          recordError("tx_send_error");
+          this.metrics.recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           console.error(
             `${this.logTag}Failed to send liquidation for ${position.borrower}: ${errorMsg}`
@@ -326,26 +331,26 @@ export class LiquidationBot {
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
-            recordLiquidationSuccess();
+            this.metrics.recordLiquidationSuccess();
             console.log(
               `${this.logTag}Liquidation confirmed in block ${receipt.blockNumber}: ${txHashes[i]}`
             );
           } else {
-            recordLiquidationFailed();
-            recordError("tx_reverted");
+            this.metrics.recordLiquidationFailed();
+            this.metrics.recordError("tx_reverted");
             console.error(`${this.logTag}Liquidation reverted: ${txHashes[i]}`);
           }
         } else {
-          recordLiquidationFailed();
-          recordError("receipt_fetch_error");
+          this.metrics.recordLiquidationFailed();
+          this.metrics.recordError("receipt_fetch_error");
           console.error(`${this.logTag}Failed to get receipt for ${txHashes[i]}: ${result.reason}`);
         }
       }
     } catch (error) {
-      recordError("poll_error");
+      this.metrics.recordError("poll_error");
       console.error(`${this.logTag}Error in bot run:`, error);
     } finally {
-      recordPollDuration(Date.now() - startTime);
+      this.metrics.recordPollDuration(Date.now() - startTime);
     }
   }
 
@@ -365,10 +370,10 @@ export class LiquidationBot {
       }
 
       const data: PonderResponse = await response.json();
-      recordPositionsChecked(data.checked);
+      this.metrics.recordPositionsChecked(data.checked);
       return data.liquidatable;
     } catch (error) {
-      recordError("ponder_fetch_error");
+      this.metrics.recordError("ponder_fetch_error");
       console.error(`${this.logTag}Failed to fetch liquidatable positions:`, error);
       return [];
     }
@@ -430,7 +435,7 @@ export class LiquidationBot {
         readBalance(this.publicClient, tokenAddress, liquidator),
       ]);
 
-      recordTokenBalance(symbol, tokenAddress, balance, decimals);
+      this.metrics.recordTokenBalance(symbol, tokenAddress, balance, decimals);
       console.log(`   ${symbol}: ${formatUnits(balance, decimals)}`);
     }
 
@@ -440,7 +445,7 @@ export class LiquidationBot {
       readBalance(this.publicClient, this.wbtcAddress, liquidator),
     ]);
 
-    recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, wbtcDecimals);
+    this.metrics.recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, wbtcDecimals);
     console.log(`   ${wbtcSymbol}: ${formatUnits(wbtcBalance, wbtcDecimals)}`);
   }
 }

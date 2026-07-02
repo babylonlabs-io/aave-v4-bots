@@ -1,8 +1,6 @@
 import type { Hex } from "viem";
 
-/**
- * Escrowed vault returned from Ponder API
- */
+/** Escrowed vault returned from the Ponder API. */
 export interface EscrowedVault {
   vaultId: Hex;
   btcAmount: string;
@@ -10,9 +8,7 @@ export interface EscrowedVault {
   createdAt: string;
 }
 
-/**
- * Response from Ponder /escrowed-vaults endpoint
- */
+/** Response from the Ponder /escrowed-vaults endpoint. */
 export interface PonderResponse {
   vaults: EscrowedVault[];
   total: number;

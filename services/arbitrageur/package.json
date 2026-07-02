@@ -1,5 +1,5 @@
 {
-  "name": "@services/liquidator-client",
+  "name": "@services/arbitrageur-client",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -17,6 +17,7 @@
     "@repo/chain": "workspace:*",
     "@repo/config": "workspace:*",
     "@repo/domain": "workspace:*",
+    "@repo/engine": "workspace:*",
     "@repo/execution": "workspace:*",
     "@repo/observability": "workspace:*",
     "dotenv": "^16.5.0",
