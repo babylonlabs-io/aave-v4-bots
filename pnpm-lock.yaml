@@ -80,9 +80,6 @@ importers:
       '@repo/logger':
         specifier: workspace:*
         version: link:../logger
-      viem:
-        specifier: ^2.37.0
-        version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
       zod:
         specifier: ^3.24.0
         version: 3.25.76

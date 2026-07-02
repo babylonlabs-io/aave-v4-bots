@@ -19,20 +19,8 @@ if (!PONDER_RPC_URL) {
   throw new Error("PONDER_RPC_URL environment variable is required");
 }
 
-// A half-configured liquidation mode is almost certainly a typo, not an intent to
-// disable it — fail loudly rather than silently indexing nothing for liquidation.
-if (!!SPOKE_ADDRESS !== !!ADAPTER_ADDRESS) {
-  throw new Error(
-    "Liquidation indexing requires BOTH SPOKE_ADDRESS and ADAPTER_ADDRESS (set both or neither)."
-  );
-}
-
-if (!INDEX_LIQUIDATION && !INDEX_ARBITRAGE) {
-  throw new Error(
-    "Enable at least one index mode: set ADAPTER_ADDRESS + SPOKE_ADDRESS (liquidation) " +
-      "and/or VAULT_SWAP_ADDRESS (arbitrage)."
-  );
-}
+// The mode gating + its fail-fast guards (half-configured / no-mode enabled) live
+// in resolveIndexingModes, which runs when `./src/flags` is imported above.
 
 // One network for every contract; handlers reference contract names, not the
 // network key, so unifying the previous `chain` / `local` keys is safe.
