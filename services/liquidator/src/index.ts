@@ -9,7 +9,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
 import { createLogger } from "@repo/logger";
-import { setPublicClient, startMetricsServer, updateLastPollTime } from "@repo/observability";
+import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { LiquidationBot } from "./bot";
 import { type Config, loadConfig } from "./config";
 import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
@@ -76,9 +76,9 @@ async function main() {
     logger.info("Aave V4 Liquidation Bot Starting...");
     const { bot, publicClient } = await createBot(config);
 
-    // Start metrics server
+    // Start the observability server (metrics + health/readiness probes)
     setPublicClient(publicClient);
-    startMetricsServer({
+    startObservabilityServer({
       port: config.metricsPort,
       ponderUrl: config.ponderUrl,
       ponderHealthEndpoint: "/positions",

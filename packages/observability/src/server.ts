@@ -6,7 +6,7 @@ import { type HealthCheckDependencies, runHealthChecks } from "./health";
 
 const logger = createLogger();
 
-export interface MetricsServerConfig {
+export interface ObservabilityServerConfig {
   port: number;
   ponderUrl: string;
   ponderHealthEndpoint: string;
@@ -30,7 +30,7 @@ export function setPublicClient(client: PublicClient): void {
 /**
  * Start the metrics and health check HTTP server
  */
-export function startMetricsServer(config: MetricsServerConfig): void {
+export function startObservabilityServer(config: ObservabilityServerConfig): void {
   healthCheckDeps.ponderUrl = config.ponderUrl;
   healthCheckDeps.ponderHealthEndpoint = config.ponderHealthEndpoint;
 
@@ -65,26 +65,26 @@ export function startMetricsServer(config: MetricsServerConfig): void {
         res.end(JSON.stringify({ error: "Not found" }));
       }
     } catch (error) {
-      logger.error("[Metrics Server] Error handling request:", error);
+      logger.error("[Observability] Error handling request:", error);
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Internal server error" }));
     }
   });
 
   server.listen(config.port, () => {
-    logger.info(`[Metrics Server] Listening on port ${config.port}`);
-    logger.info("[Metrics Server]   /health  - Health check endpoint");
-    logger.info("[Metrics Server]   /metrics - Prometheus metrics");
-    logger.info("[Metrics Server]   /ready   - Readiness probe");
+    logger.info(`[Observability] Listening on port ${config.port}`);
+    logger.info("[Observability]   /health  - Health check endpoint");
+    logger.info("[Observability]   /metrics - Prometheus metrics");
+    logger.info("[Observability]   /ready   - Readiness probe");
   });
 
   server.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EADDRINUSE") {
       logger.error(
-        `[Metrics Server] Failed to bind to port ${config.port}: address already in use.`
+        `[Observability] Failed to bind to port ${config.port}: address already in use.`
       );
       process.exit(1);
     }
-    logger.error("[Metrics Server] Server error:", error);
+    logger.error("[Observability] Server error:", error);
   });
 }

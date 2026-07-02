@@ -8,4 +8,8 @@ export {
 } from "./health";
 
 // Metrics + health HTTP server
-export { type MetricsServerConfig, setPublicClient, startMetricsServer } from "./server";
+export {
+  type ObservabilityServerConfig,
+  setPublicClient,
+  startObservabilityServer,
+} from "./server";

@@ -9,7 +9,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
 import { createLogger } from "@repo/logger";
-import { setPublicClient, startMetricsServer } from "@repo/observability";
+import { setPublicClient, startObservabilityServer } from "@repo/observability";
 import { ArbitrageurBot } from "./bot";
 import { type Config, loadConfig } from "./config";
 import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
@@ -95,9 +95,9 @@ async function runPollingMode(config: Config): Promise<void> {
 
   const { bot, publicClient } = await createBot(config);
 
-  // Start metrics server
+  // Start the observability server (metrics + health/readiness probes)
   setPublicClient(publicClient);
-  startMetricsServer({
+  startObservabilityServer({
     port: config.metricsPort,
     ponderUrl: config.ponderUrl,
     ponderHealthEndpoint: "/escrowed-vaults",
