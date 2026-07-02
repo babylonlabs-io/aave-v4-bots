@@ -175,19 +175,17 @@ pnpm test:coverage          # With coverage
 │           └── index.ts        # Package exports
 │
 ├── services/
-│   ├── liquidator/
-│   │   └── client/             # @services/liquidator-client
-│   │       └── src/
-│   │           ├── bot.ts      # LiquidationBot class
-│   │           ├── config.ts   # Configuration
-│   │           └── metrics.ts  # Prometheus metrics
+│   ├── liquidator/             # @services/liquidator
+│   │   └── src/
+│   │       ├── bot.ts          # LiquidationBot wrapper (wires engine + metrics)
+│   │       ├── config.ts       # Configuration
+│   │       └── metrics.ts      # Prometheus metrics
 │   │
-│   ├── arbitrageur/
-│   │   └── client/             # @services/arbitrageur-client
-│   │       └── src/
-│   │           ├── bot.ts      # ArbitrageurBot class
-│   │           ├── config.ts   # Configuration (with Zod)
-│   │           └── metrics.ts  # Prometheus metrics
+│   ├── arbitrageur/            # @services/arbitrageur
+│   │   └── src/
+│   │       ├── bot.ts          # ArbitrageurBot wrapper (wires engine + metrics)
+│   │       ├── config.ts       # Configuration (with Zod)
+│   │       └── metrics.ts      # Prometheus metrics
 │   │
 │   └── ponder/                 # @services/ponder — unified indexer (both modes)
 │       ├── ponder.config.ts    #   conditional contracts by mode

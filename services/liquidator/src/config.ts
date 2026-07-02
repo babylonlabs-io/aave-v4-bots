@@ -7,9 +7,26 @@ import {
   privateKeySchema,
   urlSchema,
 } from "@repo/config";
+import type { LiquidationEngineParams } from "@repo/engine";
 import type { Address, Hex } from "viem";
 import { z } from "zod";
-import type { Config } from "./types";
+
+// The engine's domain params (addresses, ponder URL, redemption flags, tx
+// timeout) are declared in `@repo/engine` and inherited here; this interface
+// only adds the composition-root fields the service needs to wire the engine up.
+export interface Config extends LiquidationEngineParams {
+  // Signer for the bot's wallet client
+  liquidatorPrivateKey: Hex;
+
+  // RPC endpoint the bot's viem clients connect to
+  rpcUrl: string;
+
+  // Poll-loop interval
+  pollingIntervalMs: number;
+
+  // Metrics/health HTTP server port
+  metricsPort: number;
+}
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";

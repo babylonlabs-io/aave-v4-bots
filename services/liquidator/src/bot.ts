@@ -1,6 +1,6 @@
 import { LiquidationEngine, type LiquidationEngineConfig } from "@repo/engine";
 
-import * as metrics from "./metrics";
+import { metrics } from "./metrics";
 
 export type LiquidationBotConfig = Omit<LiquidationEngineConfig, "metrics">;
 

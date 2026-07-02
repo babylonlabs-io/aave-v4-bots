@@ -1,16 +1,18 @@
+import type { EscrowedVault } from "@repo/engine";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArbitrageurBot, type ArbitrageurBotConfig } from "./bot";
-import type { EscrowedVault } from "./types";
 
-// Mock metrics to avoid side effects
+// Mock the metrics port to avoid side effects
 vi.mock("./metrics", () => ({
-  recordVaultAcquired: vi.fn(),
-  recordError: vi.fn(),
-  recordPollDuration: vi.fn(),
-  recordWbtcBalance: vi.fn(),
+  metrics: {
+    recordVaultAcquired: vi.fn(),
+    recordError: vi.fn(),
+    recordPollDuration: vi.fn(),
+    recordWbtcBalance: vi.fn(),
+  },
 }));
 
-vi.mock("./health", () => ({
+vi.mock("@repo/observability", () => ({
   updateLastPollTime: vi.fn(),
 }));
 

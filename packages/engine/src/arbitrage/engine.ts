@@ -31,17 +31,26 @@ export interface ArbitrageMetrics {
   recordWbtcBalance(balance: bigint): void;
 }
 
-export interface ArbitrageEngineConfig {
-  logTag: string;
-  walletClient: WalletClient<Transport, Chain, Account>;
-  publicClient: PublicClient;
+/**
+ * Domain parameters the arbitrage pipeline operates on — the env-derivable
+ * subset shared by the engine config and the service's own config (no runtime
+ * deps like clients or metrics). Services extend this so the fields are declared
+ * once, here, next to the engine that consumes them.
+ */
+export interface ArbitrageEngineParams {
   vaultSwapAddress: Address;
   wbtcAddress: Address;
   ponderUrl: string;
   maxSlippageBps: number;
   vaultProcessingDelayMs: number;
-  retryConfig: RetryConfig;
   txReceiptTimeoutMs: number;
+}
+
+export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
+  logTag: string;
+  walletClient: WalletClient<Transport, Chain, Account>;
+  publicClient: PublicClient;
+  retryConfig: RetryConfig;
   metrics: ArbitrageMetrics;
   /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
   onPollComplete?: () => void;

@@ -6,6 +6,7 @@ import {
   privateKeySchema,
   urlSchema,
 } from "@repo/config";
+import type { ArbitrageEngineParams } from "@repo/engine";
 import type { Address, Hex } from "viem";
 import { z } from "zod";
 
@@ -38,35 +39,26 @@ const envSchema = z.object({
 /**
  * Parsed and validated configuration
  */
-export interface Config {
-  // Arbitrageur
+// The engine's domain params (addresses, ponder URL, slippage, delays, tx
+// timeout) are declared in `@repo/engine` and inherited here; this interface
+// only adds the composition-root fields the service needs to wire the engine up.
+export interface Config extends ArbitrageEngineParams {
+  // Signer for the bot's wallet client
   arbitrageurPrivateKey: Hex;
 
-  // URLs
-  ponderUrl: string;
+  // RPC endpoint the bot's viem clients connect to
   rpcUrl: string;
 
-  // Contract addresses
-  vaultSwapAddress: Address;
-  wbtcAddress: Address;
-
-  // Timing
+  // Poll-loop interval
   pollingIntervalMs: number;
-  vaultProcessingDelayMs: number;
 
-  // Trading
-  maxSlippageBps: number;
-
-  // Monitoring
+  // Metrics/health HTTP server port
   metricsPort: number;
 
-  // Retry configuration
+  // Retry configuration — parsed into a `RetryConfig` object at wiring time
   retryMaxAttempts: number;
   retryInitialDelayMs: number;
   retryMaxDelayMs: number;
-
-  // Transaction timeout
-  txReceiptTimeoutMs: number;
 }
 
 /**

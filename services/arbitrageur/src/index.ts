@@ -8,10 +8,10 @@ import { type Chain, type PublicClient, createPublicClient, createWalletClient }
 import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
+import { setPublicClient, startMetricsServer } from "@repo/observability";
 import { ArbitrageurBot } from "./bot";
 import { type Config, loadConfig } from "./config";
-import { recordRpcCall } from "./metrics";
-import { setPublicClient, startMetricsServer } from "./server";
+import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
 
 function printUsage(): void {
   console.log(`
@@ -98,6 +98,9 @@ async function runPollingMode(config: Config): Promise<void> {
   startMetricsServer({
     port: config.metricsPort,
     ponderUrl: config.ponderUrl,
+    ponderHealthEndpoint: "/escrowed-vaults",
+    getMetrics,
+    getMetricsContentType,
   });
 
   console.log(`Max slippage: ${config.maxSlippageBps / 100}%`);

@@ -1,5 +1,5 @@
 {
-  "name": "@repo/observability",
+  "name": "@repo/metrics",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "viem": "^2.37.0"
+    "@repo/engine": "workspace:*",
+    "prom-client": "^15.1.3"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",

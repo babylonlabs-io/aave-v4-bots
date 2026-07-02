@@ -5,6 +5,7 @@
 export {
   LiquidationEngine,
   type LiquidationEngineConfig,
+  type LiquidationEngineParams,
   type LiquidationMetrics,
 } from "./liquidation/engine";
 export type { LiquidatablePosition } from "./liquidation/types";
@@ -12,6 +13,7 @@ export type { LiquidatablePosition } from "./liquidation/types";
 export {
   ArbitrageEngine,
   type ArbitrageEngineConfig,
+  type ArbitrageEngineParams,
   type ArbitrageMetrics,
 } from "./arbitrage/engine";
 export type { EscrowedVault } from "./arbitrage/types";

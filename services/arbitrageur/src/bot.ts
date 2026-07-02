@@ -1,7 +1,7 @@
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "@repo/engine";
+import { updateLastPollTime } from "@repo/observability";
 
-import { updateLastPollTime } from "./health";
-import * as metrics from "./metrics";
+import { metrics } from "./metrics";
 
 export type ArbitrageurBotConfig = Omit<ArbitrageEngineConfig, "metrics" | "onPollComplete">;
 

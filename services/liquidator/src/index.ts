@@ -8,12 +8,10 @@ import { type Chain, type Hex, createPublicClient, createWalletClient } from "vi
 import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
+import { setPublicClient, startMetricsServer, updateLastPollTime } from "@repo/observability";
 import { LiquidationBot } from "./bot";
-import { loadConfig } from "./config";
-import { updateLastPollTime } from "./health";
-import { recordRpcCall } from "./metrics";
-import { setPublicClient, startMetricsServer } from "./server";
-import type { Config } from "./types";
+import { type Config, loadConfig } from "./config";
+import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
 
 async function createBot(config: Config) {
   const account = privateKeyToAccount(config.liquidatorPrivateKey);
@@ -81,6 +79,9 @@ async function main() {
     startMetricsServer({
       port: config.metricsPort,
       ponderUrl: config.ponderUrl,
+      ponderHealthEndpoint: "/positions",
+      getMetrics,
+      getMetricsContentType,
     });
 
     // Discover or use configured debt tokens

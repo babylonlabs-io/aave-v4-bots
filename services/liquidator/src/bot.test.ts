@@ -1,18 +1,20 @@
+import type { LiquidatablePosition } from "@repo/engine";
 import { maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiquidationBot, type LiquidationBotConfig } from "./bot";
-import type { LiquidatablePosition } from "./types";
 
-// Mock metrics to avoid side effects
+// Mock the metrics port to avoid side effects
 vi.mock("./metrics", () => ({
-  recordPositionsChecked: vi.fn(),
-  recordPositionsLiquidatable: vi.fn(),
-  recordLiquidationSuccess: vi.fn(),
-  recordLiquidationFailed: vi.fn(),
-  recordSimulationFailed: vi.fn(),
-  recordError: vi.fn(),
-  recordPollDuration: vi.fn(),
-  recordTokenBalance: vi.fn(),
+  metrics: {
+    recordPositionsChecked: vi.fn(),
+    recordPositionsLiquidatable: vi.fn(),
+    recordLiquidationSuccess: vi.fn(),
+    recordLiquidationFailed: vi.fn(),
+    recordSimulationFailed: vi.fn(),
+    recordError: vi.fn(),
+    recordPollDuration: vi.fn(),
+    recordTokenBalance: vi.fn(),
+  },
 }));
 
 const ZERO_BYTES32 =
@@ -361,7 +363,7 @@ describe("LiquidationBot", () => {
 
     it("records failed liquidation when receipt shows reverted", async () => {
       const clients = createMockClients();
-      const { recordLiquidationFailed } = await import("./metrics");
+      const { metrics } = await import("./metrics");
 
       clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
         status: "reverted",
@@ -383,12 +385,12 @@ describe("LiquidationBot", () => {
 
       await bot.run();
 
-      expect(recordLiquidationFailed).toHaveBeenCalled();
+      expect(metrics.recordLiquidationFailed).toHaveBeenCalled();
     });
 
     it("records successful liquidation when receipt confirms", async () => {
       const clients = createMockClients();
-      const { recordLiquidationSuccess } = await import("./metrics");
+      const { metrics } = await import("./metrics");
 
       const bot = createBot(clients);
 
@@ -404,7 +406,7 @@ describe("LiquidationBot", () => {
 
       await bot.run();
 
-      expect(recordLiquidationSuccess).toHaveBeenCalled();
+      expect(metrics.recordLiquidationSuccess).toHaveBeenCalled();
     });
   });
 
@@ -535,8 +537,8 @@ describe("LiquidationBot", () => {
 
       await expect(bot.logBalances()).resolves.not.toThrow();
 
-      const { recordTokenBalance } = await import("./metrics");
-      expect(recordTokenBalance).toHaveBeenCalled();
+      const { metrics } = await import("./metrics");
+      expect(metrics.recordTokenBalance).toHaveBeenCalled();
     });
 
     it("caches symbol and decimals across calls (steady-state RPC reduction)", async () => {

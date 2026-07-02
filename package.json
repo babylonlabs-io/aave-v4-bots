@@ -17,14 +17,14 @@
     "liquidator:db:logs": "docker compose logs -f liquidator-postgres",
     "liquidator:indexer": "PONDER_PORT=42069 pnpm --filter @services/ponder dev",
     "liquidator:indexer:start": "PONDER_PORT=42069 pnpm --filter @services/ponder start",
-    "liquidator:run": "tsx services/liquidator/client/src/index.ts",
+    "liquidator:run": "tsx services/liquidator/src/index.ts",
 
     "arbitrageur:db:up": "docker compose up -d arbitrageur-postgres",
     "arbitrageur:db:down": "docker compose down -v arbitrageur-postgres",
     "arbitrageur:db:logs": "docker compose logs -f arbitrageur-postgres",
     "arbitrageur:indexer": "PONDER_PORT=42070 pnpm --filter @services/ponder dev",
     "arbitrageur:indexer:start": "PONDER_PORT=42070 pnpm --filter @services/ponder start",
-    "arbitrageur:run": "tsx services/arbitrageur/client/src/index.ts",
+    "arbitrageur:run": "tsx services/arbitrageur/src/index.ts",
 
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
@@ -33,13 +33,13 @@
     "check:fix": "biome check --write .",
 
     "typecheck": "pnpm -r typecheck",
-    "typecheck:liquidator": "pnpm --filter @services/liquidator-client typecheck",
-    "typecheck:arbitrageur": "pnpm --filter @services/arbitrageur-client typecheck",
+    "typecheck:liquidator": "pnpm --filter @services/liquidator typecheck",
+    "typecheck:arbitrageur": "pnpm --filter @services/arbitrageur typecheck",
     "typecheck:packages": "pnpm --filter \"@repo/*\" typecheck",
 
     "test": "pnpm -r test",
-    "test:liquidator": "pnpm --filter @services/liquidator-client test",
-    "test:arbitrageur": "pnpm --filter @services/arbitrageur-client test",
+    "test:liquidator": "pnpm --filter @services/liquidator test",
+    "test:arbitrageur": "pnpm --filter @services/arbitrageur test",
     "test:watch": "pnpm -r test:watch",
     "test:coverage": "pnpm -r test:coverage"
   },

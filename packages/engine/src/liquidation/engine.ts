@@ -37,19 +37,32 @@ export interface LiquidationMetrics {
   recordTokenBalance(symbol: string, address: Address, balance: bigint, decimals: number): void;
 }
 
-export interface LiquidationEngineConfig {
-  logTag: string;
-  walletClient: WalletClient<Transport, Chain, Account>;
-  publicClient: PublicClient;
+/**
+ * Domain parameters the liquidation pipeline operates on — the env-derivable
+ * subset shared by the engine config and the service's own config (no runtime
+ * deps like clients or metrics). Services extend this so the fields are declared
+ * once, here, next to the engine that consumes them.
+ */
+export interface LiquidationEngineParams {
   adapterAddress: Address;
   lensAddress: Address;
-  debtTokenAddresses?: Address[];
   wbtcAddress: Address;
+  /** Override auto-discovered debt tokens from the Spoke. */
+  debtTokenAddresses?: Address[];
+  /** BTC redeem key; bytes32(0) means WBTC payout via VaultSwap. */
   btcRedeemKey: Hex;
+  /** Direct BTC redemption vs WBTC payout via VaultSwap. */
   isDirectRedemption: boolean;
+  /** VaultSwap (LLP) address, used for non-direct redemption. */
   llpAddress: Address;
   ponderUrl: string;
   txReceiptTimeoutMs: number;
+}
+
+export interface LiquidationEngineConfig extends LiquidationEngineParams {
+  logTag: string;
+  walletClient: WalletClient<Transport, Chain, Account>;
+  publicClient: PublicClient;
   metrics: LiquidationMetrics;
 }
 
