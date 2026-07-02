@@ -15,6 +15,7 @@ import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
 import { TokenMetaCache, approveMax, readAllowance, readBalance } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
+import { nextNonce } from "@repo/execution";
 import {
   recordError,
   recordLiquidationFailed,
@@ -257,10 +258,7 @@ export class LiquidationBot {
 
       // 5. Send all liquidation txs with explicit nonces.
       // Re-sync nonce after send failures to avoid gaps/stuck sequence.
-      let nextNonce = await this.publicClient.getTransactionCount({
-        address: this.walletClient.account.address,
-        blockTag: "pending",
-      });
+      let nonce = await nextNonce(this.publicClient, this.walletClient.account.address);
 
       const txHashes: Hex[] = [];
       for (let i = 0; i < validCandidates.length; i++) {
@@ -280,18 +278,18 @@ export class LiquidationBot {
                   0n,
                   maxUint256,
                 ],
-                nonce: nextNonce,
+                nonce,
               })
             : await this.walletClient.writeContract({
                 address: this.adapterAddress,
                 abi: adapterAbi,
                 functionName: "liquidateWithLLP",
                 args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
-                nonce: nextNonce,
+                nonce,
               });
           console.log(`${this.logTag}Sent liquidation for ${position.borrower}: ${hash}`);
           txHashes.push(hash);
-          nextNonce += 1;
+          nonce += 1;
         } catch (error) {
           recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
@@ -299,10 +297,7 @@ export class LiquidationBot {
             `${this.logTag}Failed to send liquidation for ${position.borrower}: ${errorMsg}`
           );
           try {
-            nextNonce = await this.publicClient.getTransactionCount({
-              address: this.walletClient.account.address,
-              blockTag: "pending",
-            });
+            nonce = await nextNonce(this.publicClient, this.walletClient.account.address);
           } catch (nonceError) {
             console.error(
               `${this.logTag}Failed to re-sync nonce, skipping remaining candidates:`,

@@ -17,6 +17,7 @@
     "@repo/chain": "workspace:*",
     "@repo/config": "workspace:*",
     "@repo/domain": "workspace:*",
+    "@repo/execution": "workspace:*",
     "@repo/observability": "workspace:*",
     "dotenv": "^16.5.0",
     "prom-client": "^15.1.3",

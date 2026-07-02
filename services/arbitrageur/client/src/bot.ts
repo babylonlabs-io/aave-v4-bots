@@ -20,6 +20,7 @@ import {
 } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
+import { waitForReceiptWithTimeout } from "@repo/execution";
 import { updateLastPollTime } from "./health";
 import { recordError, recordPollDuration, recordVaultAcquired, recordWbtcBalance } from "./metrics";
 import type { EscrowedVault, PonderResponse } from "./types";
@@ -202,7 +203,12 @@ export class ArbitrageurBot {
       console.log(`${this.logTag}Swap transaction sent: ${hash}`);
 
       // Wait for confirmation with timeout
-      const receipt = await this.waitForReceiptWithTimeout(hash, "swap");
+      const receipt = await waitForReceiptWithTimeout(
+        this.publicClient,
+        hash,
+        this.txReceiptTimeoutMs,
+        `${this.logTag}swap`
+      );
 
       if (!receipt) {
         console.warn(`${this.logTag}Transaction receipt timeout for vault ${vaultId}`);
@@ -235,41 +241,6 @@ export class ArbitrageurBot {
   }
 
   /**
-   * Wait for transaction receipt with timeout
-   * Returns null if timeout exceeded instead of hanging forever
-   */
-  private async waitForReceiptWithTimeout(
-    hash: Hex,
-    txType: string
-  ): Promise<Awaited<ReturnType<PublicClient["waitForTransactionReceipt"]>> | null> {
-    try {
-      const receipt = await Promise.race([
-        this.publicClient.waitForTransactionReceipt({ hash }),
-        this.createTimeout(this.txReceiptTimeoutMs),
-      ]);
-
-      return receipt;
-    } catch (error) {
-      if (error instanceof Error && error.message === "Transaction receipt timeout") {
-        console.warn(
-          `${this.logTag}Timeout waiting for ${txType} transaction ${hash} after ${this.txReceiptTimeoutMs}ms`
-        );
-        return null;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Create a timeout promise that rejects after the specified time
-   */
-  private createTimeout(ms: number): Promise<never> {
-    return new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("Transaction receipt timeout")), ms);
-    });
-  }
-
-  /**
    * Ensure arbitrageur has approved VaultSwap to spend WBTC
    */
   private async ensureApproval(requiredAmount: bigint): Promise<void> {
@@ -288,7 +259,12 @@ export class ArbitrageurBot {
 
       const hash = await approveMax(this.walletClient, this.wbtcAddress, this.vaultSwapAddress);
 
-      const receipt = await this.waitForReceiptWithTimeout(hash, "approval");
+      const receipt = await waitForReceiptWithTimeout(
+        this.publicClient,
+        hash,
+        this.txReceiptTimeoutMs,
+        `${this.logTag}approval`
+      );
       if (!receipt) {
         throw new Error("Approval transaction timed out");
       }

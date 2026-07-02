@@ -91,6 +91,19 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
+  packages/execution:
+    dependencies:
+      viem:
+        specifier: ^2.37.0
+        version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.2
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/observability:
     dependencies:
       viem:
@@ -121,6 +134,9 @@ importers:
       '@repo/domain':
         specifier: workspace:*
         version: link:../../../packages/domain
+      '@repo/execution':
+        specifier: workspace:*
+        version: link:../../../packages/execution
       '@repo/observability':
         specifier: workspace:*
         version: link:../../../packages/observability
@@ -167,6 +183,9 @@ importers:
       '@repo/domain':
         specifier: workspace:*
         version: link:../../../packages/domain
+      '@repo/execution':
+        specifier: workspace:*
+        version: link:../../../packages/execution
       '@repo/observability':
         specifier: workspace:*
         version: link:../../../packages/observability
