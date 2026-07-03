@@ -184,7 +184,7 @@ The service requires two environment configurations:
 | Component | File Location | Purpose |
 |-----------|---------------|---------|
 | Client | `.env.liquidator` (root) | Liquidation client settings |
-| Ponder | `services/liquidator/ponder/.env.local` | Indexer settings |
+| Ponder | `services/ponder/.env.local` | Indexer settings |
 
 **Create configuration files:**
 
@@ -193,12 +193,12 @@ The service requires two environment configurations:
 cp env.liquidator.example .env.liquidator
 
 # Create Ponder env (copy relevant vars from .env.liquidator)
-cp .env.liquidator services/liquidator/ponder/.env.local
+cp .env.liquidator services/ponder/.env.local
 ```
 
 ### 5.2. Ponder Indexer Configuration
 
-Configure the indexer in `services/liquidator/ponder/.env.local`:
+Configure the indexer in `services/ponder/.env.local`:
 
 ```bash
 # RPC URL for blockchain indexing

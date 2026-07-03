@@ -1,102 +1,60 @@
+import {
+  addressListSchema,
+  addressSchema,
+  bytes32Schema,
+  parseEnv,
+  positiveIntSchema,
+  privateKeySchema,
+  urlSchema,
+} from "@repo/config";
 import type { Address, Hex } from "viem";
+import { z } from "zod";
 import type { Config } from "./types";
 
-const BYTES32_REGEX = /^0x[a-fA-F0-9]{64}$/;
-const ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
-const PRIVATE_KEY_REGEX = /^0x[a-fA-F0-9]{64}$/;
+const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
-function assertAddress(name: string, value: string): asserts value is Address {
-  if (!ADDRESS_REGEX.test(value)) {
-    throw new Error(`Invalid ${name}: must be a 0x-prefixed 20-byte hex address`);
-  }
-}
+const envSchema = z.object({
+  // Required
+  LIQUIDATOR_PRIVATE_KEY: privateKeySchema,
+  PONDER_URL: urlSchema,
+  CLIENT_RPC_URL: urlSchema,
+  ADAPTER_ADDRESS: addressSchema,
+  LENS_ADDRESS: addressSchema,
+  WBTC_ADDRESS: addressSchema,
+
+  // Optional
+  DEBT_TOKEN_ADDRESSES: addressListSchema.optional(),
+  BTC_REDEEM_KEY: bytes32Schema.optional().default(ZERO_BYTES32),
+  IS_DIRECT_REDEMPTION: z.string().optional(),
+  LLP_ADDRESS: addressSchema.optional().default(ZERO_ADDRESS),
+  POLLING_INTERVAL_MS: positiveIntSchema.optional().default("12000"),
+  METRICS_PORT: positiveIntSchema.optional().default("9090"),
+  TX_RECEIPT_TIMEOUT_MS: positiveIntSchema.optional().default("120000"),
+});
 
 export function loadConfig(): Config {
-  const requiredEnvVars = [
-    "LIQUIDATOR_PRIVATE_KEY",
-    "PONDER_URL",
-    "CLIENT_RPC_URL",
-    "ADAPTER_ADDRESS",
-    "LENS_ADDRESS",
-    "WBTC_ADDRESS",
-  ];
+  const env = parseEnv(envSchema);
 
-  for (const envVar of requiredEnvVars) {
-    if (!process.env[envVar]) {
-      throw new Error(`Missing required environment variable: ${envVar}`);
-    }
-  }
-
-  const liquidatorPrivateKey = process.env.LIQUIDATOR_PRIVATE_KEY!;
-  if (!PRIVATE_KEY_REGEX.test(liquidatorPrivateKey)) {
-    throw new Error("Invalid LIQUIDATOR_PRIVATE_KEY: must be 0x-prefixed 32-byte hex");
-  }
-
-  const adapterAddress = process.env.ADAPTER_ADDRESS!;
-  const lensAddress = process.env.LENS_ADDRESS!;
-  const wbtcAddress = process.env.WBTC_ADDRESS!;
-  assertAddress("ADAPTER_ADDRESS", adapterAddress);
-  assertAddress("LENS_ADDRESS", lensAddress);
-  assertAddress("WBTC_ADDRESS", wbtcAddress);
-
-  // Optional: explicit debt token addresses (overrides auto-discovery from Spoke)
-  let debtTokenAddresses: Address[] | undefined;
-
-  if (process.env.DEBT_TOKEN_ADDRESSES) {
-    debtTokenAddresses = process.env.DEBT_TOKEN_ADDRESSES.split(",")
-      .map((addr) => addr.trim() as Address)
-      .filter((addr) => addr.length > 0);
-
-    if (debtTokenAddresses.length === 0) {
-      debtTokenAddresses = undefined;
-    } else {
-      for (const tokenAddress of debtTokenAddresses) {
-        assertAddress("DEBT_TOKEN_ADDRESSES item", tokenAddress);
-      }
-    }
-  }
-
-  const btcRedeemKey =
-    process.env.BTC_REDEEM_KEY ||
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
-
-  if (!BYTES32_REGEX.test(btcRedeemKey)) {
-    throw new Error("Invalid BTC_REDEEM_KEY: must be 0x-prefixed 32-byte hex");
-  }
-
-  const isDirectRedemption = process.env.IS_DIRECT_REDEMPTION === "true";
-
-  const llpAddress = process.env.LLP_ADDRESS || "0x0000000000000000000000000000000000000000";
-  assertAddress("LLP_ADDRESS", llpAddress);
-
-  const txReceiptTimeoutMs = Number.parseInt(process.env.TX_RECEIPT_TIMEOUT_MS || "120000", 10);
-  if (!Number.isFinite(txReceiptTimeoutMs) || txReceiptTimeoutMs <= 0) {
-    throw new Error("Invalid TX_RECEIPT_TIMEOUT_MS: must be a positive integer");
-  }
-
-  const pollingIntervalMs = Number.parseInt(process.env.POLLING_INTERVAL_MS || "12000", 10);
-  if (!Number.isFinite(pollingIntervalMs) || pollingIntervalMs <= 0) {
-    throw new Error("Invalid POLLING_INTERVAL_MS: must be a positive integer");
-  }
-
-  const metricsPort = Number.parseInt(process.env.METRICS_PORT || "9090", 10);
-  if (!Number.isFinite(metricsPort) || metricsPort <= 0) {
-    throw new Error("Invalid METRICS_PORT: must be a positive integer");
-  }
+  // An empty/whitespace-only list parses to []; treat that as "auto-discover".
+  const debtTokenAddresses =
+    env.DEBT_TOKEN_ADDRESSES && env.DEBT_TOKEN_ADDRESSES.length > 0
+      ? (env.DEBT_TOKEN_ADDRESSES as Address[])
+      : undefined;
 
   return {
-    liquidatorPrivateKey: liquidatorPrivateKey as Hex,
-    pollingIntervalMs,
-    ponderUrl: process.env.PONDER_URL!,
-    rpcUrl: process.env.CLIENT_RPC_URL!,
-    adapterAddress,
-    lensAddress,
-    wbtcAddress,
+    liquidatorPrivateKey: env.LIQUIDATOR_PRIVATE_KEY as Hex,
+    pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
+    ponderUrl: env.PONDER_URL,
+    rpcUrl: env.CLIENT_RPC_URL,
+    adapterAddress: env.ADAPTER_ADDRESS as Address,
+    lensAddress: env.LENS_ADDRESS as Address,
+    wbtcAddress: env.WBTC_ADDRESS as Address,
     debtTokenAddresses,
-    btcRedeemKey: btcRedeemKey as Hex,
-    isDirectRedemption,
-    llpAddress: llpAddress as Address,
-    metricsPort,
-    txReceiptTimeoutMs,
+    btcRedeemKey: env.BTC_REDEEM_KEY as Hex,
+    isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
+    llpAddress: env.LLP_ADDRESS as Address,
+    metricsPort: Number.parseInt(env.METRICS_PORT, 10),
+    txReceiptTimeoutMs: Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10),
   };
 }

@@ -167,7 +167,7 @@ The service requires two environment configurations:
 | Component | File Location | Purpose |
 |-----------|---------------|---------|
 | Client | `.env.arbitrageur` (root) | Arbitrageur client settings |
-| Ponder | `services/arbitrageur/ponder/.env.local` | Indexer settings |
+| Ponder | `services/ponder/.env.local` | Indexer settings |
 
 **Create configuration files:**
 
@@ -176,12 +176,12 @@ The service requires two environment configurations:
 cp env.arbitrageur.example .env.arbitrageur
 
 # Create Ponder env (copy relevant vars from .env.arbitrageur)
-cp .env.arbitrageur services/arbitrageur/ponder/.env.local
+cp .env.arbitrageur services/ponder/.env.local
 ```
 
 ### 5.2. Ponder Indexer Configuration
 
-Configure the indexer in `services/arbitrageur/ponder/.env.local`:
+Configure the indexer in `services/ponder/.env.local`:
 
 ```bash
 # RPC URL for blockchain indexing

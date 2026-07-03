@@ -1,0 +1,22 @@
+{
+  "name": "@services/ponder",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "ponder dev --port ${PONDER_PORT:-42069}",
+    "start": "ponder start --port ${PONDER_PORT:-42069}",
+    "codegen": "ponder codegen",
+    "test": "node --import tsx --test tests/positionAccounting.test.ts"
+  },
+  "dependencies": {
+    "@repo/abis": "workspace:*",
+    "ponder": "^0.13.6",
+    "hono": "^4.5.0",
+    "viem": "^2.37.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "typescript": "^5.7.3"
+  }
+}

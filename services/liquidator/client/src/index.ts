@@ -7,7 +7,7 @@ dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 import { type Chain, type Hex, createPublicClient, createWalletClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import { instrumentedHttp } from "@repo/shared";
+import { instrumentedHttp } from "@repo/chain";
 import { LiquidationBot } from "./bot";
 import { loadConfig } from "./config";
 import { updateLastPollTime } from "./health";

@@ -3,7 +3,7 @@ import type { PublicClient } from "viem";
 import {
   setPublicClient as sharedSetPublicClient,
   startMetricsServer as sharedStartMetricsServer,
-} from "@repo/shared";
+} from "@repo/observability";
 import { getMetrics, getMetricsContentType } from "./metrics";
 
 export interface MetricsServerConfig {
