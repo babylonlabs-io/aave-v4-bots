@@ -1,4 +1,5 @@
 import type { Logger } from "@repo/logger";
+import { createRiskGate } from "@repo/risk";
 import { maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
@@ -76,6 +77,7 @@ function createBot(
     txReceiptTimeoutMs: 60000,
     metrics,
     logger: silentLogger,
+    risk: createRiskGate(), // permissive by default
     ...overrides,
   });
 }
@@ -153,6 +155,45 @@ describe("LiquidationEngine", () => {
       });
 
       await expect(bot.run()).resolves.not.toThrow();
+      expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("run() - risk gate", () => {
+    const liquidatable = () => ({
+      ok: true,
+      json: () => Promise.resolve({ liquidatable: [mockPosition], total: 1, checked: 1 }),
+    });
+
+    it("skips the whole cycle when the gate is HALTED (kill-switch)", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate();
+      risk.halt("manual");
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run();
+
+      expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+    });
+
+    it("trips the breaker on a reverted liquidation, halting subsequent runs", async () => {
+      const clients = createMockClients();
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 1n,
+        logs: [],
+      });
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run(); // sends 1 tx → reverts → recordOutcome(false) → breaker trips
+      expect(risk.state()).toBe("HALTED");
+
+      clients.publicClient.simulateContract.mockClear();
+      await bot.run(); // now HALTED → short-circuits before simulate
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
     });
   });

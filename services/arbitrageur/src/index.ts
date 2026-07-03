@@ -4,15 +4,30 @@ import { config as dotenvConfig } from "dotenv";
 // Load .env.arbitrageur from root directory BEFORE importing config
 dotenvConfig({ path: resolve(process.cwd(), ".env.arbitrageur") });
 
-import { type Chain, type PublicClient, createPublicClient, createWalletClient } from "viem";
+import {
+  type Account,
+  type Chain,
+  type PublicClient,
+  type Transport,
+  type WalletClient,
+  createPublicClient,
+  createWalletClient,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
+import { LiquidationEngine } from "@repo/engine";
 import { createLogger } from "@repo/logger";
-import { setPublicClient, startObservabilityServer } from "@repo/observability";
+import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
+import { createRiskGate } from "@repo/risk";
 import { ArbitrageurBot } from "./bot";
-import { type Config, loadConfig } from "./config";
-import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
+import { type Config, type LiquidationRunConfig, loadConfig } from "./config";
+import {
+  createLiquidationMetricsSet,
+  getMetrics,
+  getMetricsContentType,
+  recordRpcCall,
+} from "./metrics";
 
 const logger = createLogger({ prefix: "[Arbitrageur] " });
 
@@ -32,6 +47,7 @@ Environment variables:
 interface BotWithClients {
   bot: ArbitrageurBot;
   publicClient: PublicClient;
+  walletClient: WalletClient<Transport, Chain, Account>;
 }
 
 async function createBot(config: Config): Promise<BotWithClients> {
@@ -86,14 +102,59 @@ async function createBot(config: Config): Promise<BotWithClients> {
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
   });
 
-  return { bot, publicClient };
+  return { bot, publicClient, walletClient };
+}
+
+/**
+ * Opt-in second engine: when liquidation env is configured, the arbitrageur also
+ * runs the shared `LiquidationEngine` — same signer + clients + metrics registry,
+ * its own tagged logger and poll loop. This is the "arbitrageur runs both engines"
+ * composition the two-engine split exists for.
+ */
+async function startLiquidationEngine(
+  liq: LiquidationRunConfig,
+  walletClient: WalletClient<Transport, Chain, Account>,
+  publicClient: PublicClient
+): Promise<void> {
+  const liqLogger = createLogger({ prefix: "[Arbitrageur:Liq] " });
+  const { pollingIntervalMs, ...params } = liq;
+
+  const engine = new LiquidationEngine({
+    ...params,
+    walletClient,
+    publicClient,
+    metrics: createLiquidationMetricsSet(),
+    logger: liqLogger,
+    risk: createRiskGate(),
+  });
+
+  liqLogger.info("Liquidation engine enabled (running alongside arbitrage)");
+  if (!params.debtTokenAddresses) {
+    await engine.discoverDebtTokens();
+  }
+  await engine.ensureApproval();
+  await engine.logBalances();
+
+  const poll = async () => {
+    try {
+      await engine.run();
+      await engine.logBalances();
+    } catch (error) {
+      liqLogger.error("Unexpected error in liquidation poll cycle:", error);
+    }
+    updateLastPollTime();
+    setTimeout(poll, pollingIntervalMs);
+  };
+  // Kick off without awaiting the first cycle — the two engines poll independently
+  // (a liquidation tx wait must not stall the arbitrage loop).
+  void poll();
 }
 
 async function runPollingMode(config: Config): Promise<void> {
   logger.info("Aave V4 Arbitrageur Bot Starting...");
   logger.info("===================================");
 
-  const { bot, publicClient } = await createBot(config);
+  const { bot, publicClient, walletClient } = await createBot(config);
 
   // Start the observability server (metrics + health/readiness probes)
   setPublicClient(publicClient);
@@ -104,6 +165,11 @@ async function runPollingMode(config: Config): Promise<void> {
     getMetrics,
     getMetricsContentType,
   });
+
+  // Opt-in: also run the liquidation engine (both engines, one process).
+  if (config.liquidation) {
+    await startLiquidationEngine(config.liquidation, walletClient, publicClient);
+  }
 
   logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);
   logger.info(`Retry attempts: ${config.retryMaxAttempts}`);

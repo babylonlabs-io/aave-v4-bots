@@ -22,6 +22,7 @@ import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
 import { waitForReceiptWithTimeout } from "@repo/execution";
 import type { Logger } from "@repo/logger";
+import type { RiskGate } from "@repo/risk";
 import type { EscrowedVault, PonderResponse } from "./types";
 
 /** Observability port — the engine reports through it; the service supplies metrics. */
@@ -53,6 +54,7 @@ export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
   retryConfig: RetryConfig;
   metrics: ArbitrageMetrics;
   logger: Logger;
+  risk: RiskGate;
   /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
   onPollComplete?: () => void;
 }
@@ -60,6 +62,7 @@ export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
 export class ArbitrageEngine {
   private metrics: ArbitrageMetrics;
   private logger: Logger;
+  private risk: RiskGate;
   private onPollComplete?: () => void;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
@@ -75,6 +78,7 @@ export class ArbitrageEngine {
   constructor(config: ArbitrageEngineConfig) {
     this.metrics = config.metrics;
     this.logger = config.logger;
+    this.risk = config.risk;
     this.onPollComplete = config.onPollComplete;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
@@ -94,6 +98,12 @@ export class ArbitrageEngine {
     const startTime = Date.now();
 
     try {
+      // 0. Risk gate — a HALTED gate (kill-switch or tripped breaker) skips the cycle.
+      if (this.risk.state() === "HALTED") {
+        this.logger.warn("Risk gate is HALTED — skipping arbitrage run");
+        return;
+      }
+
       // 1. Fetch escrowed vaults from Ponder
       const vaults = await this.fetchEscrowedVaults();
 
@@ -188,6 +198,14 @@ export class ArbitrageEngine {
         return false;
       }
 
+      // Risk gate — check just before committing to the acquisition.
+      const decision = this.risk.check({ kind: "vault-acquisition", subject: vaultId });
+      if (!decision.allow) {
+        this.logger.warn(`Risk gate blocked vault ${vaultId}: ${decision.reason}`);
+        this.metrics.recordError("risk_blocked");
+        return false;
+      }
+
       // Calculate maxWbtcIn with slippage buffer
       const maxWbtcIn = maxWbtcInWithSlippage(currentDebtBigInt, this.maxSlippageBps);
 
@@ -234,20 +252,24 @@ export class ArbitrageEngine {
       );
 
       if (!receipt) {
+        this.risk.recordOutcome({ ok: false });
         this.logger.warn(`Transaction receipt timeout for vault ${vaultId}`);
         this.metrics.recordError("tx_timeout");
         return false;
       }
 
       if (receipt.status === "success") {
+        this.risk.recordOutcome({ ok: true });
         this.logger.info(`Vault acquired and redeemed in block ${receipt.blockNumber}`);
         this.metrics.recordVaultAcquired(currentDebtBigInt);
         return true;
       }
+      this.risk.recordOutcome({ ok: false });
       this.logger.error("Swap transaction reverted");
       this.metrics.recordError("swap_reverted");
       return false;
     } catch (error) {
+      this.risk.recordOutcome({ ok: false });
       let errorMsg = "Unknown error";
       if (error instanceof ContractFunctionRevertedError) {
         errorMsg = `${error.data?.errorName || "Contract reverted"}`;
