@@ -5,7 +5,6 @@ import {
   nonNegativeIntSchema,
   parseEnv,
   positiveIntSchema,
-  privateKeySchema,
   urlSchema,
 } from "@repo/config";
 import type { ArbitrageEngineParams, LiquidationEngineParams } from "@repo/engine";
@@ -18,9 +17,10 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 /**
  * Environment variables schema
  */
+// The signing key is a secret resolved at boot via `@repo/secrets`, not a config
+// field — see index.ts.
 const envSchema = z.object({
   // Required
-  ARBITRAGEUR_PRIVATE_KEY: privateKeySchema,
   PONDER_URL: urlSchema,
   CLIENT_RPC_URL: urlSchema,
   VAULT_SWAP_ADDRESS: addressSchema,
@@ -62,9 +62,6 @@ export type LiquidationRunConfig = LiquidationEngineParams & { pollingIntervalMs
 // timeout) are declared in `@repo/engine` and inherited here; this interface
 // only adds the composition-root fields the service needs to wire the engine up.
 export interface Config extends ArbitrageEngineParams {
-  // Signer for the bot's wallet client
-  arbitrageurPrivateKey: Hex;
-
   // RPC endpoint the bot's viem clients connect to
   rpcUrl: string;
 
@@ -123,7 +120,6 @@ export function loadConfig(): Config {
       : undefined;
 
   return {
-    arbitrageurPrivateKey: env.ARBITRAGEUR_PRIVATE_KEY as Hex,
     ponderUrl,
     rpcUrl: env.CLIENT_RPC_URL,
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,

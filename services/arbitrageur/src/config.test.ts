@@ -19,8 +19,8 @@ describe("config validation", () => {
     process.env = originalEnv;
   });
 
+  // The signing key is a secret (@repo/secrets), no longer a config field.
   const validEnv = {
-    ARBITRAGEUR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42070",
     CLIENT_RPC_URL: "http://localhost:8545",
     VAULT_SWAP_ADDRESS: "0x1234567890123456789012345678901234567890",
@@ -28,16 +28,6 @@ describe("config validation", () => {
   };
 
   describe("required fields", () => {
-    it("should fail when ARBITRAGEUR_PRIVATE_KEY is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.ARBITRAGEUR_PRIVATE_KEY = undefined;
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(mockExit).toHaveBeenCalledWith(1);
-    });
-
     it("should fail when PONDER_URL is missing", async () => {
       process.env = { ...validEnv };
       process.env.PONDER_URL = undefined;
@@ -60,22 +50,6 @@ describe("config validation", () => {
   });
 
   describe("format validation", () => {
-    it("should fail with invalid private key format", async () => {
-      process.env = { ...validEnv, ARBITRAGEUR_PRIVATE_KEY: "not-a-hex" };
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("process.exit called");
-    });
-
-    it("should fail with private key too short", async () => {
-      process.env = { ...validEnv, ARBITRAGEUR_PRIVATE_KEY: "0x1234" };
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("process.exit called");
-    });
-
     it("should fail with invalid address format", async () => {
       process.env = { ...validEnv, VAULT_SWAP_ADDRESS: "not-an-address" };
 
@@ -108,7 +82,6 @@ describe("config validation", () => {
       const { loadConfig } = await import("./config");
       const config = loadConfig();
 
-      expect(config.arbitrageurPrivateKey).toBe(validEnv.ARBITRAGEUR_PRIVATE_KEY);
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
       expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
       expect(config.vaultSwapAddress).toBe(validEnv.VAULT_SWAP_ADDRESS);

@@ -17,8 +17,8 @@ describe("config validation", () => {
     process.env = originalEnv;
   });
 
+  // The signing key is a secret (@repo/secrets), no longer a config field.
   const validEnv = {
-    LIQUIDATOR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42069",
     CLIENT_RPC_URL: "http://localhost:8545",
     ADAPTER_ADDRESS: "0x1234567890123456789012345678901234567890",
@@ -28,7 +28,6 @@ describe("config validation", () => {
 
   describe("required fields", () => {
     for (const key of [
-      "LIQUIDATOR_PRIVATE_KEY",
       "PONDER_URL",
       "CLIENT_RPC_URL",
       "ADAPTER_ADDRESS",
@@ -49,7 +48,6 @@ describe("config validation", () => {
 
   describe("format validation", () => {
     const badCases: Array<[string, string]> = [
-      ["LIQUIDATOR_PRIVATE_KEY", "0x1234"],
       ["ADAPTER_ADDRESS", "not-an-address"],
       ["BTC_REDEEM_KEY", "not-a-hex"],
       ["BTC_REDEEM_KEY", "0x1234"],
@@ -79,7 +77,6 @@ describe("config validation", () => {
       const { loadConfig } = await import("./config");
       const config = loadConfig();
 
-      expect(config.liquidatorPrivateKey).toBe(validEnv.LIQUIDATOR_PRIVATE_KEY);
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
       expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
       expect(config.adapterAddress).toBe(validEnv.ADAPTER_ADDRESS);

@@ -5,11 +5,12 @@ import { config as dotenvConfig } from "dotenv";
 dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
 import { type Chain, type Hex, createPublicClient, createWalletClient } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
+import { createEnvSecrets } from "@repo/secrets";
+import { createLocalSigner } from "@repo/signer";
 import { LiquidationBot } from "./bot";
 import { type Config, loadConfig } from "./config";
 import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
@@ -17,8 +18,11 @@ import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
 const logger = createLogger({ prefix: "[Bot] " });
 
 async function createBot(config: Config) {
-  const account = privateKeyToAccount(config.liquidatorPrivateKey);
-  logger.info(`Liquidator address: ${account.address}`);
+  // The signing key is a secret resolved at boot; the account/key lives in
+  // `@repo/signer` (a KMS signer is a drop-in — see refactor-002 Phase C / #1).
+  const secrets = createEnvSecrets();
+  const signer = createLocalSigner((await secrets.get("LIQUIDATOR_PRIVATE_KEY")) as Hex);
+  logger.info(`Liquidator address: ${signer.address}`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound
   // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.
@@ -48,7 +52,7 @@ async function createBot(config: Config) {
   const walletClient = createWalletClient({
     chain,
     transport,
-    account,
+    account: signer.account,
   });
 
   const bot = new LiquidationBot({

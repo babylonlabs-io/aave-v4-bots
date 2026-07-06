@@ -4,7 +4,6 @@ import {
   bytes32Schema,
   parseEnv,
   positiveIntSchema,
-  privateKeySchema,
   urlSchema,
 } from "@repo/config";
 import type { LiquidationEngineParams } from "@repo/engine";
@@ -15,9 +14,6 @@ import { z } from "zod";
 // timeout) are declared in `@repo/engine` and inherited here; this interface
 // only adds the composition-root fields the service needs to wire the engine up.
 export interface Config extends LiquidationEngineParams {
-  // Signer for the bot's wallet client
-  liquidatorPrivateKey: Hex;
-
   // RPC endpoint the bot's viem clients connect to
   rpcUrl: string;
 
@@ -31,9 +27,10 @@ export interface Config extends LiquidationEngineParams {
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
+// The signing key is a secret resolved at boot via `@repo/secrets`, not a config
+// field — see index.ts.
 const envSchema = z.object({
   // Required
-  LIQUIDATOR_PRIVATE_KEY: privateKeySchema,
   PONDER_URL: urlSchema,
   CLIENT_RPC_URL: urlSchema,
   ADAPTER_ADDRESS: addressSchema,
@@ -60,7 +57,6 @@ export function loadConfig(): Config {
       : undefined;
 
   return {
-    liquidatorPrivateKey: env.LIQUIDATOR_PRIVATE_KEY as Hex,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     ponderUrl: env.PONDER_URL,
     rpcUrl: env.CLIENT_RPC_URL,

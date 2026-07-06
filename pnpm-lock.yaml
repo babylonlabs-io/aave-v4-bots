@@ -221,6 +221,34 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.19.2)
 
+  packages/secrets:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.2
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
+
+  packages/signer:
+    dependencies:
+      viem:
+        specifier: ^2.37.0
+        version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.2
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
+
   services/arbitrageur:
     dependencies:
       '@repo/abis':
@@ -256,6 +284,12 @@ importers:
       '@repo/risk':
         specifier: workspace:*
         version: link:../../packages/risk
+      '@repo/secrets':
+        specifier: workspace:*
+        version: link:../../packages/secrets
+      '@repo/signer':
+        specifier: workspace:*
+        version: link:../../packages/signer
       dotenv:
         specifier: ^16.5.0
         version: 16.6.1
@@ -314,6 +348,12 @@ importers:
       '@repo/risk':
         specifier: workspace:*
         version: link:../../packages/risk
+      '@repo/secrets':
+        specifier: workspace:*
+        version: link:../../packages/secrets
+      '@repo/signer':
+        specifier: workspace:*
+        version: link:../../packages/signer
       dotenv:
         specifier: ^16.5.0
         version: 16.6.1
