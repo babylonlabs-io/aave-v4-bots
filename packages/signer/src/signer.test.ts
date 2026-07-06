@@ -18,6 +18,19 @@ describe("@repo/signer", () => {
       const sig = await signer.account.signMessage?.({ message: "hello" });
       expect(sig).toMatch(/^0x[0-9a-fA-F]+$/);
     });
+
+    // The key-shape guard used to live in each service's zod config schema; it now
+    // lives at this boundary. The thrown error must never echo the key material.
+    it.each([
+      ["missing 0x prefix", KEY.slice(2)],
+      ["too short", "0x1234"],
+      ["too long", `${KEY}00`],
+      ["non-hex chars", `0x${"z".repeat(64)}`],
+      ["empty", ""],
+    ])("rejects an invalid private key (%s)", (_name, bad) => {
+      expect(() => createLocalSigner(bad)).toThrow(/invalid private key/);
+      expect(() => createLocalSigner(bad)).not.toThrow(new RegExp(bad || "\\bWONT_MATCH\\b"));
+    });
   });
 
   describe("createKmsSigner (stub)", () => {

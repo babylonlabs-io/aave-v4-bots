@@ -23,9 +23,21 @@ export interface Signer {
   readonly account: Account;
 }
 
-/** `./local` — an in-process key. Key material lives here, never in `@repo/engine`. */
-export function createLocalSigner(privateKey: Hex): Signer {
-  const account = privateKeyToAccount(privateKey);
+/** A 32-byte hex private key: `0x` + 64 hex chars. */
+const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
+
+/**
+ * `./local` — an in-process key. Key material lives here, never in `@repo/engine`.
+ *
+ * The key shape is validated at this boundary (it used to be a zod schema in each
+ * service's config). The error is deliberately **sanitized** — it never echoes the key
+ * value — because a signer error can surface in logs.
+ */
+export function createLocalSigner(privateKey: string): Signer {
+  if (!PRIVATE_KEY_RE.test(privateKey)) {
+    throw new Error("invalid private key: expected 0x-prefixed 32-byte hex (66 chars)");
+  }
+  const account = privateKeyToAccount(privateKey as Hex);
   return { address: account.address, account };
 }
 

@@ -4,7 +4,7 @@ import { config as dotenvConfig } from "dotenv";
 // Load .env.liquidator from root directory
 dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
-import { type Chain, type Hex, createPublicClient, createWalletClient } from "viem";
+import { type Chain, createPublicClient, createWalletClient } from "viem";
 
 import { instrumentedHttp } from "@repo/chain";
 import { createLogger } from "@repo/logger";
@@ -21,7 +21,7 @@ async function createBot(config: Config) {
   // The signing key is a secret resolved at boot; the account/key lives in
   // `@repo/signer` (a KMS signer is a drop-in — see refactor-002 Phase C / #1).
   const secrets = createEnvSecrets();
-  const signer = createLocalSigner((await secrets.get("LIQUIDATOR_PRIVATE_KEY")) as Hex);
+  const signer = createLocalSigner(await secrets.get("LIQUIDATOR_PRIVATE_KEY"));
   logger.info(`Liquidator address: ${signer.address}`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound

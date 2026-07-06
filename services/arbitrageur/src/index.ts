@@ -13,7 +13,6 @@ import {
   createPublicClient,
   createWalletClient,
 } from "viem";
-import type { Hex } from "viem";
 
 import { instrumentedHttp } from "@repo/chain";
 import { LiquidationEngine } from "@repo/engine";
@@ -57,7 +56,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // `@repo/signer` (a KMS signer is a drop-in — see refactor-002 Phase C / #1).
   // Both engines (arbitrage + optional liquidation) share this one signer.
   const secrets = createEnvSecrets();
-  const signer = createLocalSigner((await secrets.get("ARBITRAGEUR_PRIVATE_KEY")) as Hex);
+  const signer = createLocalSigner(await secrets.get("ARBITRAGEUR_PRIVATE_KEY"));
   logger.info(`Arbitrageur address: ${signer.address}`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound
