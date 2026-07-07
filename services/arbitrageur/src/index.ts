@@ -20,7 +20,7 @@ import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { createRiskGate } from "@repo/risk";
 import { createSecrets } from "@repo/secrets";
-import { createSigner } from "@repo/signer";
+import { resolveSigner } from "@repo/signer";
 import { ArbitrageurBot } from "./bot";
 import { type Config, type LiquidationRunConfig, loadConfig } from "./config";
 import {
@@ -57,11 +57,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // signer; `aws` (KMS) resolves nothing. The key is never a plaintext `Config` field.
   // Both engines (arbitrage + optional liquidation) share this one signer.
   const secrets = createSecrets(config.secrets);
-  const signer = await createSigner(
-    config.signer.source === "local"
-      ? { source: "local", privateKey: await secrets.get(config.signer.keyRef) }
-      : config.signer
-  );
+  const signer = await resolveSigner(config.signer, (ref) => secrets.get(ref));
   logger.info(`Arbitrageur signer: ${config.signer.source} (${signer.address})`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound

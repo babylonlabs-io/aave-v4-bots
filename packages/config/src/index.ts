@@ -12,11 +12,6 @@ export const addressSchema = z
   .string()
   .regex(/^0x[a-fA-F0-9]{40}$/, "must be a 0x-prefixed 20-byte hex address");
 
-/** 0x + 64 hex chars (32-byte private key). */
-export const privateKeySchema = z
-  .string()
-  .regex(/^0x[a-fA-F0-9]{64}$/, "must be a 0x-prefixed 32-byte hex private key");
-
 /** 0x + 64 hex chars (bytes32, e.g. a BTC redeem key). */
 export const bytes32Schema = z
   .string()

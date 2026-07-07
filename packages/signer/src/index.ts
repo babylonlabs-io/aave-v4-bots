@@ -122,6 +122,23 @@ export async function createSigner(config: ResolvedSignerConfig): Promise<Signer
   }
 }
 
+/**
+ * Composition-root convenience: turn a `SignerConfig` into a `Signer`, resolving the
+ * `local` key ref via the supplied resolver (typically a `SecretsProvider`'s `get`) and
+ * handing the *value* to `createSigner`. `aws` resolves nothing. Keeps the local
+ * ref→value→signer dance in one place instead of repeated in every service boot, without
+ * giving `@repo/signer` a `@repo/secrets` dependency (the resolver is a plain callback).
+ */
+export async function resolveSigner(
+  config: SignerConfig,
+  resolveRef: (ref: string) => Promise<string>
+): Promise<Signer> {
+  if (config.source === "local") {
+    return createSigner({ source: "local", privateKey: await resolveRef(config.keyRef) });
+  }
+  return createSigner(config);
+}
+
 // ── Broadcast seam ───────────────────────────────────────────────────────────────
 
 /** Where/how a signed tx is broadcast. Extended later (private relay vs public). */

@@ -7,7 +7,6 @@ import {
   nonNegativeIntSchema,
   parseEnv,
   positiveIntSchema,
-  privateKeySchema,
   urlSchema,
 } from "./index";
 
@@ -22,10 +21,9 @@ describe("@repo/config schemas", () => {
     expect(addressSchema.safeParse("1234567890123456789012345678901234567890").success).toBe(false); // no 0x
   });
 
-  it("privateKeySchema / bytes32Schema accept 32-byte hex, reject others", () => {
-    expect(privateKeySchema.safeParse(KEY).success).toBe(true);
+  it("bytes32Schema accepts 32-byte hex, rejects others", () => {
     expect(bytes32Schema.safeParse(KEY).success).toBe(true);
-    expect(privateKeySchema.safeParse(ADDR).success).toBe(false); // 20 bytes, not 32
+    expect(bytes32Schema.safeParse(ADDR).success).toBe(false); // 20 bytes, not 32
   });
 
   it("urlSchema validates URLs", () => {
