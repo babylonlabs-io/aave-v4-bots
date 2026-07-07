@@ -167,6 +167,65 @@ describe("config validation", () => {
     });
   });
 
+  describe("signer / secrets source selection", () => {
+    it("defaults to local signer + env secrets with the conventional key ref", async () => {
+      process.env = { ...validEnv };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.secrets).toEqual({ source: "env", region: undefined });
+      expect(config.signer).toEqual({ source: "local", keyRef: "LIQUIDATOR_PRIVATE_KEY" });
+    });
+
+    it("honors a custom local key ref", async () => {
+      process.env = { ...validEnv, SIGNER_KEY_REF: "CUSTOM_KEY_SECRET" };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.signer).toEqual({ source: "local", keyRef: "CUSTOM_KEY_SECRET" });
+    });
+
+    it("selects aws signer + aws secrets when configured", async () => {
+      process.env = {
+        ...validEnv,
+        SECRETS_PROVIDER: "aws",
+        SIGNER_SOURCE: "aws",
+        KMS_KEY_ID: "arn:aws:kms:us-east-1:0:key/abc",
+        AWS_REGION: "us-east-1",
+      };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.secrets).toEqual({ source: "aws", region: "us-east-1" });
+      expect(config.signer).toEqual({
+        source: "aws",
+        keyId: "arn:aws:kms:us-east-1:0:key/abc",
+        address: undefined,
+        region: "us-east-1",
+      });
+    });
+
+    it("fails when SIGNER_SOURCE=aws but KMS_KEY_ID is missing", async () => {
+      process.env = { ...validEnv, SIGNER_SOURCE: "aws" };
+
+      const { loadConfig } = await import("./config");
+
+      // buildSignerConfig throws; loadConfig lets it propagate (fail-fast at boot).
+      expect(() => loadConfig()).toThrow(/SIGNER_SOURCE=aws requires KMS_KEY_ID/);
+    });
+
+    it("rejects an invalid SIGNER_SOURCE", async () => {
+      process.env = { ...validEnv, SIGNER_SOURCE: "gcp" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow("process.exit called");
+    });
+  });
+
   describe("debt token addresses", () => {
     it("should parse comma-separated debt token addresses", async () => {
       process.env = {

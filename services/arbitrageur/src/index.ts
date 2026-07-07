@@ -19,8 +19,8 @@ import { LiquidationEngine } from "@repo/engine";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { createRiskGate } from "@repo/risk";
-import { createEnvSecrets } from "@repo/secrets";
-import { createLocalSigner } from "@repo/signer";
+import { createSecrets } from "@repo/secrets";
+import { createSigner } from "@repo/signer";
 import { ArbitrageurBot } from "./bot";
 import { type Config, type LiquidationRunConfig, loadConfig } from "./config";
 import {
@@ -52,12 +52,17 @@ interface BotWithClients {
 }
 
 async function createBot(config: Config): Promise<BotWithClients> {
-  // The signing key is a secret resolved at boot; the account/key lives in
-  // `@repo/signer` (a KMS signer is a drop-in — see refactor-002 Phase C / #1).
+  // Secrets + signer sources are selected by config (env/aws, local/aws). For a `local`
+  // signer we resolve the key ref via the secrets provider and hand the *value* to the
+  // signer; `aws` (KMS) resolves nothing. The key is never a plaintext `Config` field.
   // Both engines (arbitrage + optional liquidation) share this one signer.
-  const secrets = createEnvSecrets();
-  const signer = createLocalSigner(await secrets.get("ARBITRAGEUR_PRIVATE_KEY"));
-  logger.info(`Arbitrageur address: ${signer.address}`);
+  const secrets = createSecrets(config.secrets);
+  const signer = await createSigner(
+    config.signer.source === "local"
+      ? { source: "local", privateKey: await secrets.get(config.signer.keyRef) }
+      : config.signer
+  );
+  logger.info(`Arbitrageur signer: ${config.signer.source} (${signer.address})`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound
   // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.

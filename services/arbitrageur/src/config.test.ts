@@ -125,6 +125,63 @@ describe("config validation", () => {
     });
   });
 
+  describe("signer / secrets source selection", () => {
+    it("defaults to local signer + env secrets with the conventional key ref", async () => {
+      process.env = { ...validEnv };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.secrets).toEqual({ source: "env", region: undefined });
+      expect(config.signer).toEqual({ source: "local", keyRef: "ARBITRAGEUR_PRIVATE_KEY" });
+    });
+
+    it("selects aws signer + aws secrets when configured", async () => {
+      process.env = {
+        ...validEnv,
+        SECRETS_PROVIDER: "aws",
+        SIGNER_SOURCE: "aws",
+        KMS_KEY_ID: "arn:aws:kms:us-east-1:0:key/abc",
+        AWS_REGION: "us-east-1",
+      };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.secrets).toEqual({ source: "aws", region: "us-east-1" });
+      expect(config.signer).toEqual({
+        source: "aws",
+        keyId: "arn:aws:kms:us-east-1:0:key/abc",
+        address: undefined,
+        region: "us-east-1",
+      });
+    });
+
+    it("fails when SIGNER_SOURCE=aws but KMS_KEY_ID is missing", async () => {
+      process.env = { ...validEnv, SIGNER_SOURCE: "aws" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow(/SIGNER_SOURCE=aws requires KMS_KEY_ID/);
+    });
+
+    it("shares one signer across both engines (dual-engine mode)", async () => {
+      process.env = {
+        ...validEnv,
+        ADAPTER_ADDRESS: "0x1111111111111111111111111111111111111111",
+        LENS_ADDRESS: "0x2222222222222222222222222222222222222222",
+      };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      // The liquidation engine has no signer of its own — index.ts wires the single
+      // `config.signer` into both engines' shared wallet client.
+      expect(config.liquidation).toBeDefined();
+      expect(config.signer).toEqual({ source: "local", keyRef: "ARBITRAGEUR_PRIVATE_KEY" });
+    });
+  });
+
   describe("liquidation mode (opt-in dual engine)", () => {
     const adapter = "0x1111111111111111111111111111111111111111";
     const lens = "0x2222222222222222222222222222222222222222";

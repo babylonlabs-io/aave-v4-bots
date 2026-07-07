@@ -1,5 +1,6 @@
 import type { Account, Address, Hex } from "viem";
-import { privateKeyToAccount, toAccount } from "viem/accounts";
+import { privateKeyToAccount } from "viem/accounts";
+import { type AwsSignerConfig, type KmsClientLike, createAwsSigner } from "./aws";
 
 // Signing seam (proposal §5.1, refactor-002 Phase C).
 //
@@ -9,7 +10,7 @@ import { privateKeyToAccount, toAccount } from "viem/accounts";
 // `writeContract` already routes signing through the account (prepare →
 // `account.signTransaction` → `sendRawTransaction`). A KMS-backed signer is therefore a
 // drop-in — a custom `Account` whose `signTransaction` calls the HSM — with **no engine
-// change** (see #25 for the real KMS adapter).
+// change** (see `./kms`).
 //
 // **Decision D5:** local sends stay on viem's machinery (do not re-implement
 // assemble→sign→broadcast). The explicit `signTransaction` → `Submitter.send` split
@@ -41,22 +42,84 @@ export function createLocalSigner(privateKey: string): Signer {
   return { address: account.address, account };
 }
 
+// `./aws` — an AWS KMS-backed signer (the key never leaves KMS; implemented in `./aws.ts`).
+export { type KmsClientLike, type AwsSignerConfig, createAwsSigner };
+
+// ── Composition-root selector ───────────────────────────────────────────────────────
+
+/** The signer backends a service can select at boot. */
+export const SIGNER_SOURCES = ["local", "aws"] as const;
+export type SignerSource = (typeof SIGNER_SOURCES)[number];
+
+/** AWS KMS selection — identical whether it lives in `Config` or the resolved input. */
+type AwsSignerSelection = { source: "aws"; keyId: string; address?: Address; region?: string };
+
 /**
- * `./kms` — stub. A production KMS/HSM signer: the address is derived off-chain from the
- * KMS public key; `signTransaction` (digest in / signature out) is done by the HSM.
- * Wireable but throws on sign until implemented (#25).
+ * How a service is **configured** to obtain its `Signer` (this is what lives in a service's
+ * `Config`, env-derived, no key material).
+ * - `local`: `keyRef` names where the key is stored; the composition root resolves it via
+ *   `@repo/secrets` and passes the value in as a `ResolvedSignerConfig`.
+ * - `aws`: the key lives in AWS KMS; `keyId` identifies it, nothing is resolved.
  */
-export function createKmsSigner(config: { keyId: string; address: Address }): Signer {
-  const notImplemented = async (): Promise<never> => {
-    throw new Error(`KMS signer not implemented (keyId=${config.keyId}) — see issue #25`);
-  };
-  const account = toAccount({
-    address: config.address,
-    signMessage: notImplemented,
-    signTransaction: notImplemented,
-    signTypedData: notImplemented,
-  });
-  return { address: config.address, account };
+export type SignerConfig = { source: "local"; keyRef: string } | AwsSignerSelection;
+
+/**
+ * The **resolved** input `createSigner` consumes. Same as `SignerConfig` except the local
+ * key ref has already been resolved to the actual `privateKey` by the caller — so
+ * `@repo/signer` stays free of any secrets/resolver concept.
+ */
+export type ResolvedSignerConfig = { source: "local"; privateKey: string } | AwsSignerSelection;
+
+/**
+ * Turn raw (already string-validated) env fields into a `SignerConfig`, applying the
+ * cross-field rules a flat zod schema can't: `aws` requires a `keyId`, and `local`
+ * defaults its `keyRef` to the service's conventional key var. Throws (fail-fast at boot)
+ * on an inconsistent combination.
+ */
+export function buildSignerConfig(input: {
+  source: SignerSource;
+  /** `local`: the ref to resolve the key from; defaults to `defaultKeyRef`. */
+  keyRef?: string;
+  /** `local`: the ref used when `keyRef` is unset (e.g. `LIQUIDATOR_PRIVATE_KEY`). */
+  defaultKeyRef: string;
+  /** `aws`: the KMS key id/ARN/alias. */
+  kmsKeyId?: string;
+  /** `aws`: optional expected address (boot fails if it mismatches the key). */
+  address?: Address;
+  /** `aws`: optional AWS region. */
+  region?: string;
+}): SignerConfig {
+  if (input.source === "aws") {
+    if (!input.kmsKeyId) {
+      throw new Error("SIGNER_SOURCE=aws requires KMS_KEY_ID to be set");
+    }
+    return { source: "aws", keyId: input.kmsKeyId, address: input.address, region: input.region };
+  }
+  return { source: "local", keyRef: input.keyRef ?? input.defaultKeyRef };
+}
+
+/**
+ * Build the `Signer` from a **resolved** config. The caller (composition root) resolves a
+ * `local` key ref via `@repo/secrets` and passes the key in — so the key is never a
+ * plaintext `Config` field, and `@repo/signer` needs no secrets dependency. `aws` never
+ * touches key material. Async because the KMS path derives its address at boot.
+ */
+export async function createSigner(config: ResolvedSignerConfig): Promise<Signer> {
+  switch (config.source) {
+    case "local":
+      return createLocalSigner(config.privateKey);
+    case "aws":
+      return createAwsSigner({
+        keyId: config.keyId,
+        address: config.address,
+        region: config.region,
+      });
+    default: {
+      // Exhaustiveness guard — unreachable once `source` is a validated enum.
+      const unknown: never = config;
+      throw new Error(`unknown signer source: ${JSON.stringify(unknown)}`);
+    }
+  }
 }
 
 // ── Broadcast seam (for #21) ───────────────────────────────────────────────────────

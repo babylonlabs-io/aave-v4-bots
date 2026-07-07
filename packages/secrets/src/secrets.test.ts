@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { createAwsSecrets, createEnvSecrets } from "./index";
+import { afterEach, describe, expect, it } from "vitest";
+import { createEnvSecrets, createSecrets } from "./index";
 
 describe("@repo/secrets", () => {
   describe("createEnvSecrets", () => {
@@ -19,9 +19,24 @@ describe("@repo/secrets", () => {
     });
   });
 
-  describe("createAwsSecrets", () => {
-    it("is a stub that throws until implemented", async () => {
-      await expect(createAwsSecrets().get("anything")).rejects.toThrow(/not implemented/);
+  describe("createSecrets (selector)", () => {
+    afterEach(() => {
+      process.env.SELECTOR_TEST = undefined;
+    });
+
+    it("source=env resolves from process.env", async () => {
+      process.env.SELECTOR_TEST = "value";
+      const secrets = createSecrets({ source: "env" });
+      await expect(secrets.get("SELECTOR_TEST")).resolves.toBe("value");
+    });
+
+    it("source=aws builds an AWS-backed provider (no call made here)", () => {
+      const secrets = createSecrets({ source: "aws", region: "us-east-1" });
+      expect(typeof secrets.get).toBe("function");
+    });
+
+    it("throws on an unknown source", () => {
+      expect(() => createSecrets({ source: "vault" as never })).toThrow(/unknown secrets source/);
     });
   });
 });

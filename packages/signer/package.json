@@ -12,6 +12,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "^3.700.0",
+    "@noble/curves": "^1.9.1",
     "viem": "^2.37.0"
   },
   "devDependencies": {

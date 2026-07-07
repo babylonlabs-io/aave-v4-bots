@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createKmsSigner, createLocalSigner, createPublicSubmitter } from "./index";
+import { buildSignerConfig, createLocalSigner, createPublicSubmitter, createSigner } from "./index";
 
 // Anvil account[0].
 const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
@@ -33,14 +33,57 @@ describe("@repo/signer", () => {
     });
   });
 
-  describe("createKmsSigner (stub)", () => {
-    it("exposes the configured address but throws on sign", async () => {
-      const signer = createKmsSigner({ keyId: "arn:test", address: ADDR });
-      expect(signer.address).toBe(ADDR);
-      await expect(signer.account.signTransaction?.({ chainId: 1 } as never)).rejects.toThrow(
-        /KMS signer not implemented/
+  // `createAwsSigner` (the real AWS KMS adapter) is covered in `aws.test.ts`.
+
+  describe("buildSignerConfig", () => {
+    it("defaults to a local signer whose keyRef is the service default", () => {
+      expect(
+        buildSignerConfig({ source: "local", defaultKeyRef: "LIQUIDATOR_PRIVATE_KEY" })
+      ).toEqual({ source: "local", keyRef: "LIQUIDATOR_PRIVATE_KEY" });
+    });
+
+    it("uses an explicit keyRef over the default when given", () => {
+      expect(
+        buildSignerConfig({ source: "local", keyRef: "MY_KEY", defaultKeyRef: "DEFAULT" })
+      ).toEqual({ source: "local", keyRef: "MY_KEY" });
+    });
+
+    it("builds an aws signer config from the KMS fields", () => {
+      expect(
+        buildSignerConfig({
+          source: "aws",
+          defaultKeyRef: "UNUSED",
+          kmsKeyId: "arn:aws:kms:...:key/abc",
+          address: ADDR,
+          region: "us-east-1",
+        })
+      ).toEqual({
+        source: "aws",
+        keyId: "arn:aws:kms:...:key/abc",
+        address: ADDR,
+        region: "us-east-1",
+      });
+    });
+
+    it("throws when source=aws but no KMS key id is set", () => {
+      expect(() => buildSignerConfig({ source: "aws", defaultKeyRef: "UNUSED" })).toThrow(
+        /SIGNER_SOURCE=aws requires KMS_KEY_ID/
       );
     });
+  });
+
+  describe("createSigner", () => {
+    it("builds a local signer from the resolved private key", async () => {
+      const signer = await createSigner({ source: "local", privateKey: KEY });
+      expect(signer.address).toBe(ADDR);
+    });
+
+    it("surfaces an invalid resolved key (validation happens in the local signer)", async () => {
+      await expect(createSigner({ source: "local", privateKey: "not-a-key" })).rejects.toThrow(
+        /invalid private key/
+      );
+    });
+    // The `aws` route just forwards to `createAwsSigner`, covered in `aws.test.ts`.
   });
 
   describe("createPublicSubmitter", () => {

@@ -9,8 +9,8 @@ import { type Chain, createPublicClient, createWalletClient } from "viem";
 import { instrumentedHttp } from "@repo/chain";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
-import { createEnvSecrets } from "@repo/secrets";
-import { createLocalSigner } from "@repo/signer";
+import { createSecrets } from "@repo/secrets";
+import { createSigner } from "@repo/signer";
 import { LiquidationBot } from "./bot";
 import { type Config, loadConfig } from "./config";
 import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
@@ -18,11 +18,16 @@ import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
 const logger = createLogger({ prefix: "[Bot] " });
 
 async function createBot(config: Config) {
-  // The signing key is a secret resolved at boot; the account/key lives in
-  // `@repo/signer` (a KMS signer is a drop-in — see refactor-002 Phase C / #1).
-  const secrets = createEnvSecrets();
-  const signer = createLocalSigner(await secrets.get("LIQUIDATOR_PRIVATE_KEY"));
-  logger.info(`Liquidator address: ${signer.address}`);
+  // Secrets + signer sources are selected by config (env/aws, local/aws). For a `local`
+  // signer we resolve the key ref via the secrets provider and hand the *value* to the
+  // signer; `aws` (KMS) resolves nothing. The key is never a plaintext `Config` field.
+  const secrets = createSecrets(config.secrets);
+  const signer = await createSigner(
+    config.signer.source === "local"
+      ? { source: "local", privateKey: await secrets.get(config.signer.keyRef) }
+      : config.signer
+  );
+  logger.info(`Liquidator signer: ${config.signer.source} (${signer.address})`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound
   // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.
