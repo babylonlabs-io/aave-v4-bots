@@ -5,7 +5,7 @@ const logger = createLogger();
 
 // Transaction execution primitives — nonce sourcing and receipt-waiting. The
 // service keeps its own send loop / nonce sequencing / retry orchestration; these
-// are the shared building blocks (proposal §6 — execution).
+// are the shared building blocks.
 
 type Receipt = Awaited<ReturnType<PublicClient["waitForTransactionReceipt"]>>;
 

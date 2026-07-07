@@ -4,8 +4,8 @@ import { z } from "zod";
 const logger = createLogger();
 
 // Shared, validated env-var field schemas + a fail-fast parser. Each service
-// composes these into its own env schema (per docs/production-architecture-proposal.md
-// §8). Schemas validate the raw string env value; clients coerce to number/Hex/etc.
+// composes these into its own env schema. Schemas validate the raw string env
+// value; clients coerce to number/Hex/etc.
 
 /** 0x + 40 hex chars (20-byte address). */
 export const addressSchema = z

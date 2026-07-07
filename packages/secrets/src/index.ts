@@ -1,4 +1,4 @@
-// Secrets seam (proposal §12). A `SecretsProvider` resolves a secret *ref* (an env
+// Secrets seam. A `SecretsProvider` resolves a secret *ref* (an env
 // var name today, an AWS Secrets Manager id later) at boot — RPC keys, DB passwords,
 // the Slack webhook, and the signer's key ref all flow through it, so no plaintext
 // secret is hard-wired into a service. The signing key material itself lives in

@@ -13,7 +13,7 @@ import {
 // ERC-20 balance / allowance / approval primitives — the leaf reads and writes
 // behind the bots' inventory + approval logic. Retry, caching, thresholds, and
 // receipt-waiting stay in the service (they differ per bot); these are the shared
-// building blocks (proposal §7 — capital).
+// building blocks.
 
 export interface TokenMeta {
   symbol: string;

@@ -19,15 +19,14 @@ import { toAccount } from "viem/accounts";
 import { publicKeyToAddress } from "viem/utils";
 import type { Signer } from "./index";
 
-// `@repo/signer` `./aws` adapter — signing via AWS KMS (proposal §5.1, refactor-002
-// Phase C, issue #25). Named after the *provider* (`aws`), like `@repo/secrets`'s `./aws`;
-// KMS is the specific AWS service it uses.
+// `@repo/signer` `./aws` adapter — signing via AWS KMS. Named after the *provider*
+// (`aws`), like `@repo/secrets`'s `./aws`; KMS is the specific AWS service it uses.
 //
 // A production signer where the key never leaves AWS KMS: the KMS key is an asymmetric
 // `ECC_SECG_P256K1` / `SIGN_VERIFY` key, the Ethereum address is derived from its public
 // key, and every signature is produced by a KMS `Sign` call. It plugs into the same
 // `Signer` port as the local signer — a service builds its `WalletClient` with
-// `signer.account`, and viem's usual assemble→sign→broadcast flow is unchanged (D5).
+// `signer.account`, and viem's usual assemble→sign→broadcast flow is unchanged.
 //
 // Two EVM-specific fix-ups are applied to every KMS signature:
 //   1. **low-`s` (EIP-2):** KMS may return the high-`s` variant; EVM rejects it, so `s`

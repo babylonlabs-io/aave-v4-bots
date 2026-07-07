@@ -2,7 +2,7 @@ import type { Account, Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { type AwsSignerConfig, type KmsClientLike, createAwsSigner } from "./aws";
 
-// Signing seam (proposal §5.1, refactor-002 Phase C).
+// Signing seam.
 //
 // A `Signer` is modelled as a viem `Account` — the abstraction viem itself uses for
 // signing. Keeping it as an `Account` is what makes the local path **behavior-
@@ -10,12 +10,12 @@ import { type AwsSignerConfig, type KmsClientLike, createAwsSigner } from "./aws
 // `writeContract` already routes signing through the account (prepare →
 // `account.signTransaction` → `sendRawTransaction`). A KMS-backed signer is therefore a
 // drop-in — a custom `Account` whose `signTransaction` calls the HSM — with **no engine
-// change** (see `./kms`).
+// change** (see `./aws`).
 //
-// **Decision D5:** local sends stay on viem's machinery (do not re-implement
-// assemble→sign→broadcast). The explicit `signTransaction` → `Submitter.send` split
-// (sign once, choose the broadcast path) ships below as a seam but is only wired onto the
-// hot path in #21, where a private-relay `Submitter` actually needs it.
+// Local sends stay on viem's machinery (do not re-implement assemble→sign→broadcast).
+// The explicit `signTransaction` → `Submitter.send` split (sign once, choose the
+// broadcast path) ships below as a seam but is only wired onto the hot path once a
+// non-default (e.g. private-relay) `Submitter` actually needs it.
 
 export interface Signer {
   /** The signer's address. */
@@ -122,9 +122,9 @@ export async function createSigner(config: ResolvedSignerConfig): Promise<Signer
   }
 }
 
-// ── Broadcast seam (for #21) ───────────────────────────────────────────────────────
+// ── Broadcast seam ───────────────────────────────────────────────────────────────
 
-/** Where/how a signed tx is broadcast. Extended in #21 (private relay vs public). */
+/** Where/how a signed tx is broadcast. Extended later (private relay vs public). */
 export interface SubmitPolicy {
   readonly relay?: "public";
 }
