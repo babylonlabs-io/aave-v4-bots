@@ -79,6 +79,11 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "\n",
             "AWS_REGION=",
             vm.envString("AWS_REGION"),
+            "\n",
+            // Assert the KMS key derives the address we funded — the bot fails fast at
+            // boot on a mismatch instead of dying later on gas/timeout errors.
+            "SIGNER_ADDRESS=",
+            vm.toString(arbAddr),
             "\n"
         );
     }

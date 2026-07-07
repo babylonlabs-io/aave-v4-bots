@@ -19,6 +19,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 # Copy package.json files for the ponder and its workspace deps
 COPY packages/abis/package.json ./packages/abis/
 COPY packages/logger/package.json ./packages/logger/
+COPY packages/secrets/package.json ./packages/secrets/
 COPY services/ponder/package.json ./services/ponder/
 
 # Install dependencies (workspace-aware)
@@ -27,6 +28,7 @@ RUN pnpm install --frozen-lockfile --filter @services/ponder
 # Copy ponder source code + config and its workspace deps
 COPY packages/abis/ ./packages/abis/
 COPY packages/logger/ ./packages/logger/
+COPY packages/secrets/ ./packages/secrets/
 COPY services/ponder/ ./services/ponder/
 
 # ============================================
