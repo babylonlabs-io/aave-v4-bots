@@ -395,6 +395,9 @@ importers:
       '@repo/logger':
         specifier: workspace:*
         version: link:../../packages/logger
+      '@repo/secrets':
+        specifier: workspace:*
+        version: link:../../packages/secrets
       hono:
         specifier: ^4.5.0
         version: 4.10.8

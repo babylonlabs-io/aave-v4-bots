@@ -105,7 +105,7 @@ export interface Config extends ArbitrageEngineParams {
  * Fails fast with clear error messages if validation fails.
  */
 export function loadConfig(): Config {
-  const env = parseEnv(envSchema);  
+  const env = parseEnv(envSchema);
 
   // A half-configured liquidation mode is almost certainly a typo — fail loudly.
   if (!!env.ADAPTER_ADDRESS !== !!env.LENS_ADDRESS) {

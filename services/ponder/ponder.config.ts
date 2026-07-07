@@ -1,13 +1,27 @@
 import { adapterAbi, spokeAbi, vaultSwapAbi } from "@repo/abis";
+import { createAwsSecrets } from "@repo/secrets";
 import { createConfig } from "ponder";
 
 import { INDEX_ARBITRAGE, INDEX_LIQUIDATION } from "./src/flags";
 
+// Secret-bearing values (DB connection, RPC URL) are read from env first; if one is absent
+// and CONFIG_SECRET_ID is set, it falls back to that AWS Secrets Manager JSON secret's
+// matching field (e.g. `<CONFIG_SECRET_ID>#DATABASE_URL`). Unset ⇒ pure env (unchanged).
+const CONFIG_SECRET_ID = process.env.CONFIG_SECRET_ID;
+const secrets = CONFIG_SECRET_ID ? createAwsSecrets({ region: process.env.AWS_REGION }) : undefined;
+
+async function resolveSecret(name: string): Promise<string | undefined> {
+  const fromEnv = process.env[name];
+  if (fromEnv) return fromEnv;
+  if (secrets && CONFIG_SECRET_ID) return secrets.get(`${CONFIG_SECRET_ID}#${name}`);
+  return undefined;
+}
+
 // Shared chain config
-const PONDER_RPC_URL = process.env.PONDER_RPC_URL;
+const PONDER_RPC_URL = await resolveSecret("PONDER_RPC_URL");
+const DATABASE_URL = await resolveSecret("DATABASE_URL");
 const CHAIN_ID = Number(process.env.CHAIN_ID || 1);
 const START_BLOCK = Number(process.env.START_BLOCK || 0);
-const DATABASE_URL = process.env.DATABASE_URL;
 const POLLING_INTERVAL = Number(process.env.PONDER_POLLING_INTERVAL || 4000);
 
 // Per-mode addresses
