@@ -361,8 +361,15 @@ export class LiquidationEngine {
         }
 
         const priorityOrder = sequentialPriorityOrder(amounts.length);
+
+        // Broadcast is isolated from the post-send bookkeeping on purpose: only a failure
+        // of `writeContract` itself (the tx never went out) marks the intent failed and
+        // re-drivable. Once a hash is returned the tx IS on chain, so a later store/receipt
+        // error must NOT flip the intent to a terminal state (that would let the next run
+        // re-submit the same liquidation) — it stays live for boot reconcile to resolve.
+        let hash: Hex;
         try {
-          const hash = this.isDirectRedemption
+          hash = this.isDirectRedemption
             ? await this.walletClient.writeContract({
                 address: this.adapterAddress,
                 abi: adapterAbi,
@@ -384,27 +391,46 @@ export class LiquidationEngine {
                 args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
                 nonce,
               });
-          this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
-          if (intentId) await this.store?.transition(intentId, "submitted", { txHash: hash });
-          sent.push({ hash, intentId });
-          if (!this.store) nonce += 1;
         } catch (error) {
           this.metrics.recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           this.logger.error(`Failed to send liquidation for ${position.borrower}: ${errorMsg}`);
           if (intentId) await this.store?.transition(intentId, "failed", { error: errorMsg });
+          // The reserved nonce was never broadcast, so free it for the next candidate. With a
+          // store, reset the lease to that exact nonce (reuse) rather than re-reading the
+          // chain — a lagging `pending` count could otherwise rewind the lease below a nonce
+          // this run already broadcast, reusing it. Without a store, re-sync from the chain.
+          if (this.store) {
+            await this.store.syncNonce(signer, nonce);
+          } else {
+            try {
+              nonce = await nextNonce(this.publicClient, signer);
+            } catch (nonceError) {
+              this.logger.error(
+                "Failed to re-sync nonce, skipping remaining candidates:",
+                nonceError
+              );
+              break;
+            }
+          }
+          continue;
+        }
+
+        // Broadcast succeeded — record it best-effort; a bookkeeping failure here is logged,
+        // not fatal, and never marks the intent failed (see above).
+        this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
+        if (intentId) {
           try {
-            const chainNonce = await nextNonce(this.publicClient, signer);
-            if (this.store) await this.store.syncNonce(signer, chainNonce);
-            else nonce = chainNonce;
-          } catch (nonceError) {
+            await this.store?.transition(intentId, "submitted", { txHash: hash });
+          } catch (bookkeepingError) {
             this.logger.error(
-              "Failed to re-sync nonce, skipping remaining candidates:",
-              nonceError
+              `Failed to persist 'submitted' for ${position.proxyAddress} (tx ${hash} is broadcast; reconcile will resolve):`,
+              bookkeepingError
             );
-            break;
           }
         }
+        sent.push({ hash, intentId });
+        if (!this.store) nonce += 1;
       }
 
       if (sent.length === 0) {

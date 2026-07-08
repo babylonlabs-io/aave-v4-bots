@@ -177,8 +177,14 @@ export async function reconcilePending(args: {
       await store.transition(id, "failed", { error: "nonce mined without recorded hash" });
       summary.failed++;
     } else if (nonce !== null && pending > nonce) {
-      // Likely in the mempool — keep it live so this boot does not re-drive it.
+      // Likely in the mempool — keep it live so this boot does not re-drive it. Without a
+      // hash we can't confirm it; if such a tx never mines and never drops, the intent stays
+      // live across boots and this subject is refused until then (no-double-submit is favored
+      // over liveness). Warn so a stuck position is observable to an operator.
       await store.transition(id, "submitted", { error: "broadcast unconfirmed on boot" });
+      logger?.warn(
+        `Reconcile: ${intent.action} ${intent.subject} kept in-flight — nonce ${nonce} in mempool, no recorded tx hash`
+      );
       summary.stillInFlight++;
     } else {
       await store.transition(id, "failed", { error: "not broadcast (reconciled)" });

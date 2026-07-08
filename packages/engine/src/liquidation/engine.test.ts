@@ -767,5 +767,57 @@ describe("LiquidationEngine", () => {
         expect.objectContaining({ nonce: 7 })
       );
     });
+
+    it("does not mark an intent failed when post-broadcast bookkeeping fails", async () => {
+      const store = createMemoryStore();
+      // The 'submitted' write fails *after* writeContract has broadcast the tx. This must not
+      // flip the intent to terminal 'failed' (which would let the next run double-submit).
+      const realTransition = store.transition;
+      store.transition = (async (id, to, meta) => {
+        if (to === "submitted") throw new Error("db blip after broadcast");
+        return realTransition(id, to, meta);
+      }) as typeof store.transition;
+
+      const { bot, clients } = storeBot(store);
+      global.fetch = feed([mockPosition]);
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(store.rows.get([...store.rows.keys()][0])?.status).not.toBe("failed");
+    });
+
+    it("reuses the reserved nonce after a send failure (no rewind to a lagging chain nonce)", async () => {
+      const store = createMemoryStore();
+      const { bot, clients } = storeBot(store);
+      // Chain seeds the lease at 10 and keeps reporting 10 (a lagging pending count).
+      clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(10);
+      const p2: LiquidatablePosition = {
+        ...mockPosition,
+        proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        borrower: "0xborrower0000000000000000000000000000000002",
+      };
+      const p3: LiquidatablePosition = {
+        ...mockPosition,
+        proxyAddress: "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed",
+        borrower: "0xborrower0000000000000000000000000000000003",
+      };
+      clients.walletClient.writeContract = vi
+        .fn()
+        .mockResolvedValueOnce("0xA") // nonce 10 — ok
+        .mockRejectedValueOnce(new Error("send failed")) // nonce 11 — fails
+        .mockResolvedValueOnce("0xC"); // must reuse nonce 11, not rewind to chain's 10
+      global.fetch = feed([mockPosition, p2, p3]);
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ nonce: 10 })
+      );
+      expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({ nonce: 11 })
+      );
+    });
   });
 });
