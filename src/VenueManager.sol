@@ -28,7 +28,11 @@ import {ExpectCallback} from "./base/ExpectCallback.sol";
 ///         The VenueManager will approve the flash-borrowed asset back to the wrapper, and the wrapper will
 ///         transfer the asset back to UniswapV4 to complete the flash swap.
 ///
-///         Data once passed into VenueManager will ALWAYS be encoded with a header to differentiate layers of encoding.
+///         - Data once passed into VenueManager will ALWAYS be encoded with a header to differentiate layers of encoding.
+///         - VenueManager does not know about the data structure. It will always stamp the data with a header and pass it
+///         to the next layer. The next layer will decode the data and pass it to the next layer, and so on.
+///         - Once the same data is passed back to VenueManager, it will decode the data and pass it to the previous layer
+///         with _resumeAfterCallback(). The previous layer will deduce its own state using the data
 
 abstract contract VenueManager is
     IMorphoFlashLoanCallback,
