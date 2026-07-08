@@ -1,5 +1,6 @@
 import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
+import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "./engine";
@@ -395,83 +396,16 @@ describe("ArbitrageEngine", () => {
   });
 
   describe("crash-safety + nonce allocator", () => {
-    type Intent = {
-      id: string;
-      status: string;
-      nonce: number | null;
-      txHash: string | null;
-      error: string | null;
-    };
-    // Minimal in-memory StateStore double (idempotency refuse/revive + reconcile list).
-    function createMemoryStore() {
-      const rows = new Map<string, Intent & { action: string; subject: string }>();
-      const live = new Set(["pending", "submitted"]);
-      const key = (i: { chainId: number; target: string; action: string; subject: string }) =>
-        `${i.chainId}:${i.target.toLowerCase()}:${i.action}:${i.subject.toLowerCase()}`;
-      return {
-        rows,
-        async reserveNonce() {
-          return 0;
-        },
-        async syncNonce() {},
-        async recordIntent(i: {
-          chainId: number;
-          target: string;
-          action: string;
-          subject: string;
-        }) {
-          const id = key(i);
-          const existing = rows.get(id);
-          if (existing && live.has(existing.status)) return { recorded: false, existing };
-          rows.set(id, {
-            id,
-            action: i.action,
-            subject: i.subject,
-            status: "pending",
-            nonce: null,
-            txHash: null,
-            error: null,
-          });
-          return { recorded: true, id };
-        },
-        async transition(
-          id: string,
-          to: string,
-          meta?: { nonce?: number; txHash?: string; error?: string }
-        ) {
-          const row = rows.get(id);
-          if (!row) return;
-          rows.set(id, {
-            ...row,
-            status: to,
-            nonce: meta?.nonce ?? row.nonce,
-            txHash: meta?.txHash ?? row.txHash,
-            error: meta?.error ?? row.error,
-          });
-        },
-        async reconcile(action?: string) {
-          return [...rows.values()].filter(
-            (r) => live.has(r.status) && (!action || r.action === action)
-          );
-        },
-        async close() {},
-      };
-    }
-    type Store = ReturnType<typeof createMemoryStore>;
-
-    function storeBot(store: Store, seedNonce = 5) {
+    function storeBot(store: MemoryStateStore, seedNonce = 5) {
       const clients = createMockClients();
       (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
       const nonces = createNonceAllocator(createNonceLease(), "0xarbitrageur");
-      const bot = createBot(clients, {
-        store: store as unknown as ArbitrageEngineConfig["store"],
-        nonces,
-      });
+      const bot = createBot(clients, { store, nonces });
       return { bot, clients, nonces, seedNonce };
     }
 
     it("records an intent and routes the swap through the allocator", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       const { bot, clients, nonces } = storeBot(store);
       await nonces.resync(() => Promise.resolve(5)); // seed the lease (run() would do this at cycle start)
 
@@ -481,12 +415,12 @@ describe("ArbitrageEngine", () => {
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "swapWbtcForVault", nonce: 5 })
       );
-      const intent = store.rows.get([...store.rows.keys()][0]);
+      const intent = store.all()[0];
       expect(intent?.status).toBe("confirmed");
     });
 
     it("refuses a duplicate live acquisition (no second swap)", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       const { bot, clients, nonces } = storeBot(store);
       await nonces.resync(() => Promise.resolve(5));
 
@@ -506,7 +440,7 @@ describe("ArbitrageEngine", () => {
     });
 
     it("keeps the intent live (not terminal) on an ambiguous send error", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       const { bot, clients, nonces } = storeBot(store);
       await nonces.resync(() => Promise.resolve(5));
       clients.walletClient.writeContract = vi.fn().mockRejectedValue(new Error("rpc timeout"));
@@ -514,13 +448,13 @@ describe("ArbitrageEngine", () => {
       const ok = await bot.acquireVault(mockVault);
 
       expect(ok).toBe("send-error");
-      const intent = store.rows.get([...store.rows.keys()][0]);
+      const intent = store.all()[0];
       expect(intent?.status).toBe("submitted"); // live, not "failed"
       expect(intent?.nonce).toBe(5); // reserved nonce persisted for reconcile
     });
 
     it("run() stops the cycle after a send error (does not process later vaults)", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       const { bot, clients } = storeBot(store);
       // run() reseeds the lease from the chain each cycle.
       (clients.publicClient as { getTransactionCount?: unknown }).getTransactionCount = vi

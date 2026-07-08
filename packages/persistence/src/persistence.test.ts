@@ -1,83 +1,13 @@
 import type { Address, Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import {
-  type ChainReader,
-  type IntentInput,
-  type IntentStatus,
-  type RecordResult,
-  type StateStore,
-  type TransitionMeta,
-  type TxIntent,
-  idempotencyKey,
-  reconcilePending,
-} from "./index";
+import { type ChainReader, type IntentInput, idempotencyKey, reconcilePending } from "./index";
+import { createMemoryStateStore } from "./memory";
 
 const SIGNER = "0x1111111111111111111111111111111111111111" as Address;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
 
 function input(subject: string, over: Partial<IntentInput> = {}): IntentInput {
   return { chainId: 31337, target: TARGET, action: "liquidation", subject, ...over };
-}
-
-/**
- * An in-memory `StateStore` that faithfully mirrors the adapter's semantics (idempotency
- * refuse/revive, nonce lease, reconcile work-list). Used to drive the `reconcilePending`
- * logic without a database; the real SQL is covered by the gated integration test.
- */
-function createMemoryStore(): StateStore & { all(): TxIntent[] } {
-  const rows = new Map<string, TxIntent>();
-  const leases = new Map<string, number>();
-  const live: IntentStatus[] = ["pending", "submitted"];
-
-  return {
-    all: () => [...rows.values()],
-
-    async reserveNonce(address) {
-      const key = address.toLowerCase();
-      const next = leases.get(key);
-      if (next === undefined) throw new Error("not seeded");
-      leases.set(key, next + 1);
-      return next;
-    },
-    async syncNonce(address, chainNonce) {
-      leases.set(address.toLowerCase(), chainNonce);
-    },
-    async recordIntent(i): Promise<RecordResult> {
-      const id = idempotencyKey(i);
-      const now = Date.now();
-      const existing = rows.get(id);
-      if (existing && live.includes(existing.status)) {
-        return { recorded: false, existing };
-      }
-      rows.set(id, {
-        id,
-        ...i,
-        status: "pending",
-        nonce: null,
-        txHash: null,
-        error: null,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      });
-      return { recorded: true, id };
-    },
-    async transition(id, to: IntentStatus, meta?: TransitionMeta) {
-      const row = rows.get(id);
-      if (!row) return;
-      rows.set(id, {
-        ...row,
-        status: to,
-        nonce: meta?.nonce ?? row.nonce,
-        txHash: meta?.txHash ?? row.txHash,
-        error: meta?.error ?? row.error,
-        updatedAt: Date.now(),
-      });
-    },
-    async reconcile() {
-      return [...rows.values()].filter((r) => live.includes(r.status));
-    },
-    async close() {},
-  };
 }
 
 /** A `ChainReader` with scripted receipt statuses and fixed latest/pending nonces. */
@@ -116,7 +46,7 @@ describe("idempotencyKey", () => {
 
 describe("recordIntent idempotency (memory model)", () => {
   it("refuses a second live record, revives a terminal one", async () => {
-    const store = createMemoryStore();
+    const store = createMemoryStateStore();
     expect((await store.recordIntent(input("p"))).recorded).toBe(true);
 
     const second = await store.recordIntent(input("p"));
@@ -129,7 +59,7 @@ describe("recordIntent idempotency (memory model)", () => {
 
 describe("reconcilePending", () => {
   it("confirms a submitted intent whose receipt succeeded", async () => {
-    const store = createMemoryStore();
+    const store = createMemoryStateStore();
     const id = idempotencyKey(input("p"));
     await store.recordIntent(input("p"));
     await store.transition(id, "submitted", { nonce: 5, txHash: "0xhash" as Hex });
@@ -145,7 +75,7 @@ describe("reconcilePending", () => {
   });
 
   it("fails a no-hash pending intent whose reserved nonce was already mined", async () => {
-    const store = createMemoryStore();
+    const store = createMemoryStateStore();
     await store.recordIntent(input("p"));
     await store.transition(idempotencyKey(input("p")), "pending", { nonce: 4 });
 
@@ -160,7 +90,7 @@ describe("reconcilePending", () => {
   });
 
   it("fails a submitted intent whose tx was dropped (nonce mined past, no receipt)", async () => {
-    const store = createMemoryStore();
+    const store = createMemoryStateStore();
     await store.recordIntent(input("p"));
     await store.transition(idempotencyKey(input("p")), "submitted", {
       nonce: 5,
@@ -177,7 +107,7 @@ describe("reconcilePending", () => {
   });
 
   it("leaves a genuinely-pending submitted intent in-flight", async () => {
-    const store = createMemoryStore();
+    const store = createMemoryStateStore();
     await store.recordIntent(input("p"));
     await store.transition(idempotencyKey(input("p")), "submitted", {
       nonce: 5,
@@ -194,7 +124,7 @@ describe("reconcilePending", () => {
   });
 
   it("fails a pending intent that was never broadcast (re-drivable)", async () => {
-    const store = createMemoryStore();
+    const store = createMemoryStateStore();
     await store.recordIntent(input("p"));
     await store.transition(idempotencyKey(input("p")), "pending", { nonce: 7 });
 
@@ -209,7 +139,7 @@ describe("reconcilePending", () => {
   });
 
   it("keeps a pending intent live when its reserved nonce is already in the mempool", async () => {
-    const store = createMemoryStore();
+    const store = createMemoryStateStore();
     await store.recordIntent(input("p"));
     await store.transition(idempotencyKey(input("p")), "pending", { nonce: 7 });
 
@@ -224,7 +154,7 @@ describe("reconcilePending", () => {
   });
 
   it("no-ops with nothing in flight", async () => {
-    const store = createMemoryStore();
+    const store = createMemoryStateStore();
     const summary = await reconcilePending({ store, signer: SIGNER, reader: reader({}) });
     expect(summary.examined).toBe(0);
   });

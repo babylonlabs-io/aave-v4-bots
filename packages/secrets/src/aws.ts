@@ -1,5 +1,5 @@
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import type { SecretsProvider } from "./index";
+import type { SecretsProvider } from "./types";
 
 // `@repo/secrets` `./aws` adapter. Resolves a ref via `GetSecretValue`. A ref is a Secrets
 // Manager name/ARN, optionally with a `#jsonKey` suffix that selects a single field from a

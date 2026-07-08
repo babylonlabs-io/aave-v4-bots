@@ -29,7 +29,7 @@ import {
   reconcileIntents,
   resyncNonces,
   sendMaybeAllocated,
-} from "../crash-safety";
+} from "../crashSafety";
 import type { EscrowedVault, PonderResponse } from "./types";
 
 /**

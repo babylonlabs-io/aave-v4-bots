@@ -24,7 +24,7 @@ import {
   reconcileIntents,
   resyncNonces,
   sendMaybeAllocated,
-} from "../crash-safety";
+} from "../crashSafety";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {

@@ -1,5 +1,6 @@
 import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
+import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
 import { maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -627,72 +628,6 @@ describe("LiquidationEngine", () => {
   });
 
   describe("crash-safety (StateStore)", () => {
-    // A faithful in-memory StateStore double (mirrors the Postgres adapter's semantics):
-    // idempotency refuse/revive, a per-address nonce lease, and a reconcile work-list.
-    function createMemoryStore() {
-      const rows = new Map<string, StateStoreIntent>();
-      const leases = new Map<string, number>();
-      const live = new Set(["pending", "submitted"]);
-      const key = (i: { chainId: number; target: string; action: string; subject: string }) =>
-        `${i.chainId}:${i.target.toLowerCase()}:${i.action}:${i.subject.toLowerCase()}`;
-      return {
-        rows,
-        async reserveNonce(address: string) {
-          const k = address.toLowerCase();
-          const n = leases.get(k);
-          if (n === undefined) throw new Error("not seeded");
-          leases.set(k, n + 1);
-          return n;
-        },
-        async syncNonce(address: string, chainNonce: number) {
-          leases.set(address.toLowerCase(), chainNonce);
-        },
-        async recordIntent(input: {
-          chainId: number;
-          target: string;
-          action: string;
-          subject: string;
-        }) {
-          const id = key(input);
-          const existing = rows.get(id);
-          if (existing && live.has(existing.status)) return { recorded: false, existing };
-          rows.set(id, { id, ...input, status: "pending", nonce: null, txHash: null, error: null });
-          return { recorded: true, id };
-        },
-        async transition(
-          id: string,
-          to: string,
-          meta?: { nonce?: number; txHash?: string; error?: string }
-        ) {
-          const row = rows.get(id);
-          if (!row) return;
-          rows.set(id, {
-            ...row,
-            status: to,
-            nonce: meta?.nonce ?? row.nonce,
-            txHash: meta?.txHash ?? row.txHash,
-            error: meta?.error ?? row.error,
-          });
-        },
-        async reconcile() {
-          return [...rows.values()].filter((r) => live.has(r.status));
-        },
-        async close() {},
-      };
-    }
-    type StateStoreIntent = {
-      id: string;
-      chainId: number;
-      target: string;
-      action: string;
-      subject: string;
-      status: string;
-      nonce: number | null;
-      txHash: string | null;
-      error: string | null;
-    };
-    type Store = ReturnType<typeof createMemoryStore>;
-
     const feed = (positions: LiquidatablePosition[]) =>
       vi.fn().mockResolvedValue({
         ok: true,
@@ -702,20 +637,17 @@ describe("LiquidationEngine", () => {
     // A bot wired with the store + a fresh in-memory nonce allocator (as the composition root
     // does). A new allocator per bot models a restart (in-memory lease resets; the store
     // persists). The allocator is seeded from the chain by run()'s cycle-start resync.
-    function storeBot(store: Store) {
+    function storeBot(store: MemoryStateStore) {
       const clients = createMockClients();
       // The store path reads chainId off the wallet's chain.
       (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
       const nonces = createNonceAllocator(createNonceLease(), clients.walletClient.account.address);
-      const bot = createBot(clients, {
-        store: store as unknown as LiquidationEngineConfig["store"],
-        nonces,
-      });
+      const bot = createBot(clients, { store, nonces });
       return { bot, clients };
     }
 
     it("re-drives after a crash mid-submit without double-sending", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
 
       // Run 1: the tx is broadcast, but the receipt never lands (simulated crash before
       // confirmation), so the intent is left 'submitted' (in-flight).
@@ -743,7 +675,7 @@ describe("LiquidationEngine", () => {
     });
 
     it("keeps a failed send live, then re-drives it once the chain shows the nonce free", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       const { bot, clients } = storeBot(store);
       // Chain nonce stays 0 (the failed tx never broadcast), so next-cycle reconcile can prove
       // the reserved nonce is free and re-drive. First send throws, second succeeds.
@@ -755,17 +687,17 @@ describe("LiquidationEngine", () => {
 
       global.fetch = feed([mockPosition]);
       await bot.run(); // send fails → intent kept LIVE (not terminal), never re-driven this cycle
-      const id = [...store.rows.keys()][0];
-      expect(store.rows.get(id)?.status).toBe("submitted");
+      const id = store.all()[0].id;
+      expect(store.get(id)?.status).toBe("submitted");
 
       global.fetch = feed([mockPosition]);
       await bot.run(); // cycle-start reconcile: nonce free ⇒ terminal ⇒ re-drive
       expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
-      expect(store.rows.get(id)?.status).toBe("confirmed");
+      expect(store.get(id)?.status).toBe("confirmed");
     });
 
     it("holds (does not re-drive) a live intent whose reserved nonce is still in the mempool", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       const { bot, clients } = storeBot(store);
       // Run 1: chain nonce 6 → the send reserves 6 then throws AFTER (mocked) broadcast.
       clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(6);
@@ -773,9 +705,9 @@ describe("LiquidationEngine", () => {
 
       global.fetch = feed([mockPosition]);
       await bot.run(); // send throws → intent kept live at nonce 6
-      const id = [...store.rows.keys()][0];
-      expect(store.rows.get(id)?.status).toBe("submitted");
-      expect(store.rows.get(id)?.nonce).toBe(6);
+      const id = store.all()[0].id;
+      expect(store.get(id)?.status).toBe("submitted");
+      expect(store.get(id)?.nonce).toBe(6);
 
       // Run 2: the ambiguous tx is now visible in the mempool — pending advanced past nonce 6.
       clients.publicClient.getTransactionCount = vi
@@ -789,7 +721,7 @@ describe("LiquidationEngine", () => {
     });
 
     it("allocates nonces from the persisted lease, seeded from the chain", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       const { bot, clients } = storeBot(store);
       // Chain's next nonce is 7; the lease should seed there and the tx use it.
       clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(7);
@@ -803,7 +735,7 @@ describe("LiquidationEngine", () => {
     });
 
     it("does not mark an intent failed when post-broadcast bookkeeping fails", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       // The 'submitted' write fails *after* writeContract has broadcast the tx. This must not
       // flip the intent to terminal 'failed' (which would let the next run double-submit).
       const realTransition = store.transition;
@@ -817,11 +749,11 @@ describe("LiquidationEngine", () => {
       await bot.run();
 
       expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
-      expect(store.rows.get([...store.rows.keys()][0])?.status).not.toBe("failed");
+      expect(store.all()[0]?.status).not.toBe("failed");
     });
 
     it("stops the cycle on a send error (does not send later candidates at a gapped nonce)", async () => {
-      const store = createMemoryStore();
+      const store = createMemoryStateStore();
       const { bot, clients } = storeBot(store);
       clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(10);
       const p2: LiquidatablePosition = {

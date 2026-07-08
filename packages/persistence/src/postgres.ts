@@ -8,8 +8,8 @@ import type {
   StateStore,
   TransitionMeta,
   TxIntent,
-} from "./index";
-import { idempotencyKey } from "./index";
+} from "./types";
+import { idempotencyKey } from "./utils";
 
 // `@repo/persistence` `./postgres` adapter — the durable `StateStore` backend. Tables live
 // in a dedicated schema (default `bot`) so they never collide with the indexer's tables in

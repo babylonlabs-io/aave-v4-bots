@@ -1,28 +1,18 @@
-import type { Account, Address, Hex } from "viem";
+import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { type AwsSignerConfig, type KmsClientLike, createAwsSigner } from "./aws";
+import type { Signer } from "./types";
 
-// Signing seam.
-//
-// A `Signer` is modelled as a viem `Account` — the abstraction viem itself uses for
-// signing. Keeping it as an `Account` is what makes the local path **behavior-
-// preserving**: a service builds its `WalletClient` with `signer.account`, and viem's
-// `writeContract` already routes signing through the account (prepare →
-// `account.signTransaction` → `sendRawTransaction`). A KMS-backed signer is therefore a
-// drop-in — a custom `Account` whose `signTransaction` calls the HSM — with **no engine
-// change** (see `./aws`).
+// `@repo/signer` public surface: the `Signer` port (`./types`), the `./local` adapter +
+// selectors below, the `./aws` KMS adapter, and the broadcast `Submitter` seam. See `./types`
+// for how the port is modelled.
 //
 // Local sends stay on viem's machinery (do not re-implement assemble→sign→broadcast).
-// The explicit `signTransaction` → `Submitter.send` split (sign once, choose the
-// broadcast path) ships below as a seam but is only wired onto the hot path once a
-// non-default (e.g. private-relay) `Submitter` actually needs it.
+// The explicit `signTransaction` → `Submitter.send` split (sign once, choose the broadcast
+// path) ships below as a seam but is only wired onto the hot path once a non-default (e.g.
+// private-relay) `Submitter` actually needs it.
 
-export interface Signer {
-  /** The signer's address. */
-  readonly address: Address;
-  /** The viem account used to build a `WalletClient` (holds/backs the key). */
-  readonly account: Account;
-}
+export type { Signer } from "./types";
 
 /** A 32-byte hex private key: `0x` + 64 hex chars. */
 const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
