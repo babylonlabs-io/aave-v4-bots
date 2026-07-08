@@ -26,4 +26,8 @@ abstract contract ExpectCallback {
         require(expected == caller, "ExpectCallback: Invalid Callback");
         EXPECT_CALLBACK_TK.storeAddress(address(0));
     }
+
+    function _requireCompleteCallback() internal view {
+        require(EXPECT_CALLBACK_TK.loadAddress() == address(0), "ExpectCallback: Callback not completed");
+    }
 }

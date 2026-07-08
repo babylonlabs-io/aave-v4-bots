@@ -57,6 +57,7 @@ abstract contract VenueManager is
     function _setUpSwapVenue(address venueAddress, bytes memory data) internal {
         _expectCallback(venueAddress);
         ISwapVenue(venueAddress).setUp(VenueDataLib.encodeStandard(data));
+        _requireCompleteCallback();
     }
 
     function _flashLoan(VenueType venueType, address venueAddress, address token, uint256 amount, bytes calldata data)
@@ -75,6 +76,7 @@ abstract contract VenueManager is
         } else {
             revert("VenueManager: Unsupported venue type");
         }
+        _requireCompleteCallback();
     }
 
     // ---------------------- CALLBACKS ----------------------

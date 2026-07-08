@@ -34,14 +34,15 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
     }
 
     function setUp(bytes calldata data) external onlyVenueManager {
-        require(UNISWAP_V4_UNLOCKED_TK.loadBool(), "UniswapV4SwapVenue: Pool manager is already unlocked");
+        require(!UNISWAP_V4_UNLOCKED_TK.loadBool(), "UniswapV4SwapVenue: Pool manager is already unlocked");
         _expectCallback(uniV4PoolManager);
         IUniswapV4PoolManager(uniV4PoolManager).unlock(_encodeSwapData(data));
+        _requireCompleteCallback();
     }
 
     /// @dev Context:
     /// - msg.sender is now the pool manager (uniswap v4)
-    /// - swapData = [venueManager (setUp.msg.sender), data]
+    /// - swapData = [HEADER, data]
     function unlockCallback(bytes calldata swapData) external consumeCallback(msg.sender) returns (bytes memory) {
         UNISWAP_V4_UNLOCKED_TK.storeBool(true);
         bytes memory data = _decodeSwapData(swapData);
