@@ -19,13 +19,21 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
     bytes32 private constant UNISWAP_V4_UNLOCKED_TK = keccak256("UniswapV4SwapVenue.unlocked");
 
     address public immutable uniV4PoolManager;
+    address public immutable venueManager;
 
-    constructor(address _uniV4PoolManager) {
-        require(_uniV4PoolManager != address(0), "UniswapV4SwapVenue: Invalid pool manager address");
-        uniV4PoolManager = _uniV4PoolManager;
+    modifier onlyVenueManager() {
+        require(msg.sender == venueManager, "UniswapV4SwapVenue: Only venue manager can call this function");
+        _;
     }
 
-    function setUp(bytes calldata data) external {
+    constructor(address _uniV4PoolManager, address _venueManager) {
+        require(_uniV4PoolManager != address(0), "UniswapV4SwapVenue: Invalid pool manager address");
+        require(_venueManager != address(0), "UniswapV4SwapVenue: Invalid venue manager address");
+        uniV4PoolManager = _uniV4PoolManager;
+        venueManager = _venueManager;
+    }
+
+    function setUp(bytes calldata data) external onlyVenueManager {
         require(UNISWAP_V4_UNLOCKED_TK.loadBool(), "UniswapV4SwapVenue: Pool manager is already unlocked");
         _expectCallback(uniV4PoolManager);
         IUniswapV4PoolManager(uniV4PoolManager).unlock(_encodeSwapData(data));
@@ -36,14 +44,14 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
     /// - swapData = [venueManager (setUp.msg.sender), data]
     function unlockCallback(bytes calldata swapData) external consumeCallback(msg.sender) returns (bytes memory) {
         UNISWAP_V4_UNLOCKED_TK.storeBool(true);
-        (address venueManager, bytes memory data) = _decodeSwapData(swapData);
+        bytes memory data = _decodeSwapData(swapData);
 
         ISwapVenueCallback(venueManager).onSetUpCallback(msg.sender, data);
         UNISWAP_V4_UNLOCKED_TK.storeBool(false);
         return abi.encode();
     }
 
-    function flashLoan(address outToken, uint256 amount, bytes calldata data) external {
+    function flashLoan(address outToken, uint256 amount, bytes calldata data) external onlyVenueManager {
         require(UNISWAP_V4_UNLOCKED_TK.loadBool(), "UniswapV4SwapVenue: Pool manager is locked");
         IUniswapV4PoolManager(uniV4PoolManager).take(outToken, msg.sender, amount);
         ISwapVenueCallback(msg.sender).onSwapVenueFlashLoan(outToken, amount, data);
@@ -53,13 +61,13 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
         IUniswapV4PoolManager(uniV4PoolManager).settle();
     }
 
-    function _encodeSwapData(bytes memory data) internal view returns (bytes memory) {
-        return abi.encode(HEADER, msg.sender, data);
+    function _encodeSwapData(bytes memory data) internal pure returns (bytes memory) {
+        return abi.encode(HEADER, data);
     }
 
-    function _decodeSwapData(bytes memory swapData) internal pure returns (address, bytes memory) {
-        (bytes32 header, address venueManager, bytes memory data) = abi.decode(swapData, (bytes32, address, bytes));
+    function _decodeSwapData(bytes memory swapData) internal pure returns (bytes memory) {
+        (bytes32 header, bytes memory data) = abi.decode(swapData, (bytes32, bytes));
         require(header == HEADER, "UniswapV4SwapVenue: Invalid venue data");
-        return (venueManager, data);
+        return data;
     }
 }

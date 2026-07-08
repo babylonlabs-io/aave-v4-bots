@@ -51,7 +51,6 @@ abstract contract VenueManager is
     }
 
     string private constant CONTRACT_NAME = "VenueManager";
-    bytes32 private constant EXPECTED_CALLBACK = keccak256(abi.encodePacked(CONTRACT_NAME, ".expectedCallback"));
     bytes32 private constant FLASH_LOAN_TOKEN_ADDRESSES_TK =
         keccak256(abi.encodePacked(CONTRACT_NAME, ".flashLoanTokenAddresses"));
 
