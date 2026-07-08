@@ -4,6 +4,4 @@ pragma solidity 0.8.28;
 
 import {AaveAdapter} from "vault-contracts/applications/aave/AaveAdapter.sol";
 
-contract LiquidationRouter {
-
-}
+contract LiquidationRouter {}
