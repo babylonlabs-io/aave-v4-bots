@@ -123,6 +123,9 @@ importers:
       '@repo/logger':
         specifier: workspace:*
         version: link:../logger
+      '@repo/persistence':
+        specifier: workspace:*
+        version: link:../persistence
       '@repo/risk':
         specifier: workspace:*
         version: link:../risk
@@ -202,6 +205,28 @@ importers:
       '@types/node':
         specifier: ^22.13.14
         version: 22.19.2
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
+
+  packages/persistence:
+    dependencies:
+      pg:
+        specifier: ^8.16.0
+        version: 8.16.3
+      viem:
+        specifier: ^2.37.0
+        version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.2
+      '@types/pg':
+        specifier: ^8.15.0
+        version: 8.20.0
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -291,6 +316,9 @@ importers:
       '@repo/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@repo/persistence':
+        specifier: workspace:*
+        version: link:../../packages/persistence
       '@repo/risk':
         specifier: workspace:*
         version: link:../../packages/risk
@@ -355,6 +383,9 @@ importers:
       '@repo/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@repo/persistence':
+        specifier: workspace:*
+        version: link:../../packages/persistence
       '@repo/risk':
         specifier: workspace:*
         version: link:../../packages/risk
@@ -403,7 +434,7 @@ importers:
         version: 4.10.8
       ponder:
         specifier: ^0.13.6
-        version: 0.13.16(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(hono@4.10.8)(typescript@5.9.3)(viem@2.41.2(typescript@5.9.3)(zod@3.25.76))(zod@3.25.76)
+        version: 0.13.16(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(@types/pg@8.20.0)(hono@4.10.8)(typescript@5.9.3)(viem@2.41.2(typescript@5.9.3)(zod@3.25.76))(zod@3.25.76)
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -977,6 +1008,9 @@ packages:
 
   '@types/node@22.19.2':
     resolution: {integrity: sha512-LPM2G3Syo1GLzXLGJAKdqoU35XvrWzGJ21/7sgZTUpbkBaOasTj8tjwn6w+hCkqaa1TfJ/w67rJSwYItlJ2mYw==}
+
+  '@types/pg@8.20.0':
+    resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
 
   '@vitest/expect@2.1.9':
     resolution: {integrity: sha512-UJCIkTBenHeKT1TTlKMJWy1laZewsRIzYighyYiJKZreqtdxSos/S1t+ktRMQWu2CKqaarrkeszJx1cgC5tGZw==}
@@ -2454,6 +2488,12 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/pg@8.20.0':
+    dependencies:
+      '@types/node': 22.19.2
+      pg-protocol: 1.10.3
+      pg-types: 2.2.0
+
   '@vitest/expect@2.1.9':
     dependencies:
       '@vitest/spy': 2.1.9
@@ -2662,10 +2702,11 @@ snapshots:
 
   dotenv@16.6.1: {}
 
-  drizzle-orm@0.41.0(@electric-sql/pglite@0.2.13)(@opentelemetry/api@1.9.0)(kysely@0.26.3)(pg@8.16.3):
+  drizzle-orm@0.41.0(@electric-sql/pglite@0.2.13)(@opentelemetry/api@1.9.0)(@types/pg@8.20.0)(kysely@0.26.3)(pg@8.16.3):
     optionalDependencies:
       '@electric-sql/pglite': 0.2.13
       '@opentelemetry/api': 1.9.0
+      '@types/pg': 8.20.0
       kysely: 0.26.3
       pg: 8.16.3
 
@@ -2962,7 +3003,7 @@ snapshots:
       sonic-boom: 3.8.1
       thread-stream: 2.7.0
 
-  ponder@0.13.16(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(hono@4.10.8)(typescript@5.9.3)(viem@2.41.2(typescript@5.9.3)(zod@3.25.76))(zod@3.25.76):
+  ponder@0.13.16(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(@types/pg@8.20.0)(hono@4.10.8)(typescript@5.9.3)(viem@2.41.2(typescript@5.9.3)(zod@3.25.76))(zod@3.25.76):
     dependencies:
       '@babel/code-frame': 7.27.1
       '@commander-js/extra-typings': 12.1.0(commander@12.1.0)
@@ -2979,7 +3020,7 @@ snapshots:
       dataloader: 2.2.3
       detect-package-manager: 3.0.2
       dotenv: 16.6.1
-      drizzle-orm: 0.41.0(@electric-sql/pglite@0.2.13)(@opentelemetry/api@1.9.0)(kysely@0.26.3)(pg@8.16.3)
+      drizzle-orm: 0.41.0(@electric-sql/pglite@0.2.13)(@opentelemetry/api@1.9.0)(@types/pg@8.20.0)(kysely@0.26.3)(pg@8.16.3)
       glob: 10.5.0
       graphql: 16.12.0
       graphql-yoga: 5.17.1(graphql@16.12.0)

@@ -17,6 +17,7 @@ import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
 import { nextNonce } from "@repo/execution";
 import type { Logger } from "@repo/logger";
+import { type ChainReader, type StateStore, reconcilePending } from "@repo/persistence";
 import type { RiskGate } from "@repo/risk";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
@@ -67,12 +68,19 @@ export interface LiquidationEngineConfig extends LiquidationEngineParams {
   metrics: LiquidationMetrics;
   logger: Logger;
   risk: RiskGate;
+  /**
+   * Crash-safety store. When present, each submit is recorded under an idempotency key and
+   * nonces come from a persisted lease, so a restart re-drives without double-sending; when
+   * absent, the engine keeps its in-memory chain-nonce sequencing (behavior-preserving).
+   */
+  store?: StateStore;
 }
 
 export class LiquidationEngine {
   private metrics: LiquidationMetrics;
   private logger: Logger;
   private risk: RiskGate;
+  private store?: StateStore;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private adapterAddress: Address;
@@ -90,6 +98,7 @@ export class LiquidationEngine {
     this.metrics = config.metrics;
     this.logger = config.logger;
     this.risk = config.risk;
+    this.store = config.store;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.adapterAddress = config.adapterAddress;
@@ -155,6 +164,32 @@ export class LiquidationEngine {
     }
 
     this.debtTokenAddresses = discovered;
+  }
+
+  /**
+   * Boot-time crash-safety: resolve any persisted in-flight intents against the chain
+   * **before** the poll loop re-drives, so a crash mid-submit doesn't double-send. No-op
+   * without a store. Call once at startup (like `ensureApproval`).
+   */
+  async reconcile(): Promise<void> {
+    if (!this.store) return;
+    const reader: ChainReader = {
+      getReceiptStatus: async (hash) => {
+        try {
+          const receipt = await this.publicClient.getTransactionReceipt({ hash });
+          return receipt.status === "success" ? "success" : "reverted";
+        } catch {
+          return null; // receipt not found yet
+        }
+      },
+      getNonce: (address, blockTag) => this.publicClient.getTransactionCount({ address, blockTag }),
+    };
+    await reconcilePending({
+      store: this.store,
+      reader,
+      signer: this.walletClient.account.address,
+      logger: this.logger,
+    });
   }
 
   /**
@@ -282,10 +317,17 @@ export class LiquidationEngine {
       this.logger.info(`${validCandidates.length}/${positions.length} positions passed simulation`);
 
       // 5. Send all liquidation txs with explicit nonces.
-      // Re-sync nonce after send failures to avoid gaps/stuck sequence.
-      let nonce = await nextNonce(this.publicClient, this.walletClient.account.address);
+      // Re-sync nonce after send failures to avoid gaps/stuck sequence. With a store, the
+      // nonce comes from the persisted lease (seeded from the chain here) and each submit is
+      // recorded under an idempotency key; without one, nonces stay in-memory (unchanged).
+      const signer = this.walletClient.account.address;
+      if (this.store) {
+        await this.store.syncNonce(signer, await nextNonce(this.publicClient, signer));
+      }
+      let nonce = this.store ? 0 : await nextNonce(this.publicClient, signer);
 
-      const txHashes: Hex[] = [];
+      // Each sent tx is paired with its intent id so the receipt phase can transition it.
+      const sent: Array<{ hash: Hex; intentId?: string }> = [];
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, amounts } = validCandidates[i];
 
@@ -295,6 +337,27 @@ export class LiquidationEngine {
           this.metrics.recordError("risk_blocked");
           this.logger.warn(`Risk gate blocked ${position.proxyAddress}: ${decision.reason}`);
           continue;
+        }
+
+        // Crash-safety: refuse a duplicate live intent, then allocate a persisted nonce.
+        let intentId: string | undefined;
+        if (this.store) {
+          const record = await this.store.recordIntent({
+            chainId: this.walletClient.chain.id,
+            target: this.adapterAddress,
+            action: "liquidation",
+            subject: position.proxyAddress,
+          });
+          if (!record.recorded) {
+            this.metrics.recordError("intent_in_flight");
+            this.logger.warn(
+              `Skipping ${position.proxyAddress}: intent already ${record.existing.status}`
+            );
+            continue;
+          }
+          intentId = record.id;
+          nonce = await this.store.reserveNonce(signer);
+          await this.store.transition(intentId, "pending", { nonce });
         }
 
         const priorityOrder = sequentialPriorityOrder(amounts.length);
@@ -322,14 +385,18 @@ export class LiquidationEngine {
                 nonce,
               });
           this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
-          txHashes.push(hash);
-          nonce += 1;
+          if (intentId) await this.store?.transition(intentId, "submitted", { txHash: hash });
+          sent.push({ hash, intentId });
+          if (!this.store) nonce += 1;
         } catch (error) {
           this.metrics.recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           this.logger.error(`Failed to send liquidation for ${position.borrower}: ${errorMsg}`);
+          if (intentId) await this.store?.transition(intentId, "failed", { error: errorMsg });
           try {
-            nonce = await nextNonce(this.publicClient, this.walletClient.account.address);
+            const chainNonce = await nextNonce(this.publicClient, signer);
+            if (this.store) await this.store.syncNonce(signer, chainNonce);
+            else nonce = chainNonce;
           } catch (nonceError) {
             this.logger.error(
               "Failed to re-sync nonce, skipping remaining candidates:",
@@ -340,40 +407,43 @@ export class LiquidationEngine {
         }
       }
 
-      if (txHashes.length === 0) {
+      if (sent.length === 0) {
         this.logger.info("No liquidation txs were sent");
         return;
       }
 
       // 6. Batch-wait for all receipts
-      this.logger.info(`Waiting for ${txHashes.length} liquidation receipt(s)...`);
+      this.logger.info(`Waiting for ${sent.length} liquidation receipt(s)...`);
       const receipts = await Promise.allSettled(
-        txHashes.map((hash) =>
+        sent.map(({ hash }) =>
           this.publicClient.waitForTransactionReceipt({ hash, timeout: this.txReceiptTimeoutMs })
         )
       );
 
       for (let i = 0; i < receipts.length; i++) {
         const result = receipts[i];
+        const { hash, intentId } = sent[i];
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
             this.risk.recordOutcome({ ok: true });
             this.metrics.recordLiquidationSuccess();
-            this.logger.info(
-              `Liquidation confirmed in block ${receipt.blockNumber}: ${txHashes[i]}`
-            );
+            this.logger.info(`Liquidation confirmed in block ${receipt.blockNumber}: ${hash}`);
+            if (intentId) await this.store?.transition(intentId, "confirmed", { txHash: hash });
           } else {
             this.risk.recordOutcome({ ok: false });
             this.metrics.recordLiquidationFailed();
             this.metrics.recordError("tx_reverted");
-            this.logger.error(`Liquidation reverted: ${txHashes[i]}`);
+            this.logger.error(`Liquidation reverted: ${hash}`);
+            if (intentId)
+              await this.store?.transition(intentId, "failed", { txHash: hash, error: "reverted" });
           }
         } else {
           this.risk.recordOutcome({ ok: false });
           this.metrics.recordLiquidationFailed();
           this.metrics.recordError("receipt_fetch_error");
-          this.logger.error(`Failed to get receipt for ${txHashes[i]}: ${result.reason}`);
+          this.logger.error(`Failed to get receipt for ${hash}: ${result.reason}`);
+          // Leave the intent 'submitted' — boot reconcile resolves it against the chain.
         }
       }
     } catch (error) {

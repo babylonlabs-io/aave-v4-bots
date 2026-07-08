@@ -7,6 +7,7 @@ import {
   urlSchema,
 } from "@repo/config";
 import type { LiquidationEngineParams } from "@repo/engine";
+import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { type SignerConfig, buildSignerConfig } from "@repo/signer";
 import type { Address, Hex } from "viem";
@@ -32,6 +33,10 @@ export interface Config extends LiquidationEngineParams {
   // `SecretsProvider` + `Signer` at boot (index.ts); no key material lives in `Config`.
   secrets: SecretsConfig;
   signer: SignerConfig;
+
+  // Crash-safety persistence. Present iff DATABASE_URL is set — otherwise the bot runs
+  // without a StateStore (in-memory nonce sequencing, no idempotency), unchanged.
+  persistence?: PersistenceConfig;
 }
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -56,6 +61,11 @@ const envSchema = z.object({
   KMS_KEY_ID: z.string().min(1).optional(),
   SIGNER_ADDRESS: addressSchema.optional(),
   AWS_REGION: z.string().min(1).optional(),
+
+  // Crash-safety persistence (optional). DATABASE_URL enables the Postgres StateStore;
+  // PERSISTENCE_SCHEMA isolates the bot tables (default "bot") from the indexer's.
+  DATABASE_URL: z.string().min(1).optional(),
+  PERSISTENCE_SCHEMA: z.string().min(1).optional(),
 
   // Optional
   DEBT_TOKEN_ADDRESSES: addressListSchema.optional(),
@@ -98,5 +108,8 @@ export function loadConfig(): Config {
       address: env.SIGNER_ADDRESS as Address | undefined,
       region: env.AWS_REGION,
     }),
+    persistence: env.DATABASE_URL
+      ? { connectionString: env.DATABASE_URL, schema: env.PERSISTENCE_SCHEMA }
+      : undefined,
   };
 }

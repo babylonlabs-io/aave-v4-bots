@@ -624,4 +624,148 @@ describe("LiquidationEngine", () => {
       expect(callsAfterSecond - callsAfterFirst).toBe(2);
     });
   });
+
+  describe("crash-safety (StateStore)", () => {
+    // A faithful in-memory StateStore double (mirrors the Postgres adapter's semantics):
+    // idempotency refuse/revive, a per-address nonce lease, and a reconcile work-list.
+    function createMemoryStore() {
+      const rows = new Map<string, StateStoreIntent>();
+      const leases = new Map<string, number>();
+      const live = new Set(["pending", "submitted"]);
+      const key = (i: { chainId: number; target: string; action: string; subject: string }) =>
+        `${i.chainId}:${i.target.toLowerCase()}:${i.action}:${i.subject.toLowerCase()}`;
+      return {
+        rows,
+        async reserveNonce(address: string) {
+          const k = address.toLowerCase();
+          const n = leases.get(k);
+          if (n === undefined) throw new Error("not seeded");
+          leases.set(k, n + 1);
+          return n;
+        },
+        async syncNonce(address: string, chainNonce: number) {
+          leases.set(address.toLowerCase(), chainNonce);
+        },
+        async recordIntent(input: {
+          chainId: number;
+          target: string;
+          action: string;
+          subject: string;
+        }) {
+          const id = key(input);
+          const existing = rows.get(id);
+          if (existing && live.has(existing.status)) return { recorded: false, existing };
+          rows.set(id, { id, ...input, status: "pending", nonce: null, txHash: null, error: null });
+          return { recorded: true, id };
+        },
+        async transition(
+          id: string,
+          to: string,
+          meta?: { nonce?: number; txHash?: string; error?: string }
+        ) {
+          const row = rows.get(id);
+          if (!row) return;
+          rows.set(id, {
+            ...row,
+            status: to,
+            nonce: meta?.nonce ?? row.nonce,
+            txHash: meta?.txHash ?? row.txHash,
+            error: meta?.error ?? row.error,
+          });
+        },
+        async reconcile() {
+          return [...rows.values()].filter((r) => live.has(r.status));
+        },
+        async close() {},
+      };
+    }
+    type StateStoreIntent = {
+      id: string;
+      chainId: number;
+      target: string;
+      action: string;
+      subject: string;
+      status: string;
+      nonce: number | null;
+      txHash: string | null;
+      error: string | null;
+    };
+    type Store = ReturnType<typeof createMemoryStore>;
+
+    const feed = (positions: LiquidatablePosition[]) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: positions, total: 1, checked: 1 }),
+      });
+
+    function storeBot(store: Store) {
+      const clients = createMockClients();
+      // The store path reads chainId off the wallet's chain.
+      (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
+      const bot = createBot(clients, {
+        store: store as unknown as LiquidationEngineConfig["store"],
+      });
+      return { bot, clients };
+    }
+
+    it("re-drives after a crash mid-submit without double-sending", async () => {
+      const store = createMemoryStore();
+
+      // Run 1: the tx is broadcast, but the receipt never lands (simulated crash before
+      // confirmation), so the intent is left 'submitted' (in-flight).
+      const first = storeBot(store);
+      first.clients.publicClient.waitForTransactionReceipt = vi
+        .fn()
+        .mockRejectedValue(new Error("process killed"));
+      global.fetch = feed([mockPosition]);
+      await first.bot.run();
+
+      expect(first.clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      const inflight = await store.reconcile();
+      expect(inflight).toHaveLength(1);
+      expect(inflight[0].status).toBe("submitted");
+
+      // Restart: a fresh engine over the same store reconciles (receipt still not found →
+      // left in-flight), then re-drives the same position — which is refused as a duplicate.
+      const second = storeBot(store);
+      await second.bot.reconcile();
+      global.fetch = feed([mockPosition]);
+      await second.bot.run();
+
+      expect(second.clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("intent_in_flight");
+    });
+
+    it("re-drives an intent whose send failed (terminal, not blocked forever)", async () => {
+      const store = createMemoryStore();
+      const { bot, clients } = storeBot(store);
+      clients.walletClient.writeContract = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValue("0xtxhash");
+
+      global.fetch = feed([mockPosition]);
+      await bot.run(); // send fails → intent 'failed' (terminal)
+      expect(store.rows.get([...store.rows.keys()][0])?.status).toBe("failed");
+
+      global.fetch = feed([mockPosition]);
+      await bot.run(); // terminal intent is revived and re-submitted
+      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+      expect(store.rows.get([...store.rows.keys()][0])?.status).toBe("confirmed");
+    });
+
+    it("allocates nonces from the persisted lease, seeded from the chain", async () => {
+      const store = createMemoryStore();
+      const { bot, clients } = storeBot(store);
+      // Chain's next nonce is 7; the lease should seed there and the tx use it.
+      clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(7);
+      global.fetch = feed([mockPosition]);
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({ nonce: 7 })
+      );
+    });
+  });
 });
