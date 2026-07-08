@@ -3,10 +3,9 @@
 pragma solidity ^0.8.0;
 
 interface ISwapVenue {
-    function setUp(address venue, bytes calldata data) external;
+    function setUp(bytes calldata data) external;
 
     function flashLoan(
-        address venue, // pair address
         address outToken, // token to receive
         uint256 amount, // amount to borrow
         bytes calldata data // details about the flash swap pair

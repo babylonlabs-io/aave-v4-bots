@@ -53,7 +53,7 @@ abstract contract VenueManager is
 
     function _setUpSwapVenue(address venueAddress, bytes memory data) internal {
         _expectCallback(venueAddress);
-        ISwapVenue(venueAddress).setUp(venueAddress, VenueDataLib.encodeStandard(data));
+        ISwapVenue(venueAddress).setUp(VenueDataLib.encodeStandard(data));
     }
 
     function _flashLoan(VenueType venueType, address venueAddress, address token, uint256 amount, bytes calldata data)
@@ -68,7 +68,7 @@ abstract contract VenueManager is
                 .flashLoanSimple(address(this), token, amount, VenueDataLib.encodeStandard(data), 0);
         } else if (venueType == VenueType.UniswapV4) {
             _expectCallback(venueAddress);
-            ISwapVenue(venueAddress).flashLoan(venueAddress, token, amount, VenueDataLib.encodeStandard(data));
+            ISwapVenue(venueAddress).flashLoan(token, amount, VenueDataLib.encodeStandard(data));
         } else {
             revert("VenueManager: Unsupported venue type");
         }
@@ -120,13 +120,13 @@ abstract contract VenueManager is
     /// @dev The callback is called only if data is not empty.
     /// @param paymentToken The address of the token for repaying the flash swap.
     /// @param amount The amount of tokens for repaying the flash swap.
-    /// @param data Arbitrary data passed to the `flashLoan` function.
-    function onSwapVenueFlashLoan(address paymentToken, uint256 amount, bytes calldata data)
+    /// @param venueData Arbitrary data passed to the `flashLoan` function.
+    function onSwapVenueFlashLoan(address paymentToken, uint256 amount, bytes calldata venueData)
         external
         consumeCallback(msg.sender)
     {
         _increaseFlashLoanDebt(paymentToken, amount);
-        _resumeAfterCallback(VenueDataLib.decodeStandard(data));
+        _resumeAfterCallback(VenueDataLib.decodeStandard(venueData));
         IERC20(paymentToken).safeIncreaseAllowance(msg.sender, amount);
     }
 

@@ -3,7 +3,7 @@
 pragma solidity 0.8.28;
 
 library VenueDataLib {
-    bytes32 internal constant HEADER = keccak256("VenueData");
+    bytes32 internal constant HEADER = keccak256("VenueDataHeader");
 
     function encodeMorpho(bytes memory data, address token) internal pure returns (bytes memory) {
         return abi.encode(HEADER, data, token);
