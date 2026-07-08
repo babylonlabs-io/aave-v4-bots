@@ -7,6 +7,7 @@ dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 import { type Chain, createPublicClient, createWalletClient } from "viem";
 
 import { instrumentedHttp } from "@repo/chain";
+import { createNonceAllocator, createNonceLease, nextNonce } from "@repo/execution";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { type StateStore, createStateStore } from "@repo/persistence";
@@ -64,6 +65,10 @@ async function createBot(config: Config) {
   const store = config.persistence ? createStateStore(config.persistence) : undefined;
   logger.info(`Persistence: ${store ? "postgres" : "disabled"}`);
 
+  // The shared in-memory nonce authority. Seeded from the chain below (and every cycle in
+  // `run()`), so it needs no persisted state. One per signer.
+  const nonces = createNonceAllocator(createNonceLease(), signer.address);
+
   const bot = new LiquidationBot({
     walletClient,
     publicClient,
@@ -77,7 +82,11 @@ async function createBot(config: Config) {
     ponderUrl: config.ponderUrl,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
     store,
+    nonces,
   });
+
+  // Seed the nonce lease from the chain before any send (approvals below reserve nonces).
+  await nonces.resync(() => nextNonce(publicClient, signer.address));
 
   return { bot, publicClient, store };
 }

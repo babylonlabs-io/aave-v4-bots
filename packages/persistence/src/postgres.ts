@@ -183,11 +183,13 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       );
     },
 
-    async reconcile() {
+    async reconcile(action?: string) {
       await ensureReady();
       const res = await client.query<IntentRow>(
         `SELECT ${INTENT_COLUMNS} FROM ${intents}
-         WHERE status IN ('pending', 'submitted') ORDER BY created_at ASC`
+         WHERE status IN ('pending', 'submitted') AND ($1::text IS NULL OR action = $1)
+         ORDER BY created_at ASC`,
+        [action ?? null]
       );
       return res.rows.map(mapIntent);
     },

@@ -16,6 +16,12 @@ import {
 
 import { instrumentedHttp } from "@repo/chain";
 import { LiquidationEngine } from "@repo/engine";
+import {
+  type NonceAllocator,
+  createNonceAllocator,
+  createNonceLease,
+  nextNonce,
+} from "@repo/execution";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { type StateStore, createStateStore } from "@repo/persistence";
@@ -54,6 +60,7 @@ interface BotWithClients {
   publicClient: PublicClient;
   walletClient: WalletClient<Transport, Chain, Account>;
   store: StateStore | undefined;
+  nonces: NonceAllocator;
 }
 
 async function createBot(config: Config): Promise<BotWithClients> {
@@ -96,6 +103,14 @@ async function createBot(config: Config): Promise<BotWithClients> {
     account: signer.account,
   });
 
+  // Crash-safety StateStore (Postgres) shared by both engines when configured.
+  const store = config.persistence ? createStateStore(config.persistence) : undefined;
+  logger.info(`Persistence: ${store ? "postgres" : "disabled"}`);
+
+  // ONE shared nonce authority for the signer — both engines route every tx through it, so
+  // their concurrent sends never collide. In-memory (chain-seeded), no persisted state.
+  const nonces = createNonceAllocator(createNonceLease(), signer.address);
+
   const bot = new ArbitrageurBot({
     walletClient,
     publicClient,
@@ -111,12 +126,14 @@ async function createBot(config: Config): Promise<BotWithClients> {
       backoffMultiplier: 2,
     },
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
+    store,
+    nonces,
   });
 
-  // Crash-safety StateStore (Postgres) for the liquidation engine when configured.
-  const store = config.persistence ? createStateStore(config.persistence) : undefined;
+  // Seed the shared lease from the chain once, before either engine sends.
+  await nonces.resync(() => nextNonce(publicClient, signer.address));
 
-  return { bot, publicClient, walletClient, store };
+  return { bot, publicClient, walletClient, store, nonces };
 }
 
 /**
@@ -129,7 +146,8 @@ async function startLiquidationEngine(
   liq: LiquidationRunConfig,
   walletClient: WalletClient<Transport, Chain, Account>,
   publicClient: PublicClient,
-  store: StateStore | undefined
+  store: StateStore | undefined,
+  nonces: NonceAllocator
 ): Promise<void> {
   const liqLogger = createLogger({ prefix: "[Arbitrageur:Liq] " });
   const { pollingIntervalMs, ...params } = liq;
@@ -142,6 +160,8 @@ async function startLiquidationEngine(
     logger: liqLogger,
     risk: createRiskGate(),
     store,
+    // The SAME allocator the arbitrage engine uses — the shared signer's single nonce owner.
+    nonces,
   });
 
   liqLogger.info(`Liquidation engine enabled (persistence: ${store ? "postgres" : "disabled"})`);
@@ -150,8 +170,6 @@ async function startLiquidationEngine(
   }
   await engine.ensureApproval();
   await engine.logBalances();
-  // Resolve any in-flight intents from a previous run before the poll loop re-drives.
-  await engine.reconcile();
 
   const poll = async () => {
     try {
@@ -172,7 +190,7 @@ async function runPollingMode(config: Config): Promise<void> {
   logger.info("Aave V4 Arbitrageur Bot Starting...");
   logger.info("===================================");
 
-  const { bot, publicClient, walletClient, store } = await createBot(config);
+  const { bot, publicClient, walletClient, store, nonces } = await createBot(config);
   storeForShutdown = store;
 
   // Start the observability server (metrics + health/readiness probes)
@@ -185,9 +203,10 @@ async function runPollingMode(config: Config): Promise<void> {
     getMetricsContentType,
   });
 
-  // Opt-in: also run the liquidation engine (both engines, one process).
+  // Opt-in: also run the liquidation engine (both engines, one process) — sharing the one
+  // nonce allocator so the two engines' concurrent sends never collide on the signer.
   if (config.liquidation) {
-    await startLiquidationEngine(config.liquidation, walletClient, publicClient, store);
+    await startLiquidationEngine(config.liquidation, walletClient, publicClient, store, nonces);
   }
 
   logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);

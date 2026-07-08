@@ -67,16 +67,22 @@ export function readAllowance(
   });
 }
 
-/** Approve `spender` for the max uint256 amount of `token`. Returns the tx hash. */
+/**
+ * Approve `spender` for the max uint256 amount of `token`. Returns the tx hash. Pass an
+ * explicit `nonce` when the send must go through the shared nonce authority (auto-nonce
+ * otherwise).
+ */
 export function approveMax(
   wallet: WalletClient<Transport, Chain, Account>,
   token: Address,
-  spender: Address
+  spender: Address,
+  nonce?: number
 ): Promise<Hex> {
   return wallet.writeContract({
     address: token,
     abi: erc20Abi,
     functionName: "approve",
     args: [spender, maxUint256],
+    ...(nonce !== undefined ? { nonce } : {}),
   });
 }

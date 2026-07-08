@@ -1,3 +1,4 @@
+import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { createRiskGate } from "@repo/risk";
 import { maxUint256 } from "viem";
@@ -698,12 +699,17 @@ describe("LiquidationEngine", () => {
         json: () => Promise.resolve({ liquidatable: positions, total: 1, checked: 1 }),
       });
 
+    // A bot wired with the store + a fresh in-memory nonce allocator (as the composition root
+    // does). A new allocator per bot models a restart (in-memory lease resets; the store
+    // persists). The allocator is seeded from the chain by run()'s cycle-start resync.
     function storeBot(store: Store) {
       const clients = createMockClients();
       // The store path reads chainId off the wallet's chain.
       (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
+      const nonces = createNonceAllocator(createNonceLease(), clients.walletClient.account.address);
       const bot = createBot(clients, {
         store: store as unknown as LiquidationEngineConfig["store"],
+        nonces,
       });
       return { bot, clients };
     }
@@ -736,22 +742,50 @@ describe("LiquidationEngine", () => {
       expect(metrics.recordError).toHaveBeenCalledWith("intent_in_flight");
     });
 
-    it("re-drives an intent whose send failed (terminal, not blocked forever)", async () => {
+    it("keeps a failed send live, then re-drives it once the chain shows the nonce free", async () => {
       const store = createMemoryStore();
       const { bot, clients } = storeBot(store);
+      // Chain nonce stays 0 (the failed tx never broadcast), so next-cycle reconcile can prove
+      // the reserved nonce is free and re-drive. First send throws, second succeeds.
+      clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(0);
       clients.walletClient.writeContract = vi
         .fn()
         .mockRejectedValueOnce(new Error("boom"))
         .mockResolvedValue("0xtxhash");
 
       global.fetch = feed([mockPosition]);
-      await bot.run(); // send fails → intent 'failed' (terminal)
-      expect(store.rows.get([...store.rows.keys()][0])?.status).toBe("failed");
+      await bot.run(); // send fails → intent kept LIVE (not terminal), never re-driven this cycle
+      const id = [...store.rows.keys()][0];
+      expect(store.rows.get(id)?.status).toBe("submitted");
 
       global.fetch = feed([mockPosition]);
-      await bot.run(); // terminal intent is revived and re-submitted
+      await bot.run(); // cycle-start reconcile: nonce free ⇒ terminal ⇒ re-drive
       expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
-      expect(store.rows.get([...store.rows.keys()][0])?.status).toBe("confirmed");
+      expect(store.rows.get(id)?.status).toBe("confirmed");
+    });
+
+    it("holds (does not re-drive) a live intent whose reserved nonce is still in the mempool", async () => {
+      const store = createMemoryStore();
+      const { bot, clients } = storeBot(store);
+      // Run 1: chain nonce 6 → the send reserves 6 then throws AFTER (mocked) broadcast.
+      clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(6);
+      clients.walletClient.writeContract = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+
+      global.fetch = feed([mockPosition]);
+      await bot.run(); // send throws → intent kept live at nonce 6
+      const id = [...store.rows.keys()][0];
+      expect(store.rows.get(id)?.status).toBe("submitted");
+      expect(store.rows.get(id)?.nonce).toBe(6);
+
+      // Run 2: the ambiguous tx is now visible in the mempool — pending advanced past nonce 6.
+      clients.publicClient.getTransactionCount = vi
+        .fn()
+        .mockImplementation(({ blockTag }: { blockTag: string }) =>
+          Promise.resolve(blockTag === "pending" ? 7 : 6)
+        );
+      global.fetch = feed([mockPosition]);
+      await bot.run(); // reconcile: pending(7) > nonce(6), latest(6) ⇒ hold, no re-drive
+      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
     });
 
     it("allocates nonces from the persisted lease, seeded from the chain", async () => {
@@ -786,10 +820,9 @@ describe("LiquidationEngine", () => {
       expect(store.rows.get([...store.rows.keys()][0])?.status).not.toBe("failed");
     });
 
-    it("reuses the reserved nonce after a send failure (no rewind to a lagging chain nonce)", async () => {
+    it("stops the cycle on a send error (does not send later candidates at a gapped nonce)", async () => {
       const store = createMemoryStore();
       const { bot, clients } = storeBot(store);
-      // Chain seeds the lease at 10 and keeps reporting 10 (a lagging pending count).
       clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(10);
       const p2: LiquidatablePosition = {
         ...mockPosition,
@@ -803,19 +836,20 @@ describe("LiquidationEngine", () => {
       };
       clients.walletClient.writeContract = vi
         .fn()
-        .mockResolvedValueOnce("0xA") // nonce 10 — ok
-        .mockRejectedValueOnce(new Error("send failed")) // nonce 11 — fails
-        .mockResolvedValueOnce("0xC"); // must reuse nonce 11, not rewind to chain's 10
+        .mockResolvedValueOnce("0xA") // p1 @ nonce 10 — ok
+        .mockRejectedValueOnce(new Error("send failed")); // p2 @ nonce 11 — fails → break
       global.fetch = feed([mockPosition, p2, p3]);
 
       await bot.run();
 
+      // p1 sent (10), p2 attempted (11) and failed → cycle stops → p3 NOT attempted.
+      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
       expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ nonce: 10 })
       );
       expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
-        3,
+        2,
         expect.objectContaining({ nonce: 11 })
       );
     });

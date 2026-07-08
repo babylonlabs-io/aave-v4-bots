@@ -73,8 +73,12 @@ export interface StateStore {
   recordIntent(input: IntentInput): Promise<RecordResult>;
   /** Move an intent to a new status, attaching any `meta` (nonce/txHash/error). */
   transition(id: string, to: IntentStatus, meta?: TransitionMeta): Promise<void>;
-  /** All in-flight (`pending`/`submitted`) intents — the boot-time reconcile work list. */
-  reconcile(): Promise<TxIntent[]>;
+  /**
+   * In-flight (`pending`/`submitted`) intents — the reconcile work list. Optionally filtered
+   * to a single `action` so an engine reconciles only its own intents (the arbitrageur's two
+   * engines share one store but own distinct actions).
+   */
+  reconcile(action?: string): Promise<TxIntent[]>;
   /** Release the underlying connection pool. */
   close(): Promise<void>;
 }
@@ -134,10 +138,12 @@ export async function reconcilePending(args: {
   store: StateStore;
   reader: ChainReader;
   signer: Address;
+  /** Restrict to one action's intents (e.g. `"liquidation"`); omit for all. */
+  action?: string;
   logger?: ReconcileLogger;
 }): Promise<ReconcileSummary> {
-  const { store, reader, signer, logger } = args;
-  const inflight = await store.reconcile();
+  const { store, reader, signer, action, logger } = args;
+  const inflight = await store.reconcile(action);
   const summary: ReconcileSummary = {
     examined: inflight.length,
     confirmed: 0,

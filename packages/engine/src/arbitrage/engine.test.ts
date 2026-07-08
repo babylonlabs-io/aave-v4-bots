@@ -1,3 +1,4 @@
+import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { createRiskGate } from "@repo/risk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -102,7 +103,7 @@ describe("ArbitrageEngine", () => {
 
       const result = await bot.acquireVault(mockVault);
 
-      expect(result).toBe(true);
+      expect(result).toBe("acquired");
       expect(clients.publicClient.estimateContractGas).toHaveBeenCalledOnce();
       expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
@@ -123,7 +124,7 @@ describe("ArbitrageEngine", () => {
 
       const result = await bot.acquireVault(mockVault);
 
-      expect(result).toBe(false);
+      expect(result).toBe("skipped");
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
 
@@ -155,7 +156,7 @@ describe("ArbitrageEngine", () => {
       const bot = createBot(clients);
       const result = await bot.acquireVault(mockVault);
 
-      expect(result).toBe(false);
+      expect(result).toBe("skipped");
       expect(clients.publicClient.estimateContractGas).not.toHaveBeenCalled();
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
@@ -170,7 +171,7 @@ describe("ArbitrageEngine", () => {
 
       const result = await bot.acquireVault(mockVault);
 
-      expect(result).toBe(false);
+      expect(result).toBe("skipped");
       expect(clients.walletClient.writeContract).toHaveBeenCalled();
     });
 
@@ -183,7 +184,7 @@ describe("ArbitrageEngine", () => {
 
       const result = await bot.acquireVault(mockVault);
 
-      expect(result).toBe(false);
+      expect(result).toBe("skipped");
     });
 
     it("approves WBTC when allowance insufficient", async () => {
@@ -260,7 +261,7 @@ describe("ArbitrageEngine", () => {
 
       const result = await bot.acquireVault(tinyVault);
 
-      expect(result).toBe(true);
+      expect(result).toBe("acquired");
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
         expect.objectContaining({
           functionName: "swapWbtcForVault",
@@ -375,7 +376,7 @@ describe("ArbitrageEngine", () => {
 
       const result = await bot.acquireVault(mockVault);
 
-      expect(result).toBe(false);
+      expect(result).toBe("skipped");
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
 
@@ -390,6 +391,154 @@ describe("ArbitrageEngine", () => {
 
       await bot.acquireVault(mockVault); // reverts → recordOutcome(false) → breaker trips
       expect(risk.state()).toBe("HALTED");
+    });
+  });
+
+  describe("crash-safety + nonce allocator", () => {
+    type Intent = {
+      id: string;
+      status: string;
+      nonce: number | null;
+      txHash: string | null;
+      error: string | null;
+    };
+    // Minimal in-memory StateStore double (idempotency refuse/revive + reconcile list).
+    function createMemoryStore() {
+      const rows = new Map<string, Intent & { action: string; subject: string }>();
+      const live = new Set(["pending", "submitted"]);
+      const key = (i: { chainId: number; target: string; action: string; subject: string }) =>
+        `${i.chainId}:${i.target.toLowerCase()}:${i.action}:${i.subject.toLowerCase()}`;
+      return {
+        rows,
+        async reserveNonce() {
+          return 0;
+        },
+        async syncNonce() {},
+        async recordIntent(i: {
+          chainId: number;
+          target: string;
+          action: string;
+          subject: string;
+        }) {
+          const id = key(i);
+          const existing = rows.get(id);
+          if (existing && live.has(existing.status)) return { recorded: false, existing };
+          rows.set(id, {
+            id,
+            action: i.action,
+            subject: i.subject,
+            status: "pending",
+            nonce: null,
+            txHash: null,
+            error: null,
+          });
+          return { recorded: true, id };
+        },
+        async transition(
+          id: string,
+          to: string,
+          meta?: { nonce?: number; txHash?: string; error?: string }
+        ) {
+          const row = rows.get(id);
+          if (!row) return;
+          rows.set(id, {
+            ...row,
+            status: to,
+            nonce: meta?.nonce ?? row.nonce,
+            txHash: meta?.txHash ?? row.txHash,
+            error: meta?.error ?? row.error,
+          });
+        },
+        async reconcile(action?: string) {
+          return [...rows.values()].filter(
+            (r) => live.has(r.status) && (!action || r.action === action)
+          );
+        },
+        async close() {},
+      };
+    }
+    type Store = ReturnType<typeof createMemoryStore>;
+
+    function storeBot(store: Store, seedNonce = 5) {
+      const clients = createMockClients();
+      (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
+      const nonces = createNonceAllocator(createNonceLease(), "0xarbitrageur");
+      const bot = createBot(clients, {
+        store: store as unknown as ArbitrageEngineConfig["store"],
+        nonces,
+      });
+      return { bot, clients, nonces, seedNonce };
+    }
+
+    it("records an intent and routes the swap through the allocator", async () => {
+      const store = createMemoryStore();
+      const { bot, clients, nonces } = storeBot(store);
+      await nonces.resync(() => Promise.resolve(5)); // seed the lease (run() would do this at cycle start)
+
+      const ok = await bot.acquireVault(mockVault);
+
+      expect(ok).toBe("acquired");
+      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+        expect.objectContaining({ functionName: "swapWbtcForVault", nonce: 5 })
+      );
+      const intent = store.rows.get([...store.rows.keys()][0]);
+      expect(intent?.status).toBe("confirmed");
+    });
+
+    it("refuses a duplicate live acquisition (no second swap)", async () => {
+      const store = createMemoryStore();
+      const { bot, clients, nonces } = storeBot(store);
+      await nonces.resync(() => Promise.resolve(5));
+
+      // Pre-record the vault as live (as if a prior cycle's swap is in flight).
+      await store.recordIntent({
+        chainId: 31337,
+        target: "0xvaultswap",
+        action: "vault-acquisition",
+        subject: mockVault.vaultId,
+      });
+
+      const ok = await bot.acquireVault(mockVault);
+
+      expect(ok).toBe("skipped");
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("intent_in_flight");
+    });
+
+    it("keeps the intent live (not terminal) on an ambiguous send error", async () => {
+      const store = createMemoryStore();
+      const { bot, clients, nonces } = storeBot(store);
+      await nonces.resync(() => Promise.resolve(5));
+      clients.walletClient.writeContract = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+
+      const ok = await bot.acquireVault(mockVault);
+
+      expect(ok).toBe("send-error");
+      const intent = store.rows.get([...store.rows.keys()][0]);
+      expect(intent?.status).toBe("submitted"); // live, not "failed"
+      expect(intent?.nonce).toBe(5); // reserved nonce persisted for reconcile
+    });
+
+    it("run() stops the cycle after a send error (does not process later vaults)", async () => {
+      const store = createMemoryStore();
+      const { bot, clients } = storeBot(store);
+      // run() reseeds the lease from the chain each cycle.
+      (clients.publicClient as { getTransactionCount?: unknown }).getTransactionCount = vi
+        .fn()
+        .mockResolvedValue(5);
+      // The first swap throws (ambiguous); the loop must break, not try the second vault.
+      clients.walletClient.writeContract = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            vaults: [mockVault, { ...mockVault, vaultId: `0x${"c".repeat(64)}` }],
+          }),
+      }) as unknown as typeof fetch;
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
     });
   });
 });
