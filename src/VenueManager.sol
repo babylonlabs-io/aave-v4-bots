@@ -14,8 +14,9 @@ import {Bytes32Lib} from "./lib/Bytes32Lib.sol";
 import {ISwapVenue} from "./interfaces/SwapVenue/ISwapVenue.sol";
 import {ISwapVenueCallback} from "./interfaces/SwapVenue/ISwapVenueCallback.sol";
 import {TokenAmountLib} from "vault-contracts/applications/aave/lib/types/TokenAmountLib.sol";
-import {VenueDataLib} from "./lib/VenueDataLib.sol";
+import {VenueForwardDataLib} from "./lib/VenueForwardDataLib.sol";
 import {ExpectCallback} from "./base/ExpectCallback.sol";
+import {Types} from "./lib/Types.sol";
 
 /// @dev    VenueManager treats flash loan and flash swap the same
 ///         The expected behavior of a venue is:
@@ -44,35 +45,44 @@ abstract contract VenueManager is
     using TransientArrayLib for ArrayKey;
     using SafeERC20 for IERC20;
 
-    enum VenueType {
-        AaveV3,
-        Morpho,
-        UniswapV4
-    }
-
     string private constant CONTRACT_NAME = "VenueManager";
     bytes32 private constant FLASH_LOAN_TOKEN_ADDRESSES_TK =
         keccak256(abi.encodePacked(CONTRACT_NAME, ".flashLoanTokenAddresses"));
 
-    function _setUpSwapVenue(address venueAddress, bytes memory data) internal {
+    function _setUpSwapVenue(address venueAddress, bytes memory forwardData) internal {
         _expectCallback(venueAddress);
-        ISwapVenue(venueAddress).setUp(VenueDataLib.encodeStandard(data));
+        ISwapVenue(venueAddress).setUp(VenueForwardDataLib.encodeStandard(forwardData));
         _requireCompleteCallback();
     }
 
-    function _flashLoan(VenueType venueType, address venueAddress, address token, uint256 amount, bytes calldata data)
-        internal
-    {
-        if (venueType == VenueType.Morpho) {
-            _expectCallback(venueAddress);
-            IMorpho(venueAddress).flashLoan(token, amount, VenueDataLib.encodeMorpho(data, token));
-        } else if (venueType == VenueType.AaveV3) {
-            _expectCallback(venueAddress);
-            IAaveV3Pool(venueAddress)
-                .flashLoanSimple(address(this), token, amount, VenueDataLib.encodeStandard(data), 0);
-        } else if (venueType == VenueType.UniswapV4) {
-            _expectCallback(venueAddress);
-            ISwapVenue(venueAddress).flashLoan(token, amount, VenueDataLib.encodeStandard(data));
+    function _flashLoan(Types.FlashLoanData memory flashLoanData, bytes calldata forwardData) internal {
+        if (flashLoanData.venueType == Types.VenueType.Morpho) {
+            _expectCallback(flashLoanData.venueAddress);
+            IMorpho(flashLoanData.venueAddress)
+                .flashLoan(
+                    flashLoanData.token,
+                    flashLoanData.amount,
+                    VenueForwardDataLib.encodeMorpho(forwardData, flashLoanData.token)
+                );
+        } else if (flashLoanData.venueType == Types.VenueType.AaveV3) {
+            _expectCallback(flashLoanData.venueAddress);
+            IAaveV3Pool(flashLoanData.venueAddress)
+                .flashLoanSimple(
+                    address(this),
+                    flashLoanData.token,
+                    flashLoanData.amount,
+                    VenueForwardDataLib.encodeStandard(forwardData),
+                    0
+                );
+        } else if (flashLoanData.venueType == Types.VenueType.UniswapV4FlashSwap) {
+            _expectCallback(flashLoanData.venueAddress);
+            ISwapVenue(flashLoanData.venueAddress)
+                .flashSwap(
+                    flashLoanData.token,
+                    flashLoanData.amount,
+                    flashLoanData.swapData,
+                    VenueForwardDataLib.encodeStandard(forwardData)
+                );
         } else {
             revert("VenueManager: Unsupported venue type");
         }
@@ -82,7 +92,7 @@ abstract contract VenueManager is
     // ---------------------- CALLBACKS ----------------------
 
     function onSetUpCallback(address, bytes calldata venueData) external consumeCallback(msg.sender) {
-        _resumeAfterCallback(VenueDataLib.decodeStandard(venueData));
+        _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
     }
 
     /// @notice Callback called when a flash loan occurs.
@@ -90,9 +100,9 @@ abstract contract VenueManager is
     /// @param assets The amount of assets that was flash loaned.
     /// @param venueData Arbitrary data passed to the `flashLoan` function.
     function onMorphoFlashLoan(uint256 assets, bytes calldata venueData) external consumeCallback(msg.sender) {
-        (bytes memory data, address token) = VenueDataLib.decodeMorpho(venueData);
+        (bytes memory forwardData, address token) = VenueForwardDataLib.decodeMorpho(venueData);
         _increaseFlashLoanDebt(token, assets);
-        _resumeAfterCallback(data);
+        _resumeAfterCallback(forwardData);
         IERC20(token).safeIncreaseAllowance(msg.sender, assets);
     }
 
@@ -116,7 +126,7 @@ abstract contract VenueManager is
     ) external consumeCallback(msg.sender) returns (bool) {
         initiator;
         _increaseFlashLoanDebt(asset, amount + premium);
-        _resumeAfterCallback(VenueDataLib.decodeStandard(venueData));
+        _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
         IERC20(asset).safeIncreaseAllowance(msg.sender, amount + premium);
         return true;
     }
@@ -131,7 +141,7 @@ abstract contract VenueManager is
         consumeCallback(msg.sender)
     {
         _increaseFlashLoanDebt(paymentToken, amount);
-        _resumeAfterCallback(VenueDataLib.decodeStandard(venueData));
+        _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
         IERC20(paymentToken).safeIncreaseAllowance(msg.sender, amount);
     }
 
@@ -185,5 +195,5 @@ abstract contract VenueManager is
 
     // ---------------------- ABSTRACT FUNCTIONS ----------------------
 
-    function _resumeAfterCallback(bytes memory data) internal virtual;
+    function _resumeAfterCallback(bytes memory forwardData) internal virtual;
 }

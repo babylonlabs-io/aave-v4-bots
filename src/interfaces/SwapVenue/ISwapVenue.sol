@@ -5,10 +5,11 @@ pragma solidity ^0.8.0;
 interface ISwapVenue {
     function setUp(bytes calldata data) external;
 
-    function flashLoan(
+    function flashSwap(
         address outToken, // token to receive
         uint256 amount, // amount to borrow
-        bytes calldata data // details about the flash swap pair
+        bytes calldata swapData, // data to determine swap route
+        bytes calldata forwardData // data to forward to the swap router
     )
         external;
 }
