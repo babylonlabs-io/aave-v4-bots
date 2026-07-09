@@ -23,9 +23,10 @@ import { maxWbtcInWithSlippage } from "@repo/domain";
 import { type NonceAllocator, waitForReceiptWithTimeout } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { StateStore } from "@repo/persistence";
-import type { RiskGate } from "@repo/risk";
+import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
 import {
   bestEffortTransition,
+  claimIntent,
   reconcileIntents,
   resyncNonces,
   sendMaybeAllocated,
@@ -131,8 +132,8 @@ export class ArbitrageEngine {
       await this.reconcile();
       await resyncNonces(this.nonces, this.publicClient, this.walletClient.account.address);
 
-      // 1. Fetch escrowed vaults from Ponder
-      const vaults = await this.fetchEscrowedVaults();
+      // 1. Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
+      const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();
 
       if (vaults.length === 0) {
         this.logger.info("No escrowed vaults available");
@@ -143,7 +144,7 @@ export class ArbitrageEngine {
 
       // 2. Process each vault one by one
       for (const vault of vaults) {
-        const outcome = await this.acquireVault(vault);
+        const outcome = await this.acquireVault(vault, dataTimestampMs);
 
         // A send error is ambiguous and leaves a possible nonce gap — stop the cycle (like
         // the liquidation engine). The next cycle's reconcile + resync resolve it and re-drive.
@@ -185,7 +186,10 @@ export class ArbitrageEngine {
   /**
    * Fetch escrowed vaults from Ponder indexer with retry
    */
-  private async fetchEscrowedVaults(): Promise<EscrowedVault[]> {
+  private async fetchEscrowedVaults(): Promise<{
+    vaults: EscrowedVault[];
+    dataTimestampMs?: number;
+  }> {
     try {
       const response = await fetchWithRetry(
         `${this.ponderUrl}/escrowed-vaults`,
@@ -201,11 +205,11 @@ export class ArbitrageEngine {
       if (!Array.isArray(data.vaults)) {
         throw new Error("Invalid Ponder response: vaults must be an array");
       }
-      return data.vaults;
+      return { vaults: data.vaults, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
       this.logger.error("Failed to fetch escrowed vaults:", error);
       this.metrics.recordError("ponder_fetch_error");
-      return [];
+      return { vaults: [] };
     }
   }
 
@@ -213,10 +217,14 @@ export class ArbitrageEngine {
    * Acquire a vault by swapping WBTC for it (redemption is atomic). Returns an outcome so the
    * poll loop knows whether to continue (`skipped`/`acquired`) or stop the cycle (`send-error`).
    */
-  async acquireVault(vault: EscrowedVault): Promise<AcquireOutcome> {
+  async acquireVault(vault: EscrowedVault, dataTimestampMs?: number): Promise<AcquireOutcome> {
     const { vaultId, btcAmount, currentDebt } = vault;
     const currentDebtBigInt = BigInt(currentDebt);
     const btcAmountBigInt = BigInt(btcAmount);
+    // Assigned once the risk gate allows this acquisition; from then on every exit must settle it
+    // (the `finally` is the backstop). Stays undefined if we bail before ever asking the gate —
+    // in which case there is no exposure slot, and nothing to record.
+    let slot: RiskSlot | undefined;
 
     this.logger.info("Attempting to acquire vault:");
     this.logger.info(`   Vault ID: ${vaultId}`);
@@ -247,16 +255,28 @@ export class ArbitrageEngine {
         return "skipped";
       }
 
-      // Risk gate — check just before committing to the acquisition.
-      const decision = this.risk.check({ kind: "vault-acquisition", subject: vaultId });
-      if (!decision.allow) {
-        this.logger.warn(`Risk gate blocked vault ${vaultId}: ${decision.reason}`);
+      // Slippage-adjusted ceiling on what we will pay. `swapWbtcForVault` charges the debt+fee
+      // prevailing at execution and only reverts *above* this ceiling, so `maxWbtcIn` — not the
+      // preview cost — is the amount the tx actually authorizes.
+      const maxWbtcIn = maxWbtcInWithSlippage(currentDebtBigInt, this.maxSlippageBps);
+
+      // Risk gate — check just before committing to the acquisition. The profit floor must bound
+      // the WORST case the tx permits, not the optimistic preview: interest can accrue between
+      // preview and execution and the swap still succeeds anywhere up to `maxWbtcIn`. Both legs
+      // are 8-dec sats (we receive the vault's BTC, we pay WBTC), so this is already the unit
+      // `minProfit` expects. May be negative — bigint comparison handles that.
+      const expectedProfit = preview.amountVault - maxWbtcIn;
+      slot = this.risk.openSlot({
+        kind: "vault-acquisition",
+        subject: vaultId,
+        expectedProfit,
+        dataTimestampMs,
+      });
+      if (!slot.allowed) {
+        this.logger.warn(`Risk gate blocked vault ${vaultId}: ${slot.reason}`);
         this.metrics.recordError("risk_blocked");
         return "skipped";
       }
-
-      // Calculate maxWbtcIn with slippage buffer
-      const maxWbtcIn = maxWbtcInWithSlippage(currentDebtBigInt, this.maxSlippageBps);
 
       // Ensure WBTC approval covers the slippage-adjusted max spend amount
       await this.ensureApproval(maxWbtcIn);
@@ -279,24 +299,21 @@ export class ArbitrageEngine {
         this.logger.error(`Gas estimation failed for vault ${vaultId}, skipping`);
         this.logger.error(`   Error: ${errorMsg}`);
         this.metrics.recordError("gas_estimation_failed");
+        // Nothing broadcast — free the exposure slot without blaming the chain.
+        slot.settle({ ok: false, abandoned: true });
         return "skipped";
       }
 
       // Crash-safety: refuse a duplicate live acquisition intent (already in flight on chain).
-      let intentId: string | undefined;
-      if (this.store) {
-        const record = await this.store.recordIntent({
-          chainId: this.walletClient.chain.id,
-          target: this.vaultSwapAddress,
-          action: "vault-acquisition",
-          subject: vaultId,
-        });
-        if (!record.recorded) {
-          this.logger.warn(`Skipping vault ${vaultId}: intent already ${record.existing.status}`);
-          this.metrics.recordError("intent_in_flight");
-          return "skipped";
-        }
-        intentId = record.id;
+      const { claimed, intentId } = await claimIntent(this.store, this.logger, slot, {
+        chainId: this.walletClient.chain.id,
+        target: this.vaultSwapAddress,
+        action: "vault-acquisition",
+        subject: vaultId,
+      });
+      if (!claimed) {
+        this.metrics.recordError("intent_in_flight");
+        return "skipped";
       }
 
       // Execute swap via VaultSwap (redemption is atomic). Route through the shared nonce
@@ -322,7 +339,7 @@ export class ArbitrageEngine {
         const errorMsg = sendError instanceof Error ? sendError.message : String(sendError);
         this.logger.error(`Failed to send swap for vault ${vaultId}: ${errorMsg}`);
         this.metrics.recordError("swap_send_error");
-        this.risk.recordOutcome({ ok: false });
+        slot.settle({ ok: false }); // a broadcast was attempted and failed
         // Ambiguous — keep the intent live; next-cycle reconcile resolves it by nonce vs chain.
         if (intentId) {
           await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
@@ -348,7 +365,7 @@ export class ArbitrageEngine {
       );
 
       if (!receipt) {
-        this.risk.recordOutcome({ ok: false });
+        slot.settle({ ok: false });
         this.logger.warn(`Transaction receipt timeout for vault ${vaultId}`);
         this.metrics.recordError("tx_timeout");
         // Leave the intent live (submitted) — reconcile resolves it against the chain.
@@ -356,7 +373,7 @@ export class ArbitrageEngine {
       }
 
       if (receipt.status === "success") {
-        this.risk.recordOutcome({ ok: true });
+        slot.settle({ ok: true });
         this.logger.info(`Vault acquired and redeemed in block ${receipt.blockNumber}`);
         this.metrics.recordVaultAcquired(currentDebtBigInt);
         if (intentId)
@@ -365,7 +382,7 @@ export class ArbitrageEngine {
           });
         return "acquired";
       }
-      this.risk.recordOutcome({ ok: false });
+      slot.settle({ ok: false });
       this.logger.error("Swap transaction reverted");
       this.metrics.recordError("swap_reverted");
       if (intentId)
@@ -375,7 +392,10 @@ export class ArbitrageEngine {
         });
       return "skipped";
     } catch (error) {
-      this.risk.recordOutcome({ ok: false });
+      // Only counts against the breaker if the gate had already allowed this acquisition. A
+      // throw from the preview read or the Ponder fetch is an infrastructure error, not a failed
+      // action — and it holds no exposure slot to release. (Those surface via `metrics`.)
+      slot?.settle({ ok: false });
       let errorMsg = "Unknown error";
       if (error instanceof ContractFunctionRevertedError) {
         errorMsg = `${error.data?.errorName || "Contract reverted"}`;
@@ -388,6 +408,10 @@ export class ArbitrageEngine {
       this.logger.error(`Failed to acquire vault ${vaultId}`);
       this.logger.error(`   Error: ${errorMsg}`);
       return "skipped";
+    } finally {
+      // Backstop: no path above may leave the slot reserved. Idempotent, so the real outcomes
+      // recorded above win and this only catches the ones nobody settled.
+      if (slot) settleUnfinished([slot]);
     }
   }
 

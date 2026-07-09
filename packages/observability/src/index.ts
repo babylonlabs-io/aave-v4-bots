@@ -7,8 +7,10 @@ export {
   runHealthChecks,
 } from "./health";
 
-// Metrics + health HTTP server
+// Metrics + health HTTP server. Other capability packages mount their own routes through
+// `HttpRoute` (see `@repo/risk`'s kill switch) rather than this package knowing about them.
 export {
+  type HttpRoute,
   type ObservabilityServerConfig,
   setPublicClient,
   startObservabilityServer,

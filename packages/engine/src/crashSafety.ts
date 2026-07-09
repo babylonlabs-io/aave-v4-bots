@@ -1,13 +1,15 @@
+import { createChainReader } from "@repo/chain";
 import { type NonceAllocator, nextNonce } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import {
+  type IntentInput,
   type IntentStatus,
   type StateStore,
   type TransitionMeta,
   reconcilePending,
 } from "@repo/persistence";
+import type { RiskSlot } from "@repo/risk";
 import type { Address, Hex, PublicClient } from "viem";
-import { createChainReader } from "./chainReader";
 
 // Shared crash-safety / nonce plumbing used by both engines (they run the same intent +
 // shared-nonce-allocator dance around their sends). Free functions rather than a base class so
@@ -75,4 +77,28 @@ export async function bestEffortTransition(
   } catch (error) {
     logger.error(`Failed to persist intent ${id} → ${to}:`, error);
   }
+}
+
+/**
+ * Claim the right to perform `input`, refusing a duplicate that is already live (pending or
+ * submitted) on chain. On refusal the risk slot is released as `abandoned` — nothing was
+ * broadcast, so it is not evidence the chain is rejecting us — and the caller skips the action.
+ *
+ * Without a store there is no idempotency to enforce: the claim always succeeds with no intent id.
+ */
+export async function claimIntent(
+  store: StateStore | undefined,
+  logger: Logger,
+  slot: RiskSlot,
+  input: IntentInput
+): Promise<{ claimed: boolean; intentId?: string }> {
+  if (!store) return { claimed: true };
+
+  const record = await store.recordIntent(input);
+  if (!record.recorded) {
+    logger.warn(`Skipping ${input.subject}: intent already ${record.existing.status}`);
+    slot.settle({ ok: false, abandoned: true });
+    return { claimed: false };
+  }
+  return { claimed: true, intentId: record.id };
 }

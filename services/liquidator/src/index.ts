@@ -6,11 +6,12 @@ dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
 import { type Chain, createPublicClient, createWalletClient } from "viem";
 
-import { instrumentedHttp } from "@repo/chain";
+import { createCodeHashReader, instrumentedHttp } from "@repo/chain";
 import { createNonceAllocator, createNonceLease, nextNonce } from "@repo/execution";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { type StateStore, createStateStore } from "@repo/persistence";
+import { startRiskRuntime } from "@repo/risk";
 import { createSecrets } from "@repo/secrets";
 import { resolveSigner } from "@repo/signer";
 import { LiquidationBot } from "./bot";
@@ -69,7 +70,24 @@ async function createBot(config: Config) {
   // `run()`), so it needs no persisted state. One per signer.
   const nonces = createNonceAllocator(createNonceLease(), signer.address);
 
+  // Exactly ONE risk gate per process, injected into every engine — a kill-switch or tripped
+  // breaker must halt everything this process drives. Also verifies the pinned adapter/lens
+  // bytecode before any tx goes out, and prepares the authenticated kill-switch routes.
+  const {
+    gate: risk,
+    routes,
+    routeNames,
+  } = await startRiskRuntime({
+    config: config.risk,
+    codeCheckIntervalMs: config.codeCheckIntervalMs,
+    controlTokenRef: config.controlTokenRef,
+    reader: createCodeHashReader(publicClient),
+    getSecret: (ref) => secrets.get(ref),
+    logger,
+  });
+
   const bot = new LiquidationBot({
+    risk,
     walletClient,
     publicClient,
     adapterAddress: config.adapterAddress,
@@ -88,7 +106,7 @@ async function createBot(config: Config) {
   // Seed the nonce lease from the chain before any send (approvals below reserve nonces).
   await nonces.resync(() => nextNonce(publicClient, signer.address));
 
-  return { bot, publicClient, store };
+  return { bot, publicClient, store, routes, routeNames };
 }
 
 async function main() {
@@ -97,10 +115,11 @@ async function main() {
 
   if (command === "poll") {
     logger.info("Aave V4 Liquidation Bot Starting...");
-    const { bot, publicClient, store } = await createBot(config);
+    const { bot, publicClient, store, routes, routeNames } = await createBot(config);
     storeForShutdown = store;
 
-    // Start the observability server (metrics + health/readiness probes)
+    // Start the observability server (metrics + health/readiness probes, and — when a control
+    // token is configured — the authenticated kill-switch endpoints).
     setPublicClient(publicClient);
     startObservabilityServer({
       port: config.metricsPort,
@@ -108,6 +127,8 @@ async function main() {
       ponderHealthEndpoint: "/positions",
       getMetrics,
       getMetricsContentType,
+      routes,
+      routeNames,
     });
 
     // Discover or use configured debt tokens

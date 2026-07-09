@@ -1,10 +1,16 @@
 import {
+  type RiskSettings,
   addressListSchema,
   addressSchema,
+  buildPersistenceConfig,
+  buildRiskConfig,
+  buildSecretsConfig,
   bytes32Schema,
   nonNegativeIntSchema,
   parseEnv,
   positiveIntSchema,
+  riskEnvFields,
+  runtimeEnvFields,
   urlSchema,
 } from "@repo/config";
 import type { ArbitrageEngineParams, LiquidationEngineParams } from "@repo/engine";
@@ -26,21 +32,19 @@ const DEFAULT_KEY_REF = "ARBITRAGEUR_PRIVATE_KEY";
 // The signing key is a secret resolved at boot via `@repo/secrets`, not a config
 // field — see index.ts.
 const envSchema = z.object({
+  // Secrets/signer source selection + crash-safety persistence, shared by every bot service.
+  // Both engines the arbitrageur may run share the one signer these fields select.
+  ...runtimeEnvFields,
+
+  // Risk gate thresholds + kill-switch (all optional; unset ⇒ the guard is off, which is the
+  // pre-existing permissive behavior). One gate is shared by BOTH engines this process runs.
+  ...riskEnvFields,
+
   // Required
   PONDER_URL: urlSchema,
   CLIENT_RPC_URL: urlSchema,
   VAULT_SWAP_ADDRESS: addressSchema,
   WBTC_ADDRESS: addressSchema,
-
-  // Signer + secrets source selection (all optional; defaults preserve current behavior:
-  // a local signer whose key is read from the ARBITRAGEUR_PRIVATE_KEY env var). Both
-  // engines the arbitrageur may run share this one signer.
-  SECRETS_PROVIDER: z.enum(["env", "aws"]).optional().default("env"),
-  SIGNER_SOURCE: z.enum(["local", "aws"]).optional().default("local"),
-  SIGNER_KEY_REF: z.string().min(1).optional(),
-  KMS_KEY_ID: z.string().min(1).optional(),
-  SIGNER_ADDRESS: addressSchema.optional(),
-  AWS_REGION: z.string().min(1).optional(),
 
   // Optional with defaults (validated as positive/non-negative integers)
   POLLING_INTERVAL_MS: positiveIntSchema.optional().default("30000"),
@@ -55,11 +59,6 @@ const envSchema = z.object({
 
   // Transaction timeout (optional)
   TX_RECEIPT_TIMEOUT_MS: positiveIntSchema.optional().default("120000"),
-
-  // Crash-safety persistence (optional; used by the opt-in liquidation engine). DATABASE_URL
-  // enables the Postgres StateStore; PERSISTENCE_SCHEMA isolates the bot tables (default "bot").
-  DATABASE_URL: z.string().min(1).optional(),
-  PERSISTENCE_SCHEMA: z.string().min(1).optional(),
 
   // Optional liquidation mode — when ADAPTER_ADDRESS + LENS_ADDRESS are set, the
   // arbitrageur also runs the LiquidationEngine (both engines, one process). Unset
@@ -82,7 +81,7 @@ export type LiquidationRunConfig = LiquidationEngineParams & { pollingIntervalMs
 // The engine's domain params (addresses, ponder URL, slippage, delays, tx
 // timeout) are declared in `@repo/engine` and inherited here; this interface
 // only adds the composition-root fields the service needs to wire the engine up.
-export interface Config extends ArbitrageEngineParams {
+export interface Config extends ArbitrageEngineParams, RiskSettings {
   // RPC endpoint the bot's viem clients connect to
   rpcUrl: string;
 
@@ -149,6 +148,7 @@ export function loadConfig(): Config {
       : undefined;
 
   return {
+    ...buildRiskConfig(env),
     ponderUrl,
     rpcUrl: env.CLIENT_RPC_URL,
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,
@@ -161,7 +161,8 @@ export function loadConfig(): Config {
     retryInitialDelayMs: Number.parseInt(env.RETRY_INITIAL_DELAY_MS, 10),
     retryMaxDelayMs: Number.parseInt(env.RETRY_MAX_DELAY_MS, 10),
     txReceiptTimeoutMs,
-    secrets: { source: env.SECRETS_PROVIDER, region: env.AWS_REGION },
+    secrets: buildSecretsConfig(env),
+    persistence: buildPersistenceConfig(env),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,
@@ -170,9 +171,6 @@ export function loadConfig(): Config {
       address: env.SIGNER_ADDRESS as Address | undefined,
       region: env.AWS_REGION,
     }),
-    persistence: env.DATABASE_URL
-      ? { connectionString: env.DATABASE_URL, schema: env.PERSISTENCE_SCHEMA }
-      : undefined,
     liquidation,
   };
 }

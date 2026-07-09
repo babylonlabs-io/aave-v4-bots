@@ -31,6 +31,9 @@ function createMockClients() {
   return {
     walletClient: {
       account: { address: "0xarbitrageur" },
+      // A real `WalletClient<Transport, Chain, Account>` always has a chain; the engine reads
+      // `chain.id` for the intent's idempotency key.
+      chain: { id: 31337 },
       writeContract: vi.fn().mockResolvedValue("0xtxhash"),
     },
     publicClient: {
@@ -390,8 +393,71 @@ describe("ArbitrageEngine", () => {
       const risk = createRiskGate({ maxConsecutiveFailures: 1 });
       const bot = createBot(clients, { risk });
 
-      await bot.acquireVault(mockVault); // reverts → recordOutcome(false) → breaker trips
+      await bot.acquireVault(mockVault); // reverts → slot settles !ok → breaker trips
       expect(risk.state()).toBe("HALTED");
+    });
+
+    // The floor bounds the WORST case the tx authorizes, not the optimistic preview:
+    // amountVault 100_000_000 − maxWbtcIn (amountWbtcToAcquire 50_000_000 + 1% slippage
+    // = 50_500_000) ⇒ expectedProfit = 49_500_000 sats.
+    const EXPECTED_PROFIT = 49_500_000n;
+
+    it("blocks a vault below the profit floor (minProfit) — no tx", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ minProfit: EXPECTED_PROFIT + 1n });
+      const bot = createBot(clients, { risk });
+
+      const result = await bot.acquireVault(mockVault);
+
+      expect(result).toBe("skipped");
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("allows a vault at the profit floor (positive control)", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ minProfit: EXPECTED_PROFIT });
+      const bot = createBot(clients, { risk });
+
+      expect(await bot.acquireVault(mockVault)).toBe("acquired");
+      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+    });
+
+    // Regression: the floor must bound the worst case the tx authorizes. `swapWbtcForVault`
+    // charges the debt+fee prevailing at execution and only reverts above `maxWbtcIn`, so a
+    // vault whose *optimistic* (preview) profit clears the floor can still realize less after
+    // interest accrual. Flooring on the un-slipped preview cost would wrongly allow this.
+    it("floors on the slippage-adjusted worst case, not the optimistic preview", async () => {
+      const clients = createMockClients();
+      const OPTIMISTIC_PROFIT = 50_000_000n; // amountVault − amountWbtcToAcquire (no slippage)
+      const risk = createRiskGate({ minProfit: OPTIMISTIC_PROFIT });
+      const bot = createBot(clients, { risk });
+
+      expect(await bot.acquireVault(mockVault)).toBe("skipped");
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("blocks a vault whose source data is stale (maxDataStalenessMs) — no tx", async () => {
+      const NOW = 1_000_000_000;
+      const clients = createMockClients();
+      const risk = createRiskGate({ maxDataStalenessMs: 60_000, now: () => NOW });
+      const bot = createBot(clients, { risk });
+
+      const result = await bot.acquireVault(mockVault, NOW - 120_000); // 2 min old
+
+      expect(result).toBe("skipped");
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("allows a vault whose source data is fresh (positive control)", async () => {
+      const NOW = 1_000_000_000;
+      const clients = createMockClients();
+      const risk = createRiskGate({ maxDataStalenessMs: 60_000, now: () => NOW });
+      const bot = createBot(clients, { risk });
+
+      expect(await bot.acquireVault(mockVault, NOW - 5_000)).toBe("acquired");
     });
   });
 

@@ -17,5 +17,3 @@ export {
   type ArbitrageMetrics,
 } from "./arbitrage/engine";
 export type { EscrowedVault } from "./arbitrage/types";
-
-export { createChainReader } from "./chainReader";

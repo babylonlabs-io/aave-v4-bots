@@ -42,6 +42,9 @@ function createMockClients() {
   return {
     walletClient: {
       account: { address: "0xliquidator" as `0x${string}` },
+      // A real `WalletClient<Transport, Chain, Account>` always has a chain; the engine reads
+      // `chain.id` for the intent's idempotency key.
+      chain: { id: 31337 },
       writeContract: vi.fn().mockResolvedValue("0xtxhash"),
     },
     publicClient: {
@@ -191,12 +194,82 @@ describe("LiquidationEngine", () => {
       const bot = createBot(clients, { risk });
       global.fetch = vi.fn().mockResolvedValue(liquidatable());
 
-      await bot.run(); // sends 1 tx → reverts → recordOutcome(false) → breaker trips
+      await bot.run(); // sends 1 tx → reverts → slot settles !ok → breaker trips
       expect(risk.state()).toBe("HALTED");
 
       clients.publicClient.simulateContract.mockClear();
       await bot.run(); // now HALTED → short-circuits before simulate
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+    });
+
+    const NOW = 1_000_000_000;
+    const feedAt = (dataTimestampMs?: number) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ liquidatable: [mockPosition], total: 1, checked: 1, dataTimestampMs }),
+      });
+
+    it("blocks a stale candidate (maxDataStalenessMs) — no tx", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ maxDataStalenessMs: 60_000, now: () => NOW });
+      const bot = createBot(clients, { risk });
+      global.fetch = feedAt(NOW - 120_000); // indexer's reads are 2 min old
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("allows a fresh candidate (positive control)", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ maxDataStalenessMs: 60_000, now: () => NOW });
+      const bot = createBot(clients, { risk });
+      global.fetch = feedAt(NOW - 5_000);
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+    });
+
+    // Fail-closed: an operator who opts into a staleness bound must not silently trade on data
+    // of unknown age (old indexer, or its block-timestamp probe failed).
+    it("blocks when the freshness guard is configured but the indexer reports no timestamp", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ maxDataStalenessMs: 60_000, now: () => NOW });
+      const bot = createBot(clients, { risk });
+      global.fetch = feedAt(undefined); // older indexer / failed probe
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("ignores a missing timestamp when the freshness guard is not configured (default)", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients, { risk: createRiskGate() }); // permissive default
+      global.fetch = feedAt(undefined);
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+    });
+
+    // Documents a known gap: liquidation profit is not derivable off-chain today (the Lens
+    // estimate and the tx return value carry no WBTC-denominated profit), so the engine passes
+    // no `expectedProfit` and the floor cannot bite here. If someone later wires a profit value,
+    // this test fails loudly — which is the point.
+    it("does NOT apply the profit floor to liquidations (expectedProfit not derivable)", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ minProfit: 10n ** 30n }); // absurd floor
+      const bot = createBot(clients, { risk });
+      global.fetch = feedAt(NOW);
+
+      await bot.run();
+
+      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
     });
   });
 

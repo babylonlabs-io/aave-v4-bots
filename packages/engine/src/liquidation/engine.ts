@@ -18,9 +18,10 @@ import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@re
 import { type NonceAllocator, nextNonce } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { StateStore } from "@repo/persistence";
-import type { RiskGate } from "@repo/risk";
+import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
 import {
   bestEffortTransition,
+  claimIntent,
   reconcileIntents,
   resyncNonces,
   sendMaybeAllocated,
@@ -202,6 +203,9 @@ export class LiquidationEngine {
    */
   async run(): Promise<void> {
     const startTime = Date.now();
+    // Every exposure slot this cycle opens. The `finally` releases any the code below missed,
+    // so an unexpected throw can never leak a slot and wedge the exposure cap.
+    const slots: RiskSlot[] = [];
 
     try {
       // 0. Risk gate — a HALTED gate (kill-switch or tripped breaker) skips the cycle.
@@ -217,8 +221,8 @@ export class LiquidationEngine {
       await this.reconcile();
       await resyncNonces(this.nonces, this.publicClient, this.walletClient.account.address);
 
-      // 1. Fetch liquidatable positions from Ponder
-      const positions = await this.fetchLiquidatablePositions();
+      // 1. Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
+      const { positions, dataTimestampMs } = await this.fetchLiquidatablePositions();
 
       this.metrics.recordPositionsLiquidatable(positions.length);
 
@@ -335,36 +339,43 @@ export class LiquidationEngine {
       const signer = this.walletClient.account.address;
       let localNonce = this.nonces ? 0 : await nextNonce(this.publicClient, signer);
 
-      // Each sent tx is paired with its intent id so the receipt phase can transition it.
-      const sent: Array<{ hash: Hex; intentId?: string }> = [];
+      // Each sent tx is paired with its intent id (so the receipt phase can transition it) and
+      // its risk slot (so the receipt phase settles the exposure it reserved).
+      const sent: Array<{ hash: Hex; intentId?: string; slot: RiskSlot }> = [];
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, amounts } = validCandidates[i];
 
-        // Risk gate — per-candidate check just before submit (profit floor, freshness, …).
-        const decision = this.risk.check({ kind: "liquidation", subject: position.proxyAddress });
-        if (!decision.allow) {
+        // Risk gate — per-candidate check just before submit. An allowed check reserves an
+        // exposure slot that MUST be settled on every path below (see `RiskSlot`).
+        //
+        // `expectedProfit` is intentionally **not** passed: liquidation profit is not derivable
+        // off-chain today. The Lens `estimateLiquidation` returns debt amounts (in debt-token
+        // units) + `wbtcPayment` + vault *ids*, and `liquidate`/`liquidateWithLLP` return only
+        // `vaultIds` — so neither the estimate nor a simulation yields a WBTC-denominated
+        // profit. Pricing it needs an oracle, a new Lens view, or the on-chain WBTC-delta
+        // ProfitGuard (RFC-001). The gate skips the profit floor when this is undefined.
+        const slot = this.risk.openSlot({
+          kind: "liquidation",
+          subject: position.proxyAddress,
+          dataTimestampMs,
+        });
+        if (!slot.allowed) {
           this.metrics.recordError("risk_blocked");
-          this.logger.warn(`Risk gate blocked ${position.proxyAddress}: ${decision.reason}`);
+          this.logger.warn(`Risk gate blocked ${position.proxyAddress}: ${slot.reason}`);
           continue;
         }
+        slots.push(slot);
 
         // Crash-safety: refuse a duplicate live intent (already pending/submitted on chain).
-        let intentId: string | undefined;
-        if (this.store) {
-          const record = await this.store.recordIntent({
-            chainId: this.walletClient.chain.id,
-            target: this.adapterAddress,
-            action: "liquidation",
-            subject: position.proxyAddress,
-          });
-          if (!record.recorded) {
-            this.metrics.recordError("intent_in_flight");
-            this.logger.warn(
-              `Skipping ${position.proxyAddress}: intent already ${record.existing.status}`
-            );
-            continue;
-          }
-          intentId = record.id;
+        const { claimed, intentId } = await claimIntent(this.store, this.logger, slot, {
+          chainId: this.walletClient.chain.id,
+          target: this.adapterAddress,
+          action: "liquidation",
+          subject: position.proxyAddress,
+        });
+        if (!claimed) {
+          this.metrics.recordError("intent_in_flight");
+          continue;
         }
 
         const priorityOrder = sequentialPriorityOrder(amounts.length);
@@ -403,6 +414,8 @@ export class LiquidationEngine {
           this.metrics.recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           this.logger.error(`Failed to send liquidation for ${position.borrower}: ${errorMsg}`);
+          // A broadcast was attempted and failed — real failure signal for the breaker.
+          slot.settle({ ok: false });
           // Ambiguous — keep the intent LIVE (not terminal); next-cycle reconcile decides.
           if (intentId) {
             await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
@@ -431,7 +444,7 @@ export class LiquidationEngine {
             txHash: hash,
           });
         }
-        sent.push({ hash, intentId });
+        sent.push({ hash, intentId, slot });
         if (!this.nonces) localNonce += 1;
       }
 
@@ -450,11 +463,11 @@ export class LiquidationEngine {
 
       for (let i = 0; i < receipts.length; i++) {
         const result = receipts[i];
-        const { hash, intentId } = sent[i];
+        const { hash, intentId, slot } = sent[i];
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
-            this.risk.recordOutcome({ ok: true });
+            slot.settle({ ok: true });
             this.metrics.recordLiquidationSuccess();
             this.logger.info(`Liquidation confirmed in block ${receipt.blockNumber}: ${hash}`);
             if (intentId)
@@ -462,7 +475,7 @@ export class LiquidationEngine {
                 txHash: hash,
               });
           } else {
-            this.risk.recordOutcome({ ok: false });
+            slot.settle({ ok: false });
             this.metrics.recordLiquidationFailed();
             this.metrics.recordError("tx_reverted");
             this.logger.error(`Liquidation reverted: ${hash}`);
@@ -473,7 +486,7 @@ export class LiquidationEngine {
               });
           }
         } else {
-          this.risk.recordOutcome({ ok: false });
+          slot.settle({ ok: false });
           this.metrics.recordLiquidationFailed();
           this.metrics.recordError("receipt_fetch_error");
           this.logger.error(`Failed to get receipt for ${hash}: ${result.reason}`);
@@ -484,14 +497,20 @@ export class LiquidationEngine {
       this.metrics.recordError("poll_error");
       this.logger.error("Error in bot run:", error);
     } finally {
+      settleUnfinished(slots);
       this.metrics.recordPollDuration(Date.now() - startTime);
     }
   }
 
   /**
-   * Fetch liquidatable positions from Ponder indexer
+   * Fetch liquidatable positions from Ponder indexer, along with the chain-block timestamp its
+   * live reads were evaluated at (the risk gate's freshness input; `undefined` if the indexer
+   * doesn't report it).
    */
-  private async fetchLiquidatablePositions(): Promise<LiquidatablePosition[]> {
+  private async fetchLiquidatablePositions(): Promise<{
+    positions: LiquidatablePosition[];
+    dataTimestampMs?: number;
+  }> {
     try {
       const response = await fetchWithRetry(
         `${this.ponderUrl}/liquidatable-positions`,
@@ -505,11 +524,11 @@ export class LiquidationEngine {
 
       const data: PonderResponse = await response.json();
       this.metrics.recordPositionsChecked(data.checked);
-      return data.liquidatable;
+      return { positions: data.liquidatable, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
       this.metrics.recordError("ponder_fetch_error");
       this.logger.error("Failed to fetch liquidatable positions:", error);
-      return [];
+      return { positions: [] };
     }
   }
 

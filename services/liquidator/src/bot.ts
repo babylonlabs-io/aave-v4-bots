@@ -1,15 +1,17 @@
 import { LiquidationEngine, type LiquidationEngineConfig } from "@repo/engine";
 import { createLogger } from "@repo/logger";
-import { createRiskGate } from "@repo/risk";
 
 import { metrics } from "./metrics";
 
-export type LiquidationBotConfig = Omit<LiquidationEngineConfig, "metrics" | "logger" | "risk">;
+/**
+ * The `risk` gate is **injected**, not constructed here: a process must have exactly one
+ * `RiskGate` so a kill-switch / tripped breaker halts every engine it owns.
+ */
+export type LiquidationBotConfig = Omit<LiquidationEngineConfig, "metrics" | "logger">;
 
 /**
  * Composition wrapper: the shared `LiquidationEngine` wired with this service's
- * Prometheus metrics, a tagged logger, and a risk gate (permissive by default —
- * env-driven thresholds are a follow-up). The pipeline logic lives in `@repo/engine`.
+ * Prometheus metrics and a tagged logger. The pipeline logic lives in `@repo/engine`.
  */
 export class LiquidationBot extends LiquidationEngine {
   constructor(config: LiquidationBotConfig) {
@@ -17,7 +19,6 @@ export class LiquidationBot extends LiquidationEngine {
       ...config,
       metrics,
       logger: createLogger({ prefix: "[Bot] " }),
-      risk: createRiskGate(),
     });
   }
 }

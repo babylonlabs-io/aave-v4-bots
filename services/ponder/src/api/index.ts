@@ -50,6 +50,29 @@ async function isMulticallSupported(publicClient: PublicClient): Promise<boolean
   }
 }
 
+/**
+ * Timestamp (ms) of the chain block this endpoint's **live** contract reads are evaluated
+ * against. Clients pass it to the risk gate as `dataTimestampMs`: if the RPC behind this
+ * indexer is lagging, `now - dataTimestampMs` exceeds the freshness threshold and the action is
+ * blocked. Note it measures *RPC* staleness, not indexer **head** lag — that is a separate
+ * guard the indexer-liveness work owns.
+ *
+ * Best-effort: a failed probe returns `undefined` (the client then skips the freshness guard
+ * rather than the bot stalling on an RPC blip) and warns.
+ */
+async function readBlockTimestampMs(publicClient: PublicClient): Promise<number | undefined> {
+  try {
+    const block = await publicClient.getBlock();
+    return Number(block.timestamp) * 1000;
+  } catch (error) {
+    logger.warn(
+      "Could not read block timestamp; omitting dataTimestampMs (freshness guard will not apply):",
+      error
+    );
+    return undefined;
+  }
+}
+
 const app = new Hono();
 
 // GraphQL endpoint
@@ -89,6 +112,9 @@ app.get("/liquidatable-positions", async (c) => {
   if (positions.length === 0) {
     return c.json({ liquidatable: [], total: 0, checked: 0 });
   }
+
+  // Freshness of the live `estimateLiquidation` reads below (risk-gate `dataTimestampMs`).
+  const dataTimestampMs = await readBlockTimestampMs(publicClient);
 
   // Build proxy -> borrower lookup
   const proxyToBorrower = new Map<string, string>();
@@ -193,6 +219,7 @@ app.get("/liquidatable-positions", async (c) => {
       liquidatable,
       total: liquidatable.length,
       checked: positions.length,
+      dataTimestampMs,
     })
   );
 });
@@ -246,6 +273,9 @@ app.get("/escrowed-vaults", async (c) => {
     return c.json({ vaults: [], total: 0, failedVaultsCount: 0 });
   }
 
+  // Freshness of the live `previewEscrowedVaults` reads below (risk-gate `dataTimestampMs`).
+  const dataTimestampMs = await readBlockTimestampMs(publicClient);
+
   // Build vault ID array and createdAt lookup
   const vaultIds = vaults.map((v) => v.vaultId);
   const createdAtMap = new Map(vaults.map((v) => [v.vaultId, v.createdAt]));
@@ -281,6 +311,7 @@ app.get("/escrowed-vaults", async (c) => {
         vaults: enrichedVaults,
         total: enrichedVaults.length,
         failedVaultsCount: 0,
+        dataTimestampMs,
       })
     );
   } catch (error) {
@@ -319,6 +350,7 @@ app.get("/escrowed-vaults", async (c) => {
         vaults: enrichedVaults,
         total: enrichedVaults.length,
         failedVaultsCount: failed,
+        dataTimestampMs,
       }),
       enrichedVaults.length > 0 ? 200 : 500
     );

@@ -1,19 +1,23 @@
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "@repo/engine";
 import { createLogger } from "@repo/logger";
 import { updateLastPollTime } from "@repo/observability";
-import { createRiskGate } from "@repo/risk";
 
 import { metrics } from "./metrics";
 
+/**
+ * The `risk` gate is **injected**, not constructed here: this process may run two engines off
+ * one signer, and they must share a single `RiskGate` so a kill-switch / tripped breaker halts
+ * **both** (previously each engine built its own, so halting one left the other trading).
+ */
 export type ArbitrageurBotConfig = Omit<
   ArbitrageEngineConfig,
-  "metrics" | "logger" | "risk" | "onPollComplete"
+  "metrics" | "logger" | "onPollComplete"
 >;
 
 /**
  * Composition wrapper: the shared `ArbitrageEngine` wired with this service's
- * Prometheus metrics, a tagged logger, a risk gate (permissive by default), and
- * the health poll-timestamp hook. The pipeline logic lives in `@repo/engine`.
+ * Prometheus metrics, a tagged logger, and the health poll-timestamp hook.
+ * The pipeline logic lives in `@repo/engine`.
  */
 export class ArbitrageurBot extends ArbitrageEngine {
   constructor(config: ArbitrageurBotConfig) {
@@ -21,7 +25,6 @@ export class ArbitrageurBot extends ArbitrageEngine {
       ...config,
       metrics,
       logger: createLogger({ prefix: "[Arbitrageur] " }),
-      risk: createRiskGate(),
       onPollComplete: updateLastPollTime,
     });
   }

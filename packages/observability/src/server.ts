@@ -6,12 +6,30 @@ import { type HealthCheckDependencies, runHealthChecks } from "./health";
 
 const logger = createLogger();
 
+/**
+ * An extra route, tried before the built-in ones. Returns `true` if it handled the request.
+ *
+ * This is how a capability package mounts its own HTTP surface without observability having to
+ * know what it is: `@repo/risk` supplies the kill-switch routes this way (the module map puts
+ * the remote kill switch in `risk` and keeps `observability` to logs/metrics/health).
+ */
+export type HttpRoute = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  searchParams: URLSearchParams
+) => boolean;
+
 export interface ObservabilityServerConfig {
   port: number;
   ponderUrl: string;
   ponderHealthEndpoint: string;
   getMetrics: () => Promise<string>;
   getMetricsContentType: () => string;
+  /** Extra routes (e.g. `@repo/risk`'s kill-switch), tried before the built-in ones. */
+  routes?: readonly HttpRoute[];
+  /** Names of the extra routes, for the startup banner only. */
+  routeNames?: readonly string[];
 }
 
 const healthCheckDeps: HealthCheckDependencies = {
@@ -35,9 +53,16 @@ export function startObservabilityServer(config: ObservabilityServerConfig): voi
   healthCheckDeps.ponderHealthEndpoint = config.ponderHealthEndpoint;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    const url = req.url || "/";
+    // Parse rather than string-compare `req.url`, so `/metrics?foo=1` still routes and the
+    // control endpoints can read their `?reason=`. The base is a placeholder; only the path
+    // and query are used.
+    const { pathname, searchParams } = new URL(req.url || "/", "http://localhost");
+    const url = pathname;
 
     try {
+      for (const route of config.routes ?? []) {
+        if (route(req, res, pathname, searchParams)) return;
+      }
       if (url === "/health" || url === "/healthz") {
         const health = await runHealthChecks(healthCheckDeps);
 
@@ -76,6 +101,9 @@ export function startObservabilityServer(config: ObservabilityServerConfig): voi
     logger.info("[Observability]   /health  - Health check endpoint");
     logger.info("[Observability]   /metrics - Prometheus metrics");
     logger.info("[Observability]   /ready   - Readiness probe");
+    for (const name of config.routeNames ?? []) {
+      logger.info(`[Observability]   ${name}`);
+    }
   });
 
   server.on("error", (error: NodeJS.ErrnoException) => {

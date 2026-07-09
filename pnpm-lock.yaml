@@ -61,6 +61,12 @@ importers:
       '@repo/logger':
         specifier: workspace:*
         version: link:../logger
+      '@repo/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@repo/risk':
+        specifier: workspace:*
+        version: link:../risk
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -80,6 +86,15 @@ importers:
       '@repo/logger':
         specifier: workspace:*
         version: link:../logger
+      '@repo/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@repo/risk':
+        specifier: workspace:*
+        version: link:../risk
+      '@repo/secrets':
+        specifier: workspace:*
+        version: link:../secrets
       zod:
         specifier: ^3.24.0
         version: 3.25.76
