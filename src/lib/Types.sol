@@ -30,9 +30,9 @@ library Types {
     }
 
     /// @dev What each phase contains:
-    /// - Lens:     Call AaveAdapterLens to determine debts[] and wbtcPayment.
-    ///             Approve tokens to AaveAdapter for later liquidation.
     /// - Setup:    For SwapVenue that requires a special setup, call the venue to set up flashloan.
+    /// - FlashLoan: Call the venue to flashloan the required amount of debt tokens.
+    /// - LiquidationAndSwap: Call the liquidation venue to liquidate the position and swap the collateral to the required debt tokens.
     enum LiquidationPhase {
         Setup,
         FlashLoan,

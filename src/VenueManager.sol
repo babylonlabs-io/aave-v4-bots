@@ -149,7 +149,7 @@ abstract contract VenueManager is
         (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(length);
         tokenTK.storeAddress(token);
         venueTK.storeAddress(venue);
-        amountTK.storeUint256(amountTK.loadUint256() + amount);
+        amountTK.storeUint256(amount);
         VENUE_DEBTS_LENGTH_TK.storeUint256(length + 1);
     }
 

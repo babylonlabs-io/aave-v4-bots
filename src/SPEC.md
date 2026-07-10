@@ -45,3 +45,21 @@ After all phases have completed, `LiquidationRouter`:
 
 - Revokes the approvals granted to `aaveAdapter` and `dexAggRouter`.
 - Transfers any remaining token profit to the `auth` address.
+
+## Engineering notes
+
+### Transient storage syntax
+
+Each transient storage slot has its key defined as a `bytes32`:
+```solidity
+    keccak256("<CONTRACT_NAME>.<VARIABLE_NAME>")
+```
+
+For array and mapping, the syntax is as follows:
+
+```solidity
+    arrayTK[i]      = keccak256("<CONTRACT_NAME>.<VARIABLE_NAME>[INDEX]")
+    mappingTK[key]  = keccak256("<CONTRACT_NAME>.<VARIABLE_NAME>[KEY]")
+```
+
+Contract name denotes the name of the contract that the variable is defined in.
