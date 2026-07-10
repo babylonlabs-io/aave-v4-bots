@@ -36,8 +36,7 @@ library Types {
     enum LiquidationPhase {
         Setup,
         FlashLoan,
-        LiquidationAndSwap,
-        Swap
+        LiquidationAndSwap
     }
 
     struct LiquidationIteration {

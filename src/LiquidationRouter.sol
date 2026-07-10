@@ -104,9 +104,35 @@ contract LiquidationRouter is VenueManager {
 
     // ---------------------- PHASE IMPLEMENTATION ----------------------
 
-    function _executeSingleSetupPhase(Types.LiquidationIteration memory iteration) internal virtual {}
+    function _executeSingleSetupPhase(Types.LiquidationIteration memory iteration) internal virtual {
+        while (iteration.i < iteration.flashDatas.length) {
+            (Types.VenueType venueType, address venue) =
+                (iteration.flashDatas[iteration.i].venueType, iteration.flashDatas[iteration.i].venueAddress);
+            if (!_venueRequiresSetup(venueType, venue)) {
+                iteration.i++;
+                continue;
+            }
+        }
 
-    function _executeSingleFlashLoanPhase(Types.LiquidationIteration memory iteration) internal virtual {}
+        if (iteration.i == iteration.flashDatas.length) {
+            iteration.phase = Types.LiquidationPhase.FlashLoan;
+            iteration.i = 0;
+            _iterateLiquidation(iteration);
+            return;
+        }
+
+        iteration.i++;
+        _setUpSwapVenue(iteration.flashDatas[iteration.i].venueAddress, abi.encode(iteration));
+
+        return;
+    }
+
+    function _executeSingleFlashLoanPhase(Types.LiquidationIteration memory iteration) internal virtual {
+        address token = iteration.flashDatas[iteration.i].token;
+        uint256 amount = _getReserveDebtAmount(iteration.reserveTokens, iteration.reserveDebtsToLiquidate, token);
+        iteration.i++;
+        _flashLoan(iteration.flashDatas[iteration.i], amount, abi.encode(iteration));
+    }
 
     function _executeLiquidationPhase(Types.LiquidationIteration memory iteration) internal virtual {
         _approveForAdapter(iteration.reserveTokens, iteration.reserveDebtsToLiquidate, iteration.wbtcPayment);
@@ -181,6 +207,19 @@ contract LiquidationRouter is VenueManager {
     }
 
     // ---------------------- MISC ----------------------
+    function _getReserveDebtAmount(address[] memory reserveTokens, uint256[] memory reserveDebts, address ofToken)
+        internal
+        pure
+        returns (uint256)
+    {
+        for (uint256 i = 0; i < reserveTokens.length; i++) {
+            if (reserveTokens[i] == ofToken) {
+                return reserveDebts[i];
+            }
+        }
+        return 0;
+    }
+
     function _getDefaultOrder(uint256 length) internal pure returns (uint256[] memory order) {
         order = new uint256[](length);
         for (uint256 i = 0; i < length; i++) {

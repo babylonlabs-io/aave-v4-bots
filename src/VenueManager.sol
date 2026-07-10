@@ -52,7 +52,7 @@ abstract contract VenueManager is
         _requireCompleteCallback();
     }
 
-    function _flashLoan(Types.FlashData memory flashData, uint256 amountOut, bytes calldata forwardData) internal {
+    function _flashLoan(Types.FlashData memory flashData, uint256 amountOut, bytes memory forwardData) internal {
         if (flashData.venueType == Types.VenueType.Morpho) {
             _expectCallback(flashData.venueAddress);
             IMorpho(flashData.venueAddress)
@@ -177,7 +177,7 @@ abstract contract VenueManager is
 
     // ---------------------- INTERNAL FUNCTIONS ----------------------
 
-    function _venueRequireSetup(Types.VenueType venueType, address venueAddress) internal view returns (bool) {
+    function _venueRequiresSetup(Types.VenueType venueType, address venueAddress) internal view returns (bool) {
         return (venueType == Types.VenueType.UniswapV4FlashSwap || venueType == Types.VenueType.UniswapV4FlashLoan)
             && ISwapVenue(venueAddress).requireSetup();
     }
