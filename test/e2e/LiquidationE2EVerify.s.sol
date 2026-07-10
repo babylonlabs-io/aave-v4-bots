@@ -100,6 +100,15 @@ contract LiquidationE2EVerify is Script, BaseBot {
         }
 
         if (positionLiquidated && liquidatorSpentUsdc && liquidatorReceivedWbtc) {
+            // The bot traded, which already proves the code-hash guard accepted the real deployed
+            // bytecode (a mismatch would have booted it HALTED). Now exercise the control plane on
+            // the live process, last so a kill-switch failure can never mask a trading failure.
+            console.log("\n--- Verifying kill switch on the running bot ---");
+            _checkKillSwitch(
+                E2EConstants.LIQUIDATOR_CONTROL_PORT, E2EConstants.LIQUIDATOR_METRICS_PORT, E2EConstants.CONTROL_TOKEN
+            );
+            console.log("[PASS] Kill switch: auth, method + traversal guards, halt/resume, loopback-only");
+
             console.log("\n=== E2E Liquidation Test PASSED ===\n");
         } else {
             console.log("\n=== E2E Liquidation Test FAILED ===\n");

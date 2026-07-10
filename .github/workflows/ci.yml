@@ -38,6 +38,29 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+
+    # The crash-safety / no-double-submit guarantee rests on the Postgres StateStore. The unit
+    # tests exercise an in-memory model, which cannot catch a schema, transaction or upsert bug —
+    # so CI runs the integration suites against a real database. They self-skip when
+    # PERSISTENCE_E2E_DATABASE_URL is unset, which keeps `pnpm test` offline for contributors.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ponder
+          POSTGRES_PASSWORD: ponder
+          POSTGRES_DB: ponder
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PERSISTENCE_E2E_DATABASE_URL: postgresql://ponder:ponder@localhost:5432/ponder
+
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 https://github.com/actions/checkout/releases/tag/v6.0.2
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0 https://github.com/pnpm/action-setup/releases/tag/v4.4.0
@@ -46,4 +69,20 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+
+      - name: Test (unit + Postgres integration suites)
+        run: |
+          set -o pipefail
+          pnpm test 2>&1 | tee /tmp/test.log
+
+          # The integration suites self-skip when the DB is unreachable. That is right for a
+          # contributor's laptop and wrong for CI: a typo in the env var, a renamed file, or a
+          # container that never came up would turn the crash-safety coverage into a silent no-op.
+          if grep -qE "(postgres|crashSafety)\.integration.*skipped" /tmp/test.log; then
+            echo "::error::Postgres integration tests skipped despite PERSISTENCE_E2E_DATABASE_URL being set"
+            grep -E "integration" /tmp/test.log || true
+            exit 1
+          fi
+          grep -qE "integration\.test" /tmp/test.log || {
+            echo "::error::no Postgres integration suite ran at all"; exit 1;
+          }

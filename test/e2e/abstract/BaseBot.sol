@@ -38,6 +38,22 @@ abstract contract BaseBot is BaseE2E {
         return _vm.ffi(cmd);
     }
 
+    /// @notice Assert the running bot's kill switch behaves, via `test/e2e/scripts/killswitch-check.sh`.
+    /// @dev The only place the whole control-plane path is exercised in a real process: the token
+    ///      resolved through `@repo/secrets`, the control server bound to loopback on its own
+    ///      socket, and — critically — the metrics port serving no control route at all. The
+    ///      script exits non-zero on any failed assertion, which reverts this script.
+    ///      Requires `--ffi`, and a cwd of the repo root (how CI and e2e-local.sh invoke forge).
+    function _checkKillSwitch(uint256 controlPort, uint256 metricsPort, string memory token) internal {
+        string[] memory cmd = new string[](5);
+        cmd[0] = "bash";
+        cmd[1] = "test/e2e/scripts/killswitch-check.sh";
+        cmd[2] = _vm.toString(controlPort);
+        cmd[3] = _vm.toString(metricsPort);
+        cmd[4] = token;
+        _vm.ffi(cmd);
+    }
+
     /// @notice Canonical proxy for a user (matches the setup scripts).
     function _getUserProxyAddress(address user) internal view returns (address) {
         return aaveAdapter.getPosition(user).proxyContract;
