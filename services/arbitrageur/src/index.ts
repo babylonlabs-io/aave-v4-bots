@@ -23,12 +23,7 @@ import {
   nextNonce,
 } from "@repo/execution";
 import { createLogger } from "@repo/logger";
-import {
-  type HttpRoute,
-  setPublicClient,
-  startObservabilityServer,
-  updateLastPollTime,
-} from "@repo/observability";
+import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { type StateStore, createStateStore } from "@repo/persistence";
 import { type RiskGate, startRiskRuntime } from "@repo/risk";
 import { createSecrets } from "@repo/secrets";
@@ -67,8 +62,6 @@ interface BotWithClients {
   store: StateStore | undefined;
   nonces: NonceAllocator;
   risk: RiskGate;
-  routes: readonly HttpRoute[];
-  routeNames: readonly string[];
 }
 
 async function createBot(config: Config): Promise<BotWithClients> {
@@ -123,14 +116,12 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // tripped breaker halts arbitrage *and* liquidation together. (Each engine used to build its
   // own gate, which meant halting one left the other trading.) Also verifies the pinned target
   // bytecode before any tx goes out, and prepares the authenticated kill-switch routes.
-  const {
-    gate: risk,
-    routes,
-    routeNames,
-  } = await startRiskRuntime({
+  const { gate: risk } = await startRiskRuntime({
     config: config.risk,
     codeCheckIntervalMs: config.codeCheckIntervalMs,
     controlTokenRef: config.controlTokenRef,
+    controlPort: config.controlPort,
+    controlHost: config.controlHost,
     read: (address) => readCodeHash(publicClient, address),
     getSecret: (ref) => secrets.get(ref),
     logger,
@@ -159,7 +150,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // Seed the shared lease from the chain once, before either engine sends.
   await nonces.resync(() => nextNonce(publicClient, signer.address));
 
-  return { bot, publicClient, walletClient, store, nonces, risk, routes, routeNames };
+  return { bot, publicClient, walletClient, store, nonces, risk };
 }
 
 /**
@@ -218,8 +209,7 @@ async function runPollingMode(config: Config): Promise<void> {
   logger.info("Aave V4 Arbitrageur Bot Starting...");
   logger.info("===================================");
 
-  const { bot, publicClient, walletClient, store, nonces, risk, routes, routeNames } =
-    await createBot(config);
+  const { bot, publicClient, walletClient, store, nonces, risk } = await createBot(config);
   storeForShutdown = store;
 
   // Start the observability server (metrics + health/readiness probes, and — when a control
@@ -232,8 +222,6 @@ async function runPollingMode(config: Config): Promise<void> {
     ponderHealthEndpoint: "/escrowed-vaults",
     getMetrics,
     getMetricsContentType,
-    routes,
-    routeNames,
   });
 
   // Opt-in: also run the liquidation engine (both engines, one process) — sharing the one

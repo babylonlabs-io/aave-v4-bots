@@ -73,14 +73,12 @@ async function createBot(config: Config) {
   // Exactly ONE risk gate per process, injected into every engine — a kill-switch or tripped
   // breaker must halt everything this process drives. Also verifies the pinned adapter/lens
   // bytecode before any tx goes out, and prepares the authenticated kill-switch routes.
-  const {
-    gate: risk,
-    routes,
-    routeNames,
-  } = await startRiskRuntime({
+  const { gate: risk } = await startRiskRuntime({
     config: config.risk,
     codeCheckIntervalMs: config.codeCheckIntervalMs,
     controlTokenRef: config.controlTokenRef,
+    controlPort: config.controlPort,
+    controlHost: config.controlHost,
     read: (address) => readCodeHash(publicClient, address),
     getSecret: (ref) => secrets.get(ref),
     logger,
@@ -106,7 +104,7 @@ async function createBot(config: Config) {
   // Seed the nonce lease from the chain before any send (approvals below reserve nonces).
   await nonces.resync(() => nextNonce(publicClient, signer.address));
 
-  return { bot, publicClient, store, routes, routeNames };
+  return { bot, publicClient, store };
 }
 
 async function main() {
@@ -115,7 +113,7 @@ async function main() {
 
   if (command === "poll") {
     logger.info("Aave V4 Liquidation Bot Starting...");
-    const { bot, publicClient, store, routes, routeNames } = await createBot(config);
+    const { bot, publicClient, store } = await createBot(config);
     storeForShutdown = store;
 
     // Start the observability server (metrics + health/readiness probes, and — when a control
@@ -127,8 +125,6 @@ async function main() {
       ponderHealthEndpoint: "/positions",
       getMetrics,
       getMetricsContentType,
-      routes,
-      routeNames,
     });
 
     // Discover or use configured debt tokens

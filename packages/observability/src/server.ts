@@ -1,4 +1,4 @@
-import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
+import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
 import type { PublicClient } from "viem";
 
 import { createLogger } from "@repo/logger";
@@ -6,19 +6,8 @@ import { type HealthCheckDependencies, runHealthChecks } from "./health";
 
 const logger = createLogger();
 
-/**
- * An extra route, tried before the built-in ones. Returns `true` if it handled the request.
- *
- * This is how a capability package mounts its own HTTP surface without observability having to
- * know what it is: `@repo/risk` supplies the kill-switch routes this way (the module map puts
- * the remote kill switch in `risk` and keeps `observability` to logs/metrics/health).
- */
-export type HttpRoute = (
-  req: IncomingMessage,
-  res: ServerResponse,
-  pathname: string,
-  searchParams: URLSearchParams
-) => boolean;
+// Metrics + health only. The kill switch lives in `@repo/risk` on its own socket — a route that
+// can stop trading must never share an exposure decision with a Prometheus scrape target.
 
 export interface ObservabilityServerConfig {
   port: number;
@@ -26,10 +15,6 @@ export interface ObservabilityServerConfig {
   ponderHealthEndpoint: string;
   getMetrics: () => Promise<string>;
   getMetricsContentType: () => string;
-  /** Extra routes (e.g. `@repo/risk`'s kill-switch), tried before the built-in ones. */
-  routes?: readonly HttpRoute[];
-  /** Names of the extra routes, for the startup banner only. */
-  routeNames?: readonly string[];
 }
 
 const healthCheckDeps: HealthCheckDependencies = {
@@ -46,23 +31,20 @@ export function setPublicClient(client: PublicClient): void {
 }
 
 /**
- * Start the metrics and health check HTTP server
+ * Start the metrics and health check HTTP server. Returns the `Server` so a caller can close it
+ * (and so tests can bind an ephemeral port).
  */
-export function startObservabilityServer(config: ObservabilityServerConfig): void {
+export function startObservabilityServer(config: ObservabilityServerConfig): Server {
   healthCheckDeps.ponderUrl = config.ponderUrl;
   healthCheckDeps.ponderHealthEndpoint = config.ponderHealthEndpoint;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    // Parse rather than string-compare `req.url`, so `/metrics?foo=1` still routes and the
-    // control endpoints can read their `?reason=`. The base is a placeholder; only the path
-    // and query are used.
-    const { pathname, searchParams } = new URL(req.url || "/", "http://localhost");
+    // Parse rather than string-compare `req.url`, so `/metrics?foo=1` still routes. The base is a
+    // placeholder; only the path is used.
+    const { pathname } = new URL(req.url || "/", "http://localhost");
     const url = pathname;
 
     try {
-      for (const route of config.routes ?? []) {
-        if (route(req, res, pathname, searchParams)) return;
-      }
       if (url === "/health" || url === "/healthz") {
         const health = await runHealthChecks(healthCheckDeps);
 
@@ -101,18 +83,18 @@ export function startObservabilityServer(config: ObservabilityServerConfig): voi
     logger.info("[Observability]   /health  - Health check endpoint");
     logger.info("[Observability]   /metrics - Prometheus metrics");
     logger.info("[Observability]   /ready   - Readiness probe");
-    for (const name of config.routeNames ?? []) {
-      logger.info(`[Observability]   ${name}`);
-    }
   });
 
+  return serverWithErrorHandler(server, config.port);
+}
+
+function serverWithErrorHandler(server: Server, port: number): Server {
   server.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EADDRINUSE") {
-      logger.error(
-        `[Observability] Failed to bind to port ${config.port}: address already in use.`
-      );
+      logger.error(`[Observability] Failed to bind to port ${port}: address already in use.`);
       process.exit(1);
     }
     logger.error("[Observability] Server error:", error);
   });
+  return server;
 }

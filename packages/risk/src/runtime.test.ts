@@ -11,6 +11,8 @@ const start = (over: Partial<Parameters<typeof startRiskRuntime>[0]> = {}) =>
   startRiskRuntime({
     config: {},
     codeCheckIntervalMs: 1000,
+    controlPort: 0, // ephemeral, only bound when a control token is configured
+    controlHost: "127.0.0.1",
     read: async (_address: string) => GOOD,
     getSecret: async () => "token",
     logger: silentLogger,
@@ -24,24 +26,17 @@ describe("startRiskRuntime", () => {
     vi.clearAllMocks();
   });
 
-  it("builds a permissive gate with no routes when nothing is configured", async () => {
-    const { gate, routes, routeNames, stop } = await start();
+  it("builds a permissive gate and starts no server when nothing is configured", async () => {
+    const { gate, stop } = await start();
     expect(gate.state()).toBe("RUNNING");
-    expect(routes).toEqual([]); // no RISK_CONTROL_TOKEN_REF ⇒ kill switch unmounted
-    expect(routeNames).toEqual([]);
-    stop();
+    stop(); // no kill-switch server was bound; stop() must still be safe
   });
 
-  it("mounts the kill-switch routes when a token ref resolves", async () => {
+  it("resolves the control token through the secrets provider when configured", async () => {
     const getSecret = vi.fn(async () => "s3cret");
-    const { routes, routeNames, stop } = await start({
-      controlTokenRef: "BOT_CONTROL_TOKEN",
-      getSecret,
-    });
+    const { stop } = await start({ controlTokenRef: "BOT_CONTROL_TOKEN", getSecret });
 
     expect(getSecret).toHaveBeenCalledWith("BOT_CONTROL_TOKEN");
-    expect(routes).toHaveLength(1);
-    expect(routeNames.join(" ")).toContain("/halt");
     stop();
   });
 

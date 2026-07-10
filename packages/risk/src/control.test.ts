@@ -152,6 +152,34 @@ describe("@repo/risk kill-switch control routes", () => {
       expect(gate.state()).toBe("RUNNING");
     });
 
+    // `reason` is free text that reaches the logs. A newline would let a caller forge log lines.
+    it("strips control characters from the reason and bounds its length", () => {
+      const gate = createRiskGate();
+      const res = fakeRes();
+      const params = new URLSearchParams({ reason: `evil\nWARN fake log line${"x".repeat(500)}` });
+      createControlRoutes({ gate, token: TOKEN })(
+        req("POST", "/halt", TOKEN),
+        res,
+        "/halt",
+        params
+      );
+      const { reason } = JSON.parse(res.body);
+      expect(reason).not.toContain("\n");
+      expect(reason.length).toBeLessThanOrEqual(200);
+    });
+
+    it("falls back to the default reason when the supplied one sanitizes to empty", () => {
+      const gate = createRiskGate();
+      const res = fakeRes();
+      createControlRoutes({ gate, token: TOKEN })(
+        req("POST", "/halt", TOKEN),
+        res,
+        "/halt",
+        new URLSearchParams({ reason: "\n\t\r" })
+      );
+      expect(JSON.parse(res.body).reason).toBe("manual halt via control endpoint");
+    });
+
     it("GET /status reports state and live exposure", () => {
       expect(call("GET", "/status", { token: TOKEN }).body).toEqual({
         state: "RUNNING",

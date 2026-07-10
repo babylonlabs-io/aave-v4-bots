@@ -51,6 +51,20 @@ function authorize(req: IncomingMessage, expected: string): boolean {
   return tokenMatches(header.slice("Bearer ".length), expected);
 }
 
+/**
+ * The `?reason=` is operator-supplied free text that lands in logs and in the response. Strip
+ * control characters (a newline would let a caller forge log lines) and bound the length.
+ */
+function sanitizeReason(raw: string): string {
+  return (
+    raw
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point.
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .trim()
+      .slice(0, 200)
+  );
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
@@ -63,14 +77,19 @@ export const CONTROL_ROUTE_NAMES = [
   "/resume  - Clear the kill-switch (POST, authenticated)",
 ] as const;
 
+/** One HTTP route: returns `true` if it handled the request, `false` to fall through. */
+export type ControlRoute = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  searchParams: URLSearchParams
+) => boolean;
+
 /**
  * Build the kill-switch route: `POST /halt`, `POST /resume`, `GET /status`. Returns `false` for
- * any other path, so the host server falls through to its own routes.
- *
- * Structurally an `@repo/observability` `HttpRoute` — matched by shape, not by import, so `risk`
- * does not depend on `observability`.
+ * any other path, so the server falls through to a 404.
  */
-export function createControlRoutes(config: ControlRoutesConfig) {
+export function createControlRoutes(config: ControlRoutesConfig): ControlRoute {
   const { gate, token, onEvent } = config;
 
   return (
@@ -113,7 +132,8 @@ export function createControlRoutes(config: ControlRoutesConfig) {
     }
 
     if (pathname === "/halt") {
-      const reason = searchParams.get("reason") || "manual halt via control endpoint";
+      const supplied = searchParams.get("reason");
+      const reason = (supplied && sanitizeReason(supplied)) || "manual halt via control endpoint";
       gate.halt(reason);
       onEvent?.(`HALTED: ${reason}`);
       json(res, 200, { state: gate.state(), reason });

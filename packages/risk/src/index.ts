@@ -17,9 +17,11 @@ export { settleUnfinished } from "./utils";
 
 // Remote kill switch (§5.6 — `risk` owns it; `observability` only mounts the route).
 export {
+  type ControlRoute,
   type ControlRoutesConfig,
   CONTROL_ROUTE_NAMES,
   createControlRoutes,
   resolveControlToken,
 } from "./control";
+export { type ControlServerConfig, startControlServer } from "./controlServer";
 export { type RiskRuntime, type RiskRuntimeConfig, startRiskRuntime } from "./runtime";

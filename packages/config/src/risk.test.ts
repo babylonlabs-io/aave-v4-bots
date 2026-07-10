@@ -49,10 +49,6 @@ describe("@repo/config risk env", () => {
   });
 
   describe("RISK_START_HALTED", () => {
-    it("starts halted on 'true'", () => {
-      expect(buildRiskConfig(parse({ RISK_START_HALTED: "true" })).risk.startHalted).toBe(true);
-    });
-
     it("does not start halted on 'false' or when unset", () => {
       expect(buildRiskConfig(parse({ RISK_START_HALTED: "false" })).risk.startHalted).toBe(false);
       expect(buildRiskConfig(parse({})).risk.startHalted).toBe(false);
@@ -62,6 +58,22 @@ describe("@repo/config risk env", () => {
     // the bot would trade when the operator asked it not to.
     it.each(["True", "TRUE", "1", "yes"])("rejects %s rather than failing open", (value) => {
       expect(() => parse({ RISK_START_HALTED: value })).toThrow();
+    });
+
+    // Booting HALTED with no way to resume bricks the bot: every restart halts again. Unlike a
+    // breaker trip or a boot-probe halt, a restart is not a recovery path here.
+    it("refuses startHalted without a control token (no resume path)", () => {
+      expect(() => buildRiskConfig(parse({ RISK_START_HALTED: "true" }))).toThrow(
+        /requires RISK_CONTROL_TOKEN_REF/
+      );
+    });
+
+    it("allows startHalted when the kill-switch endpoint is configured", () => {
+      const settings = buildRiskConfig(
+        parse({ RISK_START_HALTED: "true", RISK_CONTROL_TOKEN_REF: "BOT_CONTROL_TOKEN" })
+      );
+      expect(settings.risk.startHalted).toBe(true);
+      expect(settings.controlTokenRef).toBe("BOT_CONTROL_TOKEN");
     });
   });
 

@@ -57,8 +57,12 @@ async function isMulticallSupported(publicClient: PublicClient): Promise<boolean
  * blocked. Note it measures *RPC* staleness, not indexer **head** lag — that is a separate
  * guard the indexer-liveness work owns.
  *
- * Best-effort: a failed probe returns `undefined` (the client then skips the freshness guard
- * rather than the bot stalling on an RPC blip) and warns.
+ * A failed probe returns `undefined` and warns. Be clear about what that means downstream: the
+ * risk gate is **fail-closed** on freshness. A client with `RISK_MAX_DATA_STALENESS_MS` set will
+ * block *every* action when this field is missing — it will not "skip the guard". That is the
+ * safe direction (never trade on data of unknown age), but it means a sustained failure of this
+ * probe stops the bot trading while this endpoint still returns 200 with candidates. Alert on the
+ * warning below, not just on HTTP status.
  */
 async function readBlockTimestampMs(publicClient: PublicClient): Promise<number | undefined> {
   try {

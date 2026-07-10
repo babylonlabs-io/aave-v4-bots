@@ -62,6 +62,13 @@ export const riskEnvFields = {
    * token, resolved via `@repo/secrets` at boot. Unset ⇒ no kill-switch endpoint is mounted.
    */
   RISK_CONTROL_TOKEN_REF: z.string().min(1).optional(),
+  /** Port for the kill-switch server. Separate from METRICS_PORT, which is scrapeable. */
+  RISK_CONTROL_PORT: positiveIntSchema.optional().default("9095"),
+  /**
+   * Interface the kill-switch server binds. Loopback by default: an endpoint that can stop
+   * production trading should not be reachable off-box unless you say so.
+   */
+  RISK_CONTROL_HOST: z.string().min(1).optional().default("127.0.0.1"),
 } as const;
 
 /** The env shape `buildRiskConfig` consumes — whatever `parseEnv(riskEnvFields ∪ …)` produces. */
@@ -74,6 +81,8 @@ export interface RiskEnv {
   RISK_EXPECTED_CODE_HASHES?: Record<string, string>;
   RISK_CODE_CHECK_INTERVAL_MS: string;
   RISK_CONTROL_TOKEN_REF?: string;
+  RISK_CONTROL_PORT: string;
+  RISK_CONTROL_HOST: string;
 }
 
 /** The risk slice of a service `Config`. */
@@ -84,12 +93,29 @@ export interface RiskSettings {
   codeCheckIntervalMs: number;
   /** Secret ref for the control endpoint's bearer token; unset ⇒ endpoint not mounted. */
   controlTokenRef?: string;
+  /** Where the kill-switch server listens. Its own socket, loopback by default. */
+  controlPort: number;
+  controlHost: string;
 }
 
 const int = (v: string | undefined) => (v === undefined ? undefined : Number.parseInt(v, 10));
 
-/** Project parsed env onto the risk config. Absent vars stay absent (guard off). */
+/**
+ * Project parsed env onto the risk config. Absent vars stay absent (guard off).
+ *
+ * Throws on a config that would boot a bot nobody can start: `RISK_START_HALTED=true` halts on
+ * *every* boot, so unlike a breaker trip or a boot-probe halt (both cleared by a restart) it has
+ * no recovery path unless the kill-switch endpoint is mounted to serve `POST /resume`.
+ */
 export function buildRiskConfig(env: RiskEnv): RiskSettings {
+  const startHalted = env.RISK_START_HALTED === "true";
+  if (startHalted && !env.RISK_CONTROL_TOKEN_REF) {
+    throw new Error(
+      "RISK_START_HALTED=true requires RISK_CONTROL_TOKEN_REF: without the kill-switch endpoint " +
+        "the bot boots HALTED on every restart and can never be resumed."
+    );
+  }
+
   return {
     risk: {
       maxConsecutiveFailures: int(env.RISK_MAX_CONSECUTIVE_FAILURES),
@@ -97,9 +123,11 @@ export function buildRiskConfig(env: RiskEnv): RiskSettings {
       maxDataStalenessMs: int(env.RISK_MAX_DATA_STALENESS_MS),
       maxInFlight: int(env.RISK_MAX_IN_FLIGHT),
       expectedCodeHashes: env.RISK_EXPECTED_CODE_HASHES,
-      startHalted: env.RISK_START_HALTED === "true",
+      startHalted,
     },
     codeCheckIntervalMs: Number.parseInt(env.RISK_CODE_CHECK_INTERVAL_MS, 10),
     controlTokenRef: env.RISK_CONTROL_TOKEN_REF,
+    controlPort: Number.parseInt(env.RISK_CONTROL_PORT, 10),
+    controlHost: env.RISK_CONTROL_HOST,
   };
 }

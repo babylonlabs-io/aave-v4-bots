@@ -1,4 +1,5 @@
 import { CONTROL_ROUTE_NAMES, createControlRoutes, resolveControlToken } from "./control";
+import { startControlServer } from "./controlServer";
 import { createRiskGate } from "./gate";
 import { startCodeHashGuard } from "./guard";
 import type { CodeHashReader, RiskConfig, RiskGate } from "./types";
@@ -13,8 +14,11 @@ export interface RiskRuntimeConfig {
   config: RiskConfig;
   /** How often to re-verify pinned bytecode after the boot check. */
   codeCheckIntervalMs: number;
-  /** Secret *reference* for the kill-switch bearer token; unset ⇒ no control routes. */
+  /** Secret *reference* for the kill-switch bearer token; unset ⇒ no kill-switch server. */
   controlTokenRef?: string;
+  /** Where the kill-switch server listens. Its own socket; loopback unless told otherwise. */
+  controlPort: number;
+  controlHost: string;
   /** Reads deployed bytecode — e.g. `(address) => readCodeHash(publicClient, address)`. */
   read: CodeHashReader;
   /** Resolves a secret reference to its value (the service's `@repo/secrets` provider). */
@@ -25,18 +29,14 @@ export interface RiskRuntimeConfig {
 export interface RiskRuntime {
   /** The process's single gate. Inject this into **every** engine. */
   gate: RiskGate;
-  /** Kill-switch routes to hand to `startObservabilityServer`. Empty when unconfigured. */
-  routes: ReturnType<typeof createControlRoutes>[];
-  /** Banner lines for those routes. Empty when unconfigured. */
-  routeNames: string[];
-  /** Stop the periodic code-hash re-check. */
+  /** Stop the periodic code-hash re-check and close the kill-switch server. */
   stop(): void;
 }
 
 /**
  * Build the gate, verify pinned bytecode (halting on mismatch **before** any tx can go out), and
- * prepare the kill-switch routes. Callers must still pass `gate` to every engine and `routes` to
- * the observability server.
+ * — when a control token is configured — start the kill-switch server on its own socket. The
+ * caller's only remaining job is to pass `gate` to every engine it builds.
  */
 export async function startRiskRuntime(config: RiskRuntimeConfig): Promise<RiskRuntime> {
   const { logger } = config;
@@ -57,14 +57,36 @@ export async function startRiskRuntime(config: RiskRuntimeConfig): Promise<RiskR
   const token = await resolveControlToken(config.controlTokenRef, config.getSecret);
   if (!token) {
     logger.info("Kill-switch endpoint: disabled (no RISK_CONTROL_TOKEN_REF)");
-    return { gate, routes: [], routeNames: [], stop };
+    // A tripped breaker or a boot-probe halt is only clearable by restarting the process. That is
+    // a real recovery path, but the operator should know it is the only one they have.
+    const canAutoHalt =
+      config.config.maxConsecutiveFailures !== undefined ||
+      config.config.expectedCodeHashes !== undefined;
+    if (canAutoHalt) {
+      logger.warn(
+        "Auto-halt guards are enabled but no kill-switch endpoint is mounted — " +
+          "recovering from a HALTED gate will require restarting the process"
+      );
+    }
+    return { gate, stop };
   }
 
-  logger.info("Kill-switch endpoint: enabled (bearer token)");
+  const routes = [
+    createControlRoutes({ gate, token, onEvent: (m) => logger.warn(`[Control] ${m}`) }),
+  ];
+  const server = startControlServer({
+    port: config.controlPort,
+    host: config.controlHost,
+    routes,
+    routeNames: [...CONTROL_ROUTE_NAMES],
+    logger,
+  });
+
   return {
     gate,
-    routes: [createControlRoutes({ gate, token, onEvent: (m) => logger.warn(`[Control] ${m}`) })],
-    routeNames: [...CONTROL_ROUTE_NAMES],
-    stop,
+    stop() {
+      stop();
+      server.close();
+    },
   };
 }
