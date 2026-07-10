@@ -44,7 +44,7 @@ abstract contract VenueManager is
     using SafeERC20 for IERC20;
 
     string private constant CONTRACT_NAME = "VenueManager";
-    bytes32 private constant VENUE_DEBTS_LENGTH = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts.length"));
+    bytes32 private constant VENUE_DEBTS_LENGTH_TK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts.length"));
 
     function _setUpSwapVenue(address venueAddress, bytes memory forwardData) internal {
         _expectCallback(venueAddress);
@@ -134,7 +134,7 @@ abstract contract VenueManager is
     // ---------------------- TRANSIENT DEBT (GENERAL) ----------------------
 
     function _getAllDebts() internal view returns (Types.VenueDebt[] memory debts) {
-        uint256 length = VENUE_DEBTS_LENGTH.loadUint256();
+        uint256 length = VENUE_DEBTS_LENGTH_TK.loadUint256();
         debts = new Types.VenueDebt[](length);
         for (uint256 i = 0; i < length; i++) {
             (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(i);
@@ -145,22 +145,22 @@ abstract contract VenueManager is
     }
 
     function _addVenueDebt(address venue, address token, uint256 amount) internal {
-        uint256 length = VENUE_DEBTS_LENGTH.loadUint256();
+        uint256 length = VENUE_DEBTS_LENGTH_TK.loadUint256();
         (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(length);
         tokenTK.storeAddress(token);
         venueTK.storeAddress(venue);
         amountTK.storeUint256(amountTK.loadUint256() + amount);
-        VENUE_DEBTS_LENGTH.storeUint256(length + 1);
+        VENUE_DEBTS_LENGTH_TK.storeUint256(length + 1);
     }
 
     function _clearVenueDebts() internal {
-        for (uint256 i = 0; i < VENUE_DEBTS_LENGTH.loadUint256(); i++) {
+        for (uint256 i = 0; i < VENUE_DEBTS_LENGTH_TK.loadUint256(); i++) {
             (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(i);
             tokenTK.storeAddress(address(0));
             venueTK.storeAddress(address(0));
             amountTK.storeUint256(0);
         }
-        VENUE_DEBTS_LENGTH.storeUint256(0);
+        VENUE_DEBTS_LENGTH_TK.storeUint256(0);
     }
 
     // ---------------------- TRANSIENT DEBT (AMOUNT) ----------------------
