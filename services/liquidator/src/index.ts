@@ -72,7 +72,8 @@ async function createBot(config: Config) {
 
   // Exactly ONE risk gate per process, injected into every engine — a kill-switch or tripped
   // breaker must halt everything this process drives. Also verifies the pinned adapter/lens
-  // bytecode before any tx goes out, and prepares the authenticated kill-switch routes.
+  // bytecode before any tx goes out, and — when a control token is configured — starts the
+  // authenticated kill-switch server on its own loopback socket.
   const { gate: risk } = await startRiskRuntime({
     config: config.risk,
     codeCheckIntervalMs: config.codeCheckIntervalMs,
@@ -116,8 +117,8 @@ async function main() {
     const { bot, publicClient, store } = await createBot(config);
     storeForShutdown = store;
 
-    // Start the observability server (metrics + health/readiness probes, and — when a control
-    // token is configured — the authenticated kill-switch endpoints).
+    // Metrics + health/readiness probes only. The kill switch is not here: `startRiskRuntime`
+    // already serves it on its own socket, so this port stays safe to expose to a scrape network.
     setPublicClient(publicClient);
     startObservabilityServer({
       port: config.metricsPort,

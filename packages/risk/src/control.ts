@@ -4,9 +4,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { RiskGate } from "./types";
 
 // The **remote kill switch** — an authenticated HTTP surface for tripping and clearing `HALTED`
-// without a redeploy. It lives in `risk` (which owns the kill switch) rather than in
-// `observability` (logs/metrics/health); the observability server merely mounts it as an
-// `HttpRoute` and never learns what it does.
+// without a redeploy. It lives in `risk`, which owns the kill switch; `observability` owns
+// logs/metrics/health and never learns that `/halt` exists. `startControlServer` (this package)
+// serves these routes on their own socket.
 
 export interface ControlRoutesConfig {
   /** The process's single risk gate — halting it stops every engine the process drives. */
@@ -70,7 +70,7 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-/** The paths this route claims, for the host server's startup banner. */
+/** The paths this route claims, for the control server's startup banner. */
 export const CONTROL_ROUTE_NAMES = [
   "/status  - Kill-switch state (authenticated)",
   "/halt    - Trip the kill-switch (POST, authenticated)",

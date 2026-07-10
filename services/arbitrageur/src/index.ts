@@ -115,7 +115,8 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // ONE shared risk gate for the process — injected into BOTH engines, so a kill-switch or a
   // tripped breaker halts arbitrage *and* liquidation together. (Each engine used to build its
   // own gate, which meant halting one left the other trading.) Also verifies the pinned target
-  // bytecode before any tx goes out, and prepares the authenticated kill-switch routes.
+  // bytecode before any tx goes out, and — when a control token is configured — starts the
+  // authenticated kill-switch server on its own loopback socket.
   const { gate: risk } = await startRiskRuntime({
     config: config.risk,
     codeCheckIntervalMs: config.codeCheckIntervalMs,
@@ -212,9 +213,8 @@ async function runPollingMode(config: Config): Promise<void> {
   const { bot, publicClient, walletClient, store, nonces, risk } = await createBot(config);
   storeForShutdown = store;
 
-  // Start the observability server (metrics + health/readiness probes, and — when a control
-  // token is configured — the authenticated kill-switch endpoints). One `control` for the
-  // process: halting it stops the arbitrage engine AND the optional liquidation engine.
+  // Metrics + health/readiness probes only. The kill switch is not here: `startRiskRuntime`
+  // already serves it on its own socket, so this port stays safe to expose to a scrape network.
   setPublicClient(publicClient);
   startObservabilityServer({
     port: config.metricsPort,

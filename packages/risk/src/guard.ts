@@ -24,7 +24,8 @@ export interface CodeHashGuardConfig {
  *   so the bot keeps trading and the next tick retries. Halting on every RPC hiccup would make
  *   the guard an availability bug.
  *
- * Returns a stop function. A no-op (and no timer) when no hashes are pinned.
+ * Returns a stop function that clears the interval. Only call this when hashes are actually
+ * pinned — `startRiskRuntime` does — otherwise you get a timer that verifies nothing forever.
  */
 export async function startCodeHashGuard(config: CodeHashGuardConfig): Promise<() => void> {
   const { risk, read, intervalMs, onProbeError } = config;

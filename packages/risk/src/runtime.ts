@@ -1,4 +1,4 @@
-import { CONTROL_ROUTE_NAMES, createControlRoutes, resolveControlToken } from "./control";
+import { createControlRoutes, resolveControlToken } from "./control";
 import { startControlServer } from "./controlServer";
 import { createRiskGate } from "./gate";
 import { startCodeHashGuard } from "./guard";
@@ -46,13 +46,17 @@ export async function startRiskRuntime(config: RiskRuntimeConfig): Promise<RiskR
     logger.warn("RISK_START_HALTED=true — bot boots HALTED; POST /resume to start trading");
   }
 
-  // Boot check runs here, before the caller wires up any engine or sends an approval.
-  const stop = await startCodeHashGuard({
-    risk: gate,
-    read: config.read,
-    intervalMs: config.codeCheckIntervalMs,
-    onProbeError: (error) => logger.warn("Code-hash probe failed; will retry:", error),
-  });
+  // Boot check runs here, before the caller wires up any engine or sends an approval. Skipped
+  // entirely when nothing is pinned — otherwise an unconfigured deployment carries a timer that
+  // wakes every 5 minutes to verify nothing.
+  const stopCodeHashGuard = config.config.expectedCodeHashes
+    ? await startCodeHashGuard({
+        risk: gate,
+        read: config.read,
+        intervalMs: config.codeCheckIntervalMs,
+        onProbeError: (error) => logger.warn("Code-hash probe failed; will retry:", error),
+      })
+    : () => {};
 
   const token = await resolveControlToken(config.controlTokenRef, config.getSecret);
   if (!token) {
@@ -68,24 +72,20 @@ export async function startRiskRuntime(config: RiskRuntimeConfig): Promise<RiskR
           "recovering from a HALTED gate will require restarting the process"
       );
     }
-    return { gate, stop };
+    return { gate, stop: stopCodeHashGuard };
   }
 
-  const routes = [
-    createControlRoutes({ gate, token, onEvent: (m) => logger.warn(`[Control] ${m}`) }),
-  ];
   const server = startControlServer({
     port: config.controlPort,
     host: config.controlHost,
-    routes,
-    routeNames: [...CONTROL_ROUTE_NAMES],
+    handle: createControlRoutes({ gate, token, onEvent: (m) => logger.warn(`[Control] ${m}`) }),
     logger,
   });
 
   return {
     gate,
     stop() {
-      stop();
+      stopCodeHashGuard();
       server.close();
     },
   };

@@ -32,6 +32,17 @@ describe("startRiskRuntime", () => {
     stop(); // no kill-switch server was bound; stop() must still be safe
   });
 
+  // With no pinned hashes there is nothing to verify, so there must be no probe and no timer.
+  it("never reads the chain, or arms a timer, when no hashes are pinned", async () => {
+    const read = vi.fn(async (_address: string) => GOOD);
+    const { stop } = await start({ read });
+
+    expect(read).not.toHaveBeenCalled(); // no boot probe
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(read).not.toHaveBeenCalled(); // and no periodic re-check
+    stop();
+  });
+
   it("resolves the control token through the secrets provider when configured", async () => {
     const getSecret = vi.fn(async () => "s3cret");
     const { stop } = await start({ controlTokenRef: "BOT_CONTROL_TOKEN", getSecret });
