@@ -70,7 +70,7 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
         PoolKey memory poolKey = abi.decode(swapData, (PoolKey));
 
         (address tokenIn, uint256 amountIn) = _swapAndTake(poolKey, tokenOut, amountOut, msg.sender);
-        ISwapVenueCallback(msg.sender).onSwapVenueFlashLoan(tokenIn, amountIn, forwardData);
+        ISwapVenueCallback(msg.sender).onSwapVenueFlashSwap(tokenIn, amountIn, forwardData);
 
         IUniswapV4PoolManager(uniV4PoolManager).sync(Currency.wrap(tokenIn));
         IERC20(tokenIn).safeTransferFrom(msg.sender, uniV4PoolManager, amountIn);
@@ -99,5 +99,9 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
         (tokenIn, amountIn) = zeroForOne
             ? (Currency.unwrap(poolKey.currency0), SafeCast.toUint128(-delta.amount0()))
             : (Currency.unwrap(poolKey.currency1), SafeCast.toUint128(-delta.amount1()));
+    }
+
+    function requireSetup() external pure returns (bool) {
+        return true;
     }
 }

@@ -14,5 +14,5 @@ interface ISwapVenueCallback {
     /// @param paymentToken The address of the token for repaying the flash swap.
     /// @param amount The amount of tokens for repaying the flash swap.
     /// @param data Arbitrary data passed to the `flashLoan` function.
-    function onSwapVenueFlashLoan(address paymentToken, uint256 amount, bytes calldata data) external;
+    function onSwapVenueFlashSwap(address paymentToken, uint256 amount, bytes calldata data) external;
 }

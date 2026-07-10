@@ -7,7 +7,6 @@ import {IMorphoFlashLoanCallback} from "./interfaces/Morpho/IMorphoFlashLoanCall
 import {IAaveV3Pool} from "./interfaces/AaveV3/IAaveV3Pool.sol";
 import {IAaveV3FlashLoanSimpleReceiver} from "./interfaces/AaveV3/IAaveV3FlashLoanSimpleReceiver.sol";
 import {TransientSlotLib} from "./lib/TransientSlotLib.sol";
-import {TransientArrayLib, ArrayKey} from "./lib/TransientArrayLib.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Bytes32Lib} from "./lib/Bytes32Lib.sol";
@@ -42,12 +41,10 @@ abstract contract VenueManager is
     ExpectCallback
 {
     using TransientSlotLib for bytes32;
-    using TransientArrayLib for ArrayKey;
     using SafeERC20 for IERC20;
 
     string private constant CONTRACT_NAME = "VenueManager";
-    bytes32 private constant FLASH_LOAN_TOKEN_ADDRESSES_TK =
-        keccak256(abi.encodePacked(CONTRACT_NAME, ".flashLoanTokenAddresses"));
+    bytes32 private constant VENUE_DEBTS_LENGTH = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts.length"));
 
     function _setUpSwapVenue(address venueAddress, bytes memory forwardData) internal {
         _expectCallback(venueAddress);
@@ -55,33 +52,22 @@ abstract contract VenueManager is
         _requireCompleteCallback();
     }
 
-    function _flashLoan(Types.FlashLoanData memory flashLoanData, bytes calldata forwardData) internal {
-        if (flashLoanData.venueType == Types.VenueType.Morpho) {
-            _expectCallback(flashLoanData.venueAddress);
-            IMorpho(flashLoanData.venueAddress)
-                .flashLoan(
-                    flashLoanData.token,
-                    flashLoanData.amount,
-                    VenueForwardDataLib.encodeMorpho(forwardData, flashLoanData.token)
-                );
-        } else if (flashLoanData.venueType == Types.VenueType.AaveV3) {
-            _expectCallback(flashLoanData.venueAddress);
-            IAaveV3Pool(flashLoanData.venueAddress)
+    function _flashLoan(Types.FlashData memory flashData, uint256 amountOut, bytes calldata forwardData) internal {
+        if (flashData.venueType == Types.VenueType.Morpho) {
+            _expectCallback(flashData.venueAddress);
+            IMorpho(flashData.venueAddress)
+                .flashLoan(flashData.token, amountOut, VenueForwardDataLib.encodeMorpho(forwardData, flashData.token));
+        } else if (flashData.venueType == Types.VenueType.AaveV3) {
+            _expectCallback(flashData.venueAddress);
+            IAaveV3Pool(flashData.venueAddress)
                 .flashLoanSimple(
-                    address(this),
-                    flashLoanData.token,
-                    flashLoanData.amount,
-                    VenueForwardDataLib.encodeStandard(forwardData),
-                    0
+                    address(this), flashData.token, amountOut, VenueForwardDataLib.encodeStandard(forwardData), 0
                 );
-        } else if (flashLoanData.venueType == Types.VenueType.UniswapV4FlashSwap) {
-            _expectCallback(flashLoanData.venueAddress);
-            ISwapVenue(flashLoanData.venueAddress)
+        } else if (flashData.venueType == Types.VenueType.UniswapV4FlashSwap) {
+            _expectCallback(flashData.venueAddress);
+            ISwapVenue(flashData.venueAddress)
                 .flashSwap(
-                    flashLoanData.token,
-                    flashLoanData.amount,
-                    flashLoanData.swapData,
-                    VenueForwardDataLib.encodeStandard(forwardData)
+                    flashData.token, amountOut, flashData.swapData, VenueForwardDataLib.encodeStandard(forwardData)
                 );
         } else {
             revert("VenueManager: Unsupported venue type");
@@ -101,7 +87,7 @@ abstract contract VenueManager is
     /// @param venueData Arbitrary data passed to the `flashLoan` function.
     function onMorphoFlashLoan(uint256 assets, bytes calldata venueData) external consumeCallback(msg.sender) {
         (bytes memory forwardData, address token) = VenueForwardDataLib.decodeMorpho(venueData);
-        _increaseFlashLoanDebt(token, assets);
+        _addVenueDebt(msg.sender, token, assets);
         _resumeAfterCallback(forwardData);
         IERC20(token).safeIncreaseAllowance(msg.sender, assets);
     }
@@ -125,7 +111,7 @@ abstract contract VenueManager is
         bytes calldata venueData
     ) external consumeCallback(msg.sender) returns (bool) {
         initiator;
-        _increaseFlashLoanDebt(asset, amount + premium);
+        _addVenueDebt(msg.sender, asset, amount + premium);
         _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
         IERC20(asset).safeIncreaseAllowance(msg.sender, amount + premium);
         return true;
@@ -136,64 +122,63 @@ abstract contract VenueManager is
     /// @param paymentToken The address of the token for repaying the flash swap.
     /// @param amount The amount of tokens for repaying the flash swap.
     /// @param venueData Arbitrary data passed to the `flashLoan` function.
-    function onSwapVenueFlashLoan(address paymentToken, uint256 amount, bytes calldata venueData)
+    function onSwapVenueFlashSwap(address paymentToken, uint256 amount, bytes calldata venueData)
         external
         consumeCallback(msg.sender)
     {
-        _increaseFlashLoanDebt(paymentToken, amount);
+        _addVenueDebt(msg.sender, paymentToken, amount);
         _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
         IERC20(paymentToken).safeIncreaseAllowance(msg.sender, amount);
     }
 
     // ---------------------- TRANSIENT DEBT (GENERAL) ----------------------
 
-    function _getAllDebts() internal view returns (TokenAmountLib.TokenAmount[] memory debts) {
-        ArrayKey tokenAddressesTK = ArrayKey.wrap(FLASH_LOAN_TOKEN_ADDRESSES_TK);
-        uint256 length = tokenAddressesTK.len();
-        debts = new TokenAmountLib.TokenAmount[](length);
+    function _getAllDebts() internal view returns (Types.VenueDebt[] memory debts) {
+        uint256 length = VENUE_DEBTS_LENGTH.loadUint256();
+        debts = new Types.VenueDebt[](length);
         for (uint256 i = 0; i < length; i++) {
-            address token = Bytes32Lib.toAddress(tokenAddressesTK.at(i));
-            uint256 amount = _getFlashLoanDebt(token);
-            debts[i] = TokenAmountLib.TokenAmount({token: token, amount: amount});
+            (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(i);
+            debts[i] = Types.VenueDebt({
+                token: tokenTK.loadAddress(), venue: venueTK.loadAddress(), amount: amountTK.loadUint256()
+            });
         }
     }
 
-    function _increaseFlashLoanDebt(address token, uint256 amount) internal {
-        ArrayKey tokenAddressesTK = ArrayKey.wrap(FLASH_LOAN_TOKEN_ADDRESSES_TK);
-        bytes32 tokenB32 = Bytes32Lib.toBytes32(token);
-        if (!tokenAddressesTK.contains(tokenB32)) {
-            tokenAddressesTK.append(tokenB32);
-        }
-
-        bytes32 debtTK = _getFlashLoanDebtTK(token);
-        debtTK.storeUint256(debtTK.loadUint256() + amount);
+    function _addVenueDebt(address venue, address token, uint256 amount) internal {
+        uint256 length = VENUE_DEBTS_LENGTH.loadUint256();
+        (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(length);
+        tokenTK.storeAddress(token);
+        venueTK.storeAddress(venue);
+        amountTK.storeUint256(amountTK.loadUint256() + amount);
+        VENUE_DEBTS_LENGTH.storeUint256(length + 1);
     }
 
-    function _clearFlashLoanDebts() internal {
-        ArrayKey tokenAddressesTK = ArrayKey.wrap(FLASH_LOAN_TOKEN_ADDRESSES_TK);
-        uint256 length = tokenAddressesTK.len();
-        for (uint256 i = 0; i < length; i++) {
-            address token = Bytes32Lib.toAddress(tokenAddressesTK.at(i));
-            _clearFlashLoanDebt(token);
+    function _clearVenueDebts() internal {
+        for (uint256 i = 0; i < VENUE_DEBTS_LENGTH.loadUint256(); i++) {
+            (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(i);
+            tokenTK.storeAddress(address(0));
+            venueTK.storeAddress(address(0));
+            amountTK.storeUint256(0);
         }
-        tokenAddressesTK.clear();
+        VENUE_DEBTS_LENGTH.storeUint256(0);
     }
 
     // ---------------------- TRANSIENT DEBT (AMOUNT) ----------------------
 
-    function _getFlashLoanDebt(address token) internal view returns (uint256) {
-        return _getFlashLoanDebtTK(token).loadUint256();
-    }
-
-    function _clearFlashLoanDebt(address token) internal {
-        _getFlashLoanDebtTK(token).storeUint256(0);
-    }
-
-    function _getFlashLoanDebtTK(address token) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(CONTRACT_NAME, ".flashLoanDebt", token));
+    function _getVenueDebtTK(uint256 i) internal pure returns (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) {
+        tokenTK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts[", i, "].token"));
+        venueTK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts[", i, "].venue"));
+        amountTK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts[", i, "].amount"));
     }
 
     // ---------------------- ABSTRACT FUNCTIONS ----------------------
 
     function _resumeAfterCallback(bytes memory forwardData) internal virtual;
+
+    // ---------------------- INTERNAL FUNCTIONS ----------------------
+
+    function _venueRequireSetup(Types.VenueType venueType, address venueAddress) internal view returns (bool) {
+        return (venueType == Types.VenueType.UniswapV4FlashSwap || venueType == Types.VenueType.UniswapV4FlashLoan)
+            && ISwapVenue(venueAddress).requireSetup();
+    }
 }
