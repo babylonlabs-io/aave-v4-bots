@@ -199,10 +199,16 @@ contract LiquidationRouter is VenueManager {
 
     // ---------------------- MULTICALL ----------------------
 
-    function tryMulticall(bytes[] calldata data) external returns (bool[] memory successes, bytes[] memory results) {
+    function multicall(bytes[] calldata data, bool requireSuccess)
+        external
+        returns (bool[] memory successes, bytes[] memory results)
+    {
         results = new bytes[](data.length);
         for (uint256 i = 0; i < data.length; i++) {
             (successes[i], results[i]) = address(this).call(data[i]);
+            if (requireSuccess && !successes[i]) {
+                revert(string(results[i]));
+            }
         }
     }
 
