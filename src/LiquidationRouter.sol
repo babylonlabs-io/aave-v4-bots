@@ -15,7 +15,7 @@ contract LiquidationRouter is VenueManager {
 
     uint256 private constant MIN_PROFIT_REVERT_TAG = type(uint256).max;
 
-    address public immutable auth;
+    address public immutable owner;
     address public immutable lens;
     address public immutable aaveAdapter;
     address public immutable spoke;
@@ -25,9 +25,14 @@ contract LiquidationRouter is VenueManager {
 
     error BelovedError(uint256 netWbtcBeforePayment, Types.VenueDebt[] debts);
 
-    constructor(address _auth, address _lens, address _btcVaultSwap) {
-        require(_auth != address(0), "LiquidationRouter: Invalid auth address");
-        auth = _auth;
+    modifier auth() {
+        require(msg.sender == owner, "LiquidationRouter: Unauthorized");
+        _;
+    }
+
+    constructor(address _owner, address _lens, address _btcVaultSwap) {
+        require(_owner != address(0), "LiquidationRouter: Invalid owner address");
+        owner = _owner;
         lens = _lens;
         aaveAdapter = AaveAdapterLens(_lens).adapter();
         spoke = AaveAdapterLens(_lens).spoke();
@@ -40,20 +45,21 @@ contract LiquidationRouter is VenueManager {
         Types.LiquidationData memory liquidationData,
         Types.FlashData[] memory flashDatas,
         Types.SwapData[] memory swapDatas
-    ) external returns (uint256 wbtcProfit) {
+    ) external auth returns (uint256 wbtcProfit) {
+        (address[] memory reserveTokens, uint256[] memory reserveDebtsToLiquidate, uint256 wbtcPayment) =
+            _estLiquidationPayment(liquidationData.borrower);
+
         Types.LiquidationIteration memory iteration = Types.LiquidationIteration({
             phase: Types.LiquidationPhase.Setup,
             i: 0,
             liquidationData: liquidationData,
             flashDatas: flashDatas,
             swapDatas: swapDatas,
-            reserveDebtsToLiquidate: new uint256[](0),
-            wbtcPayment: 0,
-            reserveTokens: new address[](0)
+            reserveDebtsToLiquidate: reserveDebtsToLiquidate,
+            wbtcPayment: wbtcPayment,
+            reserveTokens: reserveTokens
         });
 
-        (iteration.reserveTokens, iteration.reserveDebtsToLiquidate, iteration.wbtcPayment) =
-            _estLiquidationPayment(liquidationData.borrower);
         _iterateLiquidation(iteration);
         _clearVenueDebts();
 
@@ -111,6 +117,8 @@ contract LiquidationRouter is VenueManager {
             if (!_venueRequiresSetup(venueType, venue)) {
                 iteration.i++;
                 continue;
+            } else {
+                break;
             }
         }
 
@@ -121,17 +129,18 @@ contract LiquidationRouter is VenueManager {
             return;
         }
 
+        address venueAddress = iteration.flashDatas[iteration.i].venueAddress;
         iteration.i++;
-        _setUpSwapVenue(iteration.flashDatas[iteration.i].venueAddress, abi.encode(iteration));
-
-        return;
+        _setUpSwapVenue(venueAddress, abi.encode(iteration));
     }
 
     function _executeSingleFlashLoanPhase(Types.LiquidationIteration memory iteration) internal virtual {
         address token = iteration.flashDatas[iteration.i].token;
         uint256 amount = _getReserveDebtAmount(iteration.reserveTokens, iteration.reserveDebtsToLiquidate, token);
+
+        Types.FlashData memory flashData = iteration.flashDatas[iteration.i];
         iteration.i++;
-        _flashLoan(iteration.flashDatas[iteration.i], amount, abi.encode(iteration));
+        _flashLoan(flashData, amount, abi.encode(iteration));
     }
 
     function _executeLiquidationPhase(Types.LiquidationIteration memory iteration) internal virtual {
@@ -172,10 +181,12 @@ contract LiquidationRouter is VenueManager {
     // ---------------------- ERC20 Handlers ----------------------
 
     function _transferAllReservesOut(address[] memory reserveTokens) internal {
-        address to = auth;
+        address to = owner;
         for (uint256 i = 0; i < reserveTokens.length; i++) {
             address token = reserveTokens[i];
-            IERC20(token).safeTransfer(to, IERC20(token).balanceOf(address(this)));
+            if (IERC20(token).balanceOf(address(this)) > 0) {
+                IERC20(token).safeTransfer(to, IERC20(token).balanceOf(address(this)));
+            }
         }
     }
 
@@ -204,6 +215,7 @@ contract LiquidationRouter is VenueManager {
         returns (bool[] memory successes, bytes[] memory results)
     {
         results = new bytes[](data.length);
+        successes = new bool[](data.length);
         for (uint256 i = 0; i < data.length; i++) {
             (successes[i], results[i]) = address(this).call(data[i]);
             if (requireSuccess && !successes[i]) {

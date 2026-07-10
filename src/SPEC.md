@@ -2,43 +2,46 @@
 
 ## Overview
 
-The liquidation smart contracts can be broken down to three main components:
-- Liquidation Router 
-- Venue Manager
-- Wrapped Venues
+The liquidation system is composed of three main components:
 
-`LiquidationRouter` is the main entry point for liquidations. It handles the core liquidation process with phases and iterations.
+- **`LiquidationRouter`** — the main entry point for liquidations. It orchestrates the core liquidation process across its phases and iterations.
+- **`VenueManager`** — the intermediary that communicates with the different venues to obtain flash swaps and flash loans. On every callback it receives — flash swap, flash loan, or setup — it forwards the current iteration's information to `LiquidationRouter` for further processing.
+- **`WrappedVenues`** — adapters for venues that do not conform to the standard venue interface.
 
-`VenueManager` is responsible for communicating with different venues for flash swap and flash loan. On, every callback to `VenueManager` including (flash swap, flash loan, set up), it will forward the received iteration information to `LiquidationRouter` for further processing.
-
-`WrappedVenues` are the venues that does not behave like a standard venue. A standard venue is a [flash loan] hub that gives `VenueManager` the token before the callback which is then followed by a `ERC20.transferFrom(venueManager, venue, amount)` to return the token back to the venue. If a [flash loan] venue requries the token to be transferred in by `VenueManager` before the callback ends, it should also be wrapped in a `WrappedVenue` contract. By this definition, all [flash swap] venues are wrapped venues.
+A **standard venue** is a flash-loan hub that transfers the borrowed token to `VenueManager` *before* invoking the callback, and is repaid afterwards via `ERC20.transferFrom(venueManager, venue, amount)`. Any flash-loan venue that instead requires the token to be transferred in by `VenueManager` before the callback returns must be adapted with a `WrappedVenue`. By this definition, all flash-swap venues are wrapped venues.
 
 ## Liquidation Process
 
-Each liquidation contains 3 phases:
-1. `SetUp`: For all wrapped venues that requires a setup before using. For example `UniswapV4` requires the `PositionManger` to be locked before being used.
-2. `FlashLoan`: `VenueManager` will request a flash loan/flash swap from all the venues.
-3. `LiquidationAndSwap`: `LiquidationRouter` will perform the liquidation and swap the earned `WBTC` into debts required for payment.
+Each liquidation proceeds through three phases:
 
-### Phase 1 & 2
+1. **`SetUp`** — Prepares any wrapped venue that requires initialization before use. For example, `UniswapV4` requires its `PositionManager` to be locked before it can be used.
+2. **`FlashLoan`** — `VenueManager` requests a flash loan or flash swap from every venue.
+3. **`LiquidationAndSwap`** — `LiquidationRouter` performs the liquidation and swaps the earned `WBTC` into the debt tokens required for repayment.
 
-All venues in phase 1 & 2 come with this behavior:
-- Implements a callback function that is called by the venue to the borrower (`VenueManager`) after the flash loan/swap is completed.
-- Implements `ERC20.transferFrom(venueManager, venue, amount)` to return the token back to the venue.
+### Phases 1 & 2
 
-In phase 1 and 2, a long chain of callbacks will be triggered:
-`LiquidationRouter` -> `VenueManager` -> `Venue` -> `VenueManager` -> `LiquidationRouter` -> `VenueManager` -> `Venue` -> `VenueManager` -> `LiquidationRouter` ... until all flash loans/swaps are completed. After that, the `LiquidationRouter` will perform the liquidation and swap the earned `WBTC` into debts required for payment.
+Every venue used in phases 1 and 2 exposes the following behavior:
 
-At each flash loan/swap callback, the `VenueManager` will approve the debt token to the according venue so that the debts are paid back automatically when the callbacks resolve themselves.
+- A callback function that the venue invokes on the borrower (`VenueManager`) once the flash loan or swap has been dispensed.
+- Support for `ERC20.transferFrom(venueManager, venue, amount)`, used to return the borrowed token to the venue.
+
+During these phases, a long chain of callbacks is triggered:
+
+```
+LiquidationRouter -> VenueManager -> Venue -> VenueManager -> LiquidationRouter -> ...
+```
+
+This continues until all flash loans and swaps have been obtained. Once the chain unwinds, `LiquidationRouter` performs the liquidation and swaps the earned `WBTC` into the debt tokens required for repayment.
+
+At each flash loan/swap callback, `VenueManager` approves the debt token to the corresponding venue, so that the debt is repaid automatically as the callbacks resolve.
 
 ### Phase 3
 
-In phase 3, the `LiquidationRouter` will perform the liquidation and swap the earned `WBTC` into debts required for payment. All swap calls are specified off-chain and passed into the `LiquidationRouter` as a parameter. The `LiquidationRouter` will blindly execute the swap calls without any validation. It is the responsibility of the off-chain system to ensure that the swap calls are valid and will not revert.
+In phase 3, `LiquidationRouter` performs the liquidation and swaps the earned `WBTC` into the debt tokens required for repayment. All swap calls are specified off-chain and passed into `LiquidationRouter` as parameters. `LiquidationRouter` executes these swap calls blindly, without validation — it is the responsibility of the off-chain system to ensure they are valid and will not revert.
 
-### Post liquidation
+### Post-Liquidation
 
-After all the phases are completed, the `LiquidationRouter` will:
-- Revoke approvals for `aaveAdapter` and `dexAggRouter`.
-- Transfer any token profit to `auth` address
+After all phases have completed, `LiquidationRouter`:
 
-
+- Revokes the approvals granted to `aaveAdapter` and `dexAggRouter`.
+- Transfers any remaining token profit to the `auth` address.
