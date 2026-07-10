@@ -46,6 +46,9 @@ contract LiquidationRouter is VenueManager {
         Types.FlashData[] memory flashDatas,
         Types.SwapData[] memory swapDatas
     ) external auth returns (uint256 wbtcProfit) {
+        require (liquidationData.borrower != address(0), "LiquidationRouter: Invalid borrower address");
+        require (flashDatas.length > 0, "LiquidationRouter: No flash data provided");
+
         (address[] memory reserveTokens, uint256[] memory reserveDebtsToLiquidate, uint256 wbtcPayment) =
             _estLiquidationPayment(liquidationData.borrower);
 
@@ -75,23 +78,13 @@ contract LiquidationRouter is VenueManager {
 
     function _iterateLiquidation(Types.LiquidationIteration memory iteration) internal virtual {
         if (iteration.phase == Types.LiquidationPhase.Setup) {
-            if (iteration.i == iteration.flashDatas.length) {
-                iteration.phase = Types.LiquidationPhase.FlashLoan;
-                iteration.i = 0;
-            } else {
-                _executeSingleSetupPhase(iteration);
-                return;
-            }
+            _executeSingleSetupPhase(iteration);
+            return;
         }
 
         if (iteration.phase == Types.LiquidationPhase.FlashLoan) {
-            if (iteration.i == iteration.flashDatas.length) {
-                iteration.phase = Types.LiquidationPhase.LiquidationAndSwap;
-                iteration.i = 0;
-            } else {
-                _executeSingleFlashLoanPhase(iteration);
-                return;
-            }
+            _executeSingleFlashLoanPhase(iteration);
+            return;
         }
 
         _executeLiquidationPhase(iteration);
@@ -111,27 +104,13 @@ contract LiquidationRouter is VenueManager {
     // ---------------------- PHASE IMPLEMENTATION ----------------------
 
     function _executeSingleSetupPhase(Types.LiquidationIteration memory iteration) internal virtual {
-        while (iteration.i < iteration.flashDatas.length) {
-            (Types.VenueType venueType, address venue) =
-                (iteration.flashDatas[iteration.i].venueType, iteration.flashDatas[iteration.i].venueAddress);
-            if (!_venueRequiresSetup(venueType, venue)) {
-                iteration.i++;
-                continue;
-            } else {
-                break;
-            }
-        }
-
-        if (iteration.i == iteration.flashDatas.length) {
-            iteration.phase = Types.LiquidationPhase.FlashLoan;
-            iteration.i = 0;
-            _iterateLiquidation(iteration);
+        (Types.VenueType venueType, address venueAddress) =
+            (iteration.flashDatas[iteration.i].venueType, iteration.flashDatas[iteration.i].venueAddress);
+        if (!_venueRequiresSetup(venueType, venueAddress)) {
+            _iterateLiquidation(_toNextIteration(iteration));
             return;
         }
-
-        address venueAddress = iteration.flashDatas[iteration.i].venueAddress;
-        iteration.i++;
-        _setUpSwapVenue(venueAddress, abi.encode(iteration));
+        _setUpSwapVenue(venueAddress, abi.encode(_toNextIteration(iteration)));
     }
 
     function _executeSingleFlashLoanPhase(Types.LiquidationIteration memory iteration) internal virtual {
@@ -139,8 +118,7 @@ contract LiquidationRouter is VenueManager {
         uint256 amount = _getReserveDebtAmount(iteration.reserveTokens, iteration.reserveDebtsToLiquidate, token);
 
         Types.FlashData memory flashData = iteration.flashDatas[iteration.i];
-        iteration.i++;
-        _flashLoan(flashData, amount, abi.encode(iteration));
+        _flashLoan(flashData, amount, abi.encode(_toNextIteration(iteration)));
     }
 
     function _executeLiquidationPhase(Types.LiquidationIteration memory iteration) internal virtual {
@@ -156,6 +134,31 @@ contract LiquidationRouter is VenueManager {
             );
 
         _revokeApprovalForAdapter(iteration.reserveTokens);
+    }
+
+    function _toNextIteration(Types.LiquidationIteration memory iteration)
+        internal
+        pure
+        returns (Types.LiquidationIteration memory)
+    {
+        if (iteration.phase == Types.LiquidationPhase.Setup) {
+            if (iteration.i == iteration.flashDatas.length - 1) {
+                iteration.phase = Types.LiquidationPhase.FlashLoan;
+                iteration.i = 0;
+            } else {
+                iteration.i++;
+            }
+        } else if (iteration.phase == Types.LiquidationPhase.FlashLoan) {
+            if (iteration.i == iteration.flashDatas.length - 1) {
+                iteration.phase = Types.LiquidationPhase.LiquidationAndSwap;
+                iteration.i = 0;
+            } else {
+                iteration.i++;
+            }
+        } else {
+            assert(false);
+        }
+        return iteration;
     }
 
     // ---------------------- ESTIMATE LIQUIDATION PAYMENT ----------------------

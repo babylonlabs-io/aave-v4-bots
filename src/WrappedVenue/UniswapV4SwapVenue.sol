@@ -65,7 +65,7 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
         external
         onlyVenueManager
     {
-        require (amountOut > 0, "UniswapV4SwapVenue: Amount out must be greater than zero");
+        require(amountOut > 0, "UniswapV4SwapVenue: Amount out must be greater than zero");
         require(UNISWAP_V4_UNLOCKED_TK.loadBool(), "UniswapV4SwapVenue: Pool manager is locked");
 
         PoolKey memory poolKey = abi.decode(swapData, (PoolKey));
