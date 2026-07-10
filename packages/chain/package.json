@@ -13,8 +13,6 @@
   },
   "dependencies": {
     "@repo/logger": "workspace:*",
-    "@repo/persistence": "workspace:*",
-    "@repo/risk": "workspace:*",
     "viem": "^2.37.0"
   },
   "devDependencies": {

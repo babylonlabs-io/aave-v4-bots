@@ -24,13 +24,7 @@ import { type NonceAllocator, waitForReceiptWithTimeout } from "@repo/execution"
 import type { Logger } from "@repo/logger";
 import type { StateStore } from "@repo/persistence";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
-import {
-  bestEffortTransition,
-  claimIntent,
-  reconcileIntents,
-  resyncNonces,
-  sendMaybeAllocated,
-} from "../crashSafety";
+import { type CrashSafety, createCrashSafety } from "../crashSafety";
 import type { EscrowedVault, PonderResponse } from "./types";
 
 /**
@@ -82,8 +76,8 @@ export class ArbitrageEngine {
   private metrics: ArbitrageMetrics;
   private logger: Logger;
   private risk: RiskGate;
-  private store?: StateStore;
-  private nonces?: NonceAllocator;
+  /** Intent + nonce plumbing. Owns the optional `store` / `nonces`, so no call site threads them. */
+  private crash: CrashSafety;
   private onPollComplete?: () => void;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
@@ -100,8 +94,6 @@ export class ArbitrageEngine {
     this.metrics = config.metrics;
     this.logger = config.logger;
     this.risk = config.risk;
-    this.store = config.store;
-    this.nonces = config.nonces;
     this.onPollComplete = config.onPollComplete;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
@@ -112,6 +104,13 @@ export class ArbitrageEngine {
     this.vaultProcessingDelayMs = config.vaultProcessingDelayMs;
     this.retryConfig = config.retryConfig;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
+    this.crash = createCrashSafety({
+      store: config.store,
+      nonces: config.nonces,
+      publicClient: config.publicClient,
+      signer: config.walletClient.account.address,
+      logger: config.logger,
+    });
   }
 
   /**
@@ -130,7 +129,7 @@ export class ArbitrageEngine {
       // 0.5. Crash-/ambiguous-send-safety: resolve in-flight vault-acquisition intents, then
       // re-seed the shared nonce lease from the chain. Both no-op without a store / allocator.
       await this.reconcile();
-      await resyncNonces(this.nonces, this.publicClient, this.walletClient.account.address);
+      await this.crash.resyncNonces();
 
       // 1. Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
       const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();
@@ -174,13 +173,7 @@ export class ArbitrageEngine {
    * and ambiguous-send-safety step, run every cycle (start of `run()`). No-op without a store.
    */
   async reconcile(): Promise<void> {
-    await reconcileIntents(
-      this.store,
-      this.publicClient,
-      this.walletClient.account.address,
-      "vault-acquisition",
-      this.logger
-    );
+    await this.crash.reconcile("vault-acquisition");
   }
 
   /**
@@ -305,7 +298,7 @@ export class ArbitrageEngine {
       }
 
       // Crash-safety: refuse a duplicate live acquisition intent (already in flight on chain).
-      const { claimed, intentId } = await claimIntent(this.store, this.logger, slot, {
+      const { claimed, intentId } = await this.crash.claim(slot, {
         chainId: this.walletClient.chain.id,
         target: this.vaultSwapAddress,
         action: "vault-acquisition",
@@ -320,8 +313,8 @@ export class ArbitrageEngine {
       // allocator when present (persisting the reserved nonce to the intent before broadcast);
       // otherwise viem auto-nonce (unchanged). A send error is ambiguous — keep the intent live.
       const broadcast = async (nonce?: number): Promise<Hex> => {
-        if (this.store && intentId && nonce !== undefined) {
-          await this.store.transition(intentId, "pending", { nonce });
+        if (intentId && nonce !== undefined) {
+          await this.crash.markPending(intentId, nonce);
         }
         return this.walletClient.writeContract({
           address: this.vaultSwapAddress,
@@ -334,7 +327,7 @@ export class ArbitrageEngine {
 
       let hash: Hex;
       try {
-        hash = await sendMaybeAllocated(this.nonces, (nonce) => broadcast(nonce));
+        hash = await this.crash.send((nonce) => broadcast(nonce));
       } catch (sendError) {
         const errorMsg = sendError instanceof Error ? sendError.message : String(sendError);
         this.logger.error(`Failed to send swap for vault ${vaultId}: ${errorMsg}`);
@@ -342,7 +335,7 @@ export class ArbitrageEngine {
         slot.settle({ ok: false }); // a broadcast was attempted and failed
         // Ambiguous — keep the intent live; next-cycle reconcile resolves it by nonce vs chain.
         if (intentId) {
-          await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
+          await this.crash.transition(intentId, "submitted", {
             error: errorMsg,
           });
         }
@@ -351,7 +344,7 @@ export class ArbitrageEngine {
 
       this.logger.info(`Swap transaction sent: ${hash}`);
       if (intentId) {
-        await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
+        await this.crash.transition(intentId, "submitted", {
           txHash: hash,
         });
       }
@@ -377,7 +370,7 @@ export class ArbitrageEngine {
         this.logger.info(`Vault acquired and redeemed in block ${receipt.blockNumber}`);
         this.metrics.recordVaultAcquired(currentDebtBigInt);
         if (intentId)
-          await bestEffortTransition(this.store, this.logger, intentId, "confirmed", {
+          await this.crash.transition(intentId, "confirmed", {
             txHash: hash,
           });
         return "acquired";
@@ -386,7 +379,7 @@ export class ArbitrageEngine {
       this.logger.error("Swap transaction reverted");
       this.metrics.recordError("swap_reverted");
       if (intentId)
-        await bestEffortTransition(this.store, this.logger, intentId, "failed", {
+        await this.crash.transition(intentId, "failed", {
           txHash: hash,
           error: "reverted",
         });
@@ -434,7 +427,7 @@ export class ArbitrageEngine {
 
       // Route through the allocator (this approval runs mid-poll and would otherwise collide
       // with the liquidation engine's nonces). Only the broadcast is under the lock.
-      const hash = await sendMaybeAllocated(this.nonces, (nonce) =>
+      const hash = await this.crash.send((nonce) =>
         approveMax(this.walletClient, this.wbtcAddress, this.vaultSwapAddress, nonce)
       );
 

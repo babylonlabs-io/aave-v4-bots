@@ -9,7 +9,11 @@ import { addressSchema } from "./schemas";
 //
 // The **signer** projection deliberately stays in each service: `buildSignerConfig` is a value
 // import from `@repo/signer`, and pulling it in here would give every `@repo/config` consumer a
-// runtime dependency on the AWS KMS SDK. Everything below is a type-only import.
+// runtime dependency on the AWS KMS SDK.
+//
+// Everything this module imports from a sibling package is `import type`, erased at compile time,
+// so `@repo/{persistence,secrets,risk}` are **devDependencies** of `@repo/config`: they name the
+// shapes these builders return without putting those packages in any consumer's runtime graph.
 
 export const runtimeEnvFields = {
   // Signer + secrets source selection. Defaults preserve today's behavior: a local signer whose

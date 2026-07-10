@@ -1,6 +1,6 @@
-// RPC plumbing + the viem→port reader adapters (lens / simulation / rpc-pool land here as
-// bot.ts is decomposed).
+// RPC plumbing + generic chain reads (lens / simulation / rpc-pool land here as bot.ts is
+// decomposed). This package imports nothing from a sibling package.
 
 export { type RetryConfig, withRetry, fetchWithRetry } from "./retry";
 export { type RpcCallObserver, instrumentedHttp } from "./instrumentedTransport";
-export { createChainReader, createCodeHashReader } from "./readers";
+export { getNonce, getReceiptStatus, readCodeHash } from "./queries";

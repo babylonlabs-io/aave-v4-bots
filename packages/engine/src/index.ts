@@ -17,3 +17,10 @@ export {
   type ArbitrageMetrics,
 } from "./arbitrage/engine";
 export type { EscrowedVault } from "./arbitrage/types";
+
+export {
+  type ChainReader,
+  type ReconcileSummary,
+  createChainReader,
+  reconcilePending,
+} from "./reconcile";

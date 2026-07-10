@@ -6,7 +6,7 @@ dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
 import { type Chain, createPublicClient, createWalletClient } from "viem";
 
-import { createCodeHashReader, instrumentedHttp } from "@repo/chain";
+import { instrumentedHttp, readCodeHash } from "@repo/chain";
 import { createNonceAllocator, createNonceLease, nextNonce } from "@repo/execution";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
@@ -81,7 +81,7 @@ async function createBot(config: Config) {
     config: config.risk,
     codeCheckIntervalMs: config.codeCheckIntervalMs,
     controlTokenRef: config.controlTokenRef,
-    reader: createCodeHashReader(publicClient),
+    read: (address) => readCodeHash(publicClient, address),
     getSecret: (ref) => secrets.get(ref),
     logger,
   });

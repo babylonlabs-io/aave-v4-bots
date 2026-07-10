@@ -1,29 +1,15 @@
-import type { Address, Hex } from "viem";
+import type { Address } from "viem";
 import { describe, expect, it } from "vitest";
-import { type ChainReader, type IntentInput, idempotencyKey, reconcilePending } from "./index";
+import { type IntentInput, idempotencyKey } from "./index";
 import { createMemoryStateStore } from "./memory";
 
-const SIGNER = "0x1111111111111111111111111111111111111111" as Address;
+// `reconcilePending` moved to `@repo/engine` (it orchestrates this store *and* chain queries);
+// its tests live there, in `reconcile.test.ts`.
+
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
 
 function input(subject: string, over: Partial<IntentInput> = {}): IntentInput {
   return { chainId: 31337, target: TARGET, action: "liquidation", subject, ...over };
-}
-
-/** A `ChainReader` with scripted receipt statuses and fixed latest/pending nonces. */
-function reader(over: {
-  receipts?: Record<string, "success" | "reverted" | null>;
-  latest?: number;
-  pending?: number;
-}): ChainReader {
-  return {
-    async getReceiptStatus(hash) {
-      return over.receipts?.[hash] ?? null;
-    },
-    async getNonce(_address, tag) {
-      return (tag === "latest" ? over.latest : over.pending) ?? 0;
-    },
-  };
 }
 
 describe("idempotencyKey", () => {
@@ -54,108 +40,5 @@ describe("recordIntent idempotency (memory model)", () => {
 
     await store.transition(idempotencyKey(input("p")), "confirmed");
     expect((await store.recordIntent(input("p"))).recorded).toBe(true); // revived
-  });
-});
-
-describe("reconcilePending", () => {
-  it("confirms a submitted intent whose receipt succeeded", async () => {
-    const store = createMemoryStateStore();
-    const id = idempotencyKey(input("p"));
-    await store.recordIntent(input("p"));
-    await store.transition(id, "submitted", { nonce: 5, txHash: "0xhash" as Hex });
-
-    const summary = await reconcilePending({
-      store,
-      signer: SIGNER,
-      reader: reader({ receipts: { "0xhash": "success" }, latest: 5, pending: 6 }),
-    });
-
-    expect(summary).toMatchObject({ examined: 1, confirmed: 1, failed: 0, stillInFlight: 0 });
-    expect(store.all().find((r) => r.id === id)?.status).toBe("confirmed");
-  });
-
-  it("fails a no-hash pending intent whose reserved nonce was already mined", async () => {
-    const store = createMemoryStateStore();
-    await store.recordIntent(input("p"));
-    await store.transition(idempotencyKey(input("p")), "pending", { nonce: 4 });
-
-    const summary = await reconcilePending({
-      store,
-      signer: SIGNER,
-      reader: reader({ latest: 5, pending: 5 }), // nonce 4 already mined, no hash to check
-    });
-
-    expect(summary).toMatchObject({ failed: 1, stillInFlight: 0 });
-    expect(store.all()[0].status).toBe("failed");
-  });
-
-  it("fails a submitted intent whose tx was dropped (nonce mined past, no receipt)", async () => {
-    const store = createMemoryStateStore();
-    await store.recordIntent(input("p"));
-    await store.transition(idempotencyKey(input("p")), "submitted", {
-      nonce: 5,
-      txHash: "0xhash" as Hex,
-    });
-
-    const summary = await reconcilePending({
-      store,
-      signer: SIGNER,
-      reader: reader({ receipts: { "0xhash": null }, latest: 6, pending: 6 }),
-    });
-
-    expect(summary).toMatchObject({ failed: 1, stillInFlight: 0 });
-  });
-
-  it("leaves a genuinely-pending submitted intent in-flight", async () => {
-    const store = createMemoryStateStore();
-    await store.recordIntent(input("p"));
-    await store.transition(idempotencyKey(input("p")), "submitted", {
-      nonce: 5,
-      txHash: "0xhash" as Hex,
-    });
-
-    const summary = await reconcilePending({
-      store,
-      signer: SIGNER,
-      reader: reader({ receipts: { "0xhash": null }, latest: 5, pending: 6 }),
-    });
-
-    expect(summary).toMatchObject({ stillInFlight: 1, failed: 0, confirmed: 0 });
-  });
-
-  it("fails a pending intent that was never broadcast (re-drivable)", async () => {
-    const store = createMemoryStateStore();
-    await store.recordIntent(input("p"));
-    await store.transition(idempotencyKey(input("p")), "pending", { nonce: 7 });
-
-    const summary = await reconcilePending({
-      store,
-      signer: SIGNER,
-      reader: reader({ latest: 7, pending: 7 }), // nothing at nonce 7 yet
-    });
-
-    expect(summary).toMatchObject({ failed: 1 });
-    expect(store.all()[0].status).toBe("failed");
-  });
-
-  it("keeps a pending intent live when its reserved nonce is already in the mempool", async () => {
-    const store = createMemoryStateStore();
-    await store.recordIntent(input("p"));
-    await store.transition(idempotencyKey(input("p")), "pending", { nonce: 7 });
-
-    const summary = await reconcilePending({
-      store,
-      signer: SIGNER,
-      reader: reader({ latest: 7, pending: 8 }), // a tx occupies nonce 7 in the mempool
-    });
-
-    expect(summary).toMatchObject({ stillInFlight: 1, failed: 0 });
-    expect(store.all()[0].status).toBe("submitted");
-  });
-
-  it("no-ops with nothing in flight", async () => {
-    const store = createMemoryStateStore();
-    const summary = await reconcilePending({ store, signer: SIGNER, reader: reader({}) });
-    expect(summary.examined).toBe(0);
   });
 });

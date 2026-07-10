@@ -3,7 +3,7 @@
 // metrics/logger), and there must be exactly **one per process** so a kill-switch halts every
 // engine that process drives.
 //
-// The per-candidate `check()` stays pure and synchronous. The one I/O-bound guard (code-hash)
+// The per-candidate `openSlot()` stays pure and synchronous. The one I/O-bound guard (code-hash)
 // lives in `verifyCode()`, which the composition root calls at boot and on an interval.
 
 export type RiskState = "RUNNING" | "HALTED";
@@ -52,13 +52,18 @@ export interface RiskSlot {
 }
 
 /**
- * Reads the deployed-bytecode hash of a contract. Implemented by the composition root over a
- * chain client (`@repo/chain`'s `createCodeHashReader`) — which keeps `@repo/risk` viem-free.
+ * Reads the deployed-bytecode hash of one address, or `undefined` when it has no code. Supplied
+ * by the composition root over a chain client (`@repo/chain`'s `readCodeHash`).
+ *
+ * A function rather than an interface: `risk` needs exactly one read, so there is no port to own
+ * — and therefore no type either package has to import from the other. A rejected promise means
+ * the *probe* failed (RPC blip), which is distinct from "no code here".
+ *
+ * Deliberately **per-address**, not batched: `verifyCode` must be able to act on the addresses it
+ * did read even when another address is unreadable, or one bad RPC response would mask a real
+ * mismatch (see `verifyCode`).
  */
-export interface CodeHashReader {
-  /** keccak256 of the deployed bytecode at `address`, or `undefined` when there is no code. */
-  getCodeHash(address: string): Promise<string | undefined>;
-}
+export type CodeHashReader = (address: string) => Promise<string | undefined>;
 
 export interface RiskGate {
   /** Current safety state; `HALTED` blocks every action until `resume()`. */
@@ -80,11 +85,14 @@ export interface RiskGate {
    * Verify the configured contract bytecode hashes and **halt on mismatch** (an upgraded or
    * self-destructed target is treated as compromised). No-op when unconfigured. Kept out of the
    * synchronous per-action path because it needs a chain read; call at boot and on an interval.
+   * The gate passes its own configured addresses, so the caller supplies only the read.
    *
    * A *probe* failure (RPC blip) is **not** evidence of compromise, so it rejects rather than
-   * halting — the caller should log and let the next tick retry.
+   * halting — the caller should log and let the next tick retry. But a mismatch **anywhere**
+   * outranks a probe failure **everywhere**: every address that could be read is judged before
+   * any read error is raised.
    */
-  verifyCode(reader: CodeHashReader): Promise<void>;
+  verifyCode(read: CodeHashReader): Promise<void>;
 }
 
 export interface RiskConfig {

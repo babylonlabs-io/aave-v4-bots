@@ -83,23 +83,6 @@ export interface StateStore {
   close(): Promise<void>;
 }
 
-/** The chain reads reconcile needs — a structural subset a viem `PublicClient` satisfies. */
-export interface ChainReader {
-  /** Receipt status for `hash`, or `null` if the receipt is not found yet. */
-  getReceiptStatus(hash: Hex): Promise<"success" | "reverted" | null>;
-  /** Transaction count for `address` at `latest` (mined) or `pending` (mined + mempool). */
-  getNonce(address: Address, tag: "latest" | "pending"): Promise<number>;
-}
-
-export interface ReconcileSummary {
-  /** In-flight intents examined. */
-  examined: number;
-  confirmed: number;
-  failed: number;
-  /** Left in-flight (genuinely still pending on chain). */
-  stillInFlight: number;
-}
-
 /** How a service is configured to obtain its `StateStore`. Postgres is the only backend. */
 export interface PersistenceConfig {
   /** Postgres connection string (e.g. `DATABASE_URL`). */

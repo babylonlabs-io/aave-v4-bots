@@ -12,10 +12,10 @@ describe("startCodeHashGuard", () => {
 
   const guard = (gate: ReturnType<typeof createRiskGate>, getCodeHash: () => Promise<string>) => {
     const onProbeError = vi.fn();
+    const read = async (_address: string) => getCodeHash();
     return {
       onProbeError,
-      start: () =>
-        startCodeHashGuard({ risk: gate, reader: { getCodeHash }, intervalMs: 1000, onProbeError }),
+      start: () => startCodeHashGuard({ risk: gate, read, intervalMs: 1000, onProbeError }),
     };
   };
 
@@ -98,15 +98,15 @@ describe("startCodeHashGuard", () => {
 
   it("stops re-checking after stop()", async () => {
     const gate = createRiskGate({ expectedCodeHashes: { [ADAPTER]: GOOD } });
-    const getCodeHash = vi.fn(async () => GOOD);
+    const read = vi.fn(async (_address: string) => GOOD);
     const stop = await startCodeHashGuard({
       risk: gate,
-      reader: { getCodeHash },
+      read,
       intervalMs: 1000,
       onProbeError: () => {},
     });
     stop();
     await vi.advanceTimersByTimeAsync(5000);
-    expect(getCodeHash).toHaveBeenCalledTimes(1); // boot only
+    expect(read).toHaveBeenCalledTimes(1); // boot only
   });
 });

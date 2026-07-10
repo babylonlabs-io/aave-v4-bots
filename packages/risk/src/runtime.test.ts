@@ -11,7 +11,7 @@ const start = (over: Partial<Parameters<typeof startRiskRuntime>[0]> = {}) =>
   startRiskRuntime({
     config: {},
     codeCheckIntervalMs: 1000,
-    reader: { getCodeHash: async () => GOOD },
+    read: async (_address: string) => GOOD,
     getSecret: async () => "token",
     logger: silentLogger,
     ...over,
@@ -56,7 +56,7 @@ describe("startRiskRuntime", () => {
   it("verifies pinned bytecode BEFORE returning the gate", async () => {
     const { gate, stop } = await start({
       config: { expectedCodeHashes: { [ADAPTER]: GOOD } },
-      reader: { getCodeHash: async () => "0xtampered" },
+      read: async (_address: string) => "0xtampered",
     });
     expect(gate.state()).toBe("HALTED");
     stop();
@@ -65,10 +65,8 @@ describe("startRiskRuntime", () => {
   it("halts when the boot probe cannot reach the chain (fail closed)", async () => {
     const { gate, stop } = await start({
       config: { expectedCodeHashes: { [ADAPTER]: GOOD } },
-      reader: {
-        getCodeHash: async () => {
-          throw new Error("rpc down");
-        },
+      read: async (_address: string) => {
+        throw new Error("rpc down");
       },
     });
     expect(gate.state()).toBe("HALTED");
@@ -76,13 +74,13 @@ describe("startRiskRuntime", () => {
   });
 
   it("stop() ends the periodic re-check", async () => {
-    const getCodeHash = vi.fn(async () => GOOD);
+    const read = vi.fn(async (_address: string) => GOOD);
     const { stop } = await start({
       config: { expectedCodeHashes: { [ADAPTER]: GOOD } },
-      reader: { getCodeHash },
+      read,
     });
     stop();
     await vi.advanceTimersByTimeAsync(5000);
-    expect(getCodeHash).toHaveBeenCalledTimes(1); // boot only
+    expect(read).toHaveBeenCalledTimes(1); // boot only
   });
 });

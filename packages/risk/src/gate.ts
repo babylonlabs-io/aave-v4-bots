@@ -107,14 +107,24 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       };
     },
 
-    async verifyCode(reader) {
+    async verifyCode(read) {
       const expected = config.expectedCodeHashes;
       if (!expected) return;
 
-      for (const [address, want] of Object.entries(expected)) {
-        // A probe error propagates (RPC blip ⇒ retry next tick); it must not halt trading.
-        const got = await reader.getCodeHash(address);
+      const addresses = Object.keys(expected);
+      // Read every address independently. `Promise.all` would reject on the first RPC blip and
+      // discard the results that DID come back — so an upgraded contract could hide behind an
+      // unrelated address being briefly unreadable, and periodic checks never halt on a probe
+      // failure. Definite compromise must outrank transient failure.
+      const results = await Promise.allSettled(addresses.map((address) => read(address)));
 
+      // Pass 1: judge everything we could actually read.
+      for (const [i, address] of addresses.entries()) {
+        const result = results[i];
+        if (result.status === "rejected") continue;
+
+        const want = expected[address];
+        const got = result.value;
         if (got === undefined) {
           halt(`no code at ${address} (expected ${want})`);
           return;
@@ -124,6 +134,11 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
           return;
         }
       }
+
+      // Pass 2: nothing is compromised among the addresses we read. Surface any probe failure so
+      // the caller can decide (fail closed at boot; retry on later ticks).
+      const failed = results.find((r) => r.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
     },
   };
 }

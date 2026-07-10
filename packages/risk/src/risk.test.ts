@@ -189,9 +189,8 @@ describe("@repo/risk createRiskGate", () => {
   });
 
   describe("code-hash guard", () => {
-    const reader = (hashes: Record<string, string | undefined>) => ({
-      getCodeHash: async (address: string) => hashes[address],
-    });
+    const reader = (hashes: Record<string, string | undefined>) => async (address: string) =>
+      hashes[address];
 
     it("is a no-op when unconfigured", async () => {
       const gate = createRiskGate();
@@ -221,12 +220,47 @@ describe("@repo/risk createRiskGate", () => {
     // An RPC blip is not evidence of compromise: reject so the caller retries, do NOT halt.
     it("rejects without halting when the probe itself fails", async () => {
       const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
-      const failing = {
-        getCodeHash: async () => {
-          throw new Error("rpc down");
-        },
+      const failing = async () => {
+        throw new Error("rpc down");
       };
       await expect(gate.verifyCode(failing)).rejects.toThrow("rpc down");
+      expect(gate.state()).toBe("RUNNING");
+    });
+
+    // Regression: a detected compromise must not hide behind an unrelated RPC blip. Batching the
+    // reads (`Promise.all`) would reject before `0xa`'s mismatch was ever compared — and periodic
+    // checks do not halt on a probe failure, so the bot would keep trading against changed code.
+    it("halts on a mismatch even when a DIFFERENT address is unreadable", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xa": "0xgood", "0xb": "0xgood" } });
+      const read = async (address: string) => {
+        if (address === "0xb") throw new Error("rpc down");
+        return "0xtampered";
+      };
+
+      await expect(gate.verifyCode(read)).resolves.toBeUndefined(); // mismatch wins, no throw
+      expect(gate.state()).toBe("HALTED");
+    });
+
+    it("halts on missing code even when a different address is unreadable", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xa": "0xgood", "0xb": "0xgood" } });
+      const read = async (address: string) => {
+        if (address === "0xb") throw new Error("rpc down");
+        return undefined;
+      };
+
+      await gate.verifyCode(read);
+      expect(gate.state()).toBe("HALTED");
+    });
+
+    // The converse: nothing is wrong with what we could read, so the probe error surfaces.
+    it("raises the probe error when every address it could read is intact", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xa": "0xgood", "0xb": "0xgood" } });
+      const read = async (address: string) => {
+        if (address === "0xb") throw new Error("rpc down");
+        return "0xgood";
+      };
+
+      await expect(gate.verifyCode(read)).rejects.toThrow("rpc down");
       expect(gate.state()).toBe("RUNNING");
     });
   });

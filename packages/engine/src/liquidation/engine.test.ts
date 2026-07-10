@@ -2,6 +2,7 @@ import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
+import { TransactionReceiptNotFoundError } from "viem";
 import { maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
@@ -58,6 +59,12 @@ function createMockClients() {
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
+      // Reconcile asks for receipts. The default answer is viem's "not mined yet" signal — a
+      // *typed* error, not a bare throw: `getReceiptStatus` only reads this one as "no receipt",
+      // and propagates anything else (an RPC outage must never look like "not mined").
+      getTransactionReceipt: vi
+        .fn()
+        .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: "0xtxhash" })),
       waitForTransactionReceipt: vi
         .fn()
         .mockResolvedValue({ status: "success", blockNumber: 123n, logs: [] }),

@@ -14,7 +14,7 @@ import {
   createWalletClient,
 } from "viem";
 
-import { createCodeHashReader, instrumentedHttp } from "@repo/chain";
+import { instrumentedHttp, readCodeHash } from "@repo/chain";
 import { LiquidationEngine } from "@repo/engine";
 import {
   type NonceAllocator,
@@ -131,7 +131,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
     config: config.risk,
     codeCheckIntervalMs: config.codeCheckIntervalMs,
     controlTokenRef: config.controlTokenRef,
-    reader: createCodeHashReader(publicClient),
+    read: (address) => readCodeHash(publicClient, address),
     getSecret: (ref) => secrets.get(ref),
     logger,
   });

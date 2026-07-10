@@ -15,8 +15,8 @@ export interface RiskRuntimeConfig {
   codeCheckIntervalMs: number;
   /** Secret *reference* for the kill-switch bearer token; unset ⇒ no control routes. */
   controlTokenRef?: string;
-  /** Reads deployed bytecode — `@repo/chain`'s `createCodeHashReader(publicClient)`. */
-  reader: CodeHashReader;
+  /** Reads deployed bytecode — e.g. `(address) => readCodeHash(publicClient, address)`. */
+  read: CodeHashReader;
   /** Resolves a secret reference to its value (the service's `@repo/secrets` provider). */
   getSecret: (ref: string) => Promise<string>;
   logger: { info(msg: string): void; warn(msg: string, ...rest: unknown[]): void };
@@ -49,7 +49,7 @@ export async function startRiskRuntime(config: RiskRuntimeConfig): Promise<RiskR
   // Boot check runs here, before the caller wires up any engine or sends an approval.
   const stop = await startCodeHashGuard({
     risk: gate,
-    reader: config.reader,
+    read: config.read,
     intervalMs: config.codeCheckIntervalMs,
     onProbeError: (error) => logger.warn("Code-hash probe failed; will retry:", error),
   });

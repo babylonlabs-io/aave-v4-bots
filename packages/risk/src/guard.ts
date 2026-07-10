@@ -2,7 +2,8 @@ import type { CodeHashReader, RiskGate } from "./types";
 
 export interface CodeHashGuardConfig {
   risk: RiskGate;
-  reader: CodeHashReader;
+  /** Reads deployed-bytecode hashes for the addresses the gate has pinned. */
+  read: CodeHashReader;
   /** How often to re-verify after the boot check. */
   intervalMs: number;
   /** Called when a probe *fails* (RPC blip) — not when it detects a mismatch (that halts). */
@@ -26,11 +27,11 @@ export interface CodeHashGuardConfig {
  * Returns a stop function. A no-op (and no timer) when no hashes are pinned.
  */
 export async function startCodeHashGuard(config: CodeHashGuardConfig): Promise<() => void> {
-  const { risk, reader, intervalMs, onProbeError } = config;
+  const { risk, read, intervalMs, onProbeError } = config;
 
   const verify = async (isBoot: boolean) => {
     try {
-      await risk.verifyCode(reader);
+      await risk.verifyCode(read);
     } catch (error) {
       onProbeError(error);
       if (isBoot) {
