@@ -117,6 +117,11 @@ contract LiquidationRouter is VenueManager {
         address token = iteration.flashDatas[iteration.i].token;
         uint256 amount = _getReserveDebtAmount(iteration.reserveTokens, iteration.reserveDebtsToLiquidate, token);
 
+        if (amount == 0) {
+            _iterateLiquidation(_toNextIteration(iteration));
+            return;
+        }
+
         Types.FlashData memory flashData = iteration.flashDatas[iteration.i];
         _flashLoan(flashData, amount, abi.encode(_toNextIteration(iteration)));
     }
@@ -221,7 +226,7 @@ contract LiquidationRouter is VenueManager {
         results = new bytes[](data.length);
         successes = new bool[](data.length);
         for (uint256 i = 0; i < data.length; i++) {
-            (successes[i], results[i]) = address(this).call(data[i]);
+            (successes[i], results[i]) = address(this).delegatecall(data[i]);
             if (requireSuccess && !successes[i]) {
                 revert(string(results[i]));
             }

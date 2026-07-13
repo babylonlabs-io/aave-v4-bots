@@ -69,6 +69,33 @@ contract UniswapV4FlashSwapTest is Test, TestSuits {
             swapData: abi.encode(poolKeys[1])
         });
 
+        bytes[] memory datas = new bytes[](1);
+        datas[0] = abi.encodeWithSelector(
+                router.liquidate.selector,
+                LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: type(uint256).max}),
+                flashDatas,
+                new LiquidationTypes.SwapData[](0)
+            );
+        vm.prank(ADMIN);
+        (bool[] memory successes, bytes[] memory results) = router.multicall(datas, false);
+
+        vm.assertFalse(successes[0], "Expected liquidation to fail due to BelovedError()");
+
+
+        bytes memory truncData = new bytes(results[0].length - 4);
+        for (uint256 i = 0; i < truncData.length; i++) {
+            truncData[i] = results[0][i + 4];
+        }
+
+        (uint256 netWbtcBeforePayment, LiquidationTypes.VenueDebt[] memory venueDebts) = abi.decode(truncData, (uint256, LiquidationTypes.VenueDebt[]));
+        uint256 sumVenueDebts = 0;
+
+        for(uint256 i = 0; i < venueDebts.length; i++) {
+            sumVenueDebts += venueDebts[i].amount;
+        }
+
+        vm.assertGt(netWbtcBeforePayment, sumVenueDebts, "Expected net WBTC before payment to be greater than sum of venue debts");
+
         vm.prank(ADMIN);
         router.liquidate(
             LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: 0}),
