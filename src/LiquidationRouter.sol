@@ -95,8 +95,14 @@ contract LiquidationRouter is VenueManager {
 
         for (uint256 i = 0; i < iteration.swapDatas.length; i++) {
             IERC20(wbtc).forceApprove(iteration.swapDatas[i].dexAggRouter, type(uint256).max);
-            (bool success,) = iteration.swapDatas[i].dexAggRouter.call(iteration.swapDatas[i].callData);
-            require(success, "LiquidationRouter: Swap failed");
+            (bool success, bytes memory err) = iteration.swapDatas[i].dexAggRouter.call(iteration.swapDatas[i].callData);
+
+            if (!success) {
+                assembly {
+                    revert(add(err, 0x20), mload(err))
+                }
+            }
+
             IERC20(wbtc).forceApprove(iteration.swapDatas[i].dexAggRouter, 0);
         }
     }
