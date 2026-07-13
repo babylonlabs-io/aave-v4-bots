@@ -30,77 +30,85 @@ import {console} from "forge-std/console.sol";
 contract UniswapV4FlashSwapTest is Test, TestSuits {
     address internal ADMIN = vm.addr(69420);
 
-    address[] internal debtTokens = [
-        address(0xB588C1bd8A6cd3F114A52a0AD916778B419ECf48), // USDC
-        address(0xCFf21358114814258635524588f74521762A6c04)
-        // , // USDT
-        // address(0x7f780b992a401fcf61eD2fbE5c98bE914A611Db2) // DAI
-    ];
-
     function setUp() public {
         vm.deal(ADMIN, 100 ether);
     }
 
     function test_UNISWAPV4_FLASH_SWAP_TEST0() external {
-        Types.UniswapFlashSwapTestCaseParams memory params = UNISWAPV4_FLASH_SWAP_TEST0;
-        vm.createSelectFork(vm.rpcUrl("sepolia"), params.liquidation.blockNumber);
+        Types.TestParams memory params = UNISWAPV4_FLASH_SWAP_TEST0;
+        vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
 
+        address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
         address oracle = AaveAdapter(params.tbvContracts.aaveAdapter).BTC_VAULT_CORE_SPOKE().ORACLE();
         uint256 btcPrice =
             IAaveOracle(oracle).getReservePrice(AaveAdapter(params.tbvContracts.aaveAdapter).VAULT_BTC_RESERVE_ID());
 
-        PoolKey[] memory poolKeys =
-            _setUpUniswap(address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC()), btcPrice);
+        PoolKey[] memory poolKeys = _setUpUniswap(params.tbvContracts.debtTokens, wbtc, btcPrice);
 
         (LiquidationRouter router, UniswapV4SwapVenue venue) =
             _setUpRouter(params.tbvContracts.lens, params.tbvContracts.btcVaultSwap);
 
+
+        // Init liquidation calldata
         LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](2);
         flashDatas[0] = LiquidationTypes.FlashData({
             venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
             venueAddress: address(venue),
-            token: debtTokens[0],
+            token: params.tbvContracts.debtTokens[0],
             swapData: abi.encode(poolKeys[0])
         });
         flashDatas[1] = LiquidationTypes.FlashData({
             venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
             venueAddress: address(venue),
-            token: debtTokens[1],
+            token: params.tbvContracts.debtTokens[1],
             swapData: abi.encode(poolKeys[1])
         });
 
         bytes[] memory datas = new bytes[](1);
         datas[0] = abi.encodeWithSelector(
-                router.liquidate.selector,
-                LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: type(uint256).max}),
-                flashDatas,
-                new LiquidationTypes.SwapData[](0)
-            );
+            router.liquidate.selector,
+            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: type(uint256).max}),
+            flashDatas,
+            new LiquidationTypes.SwapData[](0)
+        );
+
+        // Run the revert test to gain insight into the liquidation process and the expected WBTC profit before payment
         vm.prank(ADMIN);
         (bool[] memory successes, bytes[] memory results) = router.multicall(datas, false);
 
         vm.assertFalse(successes[0], "Expected liquidation to fail due to BelovedError()");
-
 
         bytes memory truncData = new bytes(results[0].length - 4);
         for (uint256 i = 0; i < truncData.length; i++) {
             truncData[i] = results[0][i + 4];
         }
 
-        (uint256 netWbtcBeforePayment, LiquidationTypes.VenueDebt[] memory venueDebts) = abi.decode(truncData, (uint256, LiquidationTypes.VenueDebt[]));
+        (uint256 netWbtcBeforePayment, LiquidationTypes.VenueDebt[] memory venueDebts) =
+            abi.decode(truncData, (uint256, LiquidationTypes.VenueDebt[]));
         uint256 sumVenueDebts = 0;
 
-        for(uint256 i = 0; i < venueDebts.length; i++) {
+        for (uint256 i = 0; i < venueDebts.length; i++) {
             sumVenueDebts += venueDebts[i].amount;
         }
 
-        vm.assertGt(netWbtcBeforePayment, sumVenueDebts, "Expected net WBTC before payment to be greater than sum of venue debts");
+        vm.assertGt(
+            netWbtcBeforePayment,
+            sumVenueDebts,
+            "Expected net WBTC before payment to be greater than sum of venue debts"
+        );
 
+        // Execute the liquidation 
         vm.prank(ADMIN);
         router.liquidate(
             LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: 0}),
             flashDatas,
             new LiquidationTypes.SwapData[](0)
+        );
+
+        vm.assertEq(
+            IERC20(wbtc).balanceOf(ADMIN),
+            netWbtcBeforePayment - sumVenueDebts,
+            "Expected final WBTC balance to match net WBTC before payment minus sum of venue debts"
         );
     }
 
@@ -112,7 +120,10 @@ contract UniswapV4FlashSwapTest is Test, TestSuits {
         venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(router));
     }
 
-    function _setUpUniswap(address wbtc, uint256 wbtcPrice1e8) internal returns (PoolKey[] memory poolKeys) {
+    function _setUpUniswap(address[] memory debtTokens, address wbtc, uint256 wbtcPrice1e8)
+        internal
+        returns (PoolKey[] memory poolKeys)
+    {
         poolKeys = new PoolKey[](debtTokens.length);
         for (uint256 i = 0; i < debtTokens.length; i++) {
             uint256 debtDecimals = IERC20Metadata(debtTokens[i]).decimals();

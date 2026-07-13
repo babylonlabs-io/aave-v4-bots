@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 
 library Types {
     struct Liquidation {
+        string network;
         uint256 blockNumber;
         address borrower;
     }
@@ -12,9 +13,10 @@ library Types {
         address btcVaultSwap;
         address aaveAdapter;
         address lens;
+        address[] debtTokens;
     }
 
-    struct UniswapFlashSwapTestCaseParams {
+    struct TestParams {
         Liquidation liquidation;
         TBVContracts tbvContracts;
     }
