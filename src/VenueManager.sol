@@ -45,6 +45,7 @@ abstract contract VenueManager is
 
     string private constant CONTRACT_NAME = "VenueManager";
     bytes32 private constant VENUE_DEBTS_LENGTH_TK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts.length"));
+    bytes32 private constant VENUE_ALREADY_SETUP_TK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueAlreadySetup"));
 
     function _setUpSwapVenue(address venueAddress, bytes memory forwardData) internal {
         _expectCallback(venueAddress);
@@ -177,7 +178,13 @@ abstract contract VenueManager is
 
     // ---------------------- INTERNAL FUNCTIONS ----------------------
 
-    function _venueRequiresSetup(Types.VenueType venueType, address venueAddress) internal view returns (bool) {
+    function _venueRequiresSetup(Types.VenueType venueType, address venueAddress) internal returns (bool) {
+        bytes32 alreadySetupTK = keccak256(abi.encodePacked(VENUE_ALREADY_SETUP_TK, "[", venueAddress, "]"));
+        if (alreadySetupTK.loadBool()) {
+            return false;
+        }
+        alreadySetupTK.storeBool(true);
+
         return (venueType == Types.VenueType.UniswapV4FlashSwap || venueType == Types.VenueType.UniswapV4FlashLoan)
             && ISwapVenue(venueAddress).requireSetup();
     }

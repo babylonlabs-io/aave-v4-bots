@@ -45,3 +45,6 @@ fs_permissions = [
 ]
 gas_snapshot_check = false
 gas_limit = "max"
+
+[rpc_endpoints]
+sepolia = "${SEPOLIA_RPC}"

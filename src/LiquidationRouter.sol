@@ -46,8 +46,8 @@ contract LiquidationRouter is VenueManager {
         Types.FlashData[] memory flashDatas,
         Types.SwapData[] memory swapDatas
     ) external auth returns (uint256 wbtcProfit) {
-        require (liquidationData.borrower != address(0), "LiquidationRouter: Invalid borrower address");
-        require (flashDatas.length > 0, "LiquidationRouter: No flash data provided");
+        require(liquidationData.borrower != address(0), "LiquidationRouter: Invalid borrower address");
+        require(flashDatas.length > 0, "LiquidationRouter: No flash data provided");
 
         (address[] memory reserveTokens, uint256[] memory reserveDebtsToLiquidate, uint256 wbtcPayment) =
             _estLiquidationPayment(liquidationData.borrower);
@@ -187,8 +187,9 @@ contract LiquidationRouter is VenueManager {
         address to = owner;
         for (uint256 i = 0; i < reserveTokens.length; i++) {
             address token = reserveTokens[i];
-            if (IERC20(token).balanceOf(address(this)) > 0) {
-                IERC20(token).safeTransfer(to, IERC20(token).balanceOf(address(this)));
+            uint256 balance = IERC20(token).balanceOf(address(this));
+            if (balance > 0) {
+                IERC20(token).safeTransfer(to, balance);
             }
         }
     }
