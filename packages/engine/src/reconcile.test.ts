@@ -8,7 +8,12 @@ import {
 } from "viem";
 import { describe, expect, it } from "vitest";
 
-import { type ChainReader, createChainReader, reconcilePending } from "./reconcile";
+import {
+  type ChainReader,
+  UNKNOWN_TX_GRACE_MS,
+  createChainReader,
+  reconcilePending,
+} from "./reconcile";
 
 const SIGNER = "0x1111111111111111111111111111111111111111" as Address;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
@@ -16,6 +21,12 @@ const TARGET = "0x2222222222222222222222222222222222222222" as Address;
 function input(subject: string, over: Partial<IntentInput> = {}): IntentInput {
   return { chainId: 31337, target: TARGET, action: "liquidation", subject, ...over };
 }
+
+/**
+ * A clock reading `ms` into the future, so an intent the store just recorded is judged as though it
+ * were `ms` old — which is what decides whether an "unknown to the node" answer is trustworthy.
+ */
+const aged = (ms: number) => () => Date.now() + ms;
 
 /**
  * A `ChainReader` with scripted receipt statuses and fixed latest/pending nonces. `known`
@@ -167,12 +178,33 @@ describe("reconcilePending", () => {
       signer: SIGNER,
       // Nonce 5 never made it to the mempool, and the node has never seen the hash.
       reader: reader({ receipts: { "0xhash": null }, latest: 5, pending: 5, known: false }),
+      now: aged(UNKNOWN_TX_GRACE_MS + 1), // past the grace window, so the "no" is trustworthy
     });
 
     // Nothing is on chain — re-drivable. Left in-flight it would be pinned forever: the same
     // rejection blocks every later send, so no tx would ever mine past nonce 5 to release it.
     expect(summary).toMatchObject({ failed: 1, stillInFlight: 0 });
     expect(store.all().find((r) => r.id === id)?.status).toBe("failed");
+  });
+
+  // Behind a load-balanced RPC pool the node we ask need not be the node we broadcast to, so a tx
+  // that IS on the wire can read as unknown until it propagates. Acting on that immediately is what
+  // turns a routing artifact into a double-submitted liquidation.
+  it("does NOT fail a just-signed intent the node has not seen yet (grace window)", async () => {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    await store.transition(id, "submitted", { nonce: 5, txHash: "0xhash" as Hex });
+
+    const summary = await reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: reader({ receipts: { "0xhash": null }, latest: 5, pending: 5, known: false }),
+      now: aged(1_000), // recorded a second ago — far too young for "unknown" to mean rejected
+    });
+
+    expect(summary).toMatchObject({ stillInFlight: 1, failed: 0 });
+    expect(store.all().find((r) => r.id === id)?.status).toBe("submitted"); // not re-drivable yet
   });
 
   it("keeps a signed intent live while the node still knows its tx", async () => {

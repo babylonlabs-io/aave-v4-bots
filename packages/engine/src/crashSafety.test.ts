@@ -6,6 +6,7 @@ import { type Address, type Hex, type PublicClient, TransactionNotFoundError } f
 import { describe, expect, it, vi } from "vitest";
 
 import { type CrashSafetyConfig, createCrashSafety } from "./crashSafety";
+import { UNKNOWN_TX_GRACE_MS } from "./reconcile";
 
 const SIGNER = "0x1111111111111111111111111111111111111111" as Address;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
@@ -165,12 +166,17 @@ describe("createCrashSafety", () => {
         }),
       }) as unknown as PublicClient;
 
-    /** Seed a live intent at `nonce`/`txHash`, then resync, and report the next nonce handed out. */
+    /**
+     * Seed a live intent at `nonce`/`txHash`, then resync, and report the next nonce handed out.
+     * `ageMs` is how old the intent's pre-broadcast record appears — past the grace window an
+     * "unknown to the node" answer is trusted, inside it the tx is presumed still propagating.
+     */
     async function nextNonceAfterResync(args: {
       publicClient: PublicClient;
       nonce: number;
       txHash?: Hex;
       action?: string;
+      ageMs?: number;
     }) {
       const store = createMemoryStateStore();
       const intent = { ...input("pos-1"), action: args.action ?? "liquidation" };
@@ -180,6 +186,7 @@ describe("createCrashSafety", () => {
         ...(args.txHash ? { txHash: args.txHash } : {}),
       });
 
+      const ageMs = args.ageMs ?? UNKNOWN_TX_GRACE_MS + 1; // aged out by default
       const nonces = createNonceAllocator(createNonceLease(), SIGNER);
       const cs = createCrashSafety({
         store,
@@ -187,6 +194,7 @@ describe("createCrashSafety", () => {
         publicClient: args.publicClient,
         signer: SIGNER,
         logger: silentLogger,
+        now: () => Date.now() + ageMs,
       });
 
       await cs.resyncNonces();
@@ -210,12 +218,27 @@ describe("createCrashSafety", () => {
       // rejected (or never happened), so the node has never heard of the hash. Nothing is on chain
       // and nonce 5 is free — it MUST be reclaimed, or every later tx queues behind a gap forever.
       const next = await nextNonceAfterResync({
-        publicClient: chain(5, []), // node does not know HASH
+        publicClient: chain(5, []), // node does not know HASH, and the record has aged out
         nonce: 5,
         txHash: HASH,
       });
 
       expect(next).toBe(5); // reclaimed
+    });
+
+    it("holds the fence while a just-broadcast tx is still too young to be called unknown", async () => {
+      // Behind a load-balanced RPC pool the backend we probe need not be the one we broadcast to, so
+      // a tx that IS on the wire can read as unknown until it propagates. Reclaiming its nonce on
+      // that answer would sign over a live tx — the same failure the fence exists to prevent, just
+      // reached through a lying probe rather than a lagging `pending`.
+      const next = await nextNonceAfterResync({
+        publicClient: chain(5, []), // node claims not to know HASH...
+        nonce: 5,
+        txHash: HASH,
+        ageMs: 1_000, // ...but we recorded it a second ago, so that "no" means nothing yet
+      });
+
+      expect(next).toBe(6); // still fenced
     });
 
     it("takes the chain's count when it is already ahead of the fence", async () => {

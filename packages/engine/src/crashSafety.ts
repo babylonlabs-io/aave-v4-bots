@@ -4,7 +4,12 @@ import type { IntentInput, IntentStatus, StateStore, TransitionMeta } from "@rep
 import type { RiskSlot } from "@repo/risk";
 import type { Address, Hex, PublicClient } from "viem";
 
-import { createChainReader, reconcilePending } from "./reconcile";
+import {
+  type LivenessCheck,
+  couldBeInFlight,
+  createChainReader,
+  reconcilePending,
+} from "./reconcile";
 
 // The crash-safety collaborator: the intent + shared-nonce-allocator dance both engines run
 // around their sends. A collaborator rather than a base class, so each engine keeps its own
@@ -29,6 +34,10 @@ export interface CrashSafetyConfig {
   /** The sending address whose nonce sequence anchors reconcile's "was this broadcast?" checks. */
   signer: Address;
   logger: Logger;
+  /** Injectable clock, for tests. */
+  now?: () => number;
+  /** How long an unknown-to-the-node tx stays presumed-live; defaults to `UNKNOWN_TX_GRACE_MS`. */
+  graceMs?: number;
 }
 
 export interface CrashSafety {
@@ -82,24 +91,27 @@ export interface CrashSafety {
 }
 
 export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
-  const { store, nonces, publicClient, signer, logger } = config;
+  const { store, nonces, publicClient, signer, logger, graceMs } = config;
   const reader = createChainReader(publicClient);
+  const now = config.now ?? Date.now;
+  const liveness: LivenessCheck = { reader, now, graceMs };
 
   /**
-   * The lowest nonce `resync` may re-seed the lease to: one past the highest nonce held by a tx the
-   * node has actually seen. `0` when no such tx exists.
+   * The lowest nonce `resync` may re-seed the lease to: one past the highest nonce held by a tx that
+   * could still be on the wire. `0` when no such tx exists.
    *
    * `resync` sets the lease from the chain's `pending` count, and may move it *down* — that is how a
    * nonce reserved but never broadcast gets reclaimed rather than left as a permanent gap. This
    * floor bounds the pull-down: the lease may drop onto a nonce no live tx occupies, never onto one
    * that a live tx holds (signing over it would replace a liquidation already on the wire). The
    * bound is needed because `pending` is only as truthful as the provider — a node that does not
-   * surface its mempool reports N while our tx sits at N. `reconcile`'s `isKnown` branch guards
-   * against the same providers.
+   * surface its mempool reports N while our tx sits at N.
    *
-   * `isKnown` is what draws the line: senders record nonce **and** hash *before* broadcasting
-   * (`TxSender`), so a recorded hash proves only that we signed. Asking the node separates the tx it
-   * is holding (fence it) from one we signed and never sent (reclaim it).
+   * `couldBeInFlight` draws the line, and it is the same judgement `reconcilePending` makes: senders
+   * record nonce **and** hash *before* broadcasting (`TxSender`), so a recorded hash proves only
+   * that we signed. Sharing the predicate is what keeps the two from disagreeing — reconcile
+   * re-driving an action whose nonce this still fences, or worse, this releasing a nonce reconcile
+   * still believes is live.
    *
    * Spans **all** actions, not just the caller's: the arbitrageur's two engines share one signer,
    * hence one nonce sequence.
@@ -118,9 +130,13 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
 
     // A probe failure propagates (as everywhere else in this layer): reading "unknown" from an RPC
     // blip would drop the fence and let the rewind through.
-    const known = await Promise.all(candidates.map((intent) => reader.isKnown(intent.txHash)));
+    const inFlight = await Promise.all(
+      candidates.map((intent) =>
+        couldBeInFlight(liveness, { txHash: intent.txHash, updatedAt: intent.updatedAt })
+      )
+    );
     return candidates.reduce(
-      (floor, intent, i) => (known[i] ? Math.max(floor, intent.nonce + 1) : floor),
+      (floor, intent, i) => (inFlight[i] ? Math.max(floor, intent.nonce + 1) : floor),
       0
     );
   }
@@ -130,7 +146,7 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
 
     async reconcile(action) {
       if (!store) return;
-      await reconcilePending({ store, reader, signer, action, logger });
+      await reconcilePending({ store, reader, signer, action, logger, now, graceMs });
     },
 
     resyncNonces() {

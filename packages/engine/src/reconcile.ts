@@ -46,6 +46,47 @@ export interface ReconcileSummary {
 }
 
 /**
+ * How long after its pre-broadcast record a tx the node claims not to know is still treated as
+ * possibly in flight.
+ *
+ * `isKnown` is only as truthful as the endpoint answering it. Behind a load-balanced RPC pool the
+ * backend we ask may not be the backend we broadcast to, so a tx that really is on the wire can
+ * read as unknown for as long as it takes to propagate. Acting on that immediately is what turns a
+ * routing artifact into a double-submitted liquidation, so a `false` only counts once the tx has
+ * had time to spread.
+ *
+ * The cost of the window is bounded and dull: a genuinely rejected broadcast is re-driven one grace
+ * period later than it could have been.
+ */
+export const UNKNOWN_TX_GRACE_MS = 30_000;
+
+/** The clock + tolerance `couldBeInFlight` judges against. */
+export interface LivenessCheck {
+  reader: ChainReader;
+  now: () => number;
+  /** Defaults to `UNKNOWN_TX_GRACE_MS`. */
+  graceMs?: number;
+}
+
+/**
+ * Could this signed tx be on the wire right now? The question both `reconcilePending` and the nonce
+ * fence must answer the same way — one decides whether to re-drive the action, the other whether to
+ * hand its nonce to someone else, and disagreeing would mean re-driving an action whose nonce is
+ * still reserved (or the reverse).
+ *
+ * A tx recorded within the grace window is taken as live without asking: too young for a "no" to
+ * mean anything. Past that, the node's answer stands.
+ */
+export async function couldBeInFlight(
+  check: LivenessCheck,
+  intent: { txHash: Hex; updatedAt: number }
+): Promise<boolean> {
+  const graceMs = check.graceMs ?? UNKNOWN_TX_GRACE_MS;
+  if (check.now() - intent.updatedAt < graceMs) return true;
+  return check.reader.isKnown(intent.txHash);
+}
+
+/**
  * Resolve the store's in-flight intents against the chain, **before** the engine re-drives —
  * the crux of no-double-submit after a crash or an ambiguous send. `signer` is the sending
  * address whose nonce sequence anchors the "was this broadcast?" checks.
@@ -60,8 +101,9 @@ export interface ReconcileSummary {
  *   no receipt but the signer's mined nonce has already passed the intent's nonce → the tx
  *   was dropped/replaced (or was signed and never broadcast, and something else took the
  *   slot) → `failed`; no receipt, the nonce slot is still free **and** the node does not know
- *   the hash → the broadcast was rejected, so nothing is on chain → `failed`, safe to
- *   re-drive; otherwise it is genuinely pending → left in-flight.
+ *   the hash **and** it is past the grace window (see `couldBeInFlight`) → the broadcast was
+ *   rejected, so nothing is on chain → `failed`, safe to re-drive; otherwise it is genuinely
+ *   pending → left in-flight.
  * - **no hash, but a reserved nonce the chain has mined past** (`latest > nonce`) → a tx took
  *   that nonce slot; we can't fetch a receipt without the hash, so mark `failed` and let the
  *   engine's fresh simulation be the final guard (an already-executed action reverts in
@@ -78,8 +120,14 @@ export async function reconcilePending(args: {
   /** Restrict to one action's intents (e.g. `"liquidation"`); omit for all. */
   action?: string;
   logger?: Pick<Logger, "info" | "warn">;
+  /** Injectable clock, for tests. */
+  now?: () => number;
+  /** How long an unknown-to-the-node tx stays presumed-live; defaults to `UNKNOWN_TX_GRACE_MS`. */
+  graceMs?: number;
 }): Promise<ReconcileSummary> {
-  const { store, reader, signer, action, logger } = args;
+  const { store, reader, signer, action, logger, graceMs } = args;
+  const now = args.now ?? Date.now;
+  const liveness: LivenessCheck = { reader, now, graceMs };
   const inflight = await store.reconcile(action);
   const summary: ReconcileSummary = {
     examined: inflight.length,
@@ -108,12 +156,17 @@ export async function reconcilePending(args: {
       } else if (nonce !== null && latest > nonce) {
         await store.transition(id, "failed", { txHash, error: "dropped/replaced (reconciled)" });
         summary.failed++;
-      } else if (nonce !== null && pending <= nonce && !(await reader.isKnown(txHash))) {
-        // The hash is recorded but the node has never heard of this tx AND its nonce slot is
-        // still free — so the broadcast was *rejected* (insufficient funds, underpriced, …),
-        // not merely unconfirmed. Nothing is on chain, so this is safe to re-drive. Without
-        // this branch such an intent would be pinned live forever: a rejection that blocks one
-        // send blocks them all, so no later tx would ever mine past the nonce to release it.
+      } else if (
+        nonce !== null &&
+        pending <= nonce &&
+        !(await couldBeInFlight(liveness, { txHash, updatedAt: intent.updatedAt }))
+      ) {
+        // The nonce slot is still free and the node has not heard of this tx for long enough that
+        // propagation cannot explain it — so the broadcast was *rejected* (insufficient funds,
+        // underpriced, …), not merely unconfirmed. Nothing is on chain, so this is safe to
+        // re-drive. Without this branch such an intent would be pinned live forever: a rejection
+        // that blocks one send blocks them all, so no later tx would ever mine past the nonce to
+        // release it.
         await store.transition(id, "failed", { txHash, error: "not accepted (reconciled)" });
         summary.failed++;
       } else {
