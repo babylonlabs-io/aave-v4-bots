@@ -25,10 +25,24 @@ abstract contract TestSuits {
         debtTokens: DEBT_TOKENS_TESTNET
     });
 
-    Types.TestParams internal LIQUIDATION_TEST0 = Types.TestParams({
-        tbvContracts: TBV_CONTRACTS_TESTNET,
-        liquidation: Types.Liquidation({
-            network: "sepolia", blockNumber: 11141103, borrower: address(0x4D1Ef18305EAe34Eaf3A7c227715A42813d667dA)
+    Types.TestParams[] internal LIQUIDATION_TESTS = [
+        Types.TestParams({
+            tbvContracts: TBV_CONTRACTS_TESTNET,
+            liquidation: Types.Liquidation({
+                network: "sepolia",
+                blockNumber: 11141103,
+                borrower: address(0x4D1Ef18305EAe34Eaf3A7c227715A42813d667dA),
+                hasFairnessPayment: false
+            })
+        }),
+        Types.TestParams({
+            tbvContracts: TBV_CONTRACTS_TESTNET,
+            liquidation: Types.Liquidation({
+                network: "sepolia",
+                blockNumber: 11130814,
+                borrower: address(0x0F586D04909546079FecddFB09d0Bb3d50871261),
+                hasFairnessPayment: true
+            })
         })
-    });
+    ];
 }

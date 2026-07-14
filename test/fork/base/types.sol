@@ -7,6 +7,7 @@ library Types {
         string network;
         uint256 blockNumber;
         address borrower;
+        bool hasFairnessPayment;
     }
 
     struct TBVContracts {

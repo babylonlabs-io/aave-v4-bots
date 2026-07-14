@@ -23,7 +23,7 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVHelper {
     address internal ADMIN = vm.addr(69420);
 
     function test_MORPHO_LIQUIDATION_TEST0() external {
-        Types.TestParams memory params = LIQUIDATION_TEST0;
+        Types.TestParams memory params = LIQUIDATION_TESTS[0];
         vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
 
         address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
@@ -54,14 +54,16 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVHelper {
             swapData: abi.encode()
         });
 
-        uint256 netWbtcBeforePayment; 
+        uint256 netWbtcBeforePayment;
         LiquidationTypes.VenueDebt[] memory venueDebts;
 
         {
             bytes[] memory datas = new bytes[](1);
             datas[0] = abi.encodeWithSelector(
                 router.liquidate.selector,
-                LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: type(uint256).max}),
+                LiquidationTypes.LiquidationData({
+                    borrower: params.liquidation.borrower, minWbtcProfit: type(uint256).max
+                }),
                 flashDatas,
                 new LiquidationTypes.SwapData[](0)
             );
@@ -69,15 +71,20 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVHelper {
             // Run the revert test to gain insight into the liquidation process and the expected WBTC profit before payment
             vm.prank(ADMIN);
             (, bytes[] memory results) = router.multicall(datas, false);
-            (netWbtcBeforePayment, venueDebts) = abi.decode(_eliminateSelector(results[0]), (uint256, LiquidationTypes.VenueDebt[]));
+            (netWbtcBeforePayment, venueDebts) =
+                abi.decode(_eliminateSelector(results[0]), (uint256, LiquidationTypes.VenueDebt[]));
         }
 
         uint256 quoteWbtc = 0;
-        for(uint256 i = 0; i < venueDebts.length; i++) {
+        for (uint256 i = 0; i < venueDebts.length; i++) {
             quoteWbtc += _quoteWbtcExactOut(poolKeys[i], wbtc, venueDebts[i].amount);
         }
 
-        vm.assertGt(netWbtcBeforePayment, quoteWbtc, "Expected net WBTC before payment to be greater than the sum of venue debts");
+        vm.assertGt(
+            netWbtcBeforePayment,
+            quoteWbtc,
+            "Expected net WBTC before payment to be greater than the sum of venue debts"
+        );
 
         LiquidationTypes.SwapData[] memory swapDatas = new LiquidationTypes.SwapData[](2);
         swapDatas[0] = _encodeSwapWbtcExactDebtOut(poolKeys[0], wbtc, venueDebts[0].amount);

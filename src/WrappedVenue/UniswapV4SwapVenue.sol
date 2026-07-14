@@ -26,7 +26,8 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
     bytes private constant EMPTY_BYTES = abi.encode();
 
     bytes32 private constant HEADER = keccak256("UniswapV4SwapDataHeader");
-    bytes32 private constant UNISWAP_V4_UNLOCKED_TK = keccak256("UniswapV4SwapVenue.unlocked");
+    bytes32 private constant UNISWAP_V4_PM_IS_UNLOCKED_TK =
+        0xc090fc4683624cfc3884e9d8de5eca132f2d0ec062aff75d43c0465d5ceeab23;
 
     address public immutable uniV4PoolManager;
     address public immutable venueManager;
@@ -44,8 +45,8 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
     }
 
     function setUp(bytes calldata forwardData) external onlyVenueManager {
-        require(!UNISWAP_V4_UNLOCKED_TK.loadBool(), "UniswapV4SwapVenue: Pool manager is already unlocked");
-        _expectCallback(uniV4PoolManager);
+        require(!isUnlocked(), "UniswapV4SwapVenue: Pool manager is already unlocked");
+        _expectCallback(UniswapV4SwapVenue.unlockCallback.selector, uniV4PoolManager);
         IUniswapV4PoolManager(uniV4PoolManager).unlock(forwardData);
         _requireCompleteCallback();
     }
@@ -53,11 +54,8 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
     /// @dev Context:
     /// - msg.sender is now the pool manager (uniswap v4)
     /// - swapData = [HEADER, data]
-    function unlockCallback(bytes calldata forwardData) external consumeCallback(msg.sender) returns (bytes memory) {
-        UNISWAP_V4_UNLOCKED_TK.storeBool(true);
-
+    function unlockCallback(bytes calldata forwardData) external consumeCallback returns (bytes memory) {
         ISwapVenueCallback(venueManager).onSetUpCallback(msg.sender, forwardData);
-        UNISWAP_V4_UNLOCKED_TK.storeBool(false);
         return abi.encode();
     }
 
@@ -66,7 +64,7 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
         onlyVenueManager
     {
         require(amountOut > 0, "UniswapV4SwapVenue: Amount out must be greater than zero");
-        require(UNISWAP_V4_UNLOCKED_TK.loadBool(), "UniswapV4SwapVenue: Pool manager is locked");
+        require(isUnlocked(), "UniswapV4SwapVenue: Pool manager is locked");
 
         PoolKey memory poolKey = abi.decode(swapData, (PoolKey));
 
@@ -97,12 +95,21 @@ contract UniswapV4SwapVenue is ISwapVenue, IUniswapV4UnlockCallback, ExpectCallb
         uint256 amountActual = SafeCast.toUint128(zeroForOne ? delta.amount1() : delta.amount0());
         IUniswapV4PoolManager(uniV4PoolManager).take(Currency.wrap(tokenOut), receiver, amountActual);
 
+        require(amountActual == amountOut, "UniswapV4SwapVenue: Amount out mismatch");
+
         (tokenIn, amountIn) = zeroForOne
             ? (Currency.unwrap(poolKey.currency0), SafeCast.toUint128(-delta.amount0()))
             : (Currency.unwrap(poolKey.currency1), SafeCast.toUint128(-delta.amount1()));
     }
 
-    function requireSetup() external pure returns (bool) {
-        return true;
+    function isUnlocked() public view returns (bool unlocked) {
+        bytes32 unlockedB32 = IUniswapV4PoolManager(uniV4PoolManager).exttload(UNISWAP_V4_PM_IS_UNLOCKED_TK);
+        assembly ("memory-safe") {
+            unlocked := unlockedB32
+        }
+    }
+
+    function requireSetup() external view returns (bool) {
+        return !isUnlocked();
     }
 }

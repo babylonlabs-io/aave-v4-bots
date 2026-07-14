@@ -35,8 +35,64 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
         vm.deal(ADMIN, 100 ether);
     }
 
+    function test_UNISWAPV4_LIQUIDATION_TESTALL() external {
+        for (uint256 i = 0; i < LIQUIDATION_TESTS.length; i++) {
+            Types.TestParams memory params = LIQUIDATION_TESTS[i];
+            vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
+
+            address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
+
+            deal(wbtc, MORPHO_BLUE, 2 ** 96);
+            _setUpUniswap(
+                params.tbvContracts.debtTokens,
+                _getWbtcPriceAgainstTokens(params.tbvContracts.aaveAdapter, params.tbvContracts.debtTokens),
+                wbtc
+            );
+
+            PoolKey[] memory poolKeys = _getPoolKeys();
+
+            (LiquidationRouter router, UniswapV4SwapVenue venue) =
+                _setUpRouter(params.tbvContracts.lens, params.tbvContracts.btcVaultSwap);
+
+            // Init liquidation calldata
+            LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](3);
+            flashDatas[0] = LiquidationTypes.FlashData({
+                venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
+                venueAddress: address(venue),
+                token: params.tbvContracts.debtTokens[0],
+                swapData: abi.encode(poolKeys[0])
+            });
+            flashDatas[1] = LiquidationTypes.FlashData({
+                venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
+                venueAddress: address(venue),
+                token: params.tbvContracts.debtTokens[1],
+                swapData: abi.encode(poolKeys[1])
+            });
+            flashDatas[2] = LiquidationTypes.FlashData({
+                venueType: LiquidationTypes.VenueType.Morpho,
+                venueAddress: MORPHO_BLUE,
+                token: wbtc,
+                swapData: abi.encode()
+            });
+
+            uint256 balanceWbtcBefore = IERC20(wbtc).balanceOf(params.liquidation.borrower);
+
+            vm.prank(ADMIN);
+            router.liquidate(
+                LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: 0}),
+                flashDatas,
+                new LiquidationTypes.SwapData[](0)
+            );
+
+            if (params.liquidation.hasFairnessPayment) {
+                uint256 balanceWbtcAfter = IERC20(wbtc).balanceOf(params.liquidation.borrower);
+                vm.assertGt(balanceWbtcAfter, balanceWbtcBefore, "Expected WBTC balance to increase after liquidation");
+            }
+        }
+    }
+
     function test_UNISWAPV4_LIQUIDATION_TEST0() external {
-        Types.TestParams memory params = LIQUIDATION_TEST0;
+        Types.TestParams memory params = LIQUIDATION_TESTS[0];
         vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
 
         address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());

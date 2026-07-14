@@ -121,7 +121,8 @@ contract LiquidationRouter is VenueManager {
 
     function _executeSingleFlashLoanPhase(Types.LiquidationIteration memory iteration) internal virtual {
         address token = iteration.flashDatas[iteration.i].token;
-        uint256 amount = _getReserveDebtAmount(iteration.reserveTokens, iteration.reserveDebtsToLiquidate, token);
+        uint256 amount = _getReserveDebtAmount(iteration.reserveTokens, iteration.reserveDebtsToLiquidate, token)
+            + (token == wbtc ? iteration.wbtcPayment : 0);
 
         if (amount == 0) {
             _iterateLiquidation(_toNextIteration(iteration));
@@ -209,11 +210,13 @@ contract LiquidationRouter is VenueManager {
         internal
     {
         for (uint256 i = 0; i < reserveTokens.length; i++) {
-            if (reservePayments[i] > 0) {
-                address token = reserveTokens[i];
-                uint256 amountPayment = reservePayments[i] + (token == wbtc ? wbtcPayment : 0);
-                IERC20(token).forceApprove(aaveAdapter, amountPayment);
+            address token = reserveTokens[i];
+            uint256 amountPayment = reservePayments[i] + (token == wbtc ? wbtcPayment : 0);
+
+            if (amountPayment == 0) {
+                continue;
             }
+            IERC20(token).forceApprove(aaveAdapter, amountPayment);
         }
     }
 

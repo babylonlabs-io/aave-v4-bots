@@ -45,27 +45,26 @@ abstract contract VenueManager is
 
     string private constant CONTRACT_NAME = "VenueManager";
     bytes32 private constant VENUE_DEBTS_LENGTH_TK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts.length"));
-    bytes32 private constant VENUE_ALREADY_SETUP_TK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueAlreadySetup"));
 
     function _setUpSwapVenue(address venueAddress, bytes memory forwardData) internal {
-        _expectCallback(venueAddress);
+        _expectCallback(VenueManager.onSetUpCallback.selector, venueAddress);
         ISwapVenue(venueAddress).setUp(VenueForwardDataLib.encodeStandard(forwardData));
         _requireCompleteCallback();
     }
 
     function _flashLoan(Types.FlashData memory flashData, uint256 amountOut, bytes memory forwardData) internal {
         if (flashData.venueType == Types.VenueType.Morpho) {
-            _expectCallback(flashData.venueAddress);
+            _expectCallback(VenueManager.onMorphoFlashLoan.selector, flashData.venueAddress);
             IMorpho(flashData.venueAddress)
                 .flashLoan(flashData.token, amountOut, VenueForwardDataLib.encodeMorpho(forwardData, flashData.token));
         } else if (flashData.venueType == Types.VenueType.AaveV3) {
-            _expectCallback(flashData.venueAddress);
+            _expectCallback(VenueManager.executeOperation.selector, flashData.venueAddress);
             IAaveV3Pool(flashData.venueAddress)
                 .flashLoanSimple(
                     address(this), flashData.token, amountOut, VenueForwardDataLib.encodeStandard(forwardData), 0
                 );
         } else if (flashData.venueType == Types.VenueType.UniswapV4FlashSwap) {
-            _expectCallback(flashData.venueAddress);
+            _expectCallback(VenueManager.onSwapVenueFlashSwap.selector, flashData.venueAddress);
             ISwapVenue(flashData.venueAddress)
                 .flashSwap(
                     flashData.token, amountOut, flashData.swapData, VenueForwardDataLib.encodeStandard(forwardData)
@@ -78,7 +77,7 @@ abstract contract VenueManager is
 
     // ---------------------- CALLBACKS ----------------------
 
-    function onSetUpCallback(address, bytes calldata venueData) external consumeCallback(msg.sender) {
+    function onSetUpCallback(address, bytes calldata venueData) external consumeCallback {
         _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
     }
 
@@ -86,7 +85,7 @@ abstract contract VenueManager is
     /// @dev The callback is called only if data is not empty.
     /// @param assets The amount of assets that was flash loaned.
     /// @param venueData Arbitrary data passed to the `flashLoan` function.
-    function onMorphoFlashLoan(uint256 assets, bytes calldata venueData) external consumeCallback(msg.sender) {
+    function onMorphoFlashLoan(uint256 assets, bytes calldata venueData) external consumeCallback {
         (bytes memory forwardData, address token) = VenueForwardDataLib.decodeMorpho(venueData);
         _addVenueDebt(msg.sender, token, assets);
         _resumeAfterCallback(forwardData);
@@ -110,8 +109,8 @@ abstract contract VenueManager is
         uint256 premium,
         address initiator,
         bytes calldata venueData
-    ) external consumeCallback(msg.sender) returns (bool) {
-        initiator;
+    ) external consumeCallback returns (bool) {
+        require(initiator == address(this), "VenueManager: Invalid initiator");
         _addVenueDebt(msg.sender, asset, amount + premium);
         _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
         IERC20(asset).safeIncreaseAllowance(msg.sender, amount + premium);
@@ -125,7 +124,7 @@ abstract contract VenueManager is
     /// @param venueData Arbitrary data passed to the `flashLoan` function.
     function onSwapVenueFlashSwap(address paymentToken, uint256 amount, bytes calldata venueData)
         external
-        consumeCallback(msg.sender)
+        consumeCallback
     {
         _addVenueDebt(msg.sender, paymentToken, amount);
         _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
@@ -178,13 +177,7 @@ abstract contract VenueManager is
 
     // ---------------------- INTERNAL FUNCTIONS ----------------------
 
-    function _venueRequiresSetup(Types.VenueType venueType, address venueAddress) internal returns (bool) {
-        bytes32 alreadySetupTK = keccak256(abi.encodePacked(VENUE_ALREADY_SETUP_TK, "[", venueAddress, "]"));
-        if (alreadySetupTK.loadBool()) {
-            return false;
-        }
-        alreadySetupTK.storeBool(true);
-
+    function _venueRequiresSetup(Types.VenueType venueType, address venueAddress) internal view returns (bool) {
         return (venueType == Types.VenueType.UniswapV4FlashSwap || venueType == Types.VenueType.UniswapV4FlashLoan)
             && ISwapVenue(venueAddress).requireSetup();
     }

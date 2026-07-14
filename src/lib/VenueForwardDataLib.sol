@@ -2,6 +2,10 @@
 
 pragma solidity 0.8.28;
 
+/// @dev    VenueForwardDataLib is a library that provides functions for encoding and decoding venue forward data.
+///         The library defines a constant HEADER that is used to identify the venue data.
+///
+///         All data passed into VenueManager will be encoded with a header to differentiate layers of encoding.
 library VenueForwardDataLib {
     bytes32 internal constant HEADER = keccak256("VenueDataHeader");
 
