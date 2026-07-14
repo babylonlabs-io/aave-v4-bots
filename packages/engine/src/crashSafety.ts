@@ -42,8 +42,8 @@ export interface CrashSafety {
   reconcile(action: string): Promise<void>;
 
   /**
-   * Re-seed the shared nonce lease from the chain's `pending` count (reclaims a not-broadcast
-   * nonce; advances if the chain moved ahead). No-op without an allocator.
+   * Re-seed the shared nonce lease (reclaims a not-broadcast nonce; advances if the chain moved
+   * ahead), **fenced against transactions we know to be live**. No-op without an allocator.
    */
   resyncNonces(): Promise<void>;
 
@@ -85,6 +85,46 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
   const { store, nonces, publicClient, signer, logger } = config;
   const reader = createChainReader(publicClient);
 
+  /**
+   * The lowest nonce `resync` may re-seed the lease to: one past the highest nonce held by a tx the
+   * node has actually seen. `0` when no such tx exists.
+   *
+   * `resync` sets the lease from the chain's `pending` count, and may move it *down* — that is how a
+   * nonce reserved but never broadcast gets reclaimed rather than left as a permanent gap. This
+   * floor bounds the pull-down: the lease may drop onto a nonce no live tx occupies, never onto one
+   * that a live tx holds (signing over it would replace a liquidation already on the wire). The
+   * bound is needed because `pending` is only as truthful as the provider — a node that does not
+   * surface its mempool reports N while our tx sits at N. `reconcile`'s `isKnown` branch guards
+   * against the same providers.
+   *
+   * `isKnown` is what draws the line: senders record nonce **and** hash *before* broadcasting
+   * (`TxSender`), so a recorded hash proves only that we signed. Asking the node separates the tx it
+   * is holding (fence it) from one we signed and never sent (reclaim it).
+   *
+   * Spans **all** actions, not just the caller's: the arbitrageur's two engines share one signer,
+   * hence one nonce sequence.
+   */
+  async function liveNonceFloor(): Promise<number> {
+    if (!store) return 0;
+
+    const live = await store.reconcile(); // every action — one signer, one nonce sequence
+    const candidates = live.filter(
+      (intent): intent is typeof intent & { nonce: number; txHash: Hex } =>
+        intent.nonce !== null && intent.txHash !== null
+    );
+    // An intent with a nonce but no hash needs no fence: reconcile only leaves it live when
+    // `pending > nonce`, so the chain's own count already sits above it.
+    if (candidates.length === 0) return 0;
+
+    // A probe failure propagates (as everywhere else in this layer): reading "unknown" from an RPC
+    // blip would drop the fence and let the rewind through.
+    const known = await Promise.all(candidates.map((intent) => reader.isKnown(intent.txHash)));
+    return candidates.reduce(
+      (floor, intent, i) => (known[i] ? Math.max(floor, intent.nonce + 1) : floor),
+      0
+    );
+  }
+
   return {
     allocated: nonces !== undefined,
 
@@ -94,7 +134,16 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
     },
 
     resyncNonces() {
-      return nonces ? nonces.resync(() => nextNonce(publicClient, signer)) : Promise.resolve();
+      if (!nonces) return Promise.resolve();
+      // Runs inside the allocator's lock, so nothing can reserve a nonce between these reads and
+      // the SET they produce.
+      return nonces.resync(async () => {
+        const [chainPending, floor] = await Promise.all([
+          nextNonce(publicClient, signer),
+          liveNonceFloor(),
+        ]);
+        return Math.max(chainPending, floor);
+      });
     },
 
     send(send) {

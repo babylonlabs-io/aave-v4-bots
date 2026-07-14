@@ -23,8 +23,8 @@ export interface ChainReader {
   getNonce(address: Address, tag: "latest" | "pending"): Promise<number>;
   /**
    * Does the node know this tx at all (mempool **or** mined)? Senders record the hash before
-   * broadcasting, so a hash alone no longer proves the tx was accepted — this distinguishes
-   * "in flight" from "signed, but the node rejected the broadcast (e.g. insufficient funds)".
+   * broadcasting, so a recorded hash proves only that we signed — this distinguishes "in flight"
+   * from "signed, but the node rejected the broadcast (e.g. insufficient funds)".
    */
   isKnown(hash: Hex): Promise<boolean>;
 }
