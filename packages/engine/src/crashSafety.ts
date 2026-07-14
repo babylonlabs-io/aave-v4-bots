@@ -64,13 +64,15 @@ export interface CrashSafety {
   claim(slot: RiskSlot, input: IntentInput): Promise<{ claimed: boolean; intentId?: string }>;
 
   /**
-   * Persist the reserved `nonce` on an intent **before** its broadcast, so a crash or ambiguous
-   * send leaves an intent that reconcile can resolve by nonce.
+   * Persist the reserved `nonce` — and, when the tx was signed locally, its `txHash` — on an
+   * intent **before** its broadcast, so a crash or ambiguous send leaves an intent that
+   * reconcile can resolve. With a hash it resolves by receipt lookup (exact); without one it
+   * can only infer from the nonce, which is why senders sign first (see `TxSender`).
    *
    * Unlike `transition`, this deliberately **propagates** a failure: if we cannot record the
    * nonce we must not broadcast against it. No-op without a store.
    */
-  markPending(id: string, nonce: number): Promise<void>;
+  markPending(id: string, nonce: number, txHash?: Hex): Promise<void>;
 
   /**
    * Intent transition that must not throw — a bookkeeping failure is logged, never propagated
@@ -111,9 +113,9 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
       return { claimed: true, intentId: record.id };
     },
 
-    async markPending(id, nonce) {
+    async markPending(id, nonce, txHash) {
       if (!store) return;
-      await store.transition(id, "pending", { nonce });
+      await store.transition(id, "pending", { nonce, ...(txHash ? { txHash } : {}) });
     },
 
     async transition(id, to, meta) {

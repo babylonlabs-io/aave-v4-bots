@@ -42,17 +42,24 @@ function fakeSlot(): RiskSlot & { settled: unknown[] } {
   return { allowed: true, reason: "", settle: (o) => settled.push(o), settled };
 }
 
-/** A `ChainReader` with scripted receipts and nonce counts. */
+/**
+ * A `ChainReader` with scripted receipts and nonce counts. `known` defaults to `true` — a
+ * recorded hash the node still knows about, i.e. a tx that really was broadcast.
+ */
 const reader = (over: {
   receipts?: Record<string, "success" | "reverted" | null>;
   latest?: number;
   pending?: number;
+  known?: boolean;
 }): ChainReader => ({
   async getReceiptStatus(hash) {
     return over.receipts?.[hash] ?? null;
   },
   async getNonce(_address, tag) {
     return (tag === "latest" ? over.latest : over.pending) ?? 0;
+  },
+  async isKnown() {
+    return over.known ?? true;
   },
 });
 
@@ -197,6 +204,9 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
             throw new Error("ECONNREFUSED");
           },
           getNonce: async () => 9, // chain has moved past nonce 5
+          isKnown: async () => {
+            throw new Error("ECONNREFUSED");
+          },
         };
 
         await expect(reconcilePending({ store, signer: SIGNER, reader: outage })).rejects.toThrow(

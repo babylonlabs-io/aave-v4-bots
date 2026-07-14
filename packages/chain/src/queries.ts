@@ -2,6 +2,7 @@ import {
   type Address,
   type Hex,
   type PublicClient,
+  TransactionNotFoundError,
   TransactionReceiptNotFoundError,
   keccak256,
 } from "viem";
@@ -51,6 +52,25 @@ export async function getReceiptStatus(
   } catch (error) {
     if (error instanceof TransactionReceiptNotFoundError) return null; // not mined yet
     throw error; // transport / RPC failure — the caller must not treat this as "not mined"
+  }
+}
+
+/**
+ * Does the node know this tx at all — mempool **or** mined? Senders sign locally and record the
+ * hash *before* broadcasting, so a recorded hash no longer proves the tx was accepted; this is
+ * what separates "in flight" from "signed, but the node rejected the broadcast".
+ *
+ * Same discipline as `getReceiptStatus`: only a genuine `TransactionNotFoundError` is `false`.
+ * Reporting an RPC failure as `false` would let `reconcilePending` conclude the broadcast was
+ * rejected and re-drive a subject whose tx is in fact in flight.
+ */
+export async function isTxKnown(publicClient: PublicClient, hash: Hex): Promise<boolean> {
+  try {
+    await publicClient.getTransaction({ hash });
+    return true;
+  } catch (error) {
+    if (error instanceof TransactionNotFoundError) return false;
+    throw error; // transport / RPC failure — the caller must not treat this as "unknown tx"
   }
 }
 

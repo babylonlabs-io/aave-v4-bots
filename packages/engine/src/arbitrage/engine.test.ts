@@ -27,14 +27,38 @@ const mockVault: EscrowedVault = {
   createdAt: "2024-01-01T00:00:00Z",
 };
 
+/**
+ * A `TxSender` that skips real signing but honors the contract that matters: `onSigned` (the
+ * durable nonce + hash record) runs BEFORE the broadcast resolves, so crash-safety tests
+ * exercise the same ordering as the real sender.
+ */
+function mockSender() {
+  return {
+    send: vi.fn(
+      async (
+        call: { nonce?: number },
+        onSigned?: (tx: {
+          hash: `0x${string}`;
+          nonce: number;
+          serialized: `0x${string}`;
+        }) => Promise<void>
+      ) => {
+        await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+        return "0xtxhash" as `0x${string}`;
+      }
+    ),
+  };
+}
+
 function createMockClients() {
   return {
+    sender: mockSender(),
     walletClient: {
       account: { address: "0xarbitrageur" },
       // A real `WalletClient<Transport, Chain, Account>` always has a chain; the engine reads
       // `chain.id` for the intent's idempotency key.
       chain: { id: 31337 },
-      writeContract: vi.fn().mockResolvedValue("0xtxhash"),
+      writeContract: vi.fn().mockResolvedValue("0xtxhash"), // approvals only
     },
     publicClient: {
       readContract: vi
@@ -76,6 +100,7 @@ function createBot(
   return new ArbitrageEngine({
     walletClient: clients.walletClient as unknown as ArbitrageEngineConfig["walletClient"],
     publicClient: clients.publicClient as unknown as ArbitrageEngineConfig["publicClient"],
+    sender: clients.sender as unknown as ArbitrageEngineConfig["sender"],
     vaultSwapAddress: "0xvaultswap",
     wbtcAddress: "0xwbtc",
     ponderUrl: "http://localhost:42070",
@@ -109,12 +134,13 @@ describe("ArbitrageEngine", () => {
 
       expect(result).toBe("acquired");
       expect(clients.publicClient.estimateContractGas).toHaveBeenCalledOnce();
-      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledOnce();
+      expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           functionName: "swapWbtcForVault",
           args: [mockVault.vaultId, 50500000n], // 0.5 WBTC debt + 1% slippage
-        })
+        }),
+        expect.any(Function)
       );
       expect(clients.publicClient.waitForTransactionReceipt).toHaveBeenCalledWith({
         hash: "0xtxhash",
@@ -129,7 +155,7 @@ describe("ArbitrageEngine", () => {
       const result = await bot.acquireVault(mockVault);
 
       expect(result).toBe("skipped");
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("skips vault when not profitable for arbitrageur", async () => {
@@ -162,7 +188,7 @@ describe("ArbitrageEngine", () => {
 
       expect(result).toBe("skipped");
       expect(clients.publicClient.estimateContractGas).not.toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("handles contract revert after tx sent", async () => {
@@ -176,7 +202,7 @@ describe("ArbitrageEngine", () => {
       const result = await bot.acquireVault(mockVault);
 
       expect(result).toBe("skipped");
-      expect(clients.walletClient.writeContract).toHaveBeenCalled();
+      expect(clients.sender.send).toHaveBeenCalled();
     });
 
     it("handles tx timeout gracefully (returns false, continues)", async () => {
@@ -219,8 +245,9 @@ describe("ArbitrageEngine", () => {
 
       await bot.acquireVault(mockVault);
 
-      // Should have 2 writeContract calls: approve + swap
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+      // Approval still goes through writeContract; the swap goes through the TxSender.
+      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(clients.sender.send).toHaveBeenCalledOnce();
     });
 
     it("approves when allowance covers debt but not slippage-adjusted maxWbtcIn", async () => {
@@ -252,7 +279,8 @@ describe("ArbitrageEngine", () => {
       await bot.acquireVault(mockVault);
 
       // Should still approve because swap uses maxWbtcIn, not currentDebt
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(clients.sender.send).toHaveBeenCalledOnce();
     });
 
     it("uses debt as maxWbtcIn when slippage floor division rounds to zero", async () => {
@@ -266,11 +294,12 @@ describe("ArbitrageEngine", () => {
       const result = await bot.acquireVault(tinyVault);
 
       expect(result).toBe("acquired");
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           functionName: "swapWbtcForVault",
           args: [tinyVault.vaultId, 1n],
-        })
+        }),
+        expect.any(Function)
       );
     });
   });
@@ -287,7 +316,7 @@ describe("ArbitrageEngine", () => {
 
       await bot.run();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalled();
+      expect(clients.sender.send).toHaveBeenCalled();
     });
 
     it("handles empty vault list gracefully", async () => {
@@ -301,7 +330,7 @@ describe("ArbitrageEngine", () => {
 
       await bot.run();
 
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("continues operation when API fails (returns empty, no crash)", async () => {
@@ -312,7 +341,7 @@ describe("ArbitrageEngine", () => {
 
       // Should not throw
       await expect(bot.run()).resolves.not.toThrow();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("handles malformed API response", async () => {
@@ -326,7 +355,7 @@ describe("ArbitrageEngine", () => {
 
       // Should not throw and should not attempt any swaps
       await expect(bot.run()).resolves.not.toThrow();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
   });
 
@@ -345,7 +374,7 @@ describe("ArbitrageEngine", () => {
       await bot.run();
 
       // 2 vaults = 2 swap transactions (no approval needed, high allowance)
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
     });
 
     it("continues to next vault when one fails", async () => {
@@ -367,7 +396,7 @@ describe("ArbitrageEngine", () => {
       await bot.run();
 
       // Only 1 tx sent (second vault)
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -381,7 +410,7 @@ describe("ArbitrageEngine", () => {
       const result = await bot.acquireVault(mockVault);
 
       expect(result).toBe("skipped");
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("trips the breaker after a reverted acquisition", async () => {
@@ -410,7 +439,7 @@ describe("ArbitrageEngine", () => {
       const result = await bot.acquireVault(mockVault);
 
       expect(result).toBe("skipped");
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
       expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
     });
 
@@ -420,7 +449,7 @@ describe("ArbitrageEngine", () => {
       const bot = createBot(clients, { risk });
 
       expect(await bot.acquireVault(mockVault)).toBe("acquired");
-      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(clients.sender.send).toHaveBeenCalledOnce();
     });
 
     // Regression: the floor must bound the worst case the tx authorizes. `swapWbtcForVault`
@@ -434,7 +463,7 @@ describe("ArbitrageEngine", () => {
       const bot = createBot(clients, { risk });
 
       expect(await bot.acquireVault(mockVault)).toBe("skipped");
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
       expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
     });
 
@@ -447,7 +476,7 @@ describe("ArbitrageEngine", () => {
       const result = await bot.acquireVault(mockVault, NOW - 120_000); // 2 min old
 
       expect(result).toBe("skipped");
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
       expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
     });
 
@@ -478,8 +507,9 @@ describe("ArbitrageEngine", () => {
       const ok = await bot.acquireVault(mockVault);
 
       expect(ok).toBe("acquired");
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
-        expect.objectContaining({ functionName: "swapWbtcForVault", nonce: 5 })
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({ functionName: "swapWbtcForVault", nonce: 5 }),
+        expect.any(Function)
       );
       const intent = store.all()[0];
       expect(intent?.status).toBe("confirmed");
@@ -501,7 +531,7 @@ describe("ArbitrageEngine", () => {
       const ok = await bot.acquireVault(mockVault);
 
       expect(ok).toBe("skipped");
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
       expect(metrics.recordError).toHaveBeenCalledWith("intent_in_flight");
     });
 
@@ -509,7 +539,20 @@ describe("ArbitrageEngine", () => {
       const store = createMemoryStateStore();
       const { bot, clients, nonces } = storeBot(store);
       await nonces.resync(() => Promise.resolve(5));
-      clients.walletClient.writeContract = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+      clients.sender.send = vi.fn(
+        async (
+          call: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          // Ambiguous send: signed + durably recorded, then the broadcast blows up.
+          await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new Error("rpc timeout");
+        }
+      );
 
       const ok = await bot.acquireVault(mockVault);
 
@@ -517,6 +560,9 @@ describe("ArbitrageEngine", () => {
       const intent = store.all()[0];
       expect(intent?.status).toBe("submitted"); // live, not "failed"
       expect(intent?.nonce).toBe(5); // reserved nonce persisted for reconcile
+      // The hash was signed and recorded before the broadcast, so reconcile can resolve this
+      // ambiguous send by receipt lookup instead of guessing from the nonce.
+      expect(intent?.txHash).toBe("0xtxhash");
     });
 
     it("run() stops the cycle after a send error (does not process later vaults)", async () => {
@@ -527,7 +573,7 @@ describe("ArbitrageEngine", () => {
         .fn()
         .mockResolvedValue(5);
       // The first swap throws (ambiguous); the loop must break, not try the second vault.
-      clients.walletClient.writeContract = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+      clients.sender.send = vi.fn().mockRejectedValue(new Error("rpc timeout"));
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         json: () =>
@@ -538,7 +584,7 @@ describe("ArbitrageEngine", () => {
 
       await bot.run();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
     });
   });
 });

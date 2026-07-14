@@ -3,4 +3,4 @@
 
 export { type RetryConfig, withRetry, fetchWithRetry } from "./retry";
 export { type RpcCallObserver, instrumentedHttp } from "./instrumentedTransport";
-export { getNonce, getReceiptStatus, readCodeHash } from "./queries";
+export { getNonce, getReceiptStatus, isTxKnown, readCodeHash } from "./queries";

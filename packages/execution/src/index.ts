@@ -1,5 +1,16 @@
 import { createLogger } from "@repo/logger";
-import type { Address, Hex, PublicClient } from "viem";
+import {
+  type Abi,
+  type Account,
+  type Address,
+  type Chain,
+  type Hex,
+  type PublicClient,
+  type Transport,
+  type WalletClient,
+  encodeFunctionData,
+  keccak256,
+} from "viem";
 
 const logger = createLogger();
 
@@ -106,6 +117,100 @@ export function createNonceAllocator(lease: NonceLease, signer: Address): NonceA
         const chainPendingNonce = await readChainNonce();
         await lease.set(signer, chainPendingNonce);
       });
+    },
+  };
+}
+
+// ── Durable-hash sending (sign → record → broadcast) ──────────────────────────────────
+//
+// `writeContract` assembles, signs and broadcasts in one step, so the tx hash only exists
+// *after* the tx is already on the wire. That leaves an unclosable window: if the caller
+// crashes (or its store write fails) between broadcast and recording the hash, a live tx
+// exists that no record points at — and reconcile, seeing a mined nonce with no hash, has to
+// guess. Splitting the step lets the hash be recorded while the tx is still purely local:
+//
+//   prepare → sign (hash exists here, nothing broadcast) → `onSigned` (durable) → broadcast
+//
+// So the two failure points are now both safe. If `onSigned` throws, nothing was broadcast and
+// the reserved nonce is free (the next `resync` reclaims it). If the *broadcast* is ambiguous,
+// the hash is already durable, so reconcile resolves the intent by receipt lookup instead of
+// inferring from the nonce. This is the `Submitter` seam in `@repo/signer` wired onto the hot
+// path; `submit` defaults to the public mempool.
+
+/** A contract call to sign — the engine-facing description of a tx. */
+export interface ContractCall {
+  address: Address;
+  abi: Abi;
+  functionName: string;
+  args: readonly unknown[];
+  /** Reserved nonce; omitted ⇒ viem fills it from the chain's `pending` count. */
+  nonce?: number;
+}
+
+/** A locally-signed tx: its hash is known before anything is broadcast. */
+export interface SignedTx {
+  hash: Hex;
+  /** The nonce actually signed over (the reserved one, or the chain-filled one). */
+  nonce: number;
+  serialized: Hex;
+}
+
+export interface TxSender {
+  /**
+   * Sign `call` locally, hand the resulting `SignedTx` to `onSigned` (the durable
+   * pre-broadcast record), then broadcast. A throwing `onSigned` aborts the send — nothing
+   * reaches the chain — so the caller may treat it as a plain send failure.
+   */
+  send(call: ContractCall, onSigned?: (tx: SignedTx) => Promise<void>): Promise<Hex>;
+}
+
+/**
+ * Sign `call` without broadcasting it. The hash is derived from the signed payload (keccak256
+ * of the serialized tx) — the same hash the node will report — so it is durable-recordable
+ * before the tx exists on chain.
+ */
+export async function signContractCall(
+  walletClient: WalletClient<Transport, Chain, Account>,
+  call: ContractCall
+): Promise<SignedTx> {
+  const request = await walletClient.prepareTransactionRequest({
+    to: call.address,
+    data: encodeFunctionData({
+      abi: call.abi,
+      functionName: call.functionName,
+      args: call.args,
+    } as Parameters<typeof encodeFunctionData>[0]),
+    ...(call.nonce !== undefined ? { nonce: call.nonce } : {}),
+    account: walletClient.account,
+    chain: walletClient.chain,
+  });
+  const serialized = await walletClient.signTransaction(
+    request as Parameters<typeof walletClient.signTransaction>[0]
+  );
+  return { hash: keccak256(serialized), nonce: request.nonce, serialized };
+}
+
+/**
+ * The default `TxSender`: local signing + public-mempool broadcast. `submit` overrides where
+ * the signed tx goes (e.g. a private relay — `@repo/signer`'s `Submitter.send` fits as-is).
+ */
+export function createTxSender(
+  publicClient: PublicClient,
+  walletClient: WalletClient<Transport, Chain, Account>,
+  submit?: (serializedTransaction: Hex) => Promise<Hex>
+): TxSender {
+  const broadcast =
+    submit ??
+    ((serializedTransaction: Hex) => publicClient.sendRawTransaction({ serializedTransaction }));
+  return {
+    async send(call, onSigned) {
+      const signed = await signContractCall(walletClient, call);
+      // Durable BEFORE the tx can exist on chain. A throw here means nothing was broadcast.
+      await onSigned?.(signed);
+      await broadcast(signed.serialized);
+      // Prefer the locally-derived hash: it is what `onSigned` persisted, and it is what the
+      // node returns anyway (same signed bytes).
+      return signed.hash;
     },
   };
 }
