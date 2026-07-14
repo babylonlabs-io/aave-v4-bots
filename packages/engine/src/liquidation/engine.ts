@@ -18,6 +18,7 @@ import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@re
 import {
   type ContractCall,
   type NonceAllocator,
+  PreBroadcastError,
   type TxSender,
   createTxSender,
   nextNonce,
@@ -420,8 +421,10 @@ export class LiquidationEngine {
           this.metrics.recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           this.logger.error(`Failed to send liquidation for ${position.borrower}: ${errorMsg}`);
-          // A broadcast was attempted and failed — real failure signal for the breaker.
-          slot.settle({ ok: false });
+          // Only a failed *broadcast* is a real failure signal for the breaker. A failure to
+          // prepare, sign, or durably record never reached the chain — settle it as abandoned,
+          // or an RPC/database blip would trip the breaker as if the chain were rejecting us.
+          slot.settle({ ok: false, abandoned: error instanceof PreBroadcastError });
           // Ambiguous — keep the intent LIVE (not terminal); next-cycle reconcile decides.
           if (intentId) {
             await this.crash.transition(intentId, "submitted", {

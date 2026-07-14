@@ -1,4 +1,4 @@
-import { createNonceAllocator, createNonceLease } from "@repo/execution";
+import { PreBroadcastError, createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
@@ -234,6 +234,39 @@ describe("LiquidationEngine", () => {
       clients.publicClient.simulateContract.mockClear();
       await bot.run(); // now HALTED → short-circuits before simulate
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+    });
+
+    // The breaker exists to stop us when THE CHAIN is rejecting our txs. A failure to prepare,
+    // sign, or durably record never reaches the chain, so it must settle as `abandoned` and
+    // leave the breaker alone — otherwise a database or RPC blip halts a healthy bot.
+    it("does NOT trip the breaker when the send fails before broadcasting", async () => {
+      const clients = createMockClients();
+      clients.sender.send = vi
+        .fn()
+        .mockRejectedValue(new PreBroadcastError(new Error("store unavailable")));
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run();
+
+      expect(clients.sender.send).toHaveBeenCalled(); // we really did attempt the send
+      expect(risk.state()).not.toBe("HALTED");
+      expect(risk.inFlight()).toBe(0); // and the exposure slot was still released
+    });
+
+    // The counterpart: an ambiguous *broadcast* failure may be on chain, so it IS a real
+    // failure signal and must feed the breaker.
+    it("trips the breaker when the broadcast itself fails (ambiguous)", async () => {
+      const clients = createMockClients();
+      clients.sender.send = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run();
+
+      expect(risk.state()).toBe("HALTED");
     });
 
     const NOW = 1_000_000_000;

@@ -22,6 +22,7 @@ import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
 import {
   type NonceAllocator,
+  PreBroadcastError,
   type TxSender,
   createTxSender,
   waitForReceiptWithTimeout,
@@ -343,7 +344,11 @@ export class ArbitrageEngine {
         const errorMsg = sendError instanceof Error ? sendError.message : String(sendError);
         this.logger.error(`Failed to send swap for vault ${vaultId}: ${errorMsg}`);
         this.metrics.recordError("swap_send_error");
-        slot.settle({ ok: false }); // a broadcast was attempted and failed
+        // A failure to prepare, sign, or durably record never reached the chain, so it is not
+        // evidence the chain is rejecting us — settle it as abandoned, or an RPC/database blip
+        // would trip the consecutive-failure breaker. Only an actual broadcast attempt counts.
+        const nothingBroadcast = sendError instanceof PreBroadcastError;
+        slot.settle({ ok: false, abandoned: nothingBroadcast });
         // Ambiguous — keep the intent live. The signed hash is already durable (unless the
         // failure *was* that record, in which case nothing was broadcast), so next-cycle
         // reconcile resolves it by receipt lookup rather than inferring from the nonce.
