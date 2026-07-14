@@ -1,7 +1,9 @@
 import {
+  type NotifierSettings,
   type RiskSettings,
   addressListSchema,
   addressSchema,
+  buildNotifierConfig,
   buildPersistenceConfig,
   buildRiskConfig,
   buildSecretsConfig,
@@ -43,6 +45,10 @@ export interface Config extends LiquidationEngineParams, RiskSettings {
   // Crash-safety persistence. Present iff DATABASE_URL is set — otherwise the bot runs
   // without a StateStore (in-memory nonce sequencing, no idempotency), unchanged.
   persistence?: PersistenceConfig;
+
+  // Outbound alerts (risk halts today; MANUAL proposals under #9b). The Slack webhook is resolved
+  // from a secret ref at boot (index.ts); `none` (default) logs only.
+  notifier: NotifierSettings;
 }
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -101,6 +107,7 @@ export function loadConfig(): Config {
     txReceiptTimeoutMs: Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10),
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),
+    notifier: buildNotifierConfig(env),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,

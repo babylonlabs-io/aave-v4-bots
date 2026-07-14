@@ -9,6 +9,7 @@ import { type Chain, createPublicClient, createWalletClient } from "viem";
 import { instrumentedHttp, readCodeHash } from "@repo/chain";
 import { createNonceAllocator, createNonceLease, nextNonce } from "@repo/execution";
 import { createLogger } from "@repo/logger";
+import { buildNotifier, riskEventSink } from "@repo/notifications";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { type StateStore, createStateStore } from "@repo/persistence";
 import { startRiskRuntime } from "@repo/risk";
@@ -70,10 +71,16 @@ async function createBot(config: Config) {
   // `run()`), so it needs no persisted state. One per signer.
   const nonces = createNonceAllocator(createNonceLease(), signer.address);
 
+  // Outbound alerts. The Slack webhook is a credential, resolved from its secret ref like the
+  // signing key; `none` (default) logs only. Delivery is best-effort inside `createNotifier`, so a
+  // dropped alert never breaks a poll cycle.
+  const notifier = await buildNotifier(config.notifier, logger, (ref) => secrets.get(ref));
+
   // Exactly ONE risk gate per process, injected into every engine — a kill-switch or tripped
   // breaker must halt everything this process drives. Also verifies the pinned adapter/lens
   // bytecode before any tx goes out, and — when a control token is configured — starts the
-  // authenticated kill-switch server on its own loopback socket.
+  // authenticated kill-switch server on its own loopback socket. Its state changes route to the
+  // notifier.
   const { gate: risk } = await startRiskRuntime({
     config: config.risk,
     codeCheckIntervalMs: config.codeCheckIntervalMs,
@@ -82,6 +89,7 @@ async function createBot(config: Config) {
     controlHost: config.controlHost,
     read: (address) => readCodeHash(publicClient, address),
     getSecret: (ref) => secrets.get(ref),
+    onEvent: riskEventSink(notifier),
     logger,
   });
 

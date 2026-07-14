@@ -9,6 +9,8 @@ export type {
   CodeHashReader,
   RiskAction,
   RiskConfig,
+  RiskEvent,
+  RiskEventSink,
   RiskGate,
   RiskSlot,
   RiskState,

@@ -110,4 +110,19 @@ export interface RiskConfig {
   startHalted?: boolean;
   /** Clock, injectable for tests. Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Called when the gate changes state — a kill-switch halt, a tripped breaker, a code-hash
+   * mismatch, or a resume. Services point this at a `Notifier`.
+   *
+   * A plain callback, not a notifier, so `@repo/risk` keeps depending on nothing (the same reason
+   * `verifyCode` takes a `CodeHashReader` function rather than importing `@repo/chain`). It is
+   * invoked synchronously and its failures are swallowed: alerting is advisory, and an alerting
+   * bug must never be able to stop the kill-switch from halting.
+   */
+  onEvent?: RiskEventSink;
 }
+
+/** A change in the gate's trading state, worth telling an operator about. */
+export type RiskEvent = { kind: "halted"; reason: string } | { kind: "resumed" };
+
+export type RiskEventSink = (event: RiskEvent) => void;

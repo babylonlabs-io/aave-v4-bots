@@ -1,7 +1,9 @@
 import {
+  type NotifierSettings,
   type RiskSettings,
   addressListSchema,
   addressSchema,
+  buildNotifierConfig,
   buildPersistenceConfig,
   buildRiskConfig,
   buildSecretsConfig,
@@ -104,6 +106,10 @@ export interface Config extends ArbitrageEngineParams, RiskSettings {
   // Crash-safety persistence for the liquidation engine. Present iff DATABASE_URL is set.
   persistence?: PersistenceConfig;
 
+  // Outbound alerts (risk halts today; MANUAL proposals under #9b). Slack webhook resolved from a
+  // secret ref at boot (index.ts); `none` (default) logs only.
+  notifier: NotifierSettings;
+
   // Present iff the arbitrageur also runs the LiquidationEngine (opt-in via env).
   liquidation?: LiquidationRunConfig;
 }
@@ -163,6 +169,7 @@ export function loadConfig(): Config {
     txReceiptTimeoutMs,
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),
+    notifier: buildNotifierConfig(env),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,

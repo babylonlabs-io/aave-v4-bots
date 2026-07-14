@@ -30,6 +30,15 @@ export const runtimeEnvFields = {
   DATABASE_URL: z.string().min(1).optional(),
   /** Isolates the bot's tables from the indexer's. */
   PERSISTENCE_SCHEMA: z.string().min(1).optional(),
+
+  /** Outbound alerts. `none` (default) logs only; `slack` also posts to a webhook. */
+  NOTIFIER: z.enum(["none", "slack"]).optional().default("none"),
+  /**
+   * Secret *reference* for the Slack webhook URL — an env-var name or an AWS secret id, never the
+   * URL itself. Resolved through `@repo/secrets` at boot, like `SIGNER_KEY_REF`. Required when
+   * `NOTIFIER=slack`.
+   */
+  SLACK_WEBHOOK_REF: z.string().min(1).optional(),
 } as const;
 
 /** The env shape the builders below consume. */
@@ -38,6 +47,27 @@ export interface RuntimeEnv {
   AWS_REGION?: string;
   DATABASE_URL?: string;
   PERSISTENCE_SCHEMA?: string;
+  NOTIFIER: "none" | "slack";
+  SLACK_WEBHOOK_REF?: string;
+}
+
+/** How a service selects and resolves its notifier — the source, plus the secret ref to resolve. */
+export interface NotifierSettings {
+  source: "none" | "slack";
+  /** Secret reference for the webhook URL (only for `slack`); resolve via `@repo/secrets`. */
+  webhookRef?: string;
+}
+
+/**
+ * Project the notifier env into a service's boot plan. Rejects `slack` with no webhook ref here —
+ * at config time — rather than letting the notifier factory fail later, so a misconfigured alerting
+ * setup stops the bot at startup instead of at the first alert it fails to send.
+ */
+export function buildNotifierConfig(env: RuntimeEnv): NotifierSettings {
+  if (env.NOTIFIER === "slack" && !env.SLACK_WEBHOOK_REF) {
+    throw new Error("NOTIFIER=slack requires SLACK_WEBHOOK_REF (a secret reference)");
+  }
+  return { source: env.NOTIFIER, webhookRef: env.SLACK_WEBHOOK_REF };
 }
 
 /** Where secrets are resolved from. The key material itself never appears in `Config`. */

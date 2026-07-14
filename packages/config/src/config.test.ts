@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   addressListSchema,
   addressSchema,
+  buildNotifierConfig,
   bytes32Schema,
   nonNegativeIntSchema,
   parseEnv,
@@ -107,5 +108,26 @@ describe("parseEnv", () => {
 
   it("fails fast when a value is invalid", () => {
     expect(() => parseEnv(schema, { REQUIRED: "not-a-url" })).toThrow("process.exit:1");
+  });
+});
+
+describe("buildNotifierConfig", () => {
+  const base = { SECRETS_PROVIDER: "env" } as const;
+
+  it("defaults to the log-only `none` backend", () => {
+    expect(buildNotifierConfig({ ...base, NOTIFIER: "none" })).toEqual({
+      source: "none",
+      webhookRef: undefined,
+    });
+  });
+
+  it("carries the webhook reference through for `slack`", () => {
+    expect(
+      buildNotifierConfig({ ...base, NOTIFIER: "slack", SLACK_WEBHOOK_REF: "SLACK_URL" })
+    ).toEqual({ source: "slack", webhookRef: "SLACK_URL" });
+  });
+
+  it("rejects `slack` with no webhook reference at config time, not at first alert", () => {
+    expect(() => buildNotifierConfig({ ...base, NOTIFIER: "slack" })).toThrow(/SLACK_WEBHOOK_REF/);
   });
 });

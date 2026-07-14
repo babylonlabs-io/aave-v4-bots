@@ -17,6 +17,8 @@ export {
 export { type RiskSettings, buildRiskConfig, riskEnvFields } from "./risk";
 
 export {
+  type NotifierSettings,
+  buildNotifierConfig,
   buildPersistenceConfig,
   buildSecretsConfig,
   runtimeEnvFields,

@@ -1,4 +1,12 @@
-import type { ActionOutcome, RiskAction, RiskConfig, RiskGate, RiskSlot, RiskState } from "./types";
+import type {
+  ActionOutcome,
+  RiskAction,
+  RiskConfig,
+  RiskEvent,
+  RiskGate,
+  RiskSlot,
+  RiskState,
+} from "./types";
 
 /**
  * Create an in-memory risk gate. With an empty config it is **permissive** — it never blocks and
@@ -11,9 +19,34 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   let consecutiveFailures = 0;
   let inFlight = 0;
 
+  /**
+   * Alerting is advisory: a throwing sink must never be able to stop the kill-switch from halting,
+   * so its failures die here. The sink's contract is `void`, but a caller could hand us an `async`
+   * one (TS erases the return); `Promise.resolve` absorbs a rejected one too, so neither a sync
+   * throw nor an async rejection can escape.
+   */
+  const emit = (event: RiskEvent) => {
+    try {
+      const returned = config.onEvent?.(event) as unknown;
+      if (returned instanceof Promise) returned.catch(() => {});
+    } catch {
+      // ignored — see above
+    }
+  };
+
   const halt = (reason: string) => {
+    // Emit on the RUNNING → HALTED *transition* only. The code-hash guard re-halts on every tick
+    // while a mismatch persists, and an operator does not need that alert once a minute, forever.
+    //
+    // Deliberate consequence: a *reason change* while already HALTED is silent — e.g. a code-hash
+    // mismatch after a manual kill-switch halt updates `haltReason` but does not re-alert. Trading
+    // is already stopped, so this is informational drift, not a safety event; the reason is visible
+    // via `GET /status`. Re-alerting on every reason change would re-introduce the breaker's own
+    // per-trip spam (its reason carries an incrementing failure count).
+    const wasRunning = state === "RUNNING";
     state = "HALTED";
     haltReason = reason;
+    if (wasRunning) emit({ kind: "halted", reason });
   };
 
   /** A blocked slot reserved nothing, so it starts settled and `settle()` is a no-op. */
@@ -79,9 +112,11 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
     halt,
 
     resume() {
+      const wasHalted = state === "HALTED";
       state = "RUNNING";
       haltReason = "";
       consecutiveFailures = 0;
+      if (wasHalted) emit({ kind: "resumed" });
       // `inFlight` is deliberately NOT cleared. Halting does not land the txs already in the
       // mempool, so zeroing here would let an operator bypass the cap: halt + resume while a
       // liquidation awaits its receipt, and the arbitrage engine sharing this gate could send

@@ -23,6 +23,7 @@ import {
   nextNonce,
 } from "@repo/execution";
 import { createLogger } from "@repo/logger";
+import { buildNotifier, riskEventSink } from "@repo/notifications";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { type StateStore, createStateStore } from "@repo/persistence";
 import { type RiskGate, startRiskRuntime } from "@repo/risk";
@@ -117,6 +118,11 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // own gate, which meant halting one left the other trading.) Also verifies the pinned target
   // bytecode before any tx goes out, and — when a control token is configured — starts the
   // authenticated kill-switch server on its own loopback socket.
+  // Outbound alerts. The Slack webhook is a credential, resolved from its secret ref like the
+  // signing key; `none` (default) logs only. Delivery is best-effort, so a dropped alert never
+  // breaks a poll cycle.
+  const notifier = await buildNotifier(config.notifier, logger, (ref) => secrets.get(ref));
+
   const { gate: risk } = await startRiskRuntime({
     config: config.risk,
     codeCheckIntervalMs: config.codeCheckIntervalMs,
@@ -125,6 +131,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
     controlHost: config.controlHost,
     read: (address) => readCodeHash(publicClient, address),
     getSecret: (ref) => secrets.get(ref),
+    onEvent: riskEventSink(notifier),
     logger,
   });
 
