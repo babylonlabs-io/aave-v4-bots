@@ -10,11 +10,16 @@ function input(subject: string, over: Partial<IntentInput> = {}): IntentInput {
   return { chainId: 31337, target: TARGET, action: "liquidation", subject, ...over };
 }
 
-/** A `ChainReader` with scripted receipt statuses and fixed latest/pending nonces. */
+/**
+ * A `ChainReader` with scripted receipt statuses and fixed latest/pending nonces. `known`
+ * defaults to `true`: a recorded hash the node still knows about (i.e. in flight), which is
+ * the case for every tx that was actually broadcast.
+ */
 function reader(over: {
   receipts?: Record<string, "success" | "reverted" | null>;
   latest?: number;
   pending?: number;
+  known?: boolean;
 }): ChainReader {
   return {
     async getReceiptStatus(hash) {
@@ -22,6 +27,9 @@ function reader(over: {
     },
     async getNonce(_address, tag) {
       return (tag === "latest" ? over.latest : over.pending) ?? 0;
+    },
+    async isKnown() {
+      return over.known ?? true;
     },
   };
 }
@@ -153,6 +161,45 @@ describe("reconcilePending", () => {
     expect(store.all()[0].status).toBe("submitted");
   });
 
+  it("fails a signed intent the node rejected (unknown hash, nonce slot still free)", async () => {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    // Signed and recorded pre-broadcast, then the node refused it (e.g. insufficient funds).
+    await store.transition(id, "submitted", { nonce: 5, txHash: "0xhash" as Hex });
+
+    const summary = await reconcilePending({
+      store,
+      signer: SIGNER,
+      // Nonce 5 never made it to the mempool, and the node has never seen the hash.
+      reader: reader({ receipts: { "0xhash": null }, latest: 5, pending: 5, known: false }),
+    });
+
+    // Nothing is on chain — re-drivable. Left in-flight it would be pinned forever: the same
+    // rejection blocks every later send, so no tx would ever mine past nonce 5 to release it.
+    expect(summary).toMatchObject({ failed: 1, stillInFlight: 0 });
+    expect(store.all().find((r) => r.id === id)?.status).toBe("failed");
+  });
+
+  it("keeps a signed intent live while the node still knows its tx", async () => {
+    const store = createMemoryStateStore();
+    await store.recordIntent(input("p"));
+    await store.transition(idempotencyKey(input("p")), "submitted", {
+      nonce: 5,
+      txHash: "0xhash" as Hex,
+    });
+
+    const summary = await reconcilePending({
+      store,
+      signer: SIGNER,
+      // Broadcast landed; this node's `pending` count just hasn't caught up (some providers
+      // never reflect the mempool). The tx is known, so it must NOT be treated as rejected.
+      reader: reader({ receipts: { "0xhash": null }, latest: 5, pending: 5, known: true }),
+    });
+
+    expect(summary).toMatchObject({ stillInFlight: 1, failed: 0 });
+  });
+
   it("propagates a reader failure instead of failing a possibly-mined intent", async () => {
     const store = createMemoryStateStore();
     const id = idempotencyKey(input("p"));
@@ -165,6 +212,9 @@ describe("reconcilePending", () => {
       },
       async getNonce() {
         return 6; // nonce 5 is mined — a swallowed reader error would read as dropped/replaced
+      },
+      async isKnown() {
+        return true;
       },
     };
 

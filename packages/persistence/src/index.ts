@@ -23,10 +23,18 @@ interface ReconcileLogger {
  * on boot — the crux of no-double-submit after a crash. `signer` is the sending address
  * whose nonce sequence anchors the "was this broadcast?" checks.
  *
+ * Senders sign locally and record `nonce` + `txHash` **before** broadcasting (see
+ * `@repo/execution`'s `TxSender`), so the hash-bearing branch is the normal path: any intent
+ * that could possibly exist on chain has its hash. The hash-less branches below are the
+ * leftovers — the durable record itself failed, so nothing was broadcast.
+ *
  * Per intent:
  * - **has a tx hash** → look up the receipt: `success` → `confirmed`, `reverted` → `failed`;
  *   no receipt but the signer's mined nonce has already passed the intent's nonce → the tx
- *   was dropped/replaced → `failed`; otherwise it is genuinely pending → left in-flight.
+ *   was dropped/replaced (or was signed and never broadcast, and something else took the
+ *   slot) → `failed`; no receipt, the nonce slot is still free **and** the node does not know
+ *   the hash → the broadcast was rejected, so nothing is on chain → `failed`, safe to
+ *   re-drive; otherwise it is genuinely pending → left in-flight.
  * - **no hash, but a reserved nonce the chain has mined past** (`latest > nonce`) → a tx took
  *   that nonce slot; we can't fetch a receipt without the hash, so mark `failed` and let the
  *   engine's fresh simulation be the final guard (an already-executed action reverts in
@@ -72,6 +80,14 @@ export async function reconcilePending(args: {
         summary.failed++;
       } else if (nonce !== null && latest > nonce) {
         await store.transition(id, "failed", { txHash, error: "dropped/replaced (reconciled)" });
+        summary.failed++;
+      } else if (nonce !== null && pending <= nonce && !(await reader.isKnown(txHash))) {
+        // The hash is recorded but the node has never heard of this tx AND its nonce slot is
+        // still free — so the broadcast was *rejected* (insufficient funds, underpriced, …),
+        // not merely unconfirmed. Nothing is on chain, so this is safe to re-drive. Without
+        // this branch such an intent would be pinned live forever: a rejection that blocks one
+        // send blocks them all, so no later tx would ever mine past the nonce to release it.
+        await store.transition(id, "failed", { txHash, error: "not accepted (reconciled)" });
         summary.failed++;
       } else {
         summary.stillInFlight++;

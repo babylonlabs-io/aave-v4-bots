@@ -15,7 +15,13 @@ import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
 import { TokenMetaCache, approveMax, readAllowance, readBalance } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
-import { type NonceAllocator, nextNonce } from "@repo/execution";
+import {
+  type ContractCall,
+  type NonceAllocator,
+  type TxSender,
+  createTxSender,
+  nextNonce,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { StateStore } from "@repo/persistence";
 import type { RiskGate } from "@repo/risk";
@@ -86,6 +92,8 @@ export interface LiquidationEngineConfig extends LiquidationEngineParams {
    * (behavior-preserving). Paired with `store` at the composition root.
    */
   nonces?: NonceAllocator;
+  /** How txs are signed + broadcast; absent ⇒ local signing to the public mempool. */
+  sender?: TxSender;
 }
 
 export class LiquidationEngine {
@@ -94,6 +102,7 @@ export class LiquidationEngine {
   private risk: RiskGate;
   private store?: StateStore;
   private nonces?: NonceAllocator;
+  private sender: TxSender;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private adapterAddress: Address;
@@ -113,6 +122,7 @@ export class LiquidationEngine {
     this.risk = config.risk;
     this.store = config.store;
     this.nonces = config.nonces;
+    this.sender = config.sender ?? createTxSender(config.publicClient, config.walletClient);
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.adapterAddress = config.adapterAddress;
@@ -368,33 +378,39 @@ export class LiquidationEngine {
         }
 
         const priorityOrder = sequentialPriorityOrder(amounts.length);
-        // Runs under the nonce lock (when allocated): persist the reserved nonce to the intent
-        // BEFORE broadcast (so a crash/ambiguous send leaves a resolvable intent), then send.
-        const broadcast = async (nonce: number): Promise<Hex> => {
-          if (this.store && intentId) await this.store.transition(intentId, "pending", { nonce });
-          return this.isDirectRedemption
-            ? this.walletClient.writeContract({
-                address: this.adapterAddress,
-                abi: adapterAbi,
-                functionName: "liquidate",
-                args: [
-                  position.borrower,
-                  this.btcRedeemKey,
-                  [...amounts],
-                  [...priorityOrder],
-                  0n,
-                  maxUint256,
-                ],
-                nonce,
-              })
-            : this.walletClient.writeContract({
-                address: this.adapterAddress,
-                abi: adapterAbi,
-                functionName: "liquidateWithLLP",
-                args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
-                nonce,
+        // Runs under the nonce lock (when allocated). The sender signs locally first, so the
+        // intent gets nonce + hash durably recorded BEFORE anything is broadcast — a crash or
+        // ambiguous send then leaves an intent reconcile can resolve by receipt lookup.
+        const call: ContractCall = this.isDirectRedemption
+          ? {
+              address: this.adapterAddress,
+              abi: adapterAbi,
+              functionName: "liquidate",
+              args: [
+                position.borrower,
+                this.btcRedeemKey,
+                [...amounts],
+                [...priorityOrder],
+                0n,
+                maxUint256,
+              ],
+            }
+          : {
+              address: this.adapterAddress,
+              abi: adapterAbi,
+              functionName: "liquidateWithLLP",
+              args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
+            };
+
+        const broadcast = (nonce: number): Promise<Hex> =>
+          this.sender.send({ ...call, nonce }, async (signed) => {
+            if (this.store && intentId) {
+              await this.store.transition(intentId, "pending", {
+                nonce: signed.nonce,
+                txHash: signed.hash,
               });
-        };
+            }
+          });
 
         let hash: Hex;
         try {
@@ -423,8 +439,8 @@ export class LiquidationEngine {
           continue;
         }
 
-        // Broadcast succeeded — record it best-effort; a bookkeeping failure here is logged,
-        // not fatal, and never marks the intent failed (the tx is on chain).
+        // Broadcast succeeded — status bump only, best-effort: the hash was already persisted
+        // pre-broadcast (see `sender.send`), so losing this write costs nothing.
         this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
         if (intentId) {
           await bestEffortTransition(this.store, this.logger, intentId, "submitted", {

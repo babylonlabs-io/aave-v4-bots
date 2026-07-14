@@ -38,11 +38,35 @@ const mockPosition: LiquidatablePosition = {
   suppliedShares: "1000000000",
 };
 
+/**
+ * A `TxSender` that skips real signing but honors the contract that matters: `onSigned` (the
+ * durable nonce + hash record) runs BEFORE the broadcast resolves, so crash-safety tests
+ * exercise the same ordering as the real sender.
+ */
+function mockSender() {
+  return {
+    send: vi.fn(
+      async (
+        call: { nonce?: number },
+        onSigned?: (tx: {
+          hash: `0x${string}`;
+          nonce: number;
+          serialized: `0x${string}`;
+        }) => Promise<void>
+      ) => {
+        await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+        return "0xtxhash" as `0x${string}`;
+      }
+    ),
+  };
+}
+
 function createMockClients() {
   return {
+    sender: mockSender(),
     walletClient: {
       account: { address: "0xliquidator" as `0x${string}` },
-      writeContract: vi.fn().mockResolvedValue("0xtxhash"),
+      writeContract: vi.fn().mockResolvedValue("0xtxhash"), // approvals only
     },
     publicClient: {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
@@ -60,6 +84,9 @@ function createMockClients() {
       getTransactionReceipt: vi
         .fn()
         .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: "0xtxhash" })),
+      // Reconcile also asks whether the node knows the tx at all: here it was broadcast, so
+      // it does (in flight). Returning "unknown" would read as a rejected broadcast.
+      getTransaction: vi.fn().mockResolvedValue({ hash: "0xtxhash" }),
       waitForTransactionReceipt: vi
         .fn()
         .mockResolvedValue({ status: "success", blockNumber: 123n, logs: [] }),
@@ -74,6 +101,7 @@ function createBot(
   return new LiquidationEngine({
     walletClient: clients.walletClient as unknown as LiquidationEngineConfig["walletClient"],
     publicClient: clients.publicClient as unknown as LiquidationEngineConfig["publicClient"],
+    sender: clients.sender as unknown as LiquidationEngineConfig["sender"],
     adapterAddress: "0xadapter" as `0x${string}`,
     lensAddress: "0xlens" as `0x${string}`,
     wbtcAddress: "0xwbtc" as `0x${string}`,
@@ -119,7 +147,7 @@ describe("LiquidationEngine", () => {
       // Should call Lens estimate + simulate + send liquidation tx
       expect(clients.publicClient.readContract).toHaveBeenCalled();
       expect(clients.publicClient.simulateContract).toHaveBeenCalledOnce();
-      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(clients.sender.send).toHaveBeenCalledOnce();
     });
 
     it("does nothing when no liquidatable positions found", async () => {
@@ -139,7 +167,7 @@ describe("LiquidationEngine", () => {
       await bot.run();
 
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("continues when ponder API fails (no crash)", async () => {
@@ -182,7 +210,7 @@ describe("LiquidationEngine", () => {
       await bot.run();
 
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("trips the breaker on a reverted liquidation, halting subsequent runs", async () => {
@@ -227,7 +255,7 @@ describe("LiquidationEngine", () => {
 
       // Should not simulate or send tx since Lens failed
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
   });
 
@@ -251,7 +279,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.publicClient.simulateContract).toHaveBeenCalledOnce();
       // No tx sent since simulation failed
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("sends tx only for positions that pass simulation", async () => {
@@ -284,7 +312,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.publicClient.simulateContract).toHaveBeenCalledTimes(2);
       // Only 1 tx sent (first position)
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -306,11 +334,12 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 42,
           functionName: "liquidateWithLLP",
-        })
+        }),
+        expect.any(Function)
       );
     });
 
@@ -335,7 +364,7 @@ describe("LiquidationEngine", () => {
 
       // Bot adds 1% buffer to Lens-returned amounts to cover interest accrual
       const bufferedAmounts = mockAmounts.map((amt) => (amt * 10100n) / 10000n);
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
@@ -343,7 +372,8 @@ describe("LiquidationEngine", () => {
           // maxUint256 is the sentinel for "unbounded prefix" (the new params from the
           // bumped adapter).
           args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n], 0n, maxUint256],
-        })
+        }),
+        expect.any(Function)
       );
     });
 
@@ -371,14 +401,16 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
-      expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
-        expect.objectContaining({ nonce: 10 })
+        expect.objectContaining({ nonce: 10 }),
+        expect.any(Function)
       );
-      expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
+      expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
-        expect.objectContaining({ nonce: 11 })
+        expect.objectContaining({ nonce: 11 }),
+        expect.any(Function)
       );
     });
 
@@ -392,7 +424,7 @@ describe("LiquidationEngine", () => {
       };
 
       // First writeContract fails, second succeeds
-      clients.walletClient.writeContract
+      clients.sender.send
         .mockRejectedValueOnce(new Error("nonce too low"))
         .mockResolvedValueOnce("0xtxhash2");
 
@@ -411,7 +443,7 @@ describe("LiquidationEngine", () => {
       await bot.run();
 
       // Both attempted
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
       // Only one receipt waited for
       expect(clients.publicClient.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
     });
@@ -663,7 +695,7 @@ describe("LiquidationEngine", () => {
       global.fetch = feed([mockPosition]);
       await first.bot.run();
 
-      expect(first.clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(first.clients.sender.send).toHaveBeenCalledOnce();
       const inflight = await store.reconcile();
       expect(inflight).toHaveLength(1);
       expect(inflight[0].status).toBe("submitted");
@@ -675,7 +707,7 @@ describe("LiquidationEngine", () => {
       global.fetch = feed([mockPosition]);
       await second.bot.run();
 
-      expect(second.clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(second.clients.sender.send).not.toHaveBeenCalled();
       expect(metrics.recordError).toHaveBeenCalledWith("intent_in_flight");
     });
 
@@ -685,7 +717,7 @@ describe("LiquidationEngine", () => {
       // Chain nonce stays 0 (the failed tx never broadcast), so next-cycle reconcile can prove
       // the reserved nonce is free and re-drive. First send throws, second succeeds.
       clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(0);
-      clients.walletClient.writeContract = vi
+      clients.sender.send = vi
         .fn()
         .mockRejectedValueOnce(new Error("boom"))
         .mockResolvedValue("0xtxhash");
@@ -697,7 +729,7 @@ describe("LiquidationEngine", () => {
 
       global.fetch = feed([mockPosition]);
       await bot.run(); // cycle-start reconcile: nonce free ⇒ terminal ⇒ re-drive
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
       expect(store.get(id)?.status).toBe("confirmed");
     });
 
@@ -706,7 +738,20 @@ describe("LiquidationEngine", () => {
       const { bot, clients } = storeBot(store);
       // Run 1: chain nonce 6 → the send reserves 6 then throws AFTER (mocked) broadcast.
       clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(6);
-      clients.walletClient.writeContract = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+      clients.sender.send = vi.fn(
+        async (
+          call: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          // Ambiguous send: signed + durably recorded, then the broadcast blows up.
+          await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new Error("rpc timeout");
+        }
+      );
 
       global.fetch = feed([mockPosition]);
       await bot.run(); // send throws → intent kept live at nonce 6
@@ -722,7 +767,7 @@ describe("LiquidationEngine", () => {
         );
       global.fetch = feed([mockPosition]);
       await bot.run(); // reconcile: pending(7) > nonce(6), latest(6) ⇒ hold, no re-drive
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
     });
 
     it("allocates nonces from the persisted lease, seeded from the chain", async () => {
@@ -734,8 +779,9 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
-        expect.objectContaining({ nonce: 7 })
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({ nonce: 7 }),
+        expect.any(Function)
       );
     });
 
@@ -753,7 +799,7 @@ describe("LiquidationEngine", () => {
       global.fetch = feed([mockPosition]);
       await bot.run();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(clients.sender.send).toHaveBeenCalledOnce();
       expect(store.all()[0]?.status).not.toBe("failed");
     });
 
@@ -771,7 +817,7 @@ describe("LiquidationEngine", () => {
         proxyAddress: "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed",
         borrower: "0xborrower0000000000000000000000000000000003",
       };
-      clients.walletClient.writeContract = vi
+      clients.sender.send = vi
         .fn()
         .mockResolvedValueOnce("0xA") // p1 @ nonce 10 — ok
         .mockRejectedValueOnce(new Error("send failed")); // p2 @ nonce 11 — fails → break
@@ -780,14 +826,16 @@ describe("LiquidationEngine", () => {
       await bot.run();
 
       // p1 sent (10), p2 attempted (11) and failed → cycle stops → p3 NOT attempted.
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
-      expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
-        expect.objectContaining({ nonce: 10 })
+        expect.objectContaining({ nonce: 10 }),
+        expect.any(Function)
       );
-      expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
+      expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
-        expect.objectContaining({ nonce: 11 })
+        expect.objectContaining({ nonce: 11 }),
+        expect.any(Function)
       );
     });
   });

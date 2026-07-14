@@ -20,7 +20,12 @@ import {
 } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
-import { type NonceAllocator, waitForReceiptWithTimeout } from "@repo/execution";
+import {
+  type NonceAllocator,
+  type TxSender,
+  createTxSender,
+  waitForReceiptWithTimeout,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { StateStore } from "@repo/persistence";
 import type { RiskGate } from "@repo/risk";
@@ -73,6 +78,8 @@ export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
   store?: StateStore;
   /** Shared nonce authority; absent ⇒ viem auto-nonce (behavior-preserving). */
   nonces?: NonceAllocator;
+  /** How txs are signed + broadcast; absent ⇒ local signing to the public mempool. */
+  sender?: TxSender;
   /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
   onPollComplete?: () => void;
 }
@@ -83,6 +90,7 @@ export class ArbitrageEngine {
   private risk: RiskGate;
   private store?: StateStore;
   private nonces?: NonceAllocator;
+  private sender: TxSender;
   private onPollComplete?: () => void;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
@@ -101,6 +109,7 @@ export class ArbitrageEngine {
     this.risk = config.risk;
     this.store = config.store;
     this.nonces = config.nonces;
+    this.sender = config.sender ?? createTxSender(config.publicClient, config.walletClient);
     this.onPollComplete = config.onPollComplete;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
@@ -300,20 +309,27 @@ export class ArbitrageEngine {
       }
 
       // Execute swap via VaultSwap (redemption is atomic). Route through the shared nonce
-      // allocator when present (persisting the reserved nonce to the intent before broadcast);
-      // otherwise viem auto-nonce (unchanged). A send error is ambiguous — keep the intent live.
-      const broadcast = async (nonce?: number): Promise<Hex> => {
-        if (this.store && intentId && nonce !== undefined) {
-          await this.store.transition(intentId, "pending", { nonce });
-        }
-        return this.walletClient.writeContract({
-          address: this.vaultSwapAddress,
-          abi: vaultSwapAbi,
-          functionName: "swapWbtcForVault",
-          args: [vaultId as Hex, maxWbtcIn],
-          ...(nonce !== undefined ? { nonce } : {}),
-        });
-      };
+      // allocator when present; otherwise viem fills the nonce from the chain. The sender signs
+      // locally first, so `onSigned` durably records nonce + hash while the tx is still local —
+      // an ambiguous broadcast then leaves an intent reconcile can resolve by receipt lookup.
+      const broadcast = (nonce?: number): Promise<Hex> =>
+        this.sender.send(
+          {
+            address: this.vaultSwapAddress,
+            abi: vaultSwapAbi,
+            functionName: "swapWbtcForVault",
+            args: [vaultId as Hex, maxWbtcIn],
+            ...(nonce !== undefined ? { nonce } : {}),
+          },
+          async (signed) => {
+            if (this.store && intentId) {
+              await this.store.transition(intentId, "pending", {
+                nonce: signed.nonce,
+                txHash: signed.hash,
+              });
+            }
+          }
+        );
 
       let hash: Hex;
       try {
@@ -323,7 +339,9 @@ export class ArbitrageEngine {
         this.logger.error(`Failed to send swap for vault ${vaultId}: ${errorMsg}`);
         this.metrics.recordError("swap_send_error");
         this.risk.recordOutcome({ ok: false });
-        // Ambiguous — keep the intent live; next-cycle reconcile resolves it by nonce vs chain.
+        // Ambiguous — keep the intent live. The signed hash is already durable (unless the
+        // failure *was* that record, in which case nothing was broadcast), so next-cycle
+        // reconcile resolves it by receipt lookup rather than inferring from the nonce.
         if (intentId) {
           await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
             error: errorMsg,
@@ -333,6 +351,7 @@ export class ArbitrageEngine {
       }
 
       this.logger.info(`Swap transaction sent: ${hash}`);
+      // Status bump only — the hash was persisted pre-broadcast, so losing this write is safe.
       if (intentId) {
         await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
           txHash: hash,

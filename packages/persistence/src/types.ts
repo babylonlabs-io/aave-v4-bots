@@ -89,6 +89,12 @@ export interface ChainReader {
   getReceiptStatus(hash: Hex): Promise<"success" | "reverted" | null>;
   /** Transaction count for `address` at `latest` (mined) or `pending` (mined + mempool). */
   getNonce(address: Address, tag: "latest" | "pending"): Promise<number>;
+  /**
+   * Does the node know this tx at all (mempool **or** mined)? Senders record the hash before
+   * broadcasting, so a hash alone no longer proves the tx was accepted — this distinguishes
+   * "in flight" from "signed, but the node rejected the broadcast (e.g. insufficient funds)".
+   */
+  isKnown(hash: Hex): Promise<boolean>;
 }
 
 export interface ReconcileSummary {

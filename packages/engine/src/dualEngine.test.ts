@@ -42,18 +42,36 @@ describe("dual-engine shared nonce allocator", () => {
     // lock), so a resync can never rewind below a just-broadcast nonce.
     let chainNonce = SEED;
     const recordedNonces: number[] = [];
-    const broadcast = vi.fn(async ({ nonce }: { nonce: number }) => {
-      recordedNonces.push(nonce);
-      await tick(); // propagation delay — the nonce lock is held across this
-      chainNonce = Math.max(chainNonce, nonce + 1);
-      return "0xhash" as `0x${string}`;
-    });
+    // Stands in for the real `TxSender`: sign → `onSigned` (durable record) → broadcast.
+    const sender = {
+      send: vi.fn(
+        async (
+          { nonce }: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          const signedNonce = nonce ?? chainNonce;
+          recordedNonces.push(signedNonce);
+          await onSigned?.({
+            hash: "0xhash",
+            nonce: signedNonce,
+            serialized: "0xraw",
+          });
+          await tick(); // propagation delay — the nonce lock is held across this
+          chainNonce = Math.max(chainNonce, signedNonce + 1);
+          return "0xhash" as `0x${string}`;
+        }
+      ),
+    };
     const getTransactionCount = vi.fn(async () => chainNonce);
 
     const walletClient = {
       account: { address: SIGNER },
       chain: { id: 31337 },
-      writeContract: broadcast,
+      writeContract: vi.fn().mockResolvedValue("0xhash"), // approvals only
     };
     const publicClient = {
       getTransactionCount,
@@ -108,6 +126,7 @@ describe("dual-engine shared nonce allocator", () => {
       logger: silentLogger,
       risk: createRiskGate(),
       nonces,
+      sender: sender as unknown as LiquidationEngineConfig["sender"],
     });
 
     const arb = new ArbitrageEngine({
@@ -129,6 +148,7 @@ describe("dual-engine shared nonce allocator", () => {
       logger: silentLogger,
       risk: createRiskGate(),
       nonces,
+      sender: sender as unknown as ArbitrageEngineConfig["sender"],
     });
 
     global.fetch = vi.fn(async (url: string) => {
