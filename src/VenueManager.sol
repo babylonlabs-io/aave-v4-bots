@@ -44,14 +44,27 @@ abstract contract VenueManager is
     using SafeERC20 for IERC20;
 
     string private constant CONTRACT_NAME = "VenueManager";
+
+    /// @dev Transient slot holding the number of venue debts recorded so far this transaction.
     bytes32 private constant VENUE_DEBTS_LENGTH_TK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts.length"));
 
+    /// @notice Runs a swap venue's setup step, which calls back into `onSetUpCallback` to continue the flow.
+    /// @dev Only venues that report `requireSetup()` need this; see `_venueRequiresSetup`. The venue is guarded by
+    ///      `ExpectCallback`, so it cannot skip the callback or call it from anywhere else.
+    /// @param venueAddress The swap venue to set up.
+    /// @param forwardData Caller state, handed back verbatim through `_resumeAfterCallback`.
     function _setUpSwapVenue(address venueAddress, bytes memory forwardData) internal {
         _expectCallback(VenueManager.onSetUpCallback.selector, venueAddress);
         ISwapVenue(venueAddress).setUp(VenueForwardDataLib.encodeStandard(forwardData));
         _requireCompleteCallback();
     }
 
+    /// @notice Borrows `amountOut` of `flashData.token` from a flash venue, whichever protocol it is.
+    /// @dev Dispatches on venue type to that protocol's flash entrypoint, and arms `ExpectCallback` with the matching
+    ///      callback selector first. Reverts on an unsupported venue type, or if the venue never calls back.
+    /// @param flashData The venue to borrow from, its type, and the token to borrow.
+    /// @param amountOut The amount to borrow.
+    /// @param forwardData Caller state, handed back verbatim through `_resumeAfterCallback` inside the callback.
     function _flashLoan(Types.FlashData memory flashData, uint256 amountOut, bytes memory forwardData) internal {
         if (flashData.venueType == Types.VenueType.Morpho) {
             _expectCallback(VenueManager.onMorphoFlashLoan.selector, flashData.venueAddress);
@@ -76,7 +89,16 @@ abstract contract VenueManager is
     }
 
     // ---------------------- CALLBACKS ----------------------
+    // Every flash callback has the same shape:
+    //   1. record what is owed back to the venue (`_addVenueDebt`),
+    //   2. hand control to the inheriting contract (`_resumeAfterCallback`) — which is where the borrowed funds get
+    //      used, and where deeper venues nest,
+    //   3. approve the venue to pull its repayment once control comes back.
+    // `consumeCallback` makes each one enterable only while this contract is waiting for that exact venue.
 
+    /// @inheritdoc ISwapVenueCallback
+    /// @dev No debt is recorded here: setup only prepares the venue (e.g. unlocks the UniswapV4 pool manager), it does
+    ///      not lend anything.
     function onSetUpCallback(address, bytes calldata venueData) external consumeCallback {
         _resumeAfterCallback(VenueForwardDataLib.decodeStandard(venueData));
     }
@@ -132,7 +154,11 @@ abstract contract VenueManager is
     }
 
     // ---------------------- TRANSIENT DEBT (GENERAL) ----------------------
+    // Debts are kept in transient storage as an append-only list, so they exist only for the transaction that created
+    // them. They are bookkeeping for the caller (e.g. to size the swaps that must cover them), not a settlement
+    // mechanism: repayment happens through the allowance each callback grants.
 
+    /// @notice Every flash debt taken on so far in this transaction.
     function _getAllDebts() internal view returns (Types.VenueDebt[] memory debts) {
         uint256 length = VENUE_DEBTS_LENGTH_TK.loadUint256();
         debts = new Types.VenueDebt[](length);
@@ -144,6 +170,11 @@ abstract contract VenueManager is
         }
     }
 
+    /// @notice Appends a debt owed back to `venue`.
+    /// @dev Entries are never merged: borrowing the same token from the same venue twice records two entries.
+    /// @param venue The venue that must be repaid.
+    /// @param token The token owed.
+    /// @param amount The amount owed, including any venue premium.
     function _addVenueDebt(address venue, address token, uint256 amount) internal {
         uint256 length = VENUE_DEBTS_LENGTH_TK.loadUint256();
         (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(length);
@@ -153,6 +184,9 @@ abstract contract VenueManager is
         VENUE_DEBTS_LENGTH_TK.storeUint256(length + 1);
     }
 
+    /// @notice Zeroes the debt list.
+    /// @dev Call once all venues have been repaid. Transient storage would clear itself at the end of the transaction
+    ///      anyway; clearing explicitly keeps the list correct for any further work in the same transaction.
     function _clearVenueDebts() internal {
         for (uint256 i = 0; i < VENUE_DEBTS_LENGTH_TK.loadUint256(); i++) {
             (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) = _getVenueDebtTK(i);
@@ -165,6 +199,8 @@ abstract contract VenueManager is
 
     // ---------------------- TRANSIENT DEBT (AMOUNT) ----------------------
 
+    /// @notice Derives the three transient slots holding debt `i`.
+    /// @dev Slots are namespaced by contract name and field, so they cannot collide with any other transient state.
     function _getVenueDebtTK(uint256 i) internal pure returns (bytes32 tokenTK, bytes32 venueTK, bytes32 amountTK) {
         tokenTK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts[", i, "].token"));
         venueTK = keccak256(abi.encodePacked(CONTRACT_NAME, ".venueDebts[", i, "].venue"));
@@ -173,10 +209,18 @@ abstract contract VenueManager is
 
     // ---------------------- ABSTRACT FUNCTIONS ----------------------
 
+    /// @notice Hands control back to the inheriting contract from inside a venue callback.
+    /// @dev Called once the flash-borrowed funds are in hand and the debt is recorded. The implementer is expected to
+    ///      reconstruct its own state from `forwardData` — VenueManager never inspects it, it only wraps and unwraps
+    ///      the header (see `VenueForwardDataLib`).
+    /// @param forwardData The data the implementer passed to `_flashLoan` / `_setUpSwapVenue`, unwrapped.
     function _resumeAfterCallback(bytes memory forwardData) internal virtual;
 
     // ---------------------- INTERNAL FUNCTIONS ----------------------
 
+    /// @notice Whether a venue needs a setup step before it can be flash-borrowed from.
+    /// @dev Only the UniswapV4 venues can: their pool manager must be unlocked first, and `requireSetup()` is false
+    ///      once it already is.
     function _venueRequiresSetup(Types.VenueType venueType, address venueAddress) internal view returns (bool) {
         return (venueType == Types.VenueType.UniswapV4FlashSwap || venueType == Types.VenueType.UniswapV4FlashLoan)
             && ISwapVenue(venueAddress).requireSetup();
