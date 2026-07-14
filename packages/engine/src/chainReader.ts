@@ -1,5 +1,5 @@
 import type { ChainReader } from "@repo/persistence";
-import type { PublicClient } from "viem";
+import { type PublicClient, TransactionReceiptNotFoundError } from "viem";
 
 /**
  * Adapt a viem `PublicClient` to the persistence `ChainReader` (receipt status + nonce) used
@@ -11,8 +11,12 @@ export function createChainReader(publicClient: PublicClient): ChainReader {
       try {
         const receipt = await publicClient.getTransactionReceipt({ hash });
         return receipt.status === "success" ? "success" : "reverted";
-      } catch {
-        return null; // receipt not found yet
+      } catch (error) {
+        // Only a genuine "no receipt" is `null`. An RPC failure (rate limit, timeout, bad
+        // response) must propagate: reconcile reads `null` on a mined nonce as dropped/replaced
+        // and would mark a mined intent `failed`, re-opening its subject for re-execution.
+        if (error instanceof TransactionReceiptNotFoundError) return null;
+        throw error;
       }
     },
     getNonce: (address, blockTag) => publicClient.getTransactionCount({ address, blockTag }),

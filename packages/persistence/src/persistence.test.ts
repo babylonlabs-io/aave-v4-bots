@@ -153,6 +153,27 @@ describe("reconcilePending", () => {
     expect(store.all()[0].status).toBe("submitted");
   });
 
+  it("propagates a reader failure instead of failing a possibly-mined intent", async () => {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    await store.transition(id, "submitted", { nonce: 5, txHash: "0xhash" as Hex });
+
+    const failing: ChainReader = {
+      async getReceiptStatus() {
+        throw new Error("RPC unavailable");
+      },
+      async getNonce() {
+        return 6; // nonce 5 is mined — a swallowed reader error would read as dropped/replaced
+      },
+    };
+
+    await expect(reconcilePending({ store, signer: SIGNER, reader: failing })).rejects.toThrow(
+      "RPC unavailable"
+    );
+    expect(store.all().find((r) => r.id === id)?.status).toBe("submitted"); // untouched
+  });
+
   it("no-ops with nothing in flight", async () => {
     const store = createMemoryStateStore();
     const summary = await reconcilePending({ store, signer: SIGNER, reader: reader({}) });

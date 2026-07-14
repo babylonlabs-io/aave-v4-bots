@@ -2,7 +2,7 @@ import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
-import { maxUint256 } from "viem";
+import { TransactionReceiptNotFoundError, maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
@@ -55,6 +55,11 @@ function createMockClients() {
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
+      // Reconcile's receipt lookup: not mined by default. Must throw the viem not-found error
+      // (not an arbitrary one) — the chain reader only maps *that* to "no receipt yet".
+      getTransactionReceipt: vi
+        .fn()
+        .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: "0xtxhash" })),
       waitForTransactionReceipt: vi
         .fn()
         .mockResolvedValue({ status: "success", blockNumber: 123n, logs: [] }),
