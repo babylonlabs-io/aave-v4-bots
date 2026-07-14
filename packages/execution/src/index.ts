@@ -28,11 +28,10 @@ export function nextNonce(client: PublicClient, address: Address): Promise<numbe
 // ── Shared nonce authority ────────────────────────────────────────────────────────────
 //
 // One signer, possibly two engines (arbitrageur runs both) polling concurrently. A single
-// `NonceAllocator` — shared across engines — is the sole nonce owner. Correctness comes from
-// two things, neither needing persistence: an in-process **mutex** (so two engines never
-// reserve the same nonce) and **re-seeding from the chain** (`resync`, so the chain is the
-// source of truth and a restart needs no persisted counter). Persistence, when present, is a
-// separate concern (intent idempotency) and lives in `@repo/persistence`.
+// `NonceAllocator` — shared across engines — is the sole nonce owner. Correctness rests on two
+// things: an in-process **mutex** (so two engines never reserve the same nonce) and **re-seeding
+// from the chain** (`resync`), which makes the chain the source of truth across restarts. Intent
+// idempotency is a separate concern and lives in `@repo/persistence`.
 //
 // **No rollback:** a thrown `send` does not prove the tx was not broadcast (an RPC timeout can
 // fire after the node accepted it), so the reserved nonce is NOT reused within the cycle; the

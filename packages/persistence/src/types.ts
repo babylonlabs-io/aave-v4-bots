@@ -1,14 +1,16 @@
 import type { Address, Hex } from "viem";
 
-// Crash-safety seam — the `StateStore` port + its data types. A `StateStore` gives the send
-// path durable memory: a persisted nonce lease (so sequencing survives a restart) and an
-// idempotency-keyed intent record (so a crash mid-submit does not double-send). Adapters
-// (`./postgres`, `./memory`) implement this; the engine depends only on these types, never on
-// a driver like `pg`.
+// Crash-safety seam — the `StateStore` port + its data types. A `StateStore` gives the send path
+// durable memory of *what it intended to do*: an idempotency-keyed intent record, so a crash
+// mid-submit does not double-send. Adapters (`./postgres`, `./memory`) implement this; the engine
+// depends only on these types, never on a driver like `pg`.
 //
-// **Single-active-instance assumption:** the nonce lease is authoritative for one running
-// process per signing key. Multi-instance leasing (advisory locks / row leases) is a later
-// adapter concern; this first cut targets the single-bot deployment.
+// Its scope is intent idempotency and the reconcile work-list. Nonce ownership belongs to
+// `@repo/execution`'s `NonceLease` / `NonceAllocator`, re-seeded from the chain each cycle.
+//
+// **Single-active-instance assumption:** one running process per signing key. Multi-instance
+// coordination (advisory locks / row leases) is a later adapter concern; this first cut targets
+// the single-bot deployment.
 
 /** Lifecycle of one intended on-chain action. Terminal states: `confirmed`, `failed`. */
 export type IntentStatus = "pending" | "submitted" | "confirmed" | "failed";
@@ -55,17 +57,6 @@ export interface TransitionMeta {
 export type RecordResult = { recorded: true; id: string } | { recorded: false; existing: TxIntent };
 
 export interface StateStore {
-  /**
-   * Allocate the next nonce for `address` and durably advance the lease. Requires the lease
-   * to have been seeded via `syncNonce` (typically at boot). Throws if unseeded.
-   */
-  reserveNonce(address: Address): Promise<number>;
-  /**
-   * Set the lease for `address` to `chainNonce` (the chain's next expected nonce). Used to
-   * seed at boot and to re-align after a send failure. Unconditional set — safe under the
-   * single-active-instance assumption.
-   */
-  syncNonce(address: Address, chainNonce: number): Promise<void>;
   /**
    * Record an intent as `pending`. Refuses (`recorded: false`) if a live intent already
    * exists for the same `(chainId, target, action, subject)`; revives a terminal one.

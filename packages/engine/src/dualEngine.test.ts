@@ -12,7 +12,7 @@ import type { LiquidatablePosition } from "./liquidation/types";
 //
 //   1. one `NonceAllocator`: their concurrent poll loops never reserve the same nonce;
 //   2. one `RiskGate`: halting it stops both engines, and a breaker tripped by one stops the
-//      other. (Each engine used to build its own gate, so halting one left the other trading.)
+//      other — a gate per engine would leave the other trading through a halt.
 
 const silentLogger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const SIGNER = "0xshared" as `0x${string}`;
