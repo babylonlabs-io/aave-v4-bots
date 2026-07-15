@@ -1,7 +1,7 @@
 import pg from "pg";
 import type { Address, Hex } from "viem";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { idempotencyKey } from "./index";
+import { afterAll, describe, expect, it } from "vitest";
+import { type ProposedTx, idempotencyKey } from "./index";
 import { createPostgresStateStore } from "./postgres";
 
 // Opt-in integration test that hits a **real Postgres** (the unit test in `persistence.test.ts`
@@ -19,11 +19,12 @@ const SCHEMA = `bot_e2e_${Date.now()}`;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
 const TIMEOUT = 30_000;
 
-const input = (subject: string) => ({
+const input = (subject: string, over: { action?: string } = {}) => ({
   chainId: 31337,
   target: TARGET,
   action: "liquidation",
   subject,
+  ...over,
 });
 
 describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real Postgres)", () => {
@@ -80,6 +81,99 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
       expect(b?.status).toBe("submitted");
       expect(b?.nonce).toBe(3);
       expect(b?.txHash).toBe("0xbeef");
+    },
+    TIMEOUT
+  );
+
+  const HASH_A = `0x${"a".repeat(64)}` as Hex;
+  const HASH_B = `0x${"b".repeat(64)}` as Hex;
+  const TX = `0x${"c".repeat(64)}` as Hex;
+  const payload = (over: Partial<ProposedTx> = {}): ProposedTx => ({
+    chainId: 31337,
+    to: TARGET,
+    data: "0xdeadbeef",
+    value: "0",
+    ...over,
+  });
+
+  it(
+    "propose round-trips the jsonb payload and keeps it out of the reconcile work-list",
+    async () => {
+      const p = payload({ gasLimit: "500000" });
+      const result = await store.propose(input("prop-1"), p, HASH_A);
+      expect(result.recorded).toBe(true);
+
+      // The proposal is live for dedup but absent from reconcile.
+      expect((await store.recordIntent(input("prop-1"))).recorded).toBe(false);
+      expect((await store.reconcile()).map((i) => i.subject)).not.toContain("prop-1");
+
+      // jsonb survives the round trip intact (a second propose is refused and returns the row).
+      const dup = await store.propose(input("prop-1"), p, HASH_A);
+      expect(dup.recorded).toBe(false);
+      if (!dup.recorded) {
+        expect(dup.existing.payload).toEqual(p);
+        expect(dup.existing.payloadHash).toBe(HASH_A);
+      }
+    },
+    TIMEOUT
+  );
+
+  it(
+    "markBroadcast is a guarded compare-and-set against the verified payload hash",
+    async () => {
+      const id = idempotencyKey(input("prop-2"));
+      await store.propose(input("prop-2"), payload(), HASH_A);
+
+      // Wrong hash → refused, untouched.
+      expect(await store.markBroadcast(id, TX, HASH_B)).toBe(false);
+      // Right hash → proposed becomes a hash-bearing in-flight intent.
+      expect(await store.markBroadcast(id, TX, HASH_A)).toBe(true);
+
+      const inflight = await store.reconcile();
+      const row = inflight.find((i) => i.subject === "prop-2");
+      expect(row).toMatchObject({ status: "submitted", txHash: TX, nonce: null });
+
+      // Not idempotent — a second report cannot overwrite the recorded hash.
+      expect(await store.markBroadcast(id, HASH_B, HASH_A)).toBe(false);
+    },
+    TIMEOUT
+  );
+
+  it(
+    "supersede retires a proposal and refuses a submitted one",
+    async () => {
+      const supId = idempotencyKey(input("prop-sup"));
+      await store.propose(input("prop-sup"), payload({ value: "1" }), HASH_A);
+      expect(await store.supersede(supId)).toBe(true);
+      // Re-proposable after supersede.
+      expect(
+        (await store.propose(input("prop-sup"), payload({ value: "2" }), HASH_B)).recorded
+      ).toBe(true);
+
+      // A submitted (real, on-chain) intent is never superseded.
+      const liveId = idempotencyKey(input("prop-live"));
+      await store.recordIntent(input("prop-live"));
+      await store.transition(liveId, "submitted", { txHash: TX });
+      expect(await store.supersede(liveId)).toBe(false);
+    },
+    TIMEOUT
+  );
+
+  it(
+    "expireProposals sweeps exactly the past-TTL proposals in its action scope",
+    async () => {
+      // A dedicated action so the count is exact — the shared schema carries `liquidation`
+      // proposals from earlier tests, and this assertion must not depend on how many.
+      const EXP = { action: "expiry-test" };
+      await store.propose(input("exp-a", EXP), payload(), HASH_A);
+      await store.propose(input("exp-b", EXP), payload(), HASH_B);
+
+      // A 0ms window means "updatedAt <= now"; both were proposed in the past, so both go — and
+      // nothing outside this action is touched.
+      expect(await store.expireProposals(0, "expiry-test")).toBe(2);
+
+      expect((await store.reconcile()).map((i) => i.subject)).not.toContain("exp-a"); // not in-flight
+      expect((await store.propose(input("exp-a", EXP), payload(), HASH_A)).recorded).toBe(true); // revivable
     },
     TIMEOUT
   );
