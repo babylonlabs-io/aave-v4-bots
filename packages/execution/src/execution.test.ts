@@ -1,12 +1,15 @@
-import { keccak256 } from "viem";
+import { type Hex, keccak256, parseAbi } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ContractCall,
   PreBroadcastError,
+  type ProposalPayload,
   type SignedTx,
   createNonceAllocator,
   createNonceLease,
   createTxSender,
+  encodeCall,
+  hashPayload,
   nextNonce,
   waitForReceipt,
   waitForReceiptWithTimeout,
@@ -253,6 +256,16 @@ describe("@repo/execution", () => {
   });
 
   describe("createTxSender", () => {
+    it("exposes its identity, derived from the wallet (from + chainId)", () => {
+      const { walletClient, publicClient } = txClients();
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg
+      );
+      // Identity rides with the sender — a caller never wires it separately.
+      expect(sender.identity).toEqual({ from: SIGNER, chainId: 31337 });
+    });
+
     it("hands the signed hash to onSigned BEFORE broadcasting", async () => {
       const { walletClient, publicClient } = txClients();
       const order: string[] = [];
@@ -401,6 +414,72 @@ describe("@repo/execution", () => {
 
       expect(submit).toHaveBeenCalledWith(SERIALIZED);
       expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("encodeCall", () => {
+    it("encodes a call to its { to, data }", () => {
+      const call: ContractCall = {
+        address: "0x000000000000000000000000000000000000dEaD",
+        abi: parseAbi(["function ping(uint256 value)"]),
+        functionName: "ping",
+        args: [1n],
+      };
+      const { to, data } = encodeCall(call);
+      expect(to).toBe("0x000000000000000000000000000000000000dEaD");
+      expect(data).toMatch(/^0x[0-9a-f]+$/); // encoded selector + arg
+      expect(data.length).toBe(2 + 8 + 64); // selector (4 bytes) + one uint256
+    });
+  });
+
+  describe("hashPayload", () => {
+    const base = (): ProposalPayload => ({
+      chainId: 31337,
+      to: "0x000000000000000000000000000000000000dEaD",
+      data: "0xdeadbeef",
+      value: "0",
+    });
+
+    it("is deterministic for identical payloads", () => {
+      expect(hashPayload(base())).toBe(hashPayload(base()));
+      expect(hashPayload(base())).toMatch(/^0x[0-9a-f]{64}$/);
+    });
+
+    // The load-bearing property: a jsonb round-trip reorders keys, may re-case the address, and
+    // drops an absent `gasLimit`. The hash is over structured fields, so none of that moves it —
+    // `operator-cli` reading the payload back must reproduce the hash the notification showed.
+    it("survives a jsonb-style round trip (key reorder, casing, absent gasLimit)", () => {
+      const original = base();
+      const target = hashPayload(original);
+
+      // Same semantic payload, keys in a different order and the address lower-cased (as a lenient
+      // JSON store might return it), gasLimit still absent.
+      const roundTripped: ProposalPayload = {
+        value: "0",
+        data: "0xdeadbeef",
+        to: "0x000000000000000000000000000000000000dead",
+        chainId: 31337,
+      };
+      expect(hashPayload(roundTripped)).toBe(target);
+    });
+
+    it("treats an absent gasLimit and an explicit '0' as identical (the sentinel)", () => {
+      expect(hashPayload({ ...base(), gasLimit: "0" })).toBe(hashPayload(base()));
+    });
+
+    it("changes when any semantic field changes", () => {
+      const h = hashPayload(base());
+      expect(hashPayload({ ...base(), chainId: 1 })).not.toBe(h);
+      expect(hashPayload({ ...base(), value: "1" })).not.toBe(h);
+      expect(hashPayload({ ...base(), data: "0xcafebabe" })).not.toBe(h);
+      expect(hashPayload({ ...base(), gasLimit: "500000" })).not.toBe(h);
+      expect(hashPayload({ ...base(), to: "0x1111111111111111111111111111111111111111" })).not.toBe(
+        h
+      );
+    });
+
+    it("rejects a malformed address rather than hashing it (getAddress guards)", () => {
+      expect(() => hashPayload({ ...base(), to: "0xnope" as Hex })).toThrow();
     });
   });
 });

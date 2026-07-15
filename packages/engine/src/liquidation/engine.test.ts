@@ -41,10 +41,12 @@ const mockPosition: LiquidatablePosition = {
 /**
  * A `TxSender` that skips real signing but honors the contract that matters: `onSigned` (the
  * durable nonce + hash record) runs BEFORE the broadcast resolves, so crash-safety tests
- * exercise the same ordering as the real sender.
+ * exercise the same ordering as the real sender. Carries an `identity` like a real sender — the
+ * engine reads `sender.identity` for the intent's chain id and the simulation `from`.
  */
-function mockSender() {
+function mockSender(identity = { from: "0xliquidator" as `0x${string}`, chainId: 31337 }) {
   return {
+    identity,
     send: vi.fn(
       async (
         call: { nonce?: number },
@@ -943,6 +945,45 @@ describe("LiquidationEngine", () => {
         2,
         expect.objectContaining({ nonce: 11 }),
         expect.any(Function)
+      );
+    });
+  });
+
+  describe("execution identity", () => {
+    const feed = () =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: [mockPosition], total: 1, checked: 1 }),
+      });
+
+    it("reads identity off the sender (intent chain id + simulation `from`)", async () => {
+      const store = createMemoryStateStore();
+      const clients = createMockClients(); // sender identity: { from: 0xliquidator, chainId: 31337 }
+      const bot = createBot(clients, { store });
+      global.fetch = feed();
+
+      await bot.run();
+
+      expect(store.all()[0]?.chainId).toBe(31337);
+      expect(clients.publicClient.simulateContract).toHaveBeenCalledWith(
+        expect.objectContaining({ account: "0xliquidator" })
+      );
+    });
+
+    it("follows the sender's identity, not the wallet (the keyless-MANUAL substitution)", async () => {
+      const store = createMemoryStateStore();
+      const clients = createMockClients();
+      // A sender carrying the OPERATOR's identity — as a keyless MANUAL bot would inject. The
+      // wallet still says chain 31337 / 0xliquidator, but the sender is the source of truth.
+      clients.sender = mockSender({ from: "0xoperator" as `0x${string}`, chainId: 424242 });
+      const bot = createBot(clients, { store });
+      global.fetch = feed();
+
+      await bot.run();
+
+      expect(store.all()[0]?.chainId).toBe(424242);
+      expect(clients.publicClient.simulateContract).toHaveBeenCalledWith(
+        expect.objectContaining({ account: "0xoperator" })
       );
     });
   });

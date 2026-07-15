@@ -21,6 +21,7 @@ import {
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
 import {
+  type ExecutionIdentity,
   type NonceAllocator,
   PreBroadcastError,
   type TxSender,
@@ -74,7 +75,11 @@ export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
   store?: StateStore;
   /** Shared nonce authority; absent ⇒ viem auto-nonce (behavior-preserving). */
   nonces?: NonceAllocator;
-  /** How txs are signed + broadcast; absent ⇒ local signing to the public mempool. */
+  /**
+   * How txs are signed + broadcast, **and who they come from** (`sender.identity`). Absent ⇒ local
+   * signing off `walletClient`. A keyless MANUAL engine injects a sender carrying the operator's
+   * identity here instead — so identity and the send path travel together, never separately.
+   */
   sender?: TxSender;
   /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
   onPollComplete?: () => void;
@@ -99,6 +104,11 @@ export class ArbitrageEngine {
   private txReceiptTimeoutMs: number;
   private wbtcMeta?: TokenMeta;
 
+  /** Who these txs come from — read straight off the sender, never cached separately. */
+  private get identity(): ExecutionIdentity {
+    return this.sender.identity;
+  }
+
   constructor(config: ArbitrageEngineConfig) {
     this.metrics = config.metrics;
     this.logger = config.logger;
@@ -118,7 +128,7 @@ export class ArbitrageEngine {
       store: config.store,
       nonces: config.nonces,
       publicClient: config.publicClient,
-      signer: config.walletClient.account.address,
+      signer: this.identity.from,
       logger: config.logger,
     });
   }
@@ -295,7 +305,7 @@ export class ArbitrageEngine {
           abi: vaultSwapAbi,
           functionName: "swapWbtcForVault",
           args: [vaultId as Hex, maxWbtcIn],
-          account: this.walletClient.account,
+          account: this.identity.from,
         });
       } catch (gasError) {
         const errorMsg = gasError instanceof Error ? gasError.message : String(gasError);
@@ -308,13 +318,15 @@ export class ArbitrageEngine {
       }
 
       // Crash-safety: refuse a duplicate live acquisition intent (already in flight on chain).
-      const { claimed, intentId } = await this.crash.claim(slot, {
-        chainId: this.walletClient.chain.id,
+      const { claimed, intentId } = await this.crash.claim({
+        chainId: this.identity.chainId,
         target: this.vaultSwapAddress,
         action: "vault-acquisition",
         subject: vaultId,
       });
       if (!claimed) {
+        // Nothing was broadcast — free the exposure slot without blaming the chain.
+        slot.settle({ ok: false, abandoned: true });
         this.metrics.recordError("intent_in_flight");
         return "skipped";
       }
@@ -431,7 +443,7 @@ export class ArbitrageEngine {
    * Ensure arbitrageur has approved VaultSwap to spend WBTC
    */
   private async ensureApproval(requiredAmount: bigint): Promise<void> {
-    const arbitrageur = this.walletClient.account.address;
+    const arbitrageur = this.identity.from;
 
     // Check current allowance for VaultSwap contract with retry
     const allowance = await withRetry(
@@ -485,7 +497,7 @@ export class ArbitrageEngine {
    * Log arbitrageur's WBTC balance
    */
   async logBalance(): Promise<void> {
-    const arbitrageur = this.walletClient.account.address;
+    const arbitrageur = this.identity.from;
 
     try {
       // Run metadata + balanceOf in parallel: cold-start is no slower than

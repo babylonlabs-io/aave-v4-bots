@@ -17,6 +17,7 @@ import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
 import {
   type ContractCall,
+  type ExecutionIdentity,
   type NonceAllocator,
   PreBroadcastError,
   type TxSender,
@@ -88,7 +89,11 @@ export interface LiquidationEngineConfig extends LiquidationEngineParams {
    * (behavior-preserving). Paired with `store` at the composition root.
    */
   nonces?: NonceAllocator;
-  /** How txs are signed + broadcast; absent ⇒ local signing to the public mempool. */
+  /**
+   * How txs are signed + broadcast, **and who they come from** (`sender.identity`). Absent ⇒ local
+   * signing off `walletClient`. A keyless MANUAL engine injects a sender carrying the operator's
+   * identity here instead — so identity and the send path travel together, never separately.
+   */
   sender?: TxSender;
 }
 
@@ -112,6 +117,11 @@ export class LiquidationEngine {
   private txReceiptTimeoutMs: number;
   private tokenMetaCache = new TokenMetaCache();
 
+  /** Who these txs come from — read straight off the sender, never cached separately. */
+  private get identity(): ExecutionIdentity {
+    return this.sender.identity;
+  }
+
   constructor(config: LiquidationEngineConfig) {
     this.metrics = config.metrics;
     this.logger = config.logger;
@@ -132,7 +142,7 @@ export class LiquidationEngine {
       store: config.store,
       nonces: config.nonces,
       publicClient: config.publicClient,
-      signer: config.walletClient.account.address,
+      signer: this.identity.from,
       logger: config.logger,
     });
   }
@@ -297,14 +307,14 @@ export class LiquidationEngine {
                   0n,
                   maxUint256,
                 ],
-                account: this.walletClient.account,
+                account: this.identity.from,
               })
             : this.publicClient.simulateContract({
                 address: this.adapterAddress,
                 abi: adapterAbi,
                 functionName: "liquidateWithLLP",
                 args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
-                account: this.walletClient.account,
+                account: this.identity.from,
               });
         })
       );
@@ -340,7 +350,7 @@ export class LiquidationEngine {
       // (behavior-preserving). A send error is treated as AMBIGUOUS (the tx may have
       // propagated): the intent is kept LIVE (never terminal) and the cycle stops — the next
       // cycle's reconcile resolves it by nonce vs. chain.
-      const signer = this.walletClient.account.address;
+      const signer = this.identity.from;
       let localNonce = this.crash.allocated ? 0 : await nextNonce(this.publicClient, signer);
 
       // Each sent tx is paired with its intent id (so the receipt phase can transition it) and
@@ -371,13 +381,15 @@ export class LiquidationEngine {
         slots.push(slot);
 
         // Crash-safety: refuse a duplicate live intent (already pending/submitted on chain).
-        const { claimed, intentId } = await this.crash.claim(slot, {
-          chainId: this.walletClient.chain.id,
+        const { claimed, intentId } = await this.crash.claim({
+          chainId: this.identity.chainId,
           target: this.adapterAddress,
           action: "liquidation",
           subject: position.proxyAddress,
         });
         if (!claimed) {
+          // Nothing was broadcast — free the exposure slot without blaming the chain.
+          slot.settle({ ok: false, abandoned: true });
           this.metrics.recordError("intent_in_flight");
           continue;
         }
@@ -547,7 +559,7 @@ export class LiquidationEngine {
    * and direct-redemption fee (`wbtcPayment` from the Lens) during liquidation.
    */
   async ensureApproval(): Promise<void> {
-    const liquidator = this.walletClient.account.address;
+    const liquidator = this.identity.from;
 
     const tokensToApprove = Array.from(
       new Set<Address>([...this.debtTokenAddresses, this.wbtcAddress])
@@ -589,7 +601,7 @@ export class LiquidationEngine {
    * Log and record liquidator's token balances (debt tokens + WBTC)
    */
   async logBalances(): Promise<void> {
-    const liquidator = this.walletClient.account.address;
+    const liquidator = this.identity.from;
 
     // Best-effort: a balance read failing on an RPC blip must not crash the poll
     // loop (mirrors ArbitrageEngine.logBalance). run() has its own try/catch.

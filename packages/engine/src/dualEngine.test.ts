@@ -68,7 +68,7 @@ function setup(
       return "0xhash" as `0x${string}`;
     }
   );
-  const sender = { send: broadcast };
+  const sender = { identity: { from: SIGNER, chainId: 31337 }, send: broadcast };
 
   const walletClient = {
     account: { address: SIGNER },

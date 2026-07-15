@@ -137,10 +137,16 @@ export async function reconcilePending(args: {
   };
   if (inflight.length === 0) return summary;
 
-  const [latest, pending] = await Promise.all([
-    reader.getNonce(signer, "latest"),
-    reader.getNonce(signer, "pending"),
-  ]);
+  // The signer's nonce counts anchor only the nonce-based branches below, all guarded by
+  // `nonce !== null`. A keyless MANUAL bot's in-flight intents are operator-broadcast — every one
+  // has `nonce === null` — so it would read a signer nonce it does not have, and issue an
+  // `eth_getTransactionCount` for nothing. Read lazily: skip both entirely unless some intent
+  // actually carries a nonce. (When skipped the values are never consulted — the branches that
+  // would are unreachable.)
+  const anyNonced = inflight.some((i) => i.nonce !== null);
+  const [latest, pending] = anyNonced
+    ? await Promise.all([reader.getNonce(signer, "latest"), reader.getNonce(signer, "pending")])
+    : [0, 0];
 
   for (const intent of inflight) {
     const { id, nonce, txHash } = intent;

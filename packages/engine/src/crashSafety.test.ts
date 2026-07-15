@@ -1,7 +1,6 @@
 import { type NonceAllocator, createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { createMemoryStateStore, idempotencyKey } from "@repo/persistence";
-import type { RiskSlot } from "@repo/risk";
 import { type Address, type Hex, type PublicClient, TransactionNotFoundError } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
@@ -19,12 +18,6 @@ const input = (subject: string) => ({
   action: "liquidation",
   subject,
 });
-
-/** A slot that records whether it was settled, standing in for the risk gate's. */
-function fakeSlot(): RiskSlot & { settled: unknown[] } {
-  const settled: unknown[] = [];
-  return { allowed: true, reason: "", settle: (o) => settled.push(o), settled };
-}
 
 const publicClient = { getTransactionCount: vi.fn(async () => 7) } as unknown as PublicClient;
 
@@ -110,28 +103,25 @@ describe("createCrashSafety", () => {
   describe("claim", () => {
     it("claims a fresh subject and returns its intent id", async () => {
       const store = createMemoryStateStore();
-      const slot = fakeSlot();
-      const result = await crash({ store }).claim(slot, input("p"));
+      const result = await crash({ store }).claim(input("p"));
 
       expect(result).toEqual({ claimed: true, intentId: idempotencyKey(input("p")) });
-      expect(slot.settled).toEqual([]); // still in flight — the caller settles later
     });
 
-    // A duplicate means nothing was broadcast: free the exposure slot, don't blame the chain.
-    it("refuses a duplicate live intent and settles the slot as abandoned", async () => {
+    // Claim does NOT settle the slot — settling exposure is the engine's job on every path. On
+    // refusal it hands back the live intent so the caller can settle `abandoned` and report it.
+    it("refuses a duplicate live intent and returns the existing one, settling nothing", async () => {
       const store = createMemoryStateStore();
       const cs = crash({ store });
-      await cs.claim(fakeSlot(), input("p"));
+      await cs.claim(input("p"));
 
-      const slot = fakeSlot();
-      expect(await cs.claim(slot, input("p"))).toEqual({ claimed: false });
-      expect(slot.settled).toEqual([{ ok: false, abandoned: true }]);
+      const result = await cs.claim(input("p"));
+      expect(result.claimed).toBe(false);
+      expect(result.existing).toMatchObject({ subject: "p", status: "pending" });
     });
 
     it("without a store, always claims and never yields an intent id", async () => {
-      const slot = fakeSlot();
-      expect(await crash().claim(slot, input("p"))).toEqual({ claimed: true });
-      expect(slot.settled).toEqual([]);
+      expect(await crash().claim(input("p"))).toEqual({ claimed: true });
     });
   });
 

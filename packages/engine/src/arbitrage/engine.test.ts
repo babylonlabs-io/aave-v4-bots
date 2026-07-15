@@ -32,8 +32,9 @@ const mockVault: EscrowedVault = {
  * durable nonce + hash record) runs BEFORE the broadcast resolves, so crash-safety tests
  * exercise the same ordering as the real sender.
  */
-function mockSender() {
+function mockSender(identity = { from: "0xarbitrageur" as `0x${string}`, chainId: 31337 }) {
   return {
+    identity,
     send: vi.fn(
       async (
         call: { nonce?: number },

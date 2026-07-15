@@ -1,7 +1,12 @@
 import { type NonceAllocator, nextNonce } from "@repo/execution";
 import type { Logger } from "@repo/logger";
-import type { IntentInput, IntentStatus, StateStore, TransitionMeta } from "@repo/persistence";
-import type { RiskSlot } from "@repo/risk";
+import type {
+  IntentInput,
+  IntentStatus,
+  StateStore,
+  TransitionMeta,
+  TxIntent,
+} from "@repo/persistence";
 import type { Address, Hex, PublicClient } from "viem";
 
 import {
@@ -64,13 +69,14 @@ export interface CrashSafety {
   send(send: (nonce?: number) => Promise<Hex>): Promise<Hex>;
 
   /**
-   * Claim the right to perform `input`, refusing a duplicate already live (pending or submitted)
-   * on chain. On refusal the risk slot is released as `abandoned` — nothing was broadcast, so it
-   * is not evidence the chain is rejecting us — and the caller skips the action.
+   * Claim the right to perform `input`, refusing (`claimed: false`) a duplicate already live
+   * (pending or submitted) on chain. **Does not settle the risk slot** — settling exposure is the
+   * caller's job on every path (a refused claim is settled `abandoned`: nothing was broadcast, so
+   * it is not evidence the chain is rejecting us). On refusal `existing` carries the live intent.
    *
    * Without a store there is no idempotency to enforce: the claim succeeds with no intent id.
    */
-  claim(slot: RiskSlot, input: IntentInput): Promise<{ claimed: boolean; intentId?: string }>;
+  claim(input: IntentInput): Promise<{ claimed: boolean; intentId?: string; existing?: TxIntent }>;
 
   /**
    * Persist the reserved `nonce` — and, when the tx was signed locally, its `txHash` — on an
@@ -166,14 +172,13 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
       return nonces ? nonces.withNonce((nonce) => send(nonce)) : send();
     },
 
-    async claim(slot, input) {
+    async claim(input) {
       if (!store) return { claimed: true };
 
       const record = await store.recordIntent(input);
       if (!record.recorded) {
         logger.warn(`Skipping ${input.subject}: intent already ${record.existing.status}`);
-        slot.settle({ ok: false, abandoned: true });
-        return { claimed: false };
+        return { claimed: false, existing: record.existing };
       }
       return { claimed: true, intentId: record.id };
     },

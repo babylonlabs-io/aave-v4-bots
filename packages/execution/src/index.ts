@@ -8,7 +8,9 @@ import {
   type PublicClient,
   type Transport,
   type WalletClient,
+  encodeAbiParameters,
   encodeFunctionData,
+  getAddress,
   keccak256,
 } from "viem";
 
@@ -136,6 +138,18 @@ export function createNonceAllocator(lease: NonceLease, signer: Address): NonceA
 // inferring from the nonce. This is the `Submitter` seam in `@repo/signer` wired onto the hot
 // path; `submit` defaults to the public mempool.
 
+/**
+ * Who a bot's transactions come from, and on what chain — the keyless subset of what an engine used
+ * to read off its `WalletClient`. In AUTO this is the bot's own signer; in MANUAL it is the
+ * operator's wallet (the address whose balances/allowances the engine reads and whose `from` its
+ * simulations use). An address and a number: **no key**, which is what lets a MANUAL engine hold no
+ * `WalletClient` at all.
+ */
+export interface ExecutionIdentity {
+  from: Address;
+  chainId: number;
+}
+
 /** A contract call to sign — the engine-facing description of a tx. */
 export interface ContractCall {
   address: Address;
@@ -144,6 +158,69 @@ export interface ContractCall {
   args: readonly unknown[];
   /** Reserved nonce; omitted ⇒ viem fills it from the chain's `pending` count. */
   nonce?: number;
+}
+
+/** Encode a `ContractCall` to the `{ to, data }` a transaction carries. */
+export function encodeCall(call: ContractCall): { to: Address; data: Hex } {
+  return {
+    to: call.address,
+    data: encodeFunctionData({
+      abi: call.abi,
+      functionName: call.functionName,
+      args: call.args,
+    } as Parameters<typeof encodeFunctionData>[0]),
+  };
+}
+
+/**
+ * The semantic content of a MANUAL proposal — the fields a `payloadHash` commits to. Structurally
+ * identical to `@repo/persistence`'s `ProposedTx` (kept decoupled: neither package depends on the
+ * other, and the engine, which has both, bridges them). `value`/`gasLimit` are **decimal strings**,
+ * as stored in `jsonb`.
+ */
+export interface ProposalPayload {
+  chainId: number;
+  to: Address;
+  data: Hex;
+  value: string;
+  gasLimit?: string;
+}
+
+/** Bumps if the hash encoding ever changes, so an old proposal's hash stays interpretable. */
+const PAYLOAD_HASH_VERSION = "aave-v4-bot-proposal-v1";
+
+/**
+ * Content hash of a proposal — the operator's out-of-band check (they compare it to the one shown in
+ * their notification; `operator-cli` recomputes it from the persisted payload).
+ *
+ * It hashes a **fixed ABI byte layout of the semantic fields**, not a JSON serialization: the
+ * payload is stored as `jsonb`, which reorders keys and drops an absent `gasLimit`, so a
+ * string-of-the-object hash would not survive the round trip. `to` is normalized (`getAddress`) so
+ * casing cannot change the hash; `value`/`gasLimit` are parsed from their decimal strings; an absent
+ * `gasLimit` collapses to its documented `0` sentinel. Recomputing from a freshly-built payload or
+ * from one read back out of the database yields the same hash.
+ */
+export function hashPayload(payload: ProposalPayload): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { type: "string" },
+        { type: "uint256" },
+        { type: "address" },
+        { type: "bytes" },
+        { type: "uint256" },
+        { type: "uint256" },
+      ],
+      [
+        PAYLOAD_HASH_VERSION,
+        BigInt(payload.chainId),
+        getAddress(payload.to),
+        payload.data,
+        BigInt(payload.value),
+        BigInt(payload.gasLimit ?? "0"),
+      ]
+    )
+  );
 }
 
 /** A locally-signed tx: its hash is known before anything is broadcast. */
@@ -155,6 +232,13 @@ export interface SignedTx {
 }
 
 export interface TxSender {
+  /**
+   * Who these transactions come from, and on what chain. A sender *is* an identity — it signs with a
+   * specific key on a specific chain — so the two travel together rather than being wired
+   * separately. Callers read `sender.identity.from` for allowance/balance owners, the reconcile
+   * signer, and the simulation `account`.
+   */
+  readonly identity: ExecutionIdentity;
   /**
    * Sign `call` locally, hand the resulting `SignedTx` to `onSigned` (the durable
    * pre-broadcast record), then broadcast. A throwing `onSigned` aborts the send — nothing
@@ -219,6 +303,9 @@ export function createTxSender(
     submit ??
     ((serializedTransaction: Hex) => publicClient.sendRawTransaction({ serializedTransaction }));
   return {
+    // The sender's identity is intrinsic: its key is `walletClient.account`, its chain
+    // `walletClient.chain`. A caller never has to supply it separately.
+    identity: { from: walletClient.account.address, chainId: walletClient.chain.id },
     async send(call, onSigned) {
       let signed: SignedTx;
       try {
