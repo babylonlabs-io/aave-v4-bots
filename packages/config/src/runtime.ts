@@ -2,7 +2,7 @@ import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { z } from "zod";
 
-import { addressSchema } from "./schemas";
+import { addressSchema, nonNegativeIntSchema } from "./schemas";
 
 /** A 0x-prefixed address. `@repo/config` avoids a `viem` dependency, so it names the shape itself. */
 type Hex40 = `0x${string}`;
@@ -54,6 +54,11 @@ export const runtimeEnvFields = {
    * reads and whose `from` its simulations use. An address, never a key. Required in MANUAL.
    */
   MANUAL_EXECUTOR_ADDRESS: addressSchema.optional(),
+  /**
+   * How long (ms) an un-actioned MANUAL proposal lives before it's swept to `expired` — freeing its
+   * subject to be re-proposed (and re-notified). `0` disables expiry. Default 3 hours. MANUAL only.
+   */
+  MANUAL_INTENT_TTL_MS: nonNegativeIntSchema.optional().default("10800000"),
 } as const;
 
 /** The env shape the builders below consume. */
@@ -76,6 +81,7 @@ export interface ExecutionEnv {
   // Address vars stay `string` here — the `addressSchema` regex validates the format but zod infers
   // `string`; `buildExecutionConfig` narrows to `Hex40` on the way out.
   MANUAL_EXECUTOR_ADDRESS?: string;
+  MANUAL_INTENT_TTL_MS: string;
   DATABASE_URL?: string;
   SIGNER_SOURCE: "local" | "aws";
   SIGNER_KEY_REF?: string;
@@ -84,13 +90,19 @@ export interface ExecutionEnv {
 }
 
 /**
- * How a service executes. A discriminated union so MANUAL *carries* its broadcasting address — the
- * composition root reads it without a re-check, and AUTO simply has no key-shaped fields.
+ * How a service executes. A discriminated union so MANUAL *carries* its broadcasting address (and
+ * proposal TTL) — the composition root reads them without a re-check, and AUTO simply has no
+ * key-shaped fields.
  */
 export type ExecutionSettings =
   | { mode: "AUTO" }
-  /** The EOA whose balances/allowances the engine reads and whose `from` it simulates from. */
-  | { mode: "MANUAL"; manualExecutorAddress: Hex40 };
+  | {
+      mode: "MANUAL";
+      /** The EOA whose balances/allowances the engine reads and whose `from` it simulates from. */
+      manualExecutorAddress: Hex40;
+      /** Sweep an un-actioned proposal to `expired` after this many ms (`0` disables). */
+      intentTtlMs: number;
+    };
 
 /** How a service selects and resolves its notifier — the source, plus the secret ref to resolve. */
 export interface NotifierSettings {
@@ -168,5 +180,9 @@ export function buildExecutionConfig(
     );
   }
 
-  return { mode: "MANUAL", manualExecutorAddress: env.MANUAL_EXECUTOR_ADDRESS as Hex40 };
+  return {
+    mode: "MANUAL",
+    manualExecutorAddress: env.MANUAL_EXECUTOR_ADDRESS as Hex40,
+    intentTtlMs: Number.parseInt(env.MANUAL_INTENT_TTL_MS, 10),
+  };
 }

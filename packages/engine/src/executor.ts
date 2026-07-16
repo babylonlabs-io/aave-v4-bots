@@ -255,8 +255,15 @@ export function createManualExecutor(deps: {
   notifier: Notifier;
   identity: ExecutionIdentity;
   logger: Logger;
+  /**
+   * Sweep an un-actioned proposal to `expired` after this many ms, each cycle, freeing its subject
+   * to be re-proposed (and re-notified). `0` disables the sweep — the "`MANUAL_INTENT_TTL_MS=0`
+   * disables expiry" convention lives here: a zero TTL means "never call `expireProposals`", not
+   * "expire everything" (`expireProposals(0)` would sweep every live proposal).
+   */
+  intentTtlMs: number;
 }): ManualExecutor {
-  const { store, publicClient, notifier, identity, logger } = deps;
+  const { store, publicClient, notifier, identity, logger, intentTtlMs } = deps;
   const reader = createChainReader(publicClient);
 
   const buildPayload = (call: ContractCall): { payload: ProposedTx; hash: `0x${string}` } => {
@@ -307,7 +314,16 @@ export function createManualExecutor(deps: {
 
     // A keyless bot still reconciles: the operator broadcasts, records the hash (markBroadcast), and
     // the next cycle resolves that intent by receipt — with no nonce reads (all intents nonce-less).
+    // It also sweeps un-actioned proposals past the TTL: without this a proposal nobody signs stays
+    // live forever (and, deduped on payload hash, blocks its subject from ever re-notifying) — the
+    // liveness hole the TTL closes. Swept across **all** actions, not just this engine's: a stale
+    // proposal is stale whoever made it (and `approval` proposals belong to no engine's reconcile),
+    // so either engine's cycle clears the lot; the other engine's call then finds nothing to do.
     async reconcile(action) {
+      if (intentTtlMs > 0) {
+        const swept = await store.expireProposals(intentTtlMs);
+        if (swept > 0) logger.info(`Expired ${swept} un-actioned proposal(s)`);
+      }
       await reconcilePending({ store, reader, signer: identity.from, action, logger });
     },
     resyncNonces: () => Promise.resolve(),
@@ -328,12 +344,14 @@ export function createManualExecutor(deps: {
 
     async ensureAllowance({ token, spender, required }) {
       // Keyless: read the operator's allowance; if short, propose the approval for them to sign.
-      // Keyed by `spender`/`token` so two engines' approvals never collide.
+      // `target` is the token (the contract the `approve` call is sent to, per `IntentInput.target`);
+      // `subject` is the spender. Both are in the idempotency key `chainId:target:action:subject`, so
+      // two engines approving the SAME token for DIFFERENT spenders never collide into one proposal.
       const allowance = await readAllowance(publicClient, token, identity.from, spender);
       if (allowance >= required) return { kind: "satisfied" };
       return propose(
         { address: token, abi: erc20Abi, functionName: "approve", args: [spender, maxUint256] },
-        { target: spender, action: "approval", subject: token }
+        { target: token, action: "approval", subject: spender }
       );
     },
   };

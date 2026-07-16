@@ -1,7 +1,7 @@
 import { type RpcCallObserver, instrumentedHttp, readCodeHash } from "@repo/chain";
 import type { ExecutionSettings, NotifierSettings, RiskSettings } from "@repo/config";
 import { type Executor, createAutoExecutorFromWallet, createManualExecutor } from "@repo/engine";
-import { createNonceAllocator, createNonceLease, nextNonce } from "@repo/execution";
+import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type Notifier, buildNotifier, riskEventSink } from "@repo/notifications";
 import { type ObservabilityServerConfig, startObservabilityServer } from "@repo/observability";
@@ -190,7 +190,14 @@ async function buildExecutor(
     if (!store) throw new Error("MANUAL execution requires a StateStore (DATABASE_URL)");
     const identity = { from: config.execution.manualExecutorAddress, chainId: chain.id };
     logger.info(`Execution mode: MANUAL — proposing from ${identity.from} (keyless)`);
-    return createManualExecutor({ store, publicClient, notifier, identity, logger });
+    return createManualExecutor({
+      store,
+      publicClient,
+      notifier,
+      identity,
+      logger,
+      intentTtlMs: config.execution.intentTtlMs,
+    });
   }
 
   // AUTO — one signer, its wallet, and ONE nonce authority shared by every engine (so their
@@ -207,7 +214,11 @@ async function buildExecutor(
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
     logger,
   });
-  // Seed the shared lease from the chain once, before any send (boot approvals reserve nonces).
-  await nonces.resync(() => nextNonce(publicClient, signer.address));
+  // Seed the shared lease from the chain once, before any send (the boot `ensureApproval` reserves
+  // nonces before the poll loop's first resync). Go through the executor's fenced resync, not a raw
+  // `nextNonce` read: it applies the same `liveNonceFloor` fence the poll loop does, so a prior
+  // crashed process's in-flight tx that the node's `pending` count under-reports can't be collided
+  // with by the very first approval.
+  await executor.resyncNonces();
   return executor;
 }

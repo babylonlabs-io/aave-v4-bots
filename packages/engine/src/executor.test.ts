@@ -224,7 +224,8 @@ const manualPublicClient = (over: Record<string, unknown> = {}) =>
 function manualExecutor(
   store: MemoryStateStore,
   notifier: Notifier,
-  publicClient = manualPublicClient()
+  publicClient = manualPublicClient(),
+  intentTtlMs = 0 // expiry disabled by default; the expiry tests set it explicitly
 ) {
   return createManualExecutor({
     store,
@@ -232,6 +233,7 @@ function manualExecutor(
     notifier,
     identity: { from: OPERATOR, chainId: 31337 },
     logger: silentLogger,
+    intentTtlMs,
   });
 }
 
@@ -315,7 +317,7 @@ describe("createManualExecutor (keyless)", () => {
       expect(store.all()).toHaveLength(0); // nothing proposed
     });
 
-    it("proposes the approval (target=spender, subject=token) — broadcasting nothing", async () => {
+    it("proposes the approval (target=token, subject=spender) — broadcasting nothing", async () => {
       const store = createMemoryStateStore();
       const { notifier, events } = fakeNotifier();
       const exec = manualExecutor(
@@ -327,15 +329,85 @@ describe("createManualExecutor (keyless)", () => {
       const result = await exec.ensureAllowance({ token: TOKEN, spender: SPENDER, required: 100n });
 
       expect(result.kind).toBe("proposed");
-      // Keyed by spender/token so two engines' approvals never collide (the #9a review point).
+      // `target` is the token (the contract `approve` is sent to), `subject` the spender — both in
+      // the key, so two engines approving one token for different spenders never collide.
       const row = store.all()[0];
       expect(row).toMatchObject({
         action: "approval",
-        target: SPENDER,
-        subject: TOKEN,
+        target: TOKEN,
+        subject: SPENDER,
         status: "proposed",
       });
       expect(events[0]).toMatchObject({ kind: "manual-intent", action: "approval" });
+    });
+  });
+
+  // Without this sweep a proposal nobody actions stays `proposed` forever and — deduped on payload
+  // hash — blocks its subject from ever re-notifying. `reconcile` expires it after the TTL.
+  describe("proposal expiry (reconcile sweep)", () => {
+    it("expires an un-actioned proposal past the TTL, freeing the subject to re-propose", async () => {
+      let clock = 1_000;
+      const store = createMemoryStateStore(() => clock);
+      const { notifier, events } = fakeNotifier();
+      const exec = manualExecutor(store, notifier, manualPublicClient(), 5_000); // 5s TTL
+
+      await exec.commit(CALL, claim("p")); // proposed at t=1000
+      expect(store.get(idempotencyKey(claim("p")))?.status).toBe("proposed");
+
+      clock = 1_000 + 5_001; // one ms past the TTL
+      await exec.reconcile("liquidation");
+      expect(store.get(idempotencyKey(claim("p")))?.status).toBe("expired");
+
+      // `expired` is terminal ⇒ revivable: a fresh proposal for the same subject re-notifies.
+      const out = await exec.commit(CALL, claim("p"));
+      expect(out.kind).toBe("proposed");
+      expect(events).toHaveLength(2);
+    });
+
+    it("leaves a proposal alone within the TTL", async () => {
+      let clock = 1_000;
+      const store = createMemoryStateStore(() => clock);
+      const exec = manualExecutor(store, fakeNotifier().notifier, manualPublicClient(), 5_000);
+
+      await exec.commit(CALL, claim("p"));
+      clock = 1_000 + 100; // still within the window
+      await exec.reconcile("liquidation");
+      expect(store.get(idempotencyKey(claim("p")))?.status).toBe("proposed");
+    });
+
+    it("intentTtlMs=0 disables the sweep (never expires)", async () => {
+      let clock = 1_000;
+      const store = createMemoryStateStore(() => clock);
+      const exec = manualExecutor(store, fakeNotifier().notifier, manualPublicClient(), 0);
+
+      await exec.commit(CALL, claim("p"));
+      clock = 1_000 + 10 ** 9; // far past any TTL
+      await exec.reconcile("liquidation");
+      expect(store.get(idempotencyKey(claim("p")))?.status).toBe("proposed");
+    });
+
+    it("sweeps proposals of any action, not just the reconciled one", async () => {
+      let clock = 1_000;
+      const store = createMemoryStateStore(() => clock);
+      const exec = manualExecutor(
+        store,
+        fakeNotifier().notifier,
+        manualPublicClient({ readContract: vi.fn(async () => 0n) }), // allowance short ⇒ proposes
+        5_000
+      );
+
+      // An `approval` proposal — no `reconcile("approval")` ever runs for it.
+      await exec.ensureAllowance({
+        token: "0x0000000000000000000000000000000000000abc" as Address,
+        spender: "0x0000000000000000000000000000000000000def" as Address,
+        required: 100n,
+      });
+      expect(store.all()[0]?.status).toBe("proposed");
+
+      clock = 1_000 + 5_001;
+      await exec.reconcile("liquidation"); // a DIFFERENT action still sweeps it
+
+      expect(store.all()[0]?.status).toBe("expired");
     });
   });
 });

@@ -138,20 +138,27 @@ describe("buildExecutionConfig", () => {
   const manualBase = {
     EXECUTION_MODE: "MANUAL",
     MANUAL_EXECUTOR_ADDRESS: ADDR,
+    MANUAL_INTENT_TTL_MS: "10800000",
     DATABASE_URL: "postgres://x",
     SIGNER_SOURCE: "local",
   } as const;
 
   it("AUTO carries no key-shaped fields (and ignores signer/store vars)", () => {
     expect(
-      buildExecutionConfig({ EXECUTION_MODE: "AUTO", SIGNER_SOURCE: "local", SIGNER_KEY_REF: "K" })
+      buildExecutionConfig({
+        EXECUTION_MODE: "AUTO",
+        SIGNER_SOURCE: "local",
+        SIGNER_KEY_REF: "K",
+        MANUAL_INTENT_TTL_MS: "10800000",
+      })
     ).toEqual({ mode: "AUTO" });
   });
 
-  it("MANUAL carries the broadcasting address", () => {
+  it("MANUAL carries the broadcasting address + proposal TTL", () => {
     expect(buildExecutionConfig(manualBase)).toEqual({
       mode: "MANUAL",
       manualExecutorAddress: ADDR,
+      intentTtlMs: 10_800_000,
     });
   });
 
@@ -189,6 +196,16 @@ describe("buildExecutionConfig", () => {
     expect(buildExecutionConfig(manualBase, { signerKeyPresent: false })).toEqual({
       mode: "MANUAL",
       manualExecutorAddress: ADDR,
+      intentTtlMs: 10_800_000,
+    });
+  });
+
+  it("parses a custom TTL, and 0 to disable expiry", () => {
+    expect(buildExecutionConfig({ ...manualBase, MANUAL_INTENT_TTL_MS: "0" })).toMatchObject({
+      intentTtlMs: 0,
+    });
+    expect(buildExecutionConfig({ ...manualBase, MANUAL_INTENT_TTL_MS: "60000" })).toMatchObject({
+      intentTtlMs: 60_000,
     });
   });
 });
