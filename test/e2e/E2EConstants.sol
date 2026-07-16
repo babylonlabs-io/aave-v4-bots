@@ -39,7 +39,7 @@ library E2EConstants {
     // an endpoint that can stop trading must not share an exposure decision with a scrape target.
     uint256 internal constant LIQUIDATOR_CONTROL_PORT = 9095;
     uint256 internal constant ARBITRAGEUR_CONTROL_PORT = 9096;
-    /// @dev E2E-only. Real deployments resolve this through `@repo/secrets`; the env var here is
+    /// @dev E2E-only. Real deployments resolve this through the `repo/secrets` package; the env var here is
     ///      the `env` provider's backing store, which is what `RISK_CONTROL_TOKEN_REF` names.
     string internal constant CONTROL_TOKEN = "e2e-kill-switch-token";
     string internal constant CONTROL_TOKEN_REF = "BOT_CONTROL_TOKEN";
