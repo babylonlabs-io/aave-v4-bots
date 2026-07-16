@@ -47,7 +47,9 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
         _createArbitrageurEnvFile(address(lens), startBlock);
         _startProcess(".env.arbitrageur", "arbitrageur:indexer", "/tmp/arb-ponder.log");
         vm.sleep(10000); // Wait 10s for the unified Ponder to initialize
-        _startProcess(".env.arbitrageur", "arbitrageur:run", "/tmp/arb-bot.log");
+        // The bot waits for the Lens (this script's last-broadcast deploy) before booting, so its
+        // risk-gate code-hash check never races the forge broadcast phase. See `_startBotProcess`.
+        _startBotProcess(".env.arbitrageur", "arbitrageur:run", "/tmp/arb-bot.log", address(lens));
         _saveInitialBalances();
 
         (address borrower,) = _setupLiquidatablePosition(lens);
