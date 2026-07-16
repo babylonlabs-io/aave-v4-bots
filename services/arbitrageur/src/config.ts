@@ -1,8 +1,10 @@
 import {
+  type ExecutionSettings,
   type NotifierSettings,
   type RiskSettings,
   addressListSchema,
   addressSchema,
+  buildExecutionConfig,
   buildNotifierConfig,
   buildPersistenceConfig,
   buildRiskConfig,
@@ -110,6 +112,10 @@ export interface Config extends ArbitrageEngineParams, RiskSettings {
   // secret ref at boot (index.ts); `none` (default) logs only.
   notifier: NotifierSettings;
 
+  // Execution mode — per PROCESS, so it covers BOTH engines this service may run. AUTO (default)
+  // signs + broadcasts; MANUAL is keyless (one shared `ManualExecutor` injected into both engines).
+  execution: ExecutionSettings;
+
   // Present iff the arbitrageur also runs the LiquidationEngine (opt-in via env).
   liquidation?: LiquidationRunConfig;
 }
@@ -170,6 +176,7 @@ export function loadConfig(): Config {
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),
     notifier: buildNotifierConfig(env),
+    execution: buildExecutionConfig(env),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,

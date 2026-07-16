@@ -57,7 +57,11 @@ export interface ArbitrageEngineParams {
 }
 
 export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
-  walletClient: WalletClient<Transport, Chain, Account>;
+  /**
+   * Holds the signing key. Required for the default AUTO executor (built from it); omit it when
+   * injecting an `executor` — a keyless MANUAL engine is constructed with no `WalletClient` at all.
+   */
+  walletClient?: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   retryConfig: RetryConfig;
   metrics: ArbitrageMetrics;
@@ -123,8 +127,17 @@ export class ArbitrageEngine {
     this.retryConfig = config.retryConfig;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
     // Default is AUTO: the sender + crash-safety plumbing (and the key) live inside the executor,
-    // built from the wallet. A keyless MANUAL bot injects its own `ManualExecutor` instead.
-    this.executor = config.executor ?? createAutoExecutorFromWallet(config);
+    // built from the wallet. A keyless MANUAL bot injects its own `ManualExecutor` instead — which
+    // is why `walletClient` may be absent, and is required only for the default AUTO path.
+    if (config.executor) {
+      this.executor = config.executor;
+    } else {
+      const { walletClient } = config;
+      if (!walletClient) {
+        throw new Error("ArbitrageEngine (AUTO) requires a walletClient, or an injected executor");
+      }
+      this.executor = createAutoExecutorFromWallet({ ...config, walletClient });
+    }
   }
 
   /**

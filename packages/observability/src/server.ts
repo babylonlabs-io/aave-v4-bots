@@ -15,6 +15,11 @@ export interface ObservabilityServerConfig {
   ponderHealthEndpoint: string;
   getMetrics: () => Promise<string>;
   getMetricsContentType: () => string;
+  /**
+   * The client the `/health` and `/ready` probes read the chain through. Optional — omitted (or
+   * `null`) reports RPC as unreachable, which is exactly the state before a client is wired.
+   */
+  publicClient?: PublicClient | null;
 }
 
 const healthCheckDeps: HealthCheckDependencies = {
@@ -24,19 +29,13 @@ const healthCheckDeps: HealthCheckDependencies = {
 };
 
 /**
- * Update the public client reference for health checks
- */
-export function setPublicClient(client: PublicClient): void {
-  healthCheckDeps.publicClient = client;
-}
-
-/**
  * Start the metrics and health check HTTP server. Returns the `Server` so a caller can close it
  * (and so tests can bind an ephemeral port).
  */
 export function startObservabilityServer(config: ObservabilityServerConfig): Server {
   healthCheckDeps.ponderUrl = config.ponderUrl;
   healthCheckDeps.ponderHealthEndpoint = config.ponderHealthEndpoint;
+  healthCheckDeps.publicClient = config.publicClient ?? null;
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Parse rather than string-compare `req.url`, so `/metrics?foo=1` still routes. The base is a

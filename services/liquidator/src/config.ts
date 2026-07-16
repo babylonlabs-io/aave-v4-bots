@@ -1,8 +1,10 @@
 import {
+  type ExecutionSettings,
   type NotifierSettings,
   type RiskSettings,
   addressListSchema,
   addressSchema,
+  buildExecutionConfig,
   buildNotifierConfig,
   buildPersistenceConfig,
   buildRiskConfig,
@@ -49,6 +51,10 @@ export interface Config extends LiquidationEngineParams, RiskSettings {
   // Outbound alerts (risk halts today; MANUAL proposals under #9b). The Slack webhook is resolved
   // from a secret ref at boot (index.ts); `none` (default) logs only.
   notifier: NotifierSettings;
+
+  // Execution mode. AUTO (default) signs + broadcasts; MANUAL is keyless — persists proposals and
+  // notifies an operator. In MANUAL the boot resolves no signing key (see index.ts).
+  execution: ExecutionSettings;
 }
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -108,6 +114,7 @@ export function loadConfig(): Config {
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),
     notifier: buildNotifierConfig(env),
+    execution: buildExecutionConfig(env),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,

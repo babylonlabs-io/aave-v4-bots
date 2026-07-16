@@ -64,7 +64,11 @@ export interface LiquidationEngineParams {
 }
 
 export interface LiquidationEngineConfig extends LiquidationEngineParams {
-  walletClient: WalletClient<Transport, Chain, Account>;
+  /**
+   * Holds the signing key. Required for the default AUTO executor (built from it); omit it when
+   * injecting an `executor` — a keyless MANUAL engine is constructed with no `WalletClient` at all.
+   */
+  walletClient?: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   metrics: LiquidationMetrics;
   logger: Logger;
@@ -134,8 +138,19 @@ export class LiquidationEngine {
     this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
     // Default is AUTO: the sender + crash-safety plumbing (and the key) live inside the executor,
-    // built from the wallet. A keyless MANUAL bot injects its own `ManualExecutor` instead.
-    this.executor = config.executor ?? createAutoExecutorFromWallet(config);
+    // built from the wallet. A keyless MANUAL bot injects its own `ManualExecutor` instead — which
+    // is why `walletClient` may be absent, and is required only for the default AUTO path.
+    if (config.executor) {
+      this.executor = config.executor;
+    } else {
+      const { walletClient } = config;
+      if (!walletClient) {
+        throw new Error(
+          "LiquidationEngine (AUTO) requires a walletClient, or an injected executor"
+        );
+      }
+      this.executor = createAutoExecutorFromWallet({ ...config, walletClient });
+    }
   }
 
   /** Resolve a token's symbol/decimals via the shared, cached reader. */

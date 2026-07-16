@@ -4,6 +4,9 @@ import { z } from "zod";
 
 import { addressSchema } from "./schemas";
 
+/** A 0x-prefixed address. `@repo/config` avoids a `viem` dependency, so it names the shape itself. */
+type Hex40 = `0x${string}`;
+
 // Env fields every bot service shares: where secrets come from, how the signer is obtained, and
 // whether crash-safety persistence is on. Declared once so the two services cannot drift.
 //
@@ -39,6 +42,18 @@ export const runtimeEnvFields = {
    * `NOTIFIER=slack`.
    */
   SLACK_WEBHOOK_REF: z.string().min(1).optional(),
+
+  /**
+   * How the service executes. `AUTO` (default) signs + broadcasts (the bot holds the key).
+   * `MANUAL` is **keyless**: it persists a content-hashed proposal + notifies an operator who
+   * signs with their own wallet — no private key, `WalletClient`, or nonce anywhere in the process.
+   */
+  EXECUTION_MODE: z.enum(["AUTO", "MANUAL"]).optional().default("AUTO"),
+  /**
+   * The EOA that will broadcast the proposals — the identity whose balances/allowances the engine
+   * reads and whose `from` its simulations use. An address, never a key. Required in MANUAL.
+   */
+  MANUAL_EXECUTOR_ADDRESS: addressSchema.optional(),
 } as const;
 
 /** The env shape the builders below consume. */
@@ -50,6 +65,32 @@ export interface RuntimeEnv {
   NOTIFIER: "none" | "slack";
   SLACK_WEBHOOK_REF?: string;
 }
+
+/**
+ * The env subset `buildExecutionConfig` reads. Kept separate from `RuntimeEnv` so the mode's
+ * cross-field validation (it inspects the signer + persistence vars) doesn't force every other
+ * builder's callers to supply signer fields.
+ */
+export interface ExecutionEnv {
+  EXECUTION_MODE: "AUTO" | "MANUAL";
+  // Address vars stay `string` here — the `addressSchema` regex validates the format but zod infers
+  // `string`; `buildExecutionConfig` narrows to `Hex40` on the way out.
+  MANUAL_EXECUTOR_ADDRESS?: string;
+  DATABASE_URL?: string;
+  SIGNER_SOURCE: "local" | "aws";
+  SIGNER_KEY_REF?: string;
+  KMS_KEY_ID?: string;
+  SIGNER_ADDRESS?: string;
+}
+
+/**
+ * How a service executes. A discriminated union so MANUAL *carries* its broadcasting address — the
+ * composition root reads it without a re-check, and AUTO simply has no key-shaped fields.
+ */
+export type ExecutionSettings =
+  | { mode: "AUTO" }
+  /** The EOA whose balances/allowances the engine reads and whose `from` it simulates from. */
+  | { mode: "MANUAL"; manualExecutorAddress: Hex40 };
 
 /** How a service selects and resolves its notifier — the source, plus the secret ref to resolve. */
 export interface NotifierSettings {
@@ -79,4 +120,41 @@ export function buildSecretsConfig(env: RuntimeEnv): SecretsConfig {
 export function buildPersistenceConfig(env: RuntimeEnv): PersistenceConfig | undefined {
   if (!env.DATABASE_URL) return undefined;
   return { connectionString: env.DATABASE_URL, schema: env.PERSISTENCE_SCHEMA };
+}
+
+/**
+ * Project the execution-mode env into a service's boot plan, failing fast on a MANUAL setup that
+ * cannot honor its own contract. MANUAL is keyless and durable, so it **requires** the broadcasting
+ * address and a `StateStore`, and it **must not** carry a signing key — a MANUAL bot that resolved
+ * one would break the property the mode exists for (no hot key to steal). AUTO is unchanged.
+ */
+export function buildExecutionConfig(env: ExecutionEnv): ExecutionSettings {
+  if (env.EXECUTION_MODE === "AUTO") {
+    return { mode: "AUTO" };
+  }
+
+  if (!env.MANUAL_EXECUTOR_ADDRESS) {
+    throw new Error(
+      "EXECUTION_MODE=MANUAL requires MANUAL_EXECUTOR_ADDRESS (the EOA that will broadcast)"
+    );
+  }
+  if (!env.DATABASE_URL) {
+    throw new Error("EXECUTION_MODE=MANUAL requires DATABASE_URL — proposals must be persisted");
+  }
+  // We promised a MANUAL process holds no key: reject an explicitly configured signer rather than
+  // silently ignore it, so a mis-set deployment stops at boot instead of running with a live key it
+  // did not expect to. (The composition root also never calls `resolveSigner` in MANUAL.)
+  const signerVars = [
+    env.SIGNER_SOURCE === "aws" && "SIGNER_SOURCE=aws",
+    env.SIGNER_KEY_REF && "SIGNER_KEY_REF",
+    env.KMS_KEY_ID && "KMS_KEY_ID",
+    env.SIGNER_ADDRESS && "SIGNER_ADDRESS",
+  ].filter((v): v is string => Boolean(v));
+  if (signerVars.length > 0) {
+    throw new Error(
+      `EXECUTION_MODE=MANUAL is keyless and must not configure a signer — unset ${signerVars.join(", ")}`
+    );
+  }
+
+  return { mode: "MANUAL", manualExecutorAddress: env.MANUAL_EXECUTOR_ADDRESS as Hex40 };
 }

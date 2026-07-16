@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   addressListSchema,
   addressSchema,
+  buildExecutionConfig,
   buildNotifierConfig,
   bytes32Schema,
   nonNegativeIntSchema,
@@ -129,5 +130,50 @@ describe("buildNotifierConfig", () => {
 
   it("rejects `slack` with no webhook reference at config time, not at first alert", () => {
     expect(() => buildNotifierConfig({ ...base, NOTIFIER: "slack" })).toThrow(/SLACK_WEBHOOK_REF/);
+  });
+});
+
+describe("buildExecutionConfig", () => {
+  // A valid MANUAL setup: the broadcasting address + a store, and NO signer configured.
+  const manualBase = {
+    EXECUTION_MODE: "MANUAL",
+    MANUAL_EXECUTOR_ADDRESS: ADDR,
+    DATABASE_URL: "postgres://x",
+    SIGNER_SOURCE: "local",
+  } as const;
+
+  it("AUTO carries no key-shaped fields (and ignores signer/store vars)", () => {
+    expect(
+      buildExecutionConfig({ EXECUTION_MODE: "AUTO", SIGNER_SOURCE: "local", SIGNER_KEY_REF: "K" })
+    ).toEqual({ mode: "AUTO" });
+  });
+
+  it("MANUAL carries the broadcasting address", () => {
+    expect(buildExecutionConfig(manualBase)).toEqual({
+      mode: "MANUAL",
+      manualExecutorAddress: ADDR,
+    });
+  });
+
+  it("rejects MANUAL without a broadcasting address", () => {
+    expect(() =>
+      buildExecutionConfig({ ...manualBase, MANUAL_EXECUTOR_ADDRESS: undefined })
+    ).toThrow(/MANUAL_EXECUTOR_ADDRESS/);
+  });
+
+  it("rejects MANUAL without a persisted store (proposals must survive a restart)", () => {
+    expect(() => buildExecutionConfig({ ...manualBase, DATABASE_URL: undefined })).toThrow(
+      /DATABASE_URL/
+    );
+  });
+
+  // The keyless promise: a MANUAL process must not carry a signer, so a mis-set one fails at boot.
+  it.each([
+    ["SIGNER_SOURCE=aws", { SIGNER_SOURCE: "aws" as const }],
+    ["SIGNER_KEY_REF", { SIGNER_KEY_REF: "LIQUIDATOR_PRIVATE_KEY" }],
+    ["KMS_KEY_ID", { KMS_KEY_ID: "arn:aws:kms:..." }],
+    ["SIGNER_ADDRESS", { SIGNER_ADDRESS: ADDR }],
+  ])("rejects MANUAL with a configured signer (%s)", (needle, extra) => {
+    expect(() => buildExecutionConfig({ ...manualBase, ...extra })).toThrow(needle);
   });
 });

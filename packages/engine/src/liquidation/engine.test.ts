@@ -5,10 +5,12 @@ import {
   createNonceLease,
 } from "@repo/execution";
 import type { Logger } from "@repo/logger";
+import type { NotificationEvent, Notifier } from "@repo/notifications";
 import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
-import { TransactionReceiptNotFoundError, maxUint256 } from "viem";
+import { type PublicClient, TransactionReceiptNotFoundError, maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createManualExecutor } from "../executor";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
 
@@ -1002,6 +1004,108 @@ describe("LiquidationEngine", () => {
       expect(clients.publicClient.simulateContract).toHaveBeenCalledWith(
         expect.objectContaining({ account: "0xoperator" })
       );
+    });
+  });
+
+  // End-to-end at the engine level: a MANUAL bot finds opportunities the same way (risk gate,
+  // simulation, all keyless reads) and, at the commit, writes a proposal + notifies instead of
+  // broadcasting. The `Executor` seam is unit-tested in `executor.test.ts`; this proves the engine
+  // loop drives it correctly — including the keyless promise (no signer nonce reads).
+  describe("MANUAL mode (keyless)", () => {
+    const OPERATOR = "0xoperator00000000000000000000000000000000" as `0x${string}`;
+    // Unlike AUTO's mocked sender, MANUAL's `propose` ABI-encodes the call for real — so the
+    // position's addresses must be valid hex. `mockPosition.borrower` is a readable placeholder
+    // (`0xborrower…`, not hex), which the encoder rejects; give this one a real address.
+    const manualPosition: LiquidatablePosition = {
+      ...mockPosition,
+      borrower: "0x00000000000000000000000000000000000b0b01",
+    };
+    const feed = () =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: [manualPosition], total: 1, checked: 1 }),
+      });
+
+    function manualBot(store: MemoryStateStore) {
+      const clients = createMockClients();
+      const events: NotificationEvent[] = [];
+      const notifier: Notifier = { notify: async (e) => void events.push(e) };
+      // A keyless publicClient for the executor (reconcile's reader + allowance reads). Its
+      // `getTransactionCount` is spied so the test can prove a MANUAL cycle issues NO nonce reads.
+      const getTransactionCount = vi.fn(async () => 0);
+      const executorPublicClient = {
+        getTransaction: vi.fn(async () => ({ hash: "0xhash" })),
+        getTransactionReceipt: vi.fn(),
+        readContract: vi.fn(async () => 0n),
+        getTransactionCount,
+      } as unknown as PublicClient;
+      const executor = createManualExecutor({
+        store,
+        publicClient: executorPublicClient,
+        notifier,
+        identity: { from: OPERATOR, chainId: 31337 },
+        logger: silentLogger,
+      });
+      // Injecting an executor makes the engine keyless: no `walletClient`, `sender`, or `nonces`.
+      // The adapter/LLP addresses must be real hex too — MANUAL encodes the call + hashes the
+      // payload (`getAddress`) for real, where AUTO's mocked sender skips both.
+      const bot = createBot(clients, {
+        store,
+        executor,
+        adapterAddress: "0x00000000000000000000000000000000000ada01",
+        llpAddress: "0x0000000000000000000000000000000000011b01",
+      });
+      return { bot, clients, events, getTransactionCount };
+    }
+
+    it("proposes + notifies for a liquidatable position, broadcasting nothing", async () => {
+      const store = createMemoryStateStore();
+      const { bot, clients, events } = manualBot(store);
+      global.fetch = feed();
+
+      await bot.run();
+
+      // A proposal was persisted (keyless: `proposed`, no nonce) — not a broadcast.
+      const row = store.all()[0];
+      expect(row).toMatchObject({
+        action: "liquidation",
+        subject: mockPosition.proxyAddress,
+        status: "proposed",
+        nonce: null,
+      });
+      // The operator was notified once, with the payload hash out-of-band (their tamper check).
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        kind: "manual-intent",
+        action: "liquidation",
+        subject: mockPosition.proxyAddress,
+        payloadHash: row?.payloadHash,
+      });
+      // Nothing was signed or broadcast — the (unused) AUTO sender is never touched.
+      expect(clients.sender.send).not.toHaveBeenCalled();
+    });
+
+    it("issues no signer nonce reads across the cycle (the keyless bar)", async () => {
+      const store = createMemoryStateStore();
+      const { bot, clients, getTransactionCount } = manualBot(store);
+      global.fetch = feed();
+
+      await bot.run();
+
+      expect(getTransactionCount).not.toHaveBeenCalled();
+      expect(clients.publicClient.getTransactionCount).not.toHaveBeenCalled();
+    });
+
+    it("dedups across cycles — one proposal, one notification for a stable position", async () => {
+      const store = createMemoryStateStore();
+      const { bot, events } = manualBot(store);
+      global.fetch = feed();
+
+      await bot.run();
+      await bot.run();
+
+      expect(store.all()).toHaveLength(1);
+      expect(events).toHaveLength(1);
     });
   });
 });

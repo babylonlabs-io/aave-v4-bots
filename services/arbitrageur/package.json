@@ -25,6 +25,7 @@
     "@repo/observability": "workspace:*",
     "@repo/persistence": "workspace:*",
     "@repo/risk": "workspace:*",
+    "@repo/runtime": "workspace:*",
     "@repo/secrets": "workspace:*",
     "@repo/signer": "workspace:*",
     "dotenv": "^16.5.0",

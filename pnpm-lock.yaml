@@ -280,6 +280,52 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.19.2)
 
+  packages/runtime:
+    dependencies:
+      '@repo/chain':
+        specifier: workspace:*
+        version: link:../chain
+      '@repo/config':
+        specifier: workspace:*
+        version: link:../config
+      '@repo/engine':
+        specifier: workspace:*
+        version: link:../engine
+      '@repo/execution':
+        specifier: workspace:*
+        version: link:../execution
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../logger
+      '@repo/notifications':
+        specifier: workspace:*
+        version: link:../notifications
+      '@repo/observability':
+        specifier: workspace:*
+        version: link:../observability
+      '@repo/persistence':
+        specifier: workspace:*
+        version: link:../persistence
+      '@repo/risk':
+        specifier: workspace:*
+        version: link:../risk
+      '@repo/secrets':
+        specifier: workspace:*
+        version: link:../secrets
+      '@repo/signer':
+        specifier: workspace:*
+        version: link:../signer
+      viem:
+        specifier: ^2.37.0
+        version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.2
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/secrets:
     dependencies:
       '@aws-sdk/client-secrets-manager':
@@ -359,6 +405,9 @@ importers:
       '@repo/risk':
         specifier: workspace:*
         version: link:../../packages/risk
+      '@repo/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@repo/secrets':
         specifier: workspace:*
         version: link:../../packages/secrets
@@ -429,6 +478,9 @@ importers:
       '@repo/risk':
         specifier: workspace:*
         version: link:../../packages/risk
+      '@repo/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@repo/secrets':
         specifier: workspace:*
         version: link:../../packages/secrets
