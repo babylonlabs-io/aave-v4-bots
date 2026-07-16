@@ -17,3 +17,13 @@ export {
   type ArbitrageMetrics,
 } from "./arbitrage/engine";
 export type { EscrowedVault } from "./arbitrage/types";
+
+export {
+  type AutoExecutor,
+  type CommitResult,
+  type Executor,
+  type ManualExecutor,
+  createAutoExecutor,
+  createAutoExecutorFromWallet,
+  createManualExecutor,
+} from "./executor";

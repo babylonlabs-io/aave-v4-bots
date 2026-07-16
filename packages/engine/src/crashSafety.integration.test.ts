@@ -1,3 +1,4 @@
+import type { NonceAllocator } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type StateStore, createPostgresStateStore, idempotencyKey } from "@repo/persistence";
 import pg from "pg";
@@ -58,8 +59,17 @@ const reader = (over: {
 
 const publicClient = { getTransactionCount: vi.fn(async () => 0) } as unknown as PublicClient;
 
+/** A pass-through allocator (identity nonce sequencing) — these tests exercise the store, not the lease. */
+const allocator = (): NonceAllocator => ({ withNonce: (send) => send(0), resync: async () => {} });
+
 const crashSafety = (store: StateStore) =>
-  createCrashSafety({ store, publicClient, signer: SIGNER, logger: silentLogger });
+  createCrashSafety({
+    store,
+    nonces: allocator(),
+    publicClient,
+    signer: SIGNER,
+    logger: silentLogger,
+  });
 
 describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", () => {
   let store: StateStore;

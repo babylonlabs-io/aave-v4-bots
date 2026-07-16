@@ -1,4 +1,4 @@
-import { createNonceAllocator, createNonceLease } from "@repo/execution";
+import { type NonceAllocator, createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
@@ -94,6 +94,16 @@ function createMockClients() {
   };
 }
 
+/**
+ * A pre-seeded pass-through allocator: hands out nonce 0 and treats `resync` as a no-op. The
+ * default for tests that drive `acquireVault` directly (no `run()` to seed the lease from the
+ * chain); the crash-safety / nonce-sequencing tests inject a real allocator instead.
+ */
+const passthroughNonces = (): NonceAllocator => ({
+  withNonce: (send) => send(0),
+  resync: async () => {},
+});
+
 function createBot(
   clients: ReturnType<typeof createMockClients>,
   overrides: Partial<ArbitrageEngineConfig> = {}
@@ -112,6 +122,7 @@ function createBot(
     metrics,
     logger: silentLogger,
     risk: createRiskGate(), // permissive by default
+    nonces: passthroughNonces(),
     ...overrides,
   });
 }

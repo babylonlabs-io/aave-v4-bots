@@ -22,19 +22,18 @@ import {
 // needed the same four fields (`store`, `nonces`, `publicClient`, `logger`) threaded through it
 // at all sixteen call sites.
 //
-// Both `store` and `nonces` are optional. Absent, the operations degrade to no-ops or to viem's
-// auto-nonce — which is what keeps persistence and the shared allocator opt-in, and what keeps
-// that optionality out of `reconcilePending`'s algorithm.
-//
-// It is not *fully* hidden: the liquidation engine still branches on `allocated` to run its own
-// nonce sequence when no allocator is injected. That branch is real behavior, not plumbing, so it
-// stays visible at the call site rather than being smuggled in here.
+// `store` is optional (absent ⇒ no intent tracking, operations no-op), which keeps persistence
+// opt-in and out of `reconcilePending`'s algorithm. The **nonce allocator is mandatory** and is the
+// sole nonce source: every signer tx goes through it, so the two engines a single process runs (the
+// arbitrageur) can never collide on a nonce. Sequencing a nonce per-send off the chain instead would
+// be incorrect for that dual-engine case — both engines would read the same count and collide — not
+// merely slower.
 
 export interface CrashSafetyConfig {
   /** Crash-safety store; absent ⇒ no intent tracking (reconcile and transitions no-op). */
   store?: StateStore;
-  /** Shared nonce authority; absent ⇒ viem auto-nonce (behavior-preserving). */
-  nonces?: NonceAllocator;
+  /** The shared nonce authority — every signer tx routes through it (no two engines collide). */
+  nonces: NonceAllocator;
   publicClient: PublicClient;
   /** The sending address whose nonce sequence anchors reconcile's "was this broadcast?" checks. */
   signer: Address;
@@ -46,9 +45,6 @@ export interface CrashSafetyConfig {
 }
 
 export interface CrashSafety {
-  /** Whether a shared nonce allocator is wired up (vs. the engine sequencing nonces itself). */
-  readonly allocated: boolean;
-
   /**
    * Resolve one `action`'s in-flight intents against the chain (crash- and ambiguous-send
    * safety). No-op without a store.
@@ -57,16 +53,15 @@ export interface CrashSafety {
 
   /**
    * Re-seed the shared nonce lease (reclaims a not-broadcast nonce; advances if the chain moved
-   * ahead), **fenced against transactions we know to be live**. No-op without an allocator.
+   * ahead), **fenced against transactions we know to be live**.
    */
   resyncNonces(): Promise<void>;
 
   /**
-   * Broadcast through the shared nonce allocator when present (so the two engines never collide
-   * on a nonce), else let viem pick. `send` receives the reserved nonce, or `undefined` when
-   * there is no allocator.
+   * Broadcast under the shared nonce lock, so the two engines never collide on a nonce. `send`
+   * receives the reserved nonce.
    */
-  send(send: (nonce?: number) => Promise<Hex>): Promise<Hex>;
+  send(send: (nonce: number) => Promise<Hex>): Promise<Hex>;
 
   /**
    * Claim the right to perform `input`, refusing (`claimed: false`) a duplicate already live
@@ -148,15 +143,12 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
   }
 
   return {
-    allocated: nonces !== undefined,
-
     async reconcile(action) {
       if (!store) return;
       await reconcilePending({ store, reader, signer, action, logger, now, graceMs });
     },
 
     resyncNonces() {
-      if (!nonces) return Promise.resolve();
       // Runs inside the allocator's lock, so nothing can reserve a nonce between these reads and
       // the SET they produce.
       return nonces.resync(async () => {
@@ -169,7 +161,7 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
     },
 
     send(send) {
-      return nonces ? nonces.withNonce((nonce) => send(nonce)) : send();
+      return nonces.withNonce((nonce) => send(nonce));
     },
 
     async claim(input) {

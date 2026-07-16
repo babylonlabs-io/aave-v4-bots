@@ -25,6 +25,8 @@ import {
   type NonceAllocator,
   PreBroadcastError,
   type TxSender,
+  createNonceAllocator,
+  createNonceLease,
   createTxSender,
   waitForReceiptWithTimeout,
 } from "@repo/execution";
@@ -73,7 +75,11 @@ export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
   risk: RiskGate;
   /** Crash-safety store (intent idempotency); absent ⇒ no intent tracking. */
   store?: StateStore;
-  /** Shared nonce authority; absent ⇒ viem auto-nonce (behavior-preserving). */
+  /**
+   * The shared nonce authority — the single owner of the signer's nonce sequence. Omit and a
+   * per-signer allocator is created here; a service that runs both engines off one signer injects
+   * one shared instance so the two never collide.
+   */
   nonces?: NonceAllocator;
   /**
    * How txs are signed + broadcast, **and who they come from** (`sender.identity`). Absent ⇒ local
@@ -126,7 +132,9 @@ export class ArbitrageEngine {
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
     this.crash = createCrashSafety({
       store: config.store,
-      nonces: config.nonces,
+      // The shared allocator is mandatory (the arbitrageur runs both engines off one signer). A
+      // caller that omits it gets a per-signer one — but production always injects the shared one.
+      nonces: config.nonces ?? createNonceAllocator(createNonceLease(), this.identity.from),
       publicClient: config.publicClient,
       signer: this.identity.from,
       logger: config.logger,
@@ -146,8 +154,9 @@ export class ArbitrageEngine {
         return;
       }
 
-      // 0.5. Crash-/ambiguous-send-safety: resolve in-flight vault-acquisition intents, then
-      // re-seed the shared nonce lease from the chain. Both no-op without a store / allocator.
+      // 0.5. Crash-/ambiguous-send-safety: resolve in-flight vault-acquisition intents (no-op
+      // without a store), then re-seed the shared nonce lease from the chain (reclaiming any
+      // reserved-but-not-broadcast nonce).
       await this.reconcile();
       await this.crash.resyncNonces();
 
@@ -331,18 +340,18 @@ export class ArbitrageEngine {
         return "skipped";
       }
 
-      // Execute swap via VaultSwap (redemption is atomic). Route through the shared nonce
-      // allocator when present; otherwise viem fills the nonce from the chain. The sender signs
-      // locally first, so `onSigned` durably records nonce + hash while the tx is still local —
-      // an ambiguous broadcast then leaves an intent reconcile can resolve by receipt lookup.
-      const broadcast = (nonce?: number): Promise<Hex> =>
+      // Execute swap via VaultSwap (redemption is atomic). The reserved nonce arrives under the
+      // shared allocator's lock. The sender signs locally first, so `onSigned` durably records
+      // nonce + hash while the tx is still local — an ambiguous broadcast then leaves an intent
+      // reconcile can resolve by receipt lookup.
+      const broadcast = (nonce: number): Promise<Hex> =>
         this.sender.send(
           {
             address: this.vaultSwapAddress,
             abi: vaultSwapAbi,
             functionName: "swapWbtcForVault",
             args: [vaultId as Hex, maxWbtcIn],
-            ...(nonce !== undefined ? { nonce } : {}),
+            nonce,
           },
           async (signed) => {
             if (intentId) await this.crash.markPending(intentId, signed.nonce, signed.hash);

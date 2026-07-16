@@ -21,45 +21,30 @@ const input = (subject: string) => ({
 
 const publicClient = { getTransactionCount: vi.fn(async () => 7) } as unknown as PublicClient;
 
-const crash = (over: Partial<CrashSafetyConfig> = {}) =>
-  createCrashSafety({ publicClient, signer: SIGNER, logger: silentLogger, ...over });
-
 /** An allocator that hands out `nonce` and records the region held under its lock. */
 const allocator = (nonce: number): NonceAllocator => ({
   withNonce: (send) => send(nonce),
   resync: vi.fn(async () => {}),
 });
 
+const crash = (over: Partial<CrashSafetyConfig> = {}) =>
+  createCrashSafety({
+    publicClient,
+    signer: SIGNER,
+    logger: silentLogger,
+    nonces: allocator(0),
+    ...over,
+  });
+
 describe("createCrashSafety", () => {
   describe("send", () => {
     it("passes the allocator's reserved nonce to the callback", async () => {
-      const seen: (number | undefined)[] = [];
+      const seen: number[] = [];
       await crash({ nonces: allocator(5) }).send(async (n) => {
         seen.push(n);
         return HASH;
       });
       expect(seen).toEqual([5]);
-    });
-
-    // Regression: nonce 0 is a *valid* reserved nonce (a signer's first tx). The engine writes
-    // `broadcast(nonce ?? localNonce)`; with `||` that 0 would be silently replaced.
-    it("passes a reserved nonce of 0 through, not undefined", async () => {
-      const seen: (number | undefined)[] = [];
-      await crash({ nonces: allocator(0) }).send(async (n) => {
-        seen.push(n);
-        return HASH;
-      });
-      expect(seen).toEqual([0]);
-      expect(seen[0]).not.toBeUndefined();
-    });
-
-    it("calls back with undefined when there is no allocator", async () => {
-      const seen: (number | undefined)[] = [];
-      await crash().send(async (n) => {
-        seen.push(n);
-        return HASH;
-      });
-      expect(seen).toEqual([undefined]);
     });
 
     it("propagates a send error (an ambiguous broadcast must not be swallowed)", async () => {
@@ -69,11 +54,6 @@ describe("createCrashSafety", () => {
         })
       ).rejects.toThrow("boom");
     });
-  });
-
-  it("reports whether an allocator is wired up", () => {
-    expect(crash().allocated).toBe(false);
-    expect(crash({ nonces: allocator(1) }).allocated).toBe(true);
   });
 
   describe("markPending vs transition — the throw/swallow split", () => {
@@ -126,9 +106,8 @@ describe("createCrashSafety", () => {
   });
 
   describe("reconcile / resyncNonces", () => {
-    it("both no-op without a store / allocator", async () => {
+    it("reconcile no-ops without a store", async () => {
       await expect(crash().reconcile("liquidation")).resolves.toBeUndefined();
-      await expect(crash().resyncNonces()).resolves.toBeUndefined();
     });
 
     it("resyncNonces re-seeds the allocator from the chain's pending count", async () => {

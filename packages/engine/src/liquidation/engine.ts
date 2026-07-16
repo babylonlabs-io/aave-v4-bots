@@ -12,22 +12,14 @@ import {
 } from "viem";
 
 import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
-import { TokenMetaCache, approveMax, readAllowance, readBalance } from "@repo/capital";
+import { TokenMetaCache, readBalance } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
-import {
-  type ContractCall,
-  type ExecutionIdentity,
-  type NonceAllocator,
-  PreBroadcastError,
-  type TxSender,
-  createTxSender,
-  nextNonce,
-} from "@repo/execution";
+import type { ContractCall, ExecutionIdentity, NonceAllocator, TxSender } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { StateStore } from "@repo/persistence";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
-import { type CrashSafety, createCrashSafety } from "../crashSafety";
+import { type Executor, createAutoExecutorFromWallet } from "../executor";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {
@@ -84,9 +76,10 @@ export interface LiquidationEngineConfig extends LiquidationEngineParams {
    */
   store?: StateStore;
   /**
-   * Shared nonce authority. When present, every signer tx routes through it (so the
-   * arbitrageur's two engines never collide); absent ⇒ in-memory chain-nonce sequencing
-   * (behavior-preserving). Paired with `store` at the composition root.
+   * The shared nonce authority — the single owner of the signer's nonce sequence; every signer tx
+   * routes through it. Omit and a per-signer allocator is created; a service running both engines
+   * off one signer injects one shared instance so the two never collide. Paired with `store` at the
+   * composition root.
    */
   nonces?: NonceAllocator;
   /**
@@ -95,16 +88,20 @@ export interface LiquidationEngineConfig extends LiquidationEngineParams {
    * identity here instead — so identity and the send path travel together, never separately.
    */
   sender?: TxSender;
+  /**
+   * The execution-mode seam: how each action is committed (AUTO broadcast vs MANUAL propose+notify).
+   * Absent ⇒ an `AutoExecutor` over the `store`/`nonces`/`sender` above (behavior-preserving). A
+   * keyless MANUAL bot injects a `ManualExecutor` here.
+   */
+  executor?: Executor;
 }
 
 export class LiquidationEngine {
   private metrics: LiquidationMetrics;
   private logger: Logger;
   private risk: RiskGate;
-  /** Intent + nonce plumbing. Owns the optional `store` / `nonces`, so no call site threads them. */
-  private crash: CrashSafety;
-  private sender: TxSender;
-  private walletClient: WalletClient<Transport, Chain, Account>;
+  /** The engine's one execution collaborator (see `executor.ts`). The engine reaches nothing lower. */
+  private executor: Executor;
   private publicClient: PublicClient;
   private adapterAddress: Address;
   private lensAddress: Address;
@@ -117,17 +114,15 @@ export class LiquidationEngine {
   private txReceiptTimeoutMs: number;
   private tokenMetaCache = new TokenMetaCache();
 
-  /** Who these txs come from — read straight off the sender, never cached separately. */
+  /** Who these txs come from — the executor's identity (the signer in AUTO, the operator in MANUAL). */
   private get identity(): ExecutionIdentity {
-    return this.sender.identity;
+    return this.executor.identity;
   }
 
   constructor(config: LiquidationEngineConfig) {
     this.metrics = config.metrics;
     this.logger = config.logger;
     this.risk = config.risk;
-    this.sender = config.sender ?? createTxSender(config.publicClient, config.walletClient);
-    this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.adapterAddress = config.adapterAddress;
     this.lensAddress = config.lensAddress;
@@ -138,13 +133,9 @@ export class LiquidationEngine {
     this.llpAddress = config.llpAddress;
     this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
-    this.crash = createCrashSafety({
-      store: config.store,
-      nonces: config.nonces,
-      publicClient: config.publicClient,
-      signer: this.identity.from,
-      logger: config.logger,
-    });
+    // Default is AUTO: the sender + crash-safety plumbing (and the key) live inside the executor,
+    // built from the wallet. A keyless MANUAL bot injects its own `ManualExecutor` instead.
+    this.executor = config.executor ?? createAutoExecutorFromWallet(config);
   }
 
   /** Resolve a token's symbol/decimals via the shared, cached reader. */
@@ -208,7 +199,7 @@ export class LiquidationEngine {
    * re-drive on settled state; not-broadcast ⇒ re-drive). No-op without a store.
    */
   async reconcile(): Promise<void> {
-    await this.crash.reconcile("liquidation");
+    await this.executor.reconcile("liquidation");
   }
 
   /**
@@ -228,12 +219,12 @@ export class LiquidationEngine {
         return;
       }
 
-      // 0.5. Crash-/ambiguous-send-safety: resolve in-flight intents against the chain, then
-      // re-seed the shared nonce lease from the chain (reclaiming any not-broadcast nonce).
-      // Both no-op without a store / allocator. Done before fetching so a position stuck as a
-      // live intent is resolved even in a cycle that would otherwise skip it.
+      // 0.5. Crash-/ambiguous-send-safety: resolve in-flight intents against the chain (no-op
+      // without a store), then re-seed the shared nonce lease from the chain (reclaiming any
+      // reserved-but-not-broadcast nonce). Done before fetching so a position stuck as a live
+      // intent is resolved even in a cycle that would otherwise skip it.
       await this.reconcile();
-      await this.crash.resyncNonces();
+      await this.executor.resyncNonces();
 
       // 1. Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
       const { positions, dataTimestampMs } = await this.fetchLiquidatablePositions();
@@ -345,18 +336,14 @@ export class LiquidationEngine {
 
       this.logger.info(`${validCandidates.length}/${positions.length} positions passed simulation`);
 
-      // 5. Send. Every tx routes through the shared nonce allocator (`withNonce`) when one is
-      // injected — the single nonce owner across both engines; otherwise nonces stay in-memory
-      // (behavior-preserving). A send error is treated as AMBIGUOUS (the tx may have
+      // 5. Send. Every tx routes through the shared nonce allocator (`withNonce`), the single nonce
+      // owner across both engines. A send error is treated as AMBIGUOUS (the tx may have
       // propagated): the intent is kept LIVE (never terminal) and the cycle stops — the next
       // cycle's reconcile resolves it by nonce vs. chain.
-      const signer = this.identity.from;
-      let localNonce = this.crash.allocated ? 0 : await nextNonce(this.publicClient, signer);
-
-      // Each sent tx is paired with its intent id (so the receipt phase can transition it) and
-      // its risk slot (so the receipt phase settles the exposure it reserved).
+      // Each sent tx is paired with its intent id (so the receipt phase records its outcome) and its
+      // risk slot (so the receipt phase settles the exposure it reserved).
       const sent: Array<{ hash: Hex; intentId?: string; slot: RiskSlot }> = [];
-      for (let i = 0; i < validCandidates.length; i++) {
+      sendLoop: for (let i = 0; i < validCandidates.length; i++) {
         const { position, amounts } = validCandidates[i];
 
         // Risk gate — per-candidate check just before submit. An allowed check reserves an
@@ -380,24 +367,7 @@ export class LiquidationEngine {
         }
         slots.push(slot);
 
-        // Crash-safety: refuse a duplicate live intent (already pending/submitted on chain).
-        const { claimed, intentId } = await this.crash.claim({
-          chainId: this.identity.chainId,
-          target: this.adapterAddress,
-          action: "liquidation",
-          subject: position.proxyAddress,
-        });
-        if (!claimed) {
-          // Nothing was broadcast — free the exposure slot without blaming the chain.
-          slot.settle({ ok: false, abandoned: true });
-          this.metrics.recordError("intent_in_flight");
-          continue;
-        }
-
         const priorityOrder = sequentialPriorityOrder(amounts.length);
-        // Runs under the nonce lock (when allocated). The sender signs locally first, so the
-        // intent gets nonce + hash durably recorded BEFORE anything is broadcast — a crash or
-        // ambiguous send then leaves an intent reconcile can resolve by receipt lookup.
         const call: ContractCall = this.isDirectRedemption
           ? {
               address: this.adapterAddress,
@@ -419,54 +389,45 @@ export class LiquidationEngine {
               args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
             };
 
-        const broadcast = (nonce: number): Promise<Hex> =>
-          this.sender.send({ ...call, nonce }, async (signed) => {
-            if (intentId) await this.crash.markPending(intentId, signed.nonce, signed.hash);
-          });
+        // Commit the action through the mode seam. AUTO signs + broadcasts under the shared nonce
+        // lock (claim → send → markPending → submitted, all inside `commit`); MANUAL proposes +
+        // notifies.
+        const out = await this.executor.commit(call, {
+          target: this.adapterAddress,
+          action: "liquidation",
+          subject: position.proxyAddress,
+        });
 
-        let hash: Hex;
-        try {
-          // With an allocator the reserved nonce arrives here; without one, `send` calls back
-          // with `undefined` and we fall through to the engine's own sequence.
-          hash = await this.crash.send((nonce) => broadcast(nonce ?? localNonce));
-        } catch (error) {
-          this.metrics.recordError("tx_send_error");
-          const errorMsg = error instanceof Error ? error.message : "Unknown error";
-          this.logger.error(`Failed to send liquidation for ${position.borrower}: ${errorMsg}`);
-          // Only a failed *broadcast* is a real failure signal for the breaker. A failure to
-          // prepare, sign, or durably record never reached the chain — settle it as abandoned,
-          // or an RPC/database blip would trip the breaker as if the chain were rejecting us.
-          slot.settle({ ok: false, abandoned: error instanceof PreBroadcastError });
-          // Ambiguous — keep the intent LIVE (not terminal); next-cycle reconcile decides.
-          if (intentId) {
-            await this.crash.transition(intentId, "submitted", {
-              error: errorMsg,
-            });
-          }
-          if (this.crash.allocated) break; // allocator: stop the cycle; resync reclaims the nonce
-          // Legacy (no allocator): re-sync the local nonce from the chain and continue.
-          try {
-            localNonce = await nextNonce(this.publicClient, signer);
-          } catch (nonceError) {
-            this.logger.error(
-              "Failed to re-sync nonce, skipping remaining candidates:",
-              nonceError
-            );
-            break;
-          }
-          continue;
-        }
+        switch (out.kind) {
+          case "duplicate":
+            // A live intent for this subject already exists — nothing broadcast; free the slot.
+            slot.settle({ ok: false, abandoned: true });
+            this.metrics.recordError("intent_in_flight");
+            continue;
 
-        // Broadcast succeeded — status bump only, best-effort: the hash was already persisted
-        // pre-broadcast (see `sender.send`), so losing this write costs nothing.
-        this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
-        if (intentId) {
-          await this.crash.transition(intentId, "submitted", {
-            txHash: hash,
-          });
+          case "proposed":
+            // MANUAL — written down for an operator; nothing on chain, no receipt to await.
+            slot.settle({ ok: false, abandoned: true });
+            continue;
+
+          case "aborted":
+            this.metrics.recordError("tx_send_error");
+            this.logger.error(`Failed to send liquidation for ${position.borrower}: ${out.error}`);
+            // Only a failed *broadcast* is a real failure signal for the breaker; a pre-broadcast
+            // failure reached no chain, so an RPC/database blip cannot trip it.
+            slot.settle({ ok: false, abandoned: !out.broadcastAttempted });
+            // The send left a possible nonce gap — stop the cycle; the next resync reclaims it.
+            break sendLoop;
+
+          case "broadcast":
+            // The intent is already `submitted` (recorded inside `commit`).
+            this.logger.info(`Sent liquidation for ${position.borrower}: ${out.hash}`);
+            sent.push({ hash: out.hash, intentId: out.intentId, slot });
+            continue;
+
+          default:
+            out satisfies never; // exhaustiveness — a new `CommitResult` kind must be handled here
         }
-        sent.push({ hash, intentId, slot });
-        if (!this.crash.allocated) localNonce += 1;
       }
 
       if (sent.length === 0) {
@@ -492,16 +453,15 @@ export class LiquidationEngine {
             this.metrics.recordLiquidationSuccess();
             this.logger.info(`Liquidation confirmed in block ${receipt.blockNumber}: ${hash}`);
             if (intentId)
-              await this.crash.transition(intentId, "confirmed", {
-                txHash: hash,
-              });
+              await this.executor.recordOutcome(intentId, { kind: "confirmed", txHash: hash });
           } else {
             slot.settle({ ok: false });
             this.metrics.recordLiquidationFailed();
             this.metrics.recordError("tx_reverted");
             this.logger.error(`Liquidation reverted: ${hash}`);
             if (intentId)
-              await this.crash.transition(intentId, "failed", {
+              await this.executor.recordOutcome(intentId, {
+                kind: "failed",
                 txHash: hash,
                 error: "reverted",
               });
@@ -559,40 +519,26 @@ export class LiquidationEngine {
    * and direct-redemption fee (`wbtcPayment` from the Lens) during liquidation.
    */
   async ensureApproval(): Promise<void> {
-    const liquidator = this.identity.from;
-
     const tokensToApprove = Array.from(
       new Set<Address>([...this.debtTokenAddresses, this.wbtcAddress])
     );
 
     for (const tokenAddress of tokensToApprove) {
-      const allowance = await readAllowance(
-        this.publicClient,
-        tokenAddress,
-        liquidator,
-        this.adapterAddress
-      );
-
-      if (allowance < maxUint256 / 2n) {
-        const { symbol } = await this.getTokenMeta(tokenAddress);
-
-        this.logger.info(`Approving ${symbol} for AaveAdapter...`);
-
-        // Approvals are signer txs too — route through the allocator so they don't collide
-        // with the other engine's nonces (only the broadcast is under the lock; the receipt
-        // wait is outside). An ambiguous approval is idempotent — re-checked here next boot.
-        const hash = await this.crash.send((nonce) =>
-          approveMax(this.walletClient, tokenAddress, this.adapterAddress, nonce)
-        );
-
-        const receipt = await this.publicClient.waitForTransactionReceipt({
-          hash,
-          timeout: this.txReceiptTimeoutMs,
-        });
-        if (receipt.status !== "success") {
-          throw new Error(`Approval transaction reverted for ${symbol}`);
-        }
-        this.logger.info(`Approved ${symbol}`);
+      const { symbol } = await this.getTokenMeta(tokenAddress);
+      // The executor owns the mode-correct approval: AUTO broadcasts + waits (the key lives inside
+      // it), MANUAL proposes the approval for the operator to sign. A proposed/duplicate result
+      // means the allowance is not ready yet — the run loop's simulation gates dependent actions.
+      const result = await this.executor.ensureAllowance({
+        token: tokenAddress,
+        spender: this.adapterAddress,
+        required: maxUint256 / 2n,
+        label: symbol,
+      });
+      // MANUAL: a `proposed` (fresh) or `duplicate` (already awaiting) result means the allowance is
+      // not ready — the operator must sign it. AUTO only ever returns `satisfied` (it throws on a
+      // reverted approve). The run loop's simulation gates dependent actions until it clears.
+      if (result.kind !== "satisfied") {
+        this.logger.info(`Approval for ${symbol} ${result.kind} — awaiting operator signature`);
       }
     }
   }

@@ -1,4 +1,9 @@
-import { PreBroadcastError, createNonceAllocator, createNonceLease } from "@repo/execution";
+import {
+  type NonceAllocator,
+  PreBroadcastError,
+  createNonceAllocator,
+  createNonceLease,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
@@ -99,6 +104,16 @@ function createMockClients() {
     },
   };
 }
+
+/**
+ * A pre-seeded pass-through allocator: hands out nonce 0 and treats `resync` as a no-op. For tests
+ * that drive a send path directly (e.g. `ensureApproval`) without a `run()` to seed the lease from
+ * the chain; `run()`-based tests keep the default real allocator, seeded from `getTransactionCount`.
+ */
+const passthroughNonces = (): NonceAllocator => ({
+  withNonce: (send) => send(0),
+  resync: async () => {},
+});
 
 function createBot(
   clients: ReturnType<typeof createMockClients>,
@@ -523,7 +538,7 @@ describe("LiquidationEngine", () => {
       );
     });
 
-    it("handles tx send failure gracefully (continues to next)", async () => {
+    it("stops the cycle after a send error (does not process later positions)", async () => {
       const clients = createMockClients();
 
       const position2: LiquidatablePosition = {
@@ -532,10 +547,11 @@ describe("LiquidationEngine", () => {
         borrower: "0xborrower0000000000000000000000000000000002",
       };
 
-      // First writeContract fails, second succeeds
-      clients.sender.send
-        .mockRejectedValueOnce(new Error("nonce too low"))
-        .mockResolvedValueOnce("0xtxhash2");
+      // The first send throws — an AMBIGUOUS broadcast (the tx may be on the wire). The loop must
+      // break rather than reserve the next nonce for position 2: continuing could leave a gap that
+      // wedges every later tx, or double-act if position 1 actually landed. The next cycle's
+      // reconcile + resync resolves the in-flight intent by nonce vs. chain.
+      clients.sender.send.mockRejectedValueOnce(new Error("nonce too low"));
 
       const bot = createBot(clients);
 
@@ -551,10 +567,10 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      // Both attempted
-      expect(clients.sender.send).toHaveBeenCalledTimes(2);
-      // Only one receipt waited for
-      expect(clients.publicClient.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
+      // Only the first position was attempted; the cycle stopped before position 2.
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      // Nothing was successfully sent, so no receipt is awaited.
+      expect(clients.publicClient.waitForTransactionReceipt).not.toHaveBeenCalled();
     });
 
     it("records failed liquidation when receipt shows reverted", async () => {
@@ -612,6 +628,7 @@ describe("LiquidationEngine", () => {
 
       const bot = createBot(clients, {
         debtTokenAddresses: ["0xtoken1" as `0x${string}`],
+        nonces: passthroughNonces(),
       });
 
       await bot.ensureApproval();
@@ -650,7 +667,7 @@ describe("LiquidationEngine", () => {
           return Promise.resolve(0n);
         }
       );
-      const bot = createBot(clients, { debtTokenAddresses: [] });
+      const bot = createBot(clients, { debtTokenAddresses: [], nonces: passthroughNonces() });
 
       // WBTC approval is unconditional — the adapter pulls WBTC from msg.sender
       // for fairness + direct-redemption fee, independent of whether WBTC is a

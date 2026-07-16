@@ -132,6 +132,9 @@ importers:
       '@repo/logger':
         specifier: workspace:*
         version: link:../logger
+      '@repo/notifications':
+        specifier: workspace:*
+        version: link:../notifications
       '@repo/persistence':
         specifier: workspace:*
         version: link:../persistence
