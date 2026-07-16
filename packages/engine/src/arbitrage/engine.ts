@@ -1,12 +1,8 @@
 import {
-  type Account,
   type Address,
-  type Chain,
   ContractFunctionRevertedError,
   type Hex,
   type PublicClient,
-  type Transport,
-  type WalletClient,
   formatUnits,
 } from "viem";
 
@@ -14,16 +10,10 @@ import { vaultSwapAbi } from "@repo/abis";
 import { type TokenMeta, readBalance, readTokenMeta } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
-import {
-  type ExecutionIdentity,
-  type NonceAllocator,
-  type TxSender,
-  waitForReceiptWithTimeout,
-} from "@repo/execution";
+import { type ExecutionIdentity, waitForReceiptWithTimeout } from "@repo/execution";
 import type { Logger } from "@repo/logger";
-import type { StateStore } from "@repo/persistence";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
-import { type AllowanceResult, type Executor, createAutoExecutorFromWallet } from "../executor";
+import type { AllowanceResult, Executor } from "../executor";
 import type { EscrowedVault, PonderResponse } from "./types";
 
 /**
@@ -57,36 +47,20 @@ export interface ArbitrageEngineParams {
 }
 
 export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
-  /**
-   * Holds the signing key. Required for the default AUTO executor (built from it); omit it when
-   * injecting an `executor` — a keyless MANUAL engine is constructed with no `WalletClient` at all.
-   */
-  walletClient?: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   retryConfig: RetryConfig;
   metrics: ArbitrageMetrics;
   logger: Logger;
   risk: RiskGate;
-  /** Crash-safety store (intent idempotency); absent ⇒ no intent tracking. */
-  store?: StateStore;
   /**
-   * The shared nonce authority — the single owner of the signer's nonce sequence. Omit and a
-   * per-signer allocator is created here; a service that runs both engines off one signer injects
-   * one shared instance so the two never collide.
+   * The execution-mode seam and the engine's sole execution collaborator: how each acquisition is
+   * committed (AUTO sign+broadcast vs keyless MANUAL propose+notify), plus who the txs come from
+   * (`executor.identity`). The composition root (`@repo/runtime`) builds it — an `AutoExecutor`
+   * wrapping the wallet + shared nonce authority, or a keyless `ManualExecutor` — and injects it, so
+   * the engine holds no `WalletClient`, `TxSender`, or nonce state of its own. Both engines the
+   * arbitrageur runs share one instance, so they never collide on a nonce.
    */
-  nonces?: NonceAllocator;
-  /**
-   * How txs are signed + broadcast, **and who they come from** (`sender.identity`). Absent ⇒ local
-   * signing off `walletClient`. A keyless MANUAL engine injects a sender carrying the operator's
-   * identity here instead — so identity and the send path travel together, never separately.
-   */
-  sender?: TxSender;
-  /**
-   * The execution-mode seam: how each acquisition is committed (AUTO broadcast vs MANUAL
-   * propose+notify). Absent ⇒ an `AutoExecutor` over the `store`/`nonces`/`sender` above
-   * (behavior-preserving). A keyless MANUAL bot injects a `ManualExecutor` here.
-   */
-  executor?: Executor;
+  executor: Executor;
   /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
   onPollComplete?: () => void;
 }
@@ -126,18 +100,7 @@ export class ArbitrageEngine {
     this.vaultProcessingDelayMs = config.vaultProcessingDelayMs;
     this.retryConfig = config.retryConfig;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
-    // Default is AUTO: the sender + crash-safety plumbing (and the key) live inside the executor,
-    // built from the wallet. A keyless MANUAL bot injects its own `ManualExecutor` instead — which
-    // is why `walletClient` may be absent, and is required only for the default AUTO path.
-    if (config.executor) {
-      this.executor = config.executor;
-    } else {
-      const { walletClient } = config;
-      if (!walletClient) {
-        throw new Error("ArbitrageEngine (AUTO) requires a walletClient, or an injected executor");
-      }
-      this.executor = createAutoExecutorFromWallet({ ...config, walletClient });
-    }
+    this.executor = config.executor;
   }
 
   /**

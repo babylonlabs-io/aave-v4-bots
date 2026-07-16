@@ -328,7 +328,7 @@ export function createManualExecutor(deps: {
 
     async ensureAllowance({ token, spender, required }) {
       // Keyless: read the operator's allowance; if short, propose the approval for them to sign.
-      // Keyed by `spender`/`token` (per #9a review) so two engines' approvals never collide.
+      // Keyed by `spender`/`token` so two engines' approvals never collide.
       const allowance = await readAllowance(publicClient, token, identity.from, spender);
       if (allowance >= required) return { kind: "satisfied" };
       return propose(

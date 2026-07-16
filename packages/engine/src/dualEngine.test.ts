@@ -2,17 +2,21 @@ import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type RiskConfig, type RiskGate, createRiskGate } from "@repo/risk";
 import { describe, expect, it, vi } from "vitest";
-import { ArbitrageEngine, type ArbitrageEngineConfig } from "./arbitrage/engine";
+import { ArbitrageEngine } from "./arbitrage/engine";
 import type { EscrowedVault } from "./arbitrage/types";
-import { LiquidationEngine, type LiquidationEngineConfig } from "./liquidation/engine";
+import { createAutoExecutorFromWallet } from "./executor";
+import { LiquidationEngine } from "./liquidation/engine";
 import type { LiquidatablePosition } from "./liquidation/types";
 
 // The arbitrageur runs BOTH engines in one process off ONE signer. Two invariants follow, and
 // both are properties of the pair, not of either engine alone — so they are tested here:
 //
-//   1. one `NonceAllocator`: their concurrent poll loops never reserve the same nonce;
+//   1. one `Executor` (one `NonceAllocator` inside it): their concurrent poll loops never reserve
+//      the same nonce;
 //   2. one `RiskGate`: halting it stops both engines, and a breaker tripped by one stops the
 //      other — a gate per engine would leave the other trading through a halt.
+
+type AutoDeps = Parameters<typeof createAutoExecutorFromWallet>[0];
 
 const silentLogger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const SIGNER = "0xshared" as `0x${string}`;
@@ -113,9 +117,19 @@ function setup(
   const risk =
     opts.risk && "openSlot" in opts.risk ? opts.risk : createRiskGate(opts.risk as RiskConfig);
 
+  // ONE executor for both engines — the one nonce authority lives inside it, exactly as the
+  // arbitrageur composition root builds it. This is what makes their concurrent sends never collide.
+  const executor = createAutoExecutorFromWallet({
+    nonces,
+    sender: sender as unknown as AutoDeps["sender"],
+    publicClient: publicClient as unknown as AutoDeps["publicClient"],
+    walletClient: walletClient as unknown as AutoDeps["walletClient"],
+    txReceiptTimeoutMs: 1000,
+    logger: silentLogger,
+  });
+
   const liq = new LiquidationEngine({
-    walletClient: walletClient as unknown as LiquidationEngineConfig["walletClient"],
-    publicClient: publicClient as unknown as LiquidationEngineConfig["publicClient"],
+    publicClient: publicClient as unknown as AutoDeps["publicClient"],
     adapterAddress: "0xadapter",
     lensAddress: "0xlens",
     wbtcAddress: "0xwbtc",
@@ -136,13 +150,11 @@ function setup(
     },
     logger: silentLogger,
     risk,
-    nonces,
-    sender: sender as unknown as LiquidationEngineConfig["sender"],
+    executor,
   });
 
   const arb = new ArbitrageEngine({
-    walletClient: walletClient as unknown as ArbitrageEngineConfig["walletClient"],
-    publicClient: publicClient as unknown as ArbitrageEngineConfig["publicClient"],
+    publicClient: publicClient as unknown as AutoDeps["publicClient"],
     vaultSwapAddress: "0xvaultswap",
     wbtcAddress: "0xwbtc",
     ponderUrl: "http://x",
@@ -158,8 +170,7 @@ function setup(
     },
     logger: silentLogger,
     risk,
-    nonces,
-    sender: sender as unknown as ArbitrageEngineConfig["sender"],
+    executor,
   });
 
   global.fetch = vi.fn(async (url: string) => {

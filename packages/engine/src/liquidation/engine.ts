@@ -1,12 +1,8 @@
 import {
-  type Account,
   type Address,
-  type Chain,
   ContractFunctionRevertedError,
   type Hex,
   type PublicClient,
-  type Transport,
-  type WalletClient,
   formatUnits,
   maxUint256,
 } from "viem";
@@ -15,11 +11,10 @@ import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
 import { TokenMetaCache, readBalance } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
-import type { ContractCall, ExecutionIdentity, NonceAllocator, TxSender } from "@repo/execution";
+import type { ContractCall, ExecutionIdentity } from "@repo/execution";
 import type { Logger } from "@repo/logger";
-import type { StateStore } from "@repo/persistence";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
-import { type Executor, createAutoExecutorFromWallet } from "../executor";
+import type { Executor } from "../executor";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {
@@ -64,40 +59,18 @@ export interface LiquidationEngineParams {
 }
 
 export interface LiquidationEngineConfig extends LiquidationEngineParams {
-  /**
-   * Holds the signing key. Required for the default AUTO executor (built from it); omit it when
-   * injecting an `executor` — a keyless MANUAL engine is constructed with no `WalletClient` at all.
-   */
-  walletClient?: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   metrics: LiquidationMetrics;
   logger: Logger;
   risk: RiskGate;
   /**
-   * Crash-safety store (intent idempotency). When present, each submit is recorded under an
-   * idempotency key so a crash/ambiguous-send doesn't double-execute an action; absent ⇒ no
-   * intent tracking (behavior-preserving).
+   * The execution-mode seam and the engine's sole execution collaborator: how each action is
+   * committed (AUTO sign+broadcast vs keyless MANUAL propose+notify), plus who the txs come from
+   * (`executor.identity`). The composition root (`@repo/runtime`) builds it — an `AutoExecutor`
+   * wrapping the wallet + shared nonce authority, or a keyless `ManualExecutor` — and injects it, so
+   * the engine holds no `WalletClient`, `TxSender`, or nonce state of its own.
    */
-  store?: StateStore;
-  /**
-   * The shared nonce authority — the single owner of the signer's nonce sequence; every signer tx
-   * routes through it. Omit and a per-signer allocator is created; a service running both engines
-   * off one signer injects one shared instance so the two never collide. Paired with `store` at the
-   * composition root.
-   */
-  nonces?: NonceAllocator;
-  /**
-   * How txs are signed + broadcast, **and who they come from** (`sender.identity`). Absent ⇒ local
-   * signing off `walletClient`. A keyless MANUAL engine injects a sender carrying the operator's
-   * identity here instead — so identity and the send path travel together, never separately.
-   */
-  sender?: TxSender;
-  /**
-   * The execution-mode seam: how each action is committed (AUTO broadcast vs MANUAL propose+notify).
-   * Absent ⇒ an `AutoExecutor` over the `store`/`nonces`/`sender` above (behavior-preserving). A
-   * keyless MANUAL bot injects a `ManualExecutor` here.
-   */
-  executor?: Executor;
+  executor: Executor;
 }
 
 export class LiquidationEngine {
@@ -137,20 +110,7 @@ export class LiquidationEngine {
     this.llpAddress = config.llpAddress;
     this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
-    // Default is AUTO: the sender + crash-safety plumbing (and the key) live inside the executor,
-    // built from the wallet. A keyless MANUAL bot injects its own `ManualExecutor` instead — which
-    // is why `walletClient` may be absent, and is required only for the default AUTO path.
-    if (config.executor) {
-      this.executor = config.executor;
-    } else {
-      const { walletClient } = config;
-      if (!walletClient) {
-        throw new Error(
-          "LiquidationEngine (AUTO) requires a walletClient, or an injected executor"
-        );
-      }
-      this.executor = createAutoExecutorFromWallet({ ...config, walletClient });
-    }
+    this.executor = config.executor;
   }
 
   /** Resolve a token's symbol/decimals via the shared, cached reader. */
@@ -368,8 +328,8 @@ export class LiquidationEngine {
         // off-chain today. The Lens `estimateLiquidation` returns debt amounts (in debt-token
         // units) + `wbtcPayment` + vault *ids*, and `liquidate`/`liquidateWithLLP` return only
         // `vaultIds` — so neither the estimate nor a simulation yields a WBTC-denominated
-        // profit. Pricing it needs an oracle, a new Lens view, or the on-chain WBTC-delta
-        // ProfitGuard (RFC-001). The gate skips the profit floor when this is undefined.
+        // profit. Pricing it needs an oracle, a new Lens view, or an on-chain WBTC-delta
+        // profit guard. The gate skips the profit floor when this is undefined.
         const slot = this.risk.openSlot({
           kind: "liquidation",
           subject: position.proxyAddress,

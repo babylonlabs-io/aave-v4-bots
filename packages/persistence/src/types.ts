@@ -61,7 +61,7 @@ export const TERMINAL: readonly IntentStatus[] = ["confirmed", "failed", "supers
  *
  * **This store treats `payloadHash` as opaque.** It does not compute it: `propose` takes the hash
  * as an argument and stores it verbatim. The canonical encoding that turns a `ProposedTx` into that
- * hash is the *producer's* contract (#9b's `encodeCall` + keccak), and both the producer and
+ * hash is the *producer's* contract (its `encodeCall` + keccak), and both the producer and
  * `operator-cli` must use the same one. Critically, `jsonb` does **not** preserve byte layout — it
  * may reorder keys and drops an absent `gasLimit` — so recomputation must canonicalize the *parsed
  * object* (sorted keys, explicit optional handling), never the raw stored bytes.
@@ -163,8 +163,8 @@ export interface StateStore {
    *
    * `ttlMs` is a **mechanical lookback window**, not a policy: `0` sweeps every current proposal
    * (`updatedAt <= now`). The "`MANUAL_INTENT_TTL_MS=0` disables expiry" convention lives in the
-   * caller (#9b), which simply does not call this when the operator turned expiry off — the
-   * primitive stays honest about what a zero window means.
+   * caller, which simply does not call this when the operator turned expiry off — the primitive
+   * stays honest about what a zero window means.
    */
   expireProposals(ttlMs: number, action?: string): Promise<number>;
   /** Move an intent to a new status, attaching any `meta` (nonce/txHash/error). */

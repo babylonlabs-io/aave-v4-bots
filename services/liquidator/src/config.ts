@@ -48,8 +48,8 @@ export interface Config extends LiquidationEngineParams, RiskSettings {
   // without a StateStore (in-memory nonce sequencing, no idempotency), unchanged.
   persistence?: PersistenceConfig;
 
-  // Outbound alerts (risk halts today; MANUAL proposals under #9b). The Slack webhook is resolved
-  // from a secret ref at boot (index.ts); `none` (default) logs only.
+  // Outbound alerts (risk halts, and MANUAL proposals). The Slack webhook is resolved from a
+  // secret ref at boot (index.ts); `none` (default) logs only.
   notifier: NotifierSettings;
 
   // Execution mode. AUTO (default) signs + broadcasts; MANUAL is keyless — persists proposals and

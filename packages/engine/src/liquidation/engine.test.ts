@@ -6,11 +6,11 @@ import {
 } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { NotificationEvent, Notifier } from "@repo/notifications";
-import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
+import { type MemoryStateStore, type StateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
 import { type PublicClient, TransactionReceiptNotFoundError, maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createManualExecutor } from "../executor";
+import { createAutoExecutorFromWallet, createManualExecutor } from "../executor";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
 
@@ -117,14 +117,23 @@ const passthroughNonces = (): NonceAllocator => ({
   resync: async () => {},
 });
 
+type AutoDeps = Parameters<typeof createAutoExecutorFromWallet>[0];
+
+/**
+ * Build the engine with a default AUTO executor over the mock wallet + sender (the composition the
+ * `@repo/runtime` root does in production), unless a test injects its own `executor` (e.g. a keyless
+ * `ManualExecutor`). `store`/`nonces` steer the executor's crash-safety + nonce plumbing.
+ */
 function createBot(
   clients: ReturnType<typeof createMockClients>,
-  overrides: Partial<LiquidationEngineConfig> = {}
+  overrides: Partial<LiquidationEngineConfig> & {
+    store?: StateStore;
+    nonces?: NonceAllocator;
+  } = {}
 ): LiquidationEngine {
+  const { store, nonces, executor, ...engineOverrides } = overrides;
   return new LiquidationEngine({
-    walletClient: clients.walletClient as unknown as LiquidationEngineConfig["walletClient"],
     publicClient: clients.publicClient as unknown as LiquidationEngineConfig["publicClient"],
-    sender: clients.sender as unknown as LiquidationEngineConfig["sender"],
     adapterAddress: "0xadapter" as `0x${string}`,
     lensAddress: "0xlens" as `0x${string}`,
     wbtcAddress: "0xwbtc" as `0x${string}`,
@@ -136,7 +145,18 @@ function createBot(
     metrics,
     logger: silentLogger,
     risk: createRiskGate(), // permissive by default
-    ...overrides,
+    executor:
+      executor ??
+      createAutoExecutorFromWallet({
+        store,
+        nonces,
+        sender: clients.sender as unknown as AutoDeps["sender"],
+        publicClient: clients.publicClient as unknown as AutoDeps["publicClient"],
+        walletClient: clients.walletClient as unknown as AutoDeps["walletClient"],
+        txReceiptTimeoutMs: 60000,
+        logger: silentLogger,
+      }),
+    ...engineOverrides,
   });
 }
 
