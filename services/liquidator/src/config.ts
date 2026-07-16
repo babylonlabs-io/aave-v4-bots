@@ -114,7 +114,11 @@ export function loadConfig(): Config {
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),
     notifier: buildNotifierConfig(env),
-    execution: buildExecutionConfig(env),
+    // Pass whether the effective signing-key env var actually holds a value, so a MANUAL boot
+    // rejects a raw key left in the process env (see `buildExecutionConfig`).
+    execution: buildExecutionConfig(env, {
+      signerKeyPresent: Boolean(process.env[env.SIGNER_KEY_REF ?? DEFAULT_KEY_REF]),
+    }),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,

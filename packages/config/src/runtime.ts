@@ -127,8 +127,17 @@ export function buildPersistenceConfig(env: RuntimeEnv): PersistenceConfig | und
  * cannot honor its own contract. MANUAL is keyless and durable, so it **requires** the broadcasting
  * address and a `StateStore`, and it **must not** carry a signing key — a MANUAL bot that resolved
  * one would break the property the mode exists for (no hot key to steal). AUTO is unchanged.
+ *
+ * `opts.signerKeyPresent` is whether the service's signing-key env var actually holds a value (the
+ * service knows its own key-ref name, e.g. `LIQUIDATOR_PRIVATE_KEY`, so it computes this and passes
+ * it in). It closes the gap the schema-field checks below cannot see: a MANUAL deployment that never
+ * sets an explicit signer var but leaves the raw key in the process env — which a compromised MANUAL
+ * process could still read and exfiltrate, defeating "no hot key to steal".
  */
-export function buildExecutionConfig(env: ExecutionEnv): ExecutionSettings {
+export function buildExecutionConfig(
+  env: ExecutionEnv,
+  opts: { signerKeyPresent?: boolean } = {}
+): ExecutionSettings {
   if (env.EXECUTION_MODE === "AUTO") {
     return { mode: "AUTO" };
   }
@@ -141,18 +150,21 @@ export function buildExecutionConfig(env: ExecutionEnv): ExecutionSettings {
   if (!env.DATABASE_URL) {
     throw new Error("EXECUTION_MODE=MANUAL requires DATABASE_URL — proposals must be persisted");
   }
-  // We promised a MANUAL process holds no key: reject an explicitly configured signer rather than
-  // silently ignore it, so a mis-set deployment stops at boot instead of running with a live key it
-  // did not expect to. (The composition root also never calls `resolveSigner` in MANUAL.)
+  // We promised a MANUAL process holds no key: reject an explicitly configured signer, AND the raw
+  // key material sitting in the env, rather than silently ignore either — so a mis-set deployment
+  // stops at boot instead of running with a live key it did not expect to. (The composition root
+  // also never calls `resolveSigner` in MANUAL, so the key is never loaded into a signer object;
+  // this is the defense-in-depth that keeps it out of the process env entirely.)
   const signerVars = [
     env.SIGNER_SOURCE === "aws" && "SIGNER_SOURCE=aws",
     env.SIGNER_KEY_REF && "SIGNER_KEY_REF",
     env.KMS_KEY_ID && "KMS_KEY_ID",
     env.SIGNER_ADDRESS && "SIGNER_ADDRESS",
+    opts.signerKeyPresent && "the signing-key env var",
   ].filter((v): v is string => Boolean(v));
   if (signerVars.length > 0) {
     throw new Error(
-      `EXECUTION_MODE=MANUAL is keyless and must not configure a signer — unset ${signerVars.join(", ")}`
+      `EXECUTION_MODE=MANUAL is keyless and must hold no signing key — unset ${signerVars.join(", ")}`
     );
   }
 

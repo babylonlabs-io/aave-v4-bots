@@ -176,4 +176,19 @@ describe("buildExecutionConfig", () => {
   ])("rejects MANUAL with a configured signer (%s)", (needle, extra) => {
     expect(() => buildExecutionConfig({ ...manualBase, ...extra })).toThrow(needle);
   });
+
+  // The gap the schema-field checks can't see: no explicit signer var, but the raw key sits in the
+  // process env. A compromised MANUAL process could read + exfiltrate it, so boot must reject it.
+  it("rejects MANUAL when the raw signing key is present in the env", () => {
+    expect(() => buildExecutionConfig(manualBase, { signerKeyPresent: true })).toThrow(
+      /keyless|signing key/
+    );
+  });
+
+  it("allows MANUAL when no signing key is present", () => {
+    expect(buildExecutionConfig(manualBase, { signerKeyPresent: false })).toEqual({
+      mode: "MANUAL",
+      manualExecutorAddress: ADDR,
+    });
+  });
 });
