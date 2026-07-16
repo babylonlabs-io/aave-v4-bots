@@ -264,6 +264,29 @@ describe("createManualExecutor (keyless)", () => {
     expect(events[0]).toMatchObject({ kind: "manual-intent", payloadHash: row?.payloadHash });
   });
 
+  it("carries an `expiresAt` deadline in the notification when a TTL is set", async () => {
+    const { notifier, events } = fakeNotifier();
+    const before = Date.now();
+    const exec = manualExecutor(createMemoryStateStore(), notifier, manualPublicClient(), 5_000);
+
+    await exec.commit(CALL, claim("p"));
+
+    const event = events[0];
+    if (event.kind !== "manual-intent") throw new Error("expected a manual-intent event");
+    expect(event.expiresAt).toBeGreaterThanOrEqual(before + 5_000);
+  });
+
+  it("omits `expiresAt` when the TTL is disabled (0)", async () => {
+    const { notifier, events } = fakeNotifier();
+    const exec = manualExecutor(createMemoryStateStore(), notifier, manualPublicClient(), 0);
+
+    await exec.commit(CALL, claim("p"));
+
+    const event = events[0];
+    if (event.kind !== "manual-intent") throw new Error("expected a manual-intent event");
+    expect(event.expiresAt).toBeUndefined();
+  });
+
   it("dedups an unchanged re-proposal — one proposal, one notification", async () => {
     const store = createMemoryStateStore();
     const { notifier, events } = fakeNotifier();

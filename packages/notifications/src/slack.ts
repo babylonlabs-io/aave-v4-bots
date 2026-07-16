@@ -70,6 +70,9 @@ function fieldsOf(
         // The reason this event exists in Slack at all: the operator verifies the hash they see
         // HERE against the one `operator-cli` recomputes from the persisted payload.
         { title: "Payload hash", value: event.payloadHash, short: false },
+        ...(event.expiresAt === undefined
+          ? []
+          : [{ title: "Expires", value: new Date(event.expiresAt).toISOString(), short: true }]),
       ];
     case "intent-stuck":
       return [

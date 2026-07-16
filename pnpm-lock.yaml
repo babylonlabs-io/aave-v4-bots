@@ -84,6 +84,9 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
     devDependencies:
+      '@repo/notifications':
+        specifier: workspace:*
+        version: link:../notifications
       '@repo/persistence':
         specifier: workspace:*
         version: link:../persistence

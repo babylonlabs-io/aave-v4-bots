@@ -1,3 +1,4 @@
+import type { NotifierSettings } from "@repo/notifications";
 import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { z } from "zod";
@@ -104,12 +105,10 @@ export type ExecutionSettings =
       intentTtlMs: number;
     };
 
-/** How a service selects and resolves its notifier — the source, plus the secret ref to resolve. */
-export interface NotifierSettings {
-  source: "none" | "slack";
-  /** Secret reference for the webhook URL (only for `slack`); resolve via `@repo/secrets`. */
-  webhookRef?: string;
-}
+// `NotifierSettings` is owned by `@repo/notifications` (the consumer, `buildNotifier`), imported above
+// and re-exported here so a service reads it off `@repo/config` like every other boot-plan type. One
+// definition, so `buildNotifierConfig`'s output and `buildNotifier`'s input can never drift apart.
+export type { NotifierSettings };
 
 /**
  * Project the notifier env into a service's boot plan. Rejects `slack` with no webhook ref here —

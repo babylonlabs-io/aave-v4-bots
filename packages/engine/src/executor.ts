@@ -274,7 +274,8 @@ export function createManualExecutor(deps: {
 
   async function announce(intentId: string, claim: IntentInput, hash: `0x${string}`) {
     // The hash travels out-of-band on purpose: it is the operator's tamper check against what
-    // `operator-cli` recomputes from the persisted payload.
+    // `operator-cli` recomputes from the persisted payload. `expiresAt` (when a TTL is set) tells
+    // the operator the deadline to sign before `reconcile`'s sweep expires this proposal.
     await notifier.notify({
       kind: "manual-intent",
       intentId,
@@ -282,6 +283,7 @@ export function createManualExecutor(deps: {
       subject: claim.subject,
       target: claim.target,
       payloadHash: hash,
+      ...(intentTtlMs > 0 ? { expiresAt: Date.now() + intentTtlMs } : {}),
     });
   }
 
