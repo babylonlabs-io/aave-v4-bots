@@ -19,15 +19,21 @@ import type { Address, Hex } from "viem";
  * - **AUTO** starts at `pending` (nonce + hash recorded pre-broadcast) → `submitted` (broadcast
  *   attempted) → `confirmed` / `failed`.
  * - **MANUAL** starts at `proposed` — a transaction written down for a human to sign, with no nonce
- *   and nothing on chain. When the operator broadcasts it (`markBroadcast`) it joins the AUTO path
- *   at `submitted`; if it is replaced by a fresher proposal it becomes `superseded`, and if no one
- *   actions it before the TTL it becomes `expired`.
+ *   and nothing on chain. An operator `claimProposal`s it (`proposed → claimed`) before signing —
+ *   the fence that stops a superseded/expired proposal being broadcast — then `markBroadcast`
+ *   (`claimed → submitted`) joins the AUTO path when the tx is on chain. If it is replaced by a
+ *   fresher proposal it becomes `superseded`, and if no one actions it before the TTL, `expired`.
+ *
+ * `claimed` is deliberately NOT in-flight-on-chain: a claimed proposal is spoken-for but has no tx
+ * yet, so reconcile must not see it. An abandoned `claimed` is recovered by an operator, never
+ * auto-reverted (that would risk a double-broadcast) — see `StateStore.release` / `fail`.
  *
  * Terminal states — `confirmed`, `failed`, `superseded`, `expired` — are all revivable: a later
  * `recordIntent` / `propose` for the same subject may start a fresh attempt.
  */
 export type IntentStatus =
   | "proposed"
+  | "claimed"
   | "pending"
   | "submitted"
   | "confirmed"
@@ -40,17 +46,22 @@ export type IntentStatus =
  * because the split between them is load-bearing and easy to get subtly wrong:
  *
  * - **`LIVE_FOR_DEDUP`** — an intent in one of these blocks a second `recordIntent`/`propose` for
- *   the same subject. It **includes `proposed`**: without that, a MANUAL bot re-proposes (and
- *   re-notifies) the same subject every poll cycle.
+ *   the same subject. It **includes `proposed` and `claimed`**: without that, a MANUAL bot
+ *   re-proposes (and re-notifies) a subject already awaiting or mid-signing every poll cycle.
  * - **`IN_FLIGHT_ON_CHAIN`** — the `reconcile()` work-list: intents that may exist ON CHAIN. It
- *   **excludes `proposed`** (a proposal has no tx), so reconcile — and the nonce fence that reads
- *   the same list — never sees one.
+ *   **excludes `proposed` and `claimed`** (neither has a tx), so reconcile — and the nonce fence
+ *   that reads the same list — never sees one.
  * - **`TERMINAL`** — revivable states a fresh attempt may overwrite.
  *
- * `proposed` is deliberately in the first and not the second: live enough to dedup, invisible to
- * anything that reasons about the chain.
+ * `proposed`/`claimed` are deliberately in the first and not the second: live enough to dedup,
+ * invisible to anything that reasons about the chain.
  */
-export const LIVE_FOR_DEDUP: readonly IntentStatus[] = ["proposed", "pending", "submitted"];
+export const LIVE_FOR_DEDUP: readonly IntentStatus[] = [
+  "proposed",
+  "claimed",
+  "pending",
+  "submitted",
+];
 export const IN_FLIGHT_ON_CHAIN: readonly IntentStatus[] = ["pending", "submitted"];
 export const TERMINAL: readonly IntentStatus[] = ["confirmed", "failed", "superseded", "expired"];
 
@@ -80,6 +91,43 @@ export interface ProposedTx {
   gasLimit?: string;
 }
 
+/**
+ * A Safe execution envelope — the full SafeTx an operator's owners sign, **fixed at claim time** so
+ * the hash they sign is exactly what executes and what reconcile later matches. The inner call is the
+ * intent's `payload`; these are the Safe-specific fields wrapping it. Absent (`null`) for EOA custody.
+ *
+ * Persisted as `jsonb`, so — like `ProposedTx` — every field is JSON-serializable (decimal strings,
+ * no `bigint`). Once written it is never renegotiated: a second claim would need a fresh proposal.
+ */
+export interface SafeEnvelope {
+  /** The Safe's on-chain nonce reserved for this SafeTx (distinct per concurrent claim). */
+  safeNonce: number;
+  /** `0` = CALL, `1` = DELEGATECALL. v1 policy: always CALL. */
+  operation: 0 | 1;
+  /** SafeTx gas + refund fields, decimal strings. v1 policy: all `"0"` / zero address — no Safe-level
+   *  refund (a refund moves value out of the Safe on every exec). `confirm` rejects any deviation. */
+  safeTxGas: string;
+  baseGas: string;
+  gasPrice: string;
+  gasToken: Address;
+  refundReceiver: Address;
+  /** The Safe contract version the hash was computed against (part of the EIP-712 domain). */
+  safeVersion: string;
+  /** The EIP-712 SafeTx hash the owners sign; reconcile matches the Safe's `Execution*` event to it. */
+  safeTxHash: Hex;
+}
+
+/** Why a `claimProposal` CAS did not apply. */
+export type ClaimFailure = "not-found" | "not-proposed" | "hash-mismatch";
+
+/**
+ * Outcome of `claimProposal`. `claimed: false` carries the current row (if any) so the operator-cli
+ * can explain *why* — superseded, expired, already claimed, or a stale hash.
+ */
+export type ClaimResult =
+  | { claimed: true; intent: TxIntent }
+  | { claimed: false; reason: ClaimFailure; existing: TxIntent | null };
+
 /** The identity of an action — everything the idempotency key is derived from. */
 export interface IntentInput {
   /** Chain the action targets. */
@@ -107,6 +155,8 @@ export interface TxIntent extends IntentInput {
   payload: ProposedTx | null;
   /** Opaque content hash of `payload` (the operator's out-of-band check); `null` for AUTO. See `ProposedTx`. */
   payloadHash: Hex | null;
+  /** The Safe execution envelope, set at `claimProposal` under `safe` custody; `null` otherwise. */
+  safeEnvelope: SafeEnvelope | null;
   /** ms epoch. */
   createdAt: number;
   updatedAt: number;
@@ -140,15 +190,49 @@ export interface StateStore {
    */
   propose(input: IntentInput, payload: ProposedTx, payloadHash: Hex): Promise<RecordResult>;
   /**
-   * The operator broadcast a proposal: move it `proposed → submitted` and record its `txHash`.
+   * Proposals awaiting an operator — `proposed` (needs claiming) + `claimed` (spoken-for, mid-signing)
+   * rows, optionally scoped to one `action`. The read-side counterpart to `reconcile()` (which is the
+   * on-chain work-list and excludes both). Filters to rows carrying a `payloadHash`, so an AUTO
+   * `pending` never leaks in. Ordered oldest first.
+   */
+  proposals(action?: string): Promise<TxIntent[]>;
+  /** One intent by id (idempotency key), or `null`. The single-row read the operator-cli acts on. */
+  getIntent(id: string): Promise<TxIntent | null>;
+  /**
+   * The operator claims a proposal before signing: a guarded compare-and-set `proposed → claimed`.
+   * Applies **only** while the row is `proposed` and its `payloadHash` equals `expectedPayloadHash`.
+   * This is the fence: a proposal the bot superseded/expired a moment earlier fails here, *before*
+   * anything is signed or broadcast. Under `safe` custody the caller passes the `SafeEnvelope` it
+   * fixed (nonce + gas/refund + `safeTxHash`); it is persisted so the signed SafeTx is verifiable.
+   */
+  claimProposal(
+    id: string,
+    expectedPayloadHash: Hex,
+    envelope?: SafeEnvelope
+  ): Promise<ClaimResult>;
+  /**
+   * The operator broadcast a claimed proposal: move it `claimed → submitted` and record its `txHash`
+   * (the direct tx for EOA, the `execTransaction` tx for Safe).
    *
-   * A guarded compare-and-set, not a blind `transition`: it applies **only** while the row is still
-   * `proposed`, has no `txHash` yet, and its `payloadHash` still equals `expectedPayloadHash`.
-   * Returns `false` if any guard fails — the proposal was superseded, expired, or already reported —
-   * so a stale or unrelated hash can never be pinned to an intent. Chain-level verification (does
-   * this tx really match the payload?) is the caller's job; this enforces the state machine.
+   * A guarded compare-and-set: it applies **only** while the row is `claimed`, has no `txHash` yet,
+   * and its `payloadHash` still equals `expectedPayloadHash`. Returns `false` if any guard fails — so
+   * a stale hash can never be pinned to an intent. Chain-level verification (does this tx match the
+   * payload/envelope?) is the caller's job; this enforces the state machine.
    */
   markBroadcast(id: string, txHash: Hex, expectedPayloadHash: Hex): Promise<boolean>;
+  /**
+   * Recovery: revert a `claimed` proposal back to `proposed` (CAS, guarded on `payloadHash`), clearing
+   * its Safe envelope, so it can be re-notified + re-claimed. For an abandoned claim the operator did
+   * **not** broadcast — the caller must verify nothing executed on chain (the Safe/EOA nonce has not
+   * advanced) BEFORE calling this, or it would invite a double-broadcast. Returns whether it applied.
+   */
+  release(id: string, expectedPayloadHash: Hex): Promise<boolean>;
+  /**
+   * Recovery: mark a live non-terminal intent (`proposed`/`claimed`/`pending`/`submitted`) `failed`,
+   * reviving its subject for a fresh attempt. The operator's escape hatch for a wedged intent (a
+   * dropped tx, an abandoned claim they don't want re-proposed). Returns whether it applied.
+   */
+  fail(id: string, error?: string): Promise<boolean>;
   /**
    * Retire a `proposed` intent as `superseded` (a fresher proposal for the same subject replaces
    * it). No-op unless the row is currently `proposed` — a `pending`/`submitted` (AUTO, real tx)

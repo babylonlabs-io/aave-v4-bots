@@ -262,9 +262,49 @@ export function createManualExecutor(deps: {
    * "expire everything" (`expireProposals(0)` would sweep every live proposal).
    */
   intentTtlMs: number;
+  /**
+   * Warn (`intent-stuck`) when a `claimed` (operator mid-signing) or `submitted` (broadcast, not yet
+   * mined) intent has sat this long — the signal that a claim was abandoned or a tx dropped, which an
+   * operator resolves with `confirm`/`release`/`fail`. `0` disables the check.
+   */
+  intentStuckMs: number;
+  /** Injectable clock for the stuck-age check (tests); defaults to `Date.now`. */
+  now?: () => number;
 }): ManualExecutor {
-  const { store, publicClient, notifier, identity, logger, intentTtlMs } = deps;
+  const { store, publicClient, notifier, identity, logger, intentTtlMs, intentStuckMs } = deps;
+  const now = deps.now ?? Date.now;
   const reader = createChainReader(publicClient);
+
+  // Ids we've already warned as stuck, so a persistently-stuck intent alerts once, not every cycle.
+  // Re-derived to the currently-stuck set each cycle: an intent that recovers drops out (and would
+  // re-warn if it got stuck again), and the set never grows unbounded.
+  let warnedStuck = new Set<string>();
+
+  /** Alert once for each `claimed`/`submitted` intent past `intentStuckMs`. Runs AFTER reconcile, so
+   *  an intent resolved this cycle is already gone and never draws a spurious warning. */
+  async function emitStuck(action: string): Promise<void> {
+    if (intentStuckMs <= 0) return;
+    const at = now();
+    const candidates = [
+      ...(await store.proposals(action)).filter((r) => r.status === "claimed"),
+      ...(await store.reconcile(action)).filter((r) => r.status === "submitted"),
+    ];
+    const stuck = new Set<string>();
+    for (const intent of candidates) {
+      const ageMs = at - intent.updatedAt;
+      if (ageMs < intentStuckMs) continue;
+      stuck.add(intent.id);
+      if (!warnedStuck.has(intent.id)) {
+        await notifier.notify({
+          kind: "intent-stuck",
+          intentId: intent.id,
+          subject: intent.subject,
+          ageMs,
+        });
+      }
+    }
+    warnedStuck = stuck;
+  }
 
   const buildPayload = (call: ContractCall): { payload: ProposedTx; hash: `0x${string}` } => {
     const { to, data } = encodeCall(call);
@@ -327,6 +367,7 @@ export function createManualExecutor(deps: {
         if (swept > 0) logger.info(`Expired ${swept} un-actioned proposal(s)`);
       }
       await reconcilePending({ store, reader, signer: identity.from, action, logger });
+      await emitStuck(action);
     },
     resyncNonces: () => Promise.resolve(),
     async recordOutcome(id, outcome) {

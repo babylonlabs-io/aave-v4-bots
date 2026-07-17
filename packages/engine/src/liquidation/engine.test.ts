@@ -1066,6 +1066,7 @@ describe("LiquidationEngine", () => {
         identity: { from: OPERATOR, chainId: 31337 },
         logger: silentLogger,
         intentTtlMs: 0, // expiry not under test here
+        intentStuckMs: 0, // stuck-check not under test here
       });
       // Injecting an executor makes the engine keyless: no `walletClient`, `sender`, or `nonces`.
       // The adapter/LLP addresses must be real hex too — MANUAL encodes the call + hashes the

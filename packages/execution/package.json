@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@repo/abis": "workspace:*",
     "@repo/logger": "workspace:*",
     "viem": "^2.37.0"
   },

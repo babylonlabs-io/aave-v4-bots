@@ -138,28 +138,48 @@ describe("buildExecutionConfig", () => {
   const manualBase = {
     EXECUTION_MODE: "MANUAL",
     MANUAL_EXECUTOR_ADDRESS: ADDR,
+    MANUAL_EXECUTOR_KIND: "eoa",
     MANUAL_INTENT_TTL_MS: "10800000",
+    MANUAL_INTENT_STUCK_MS: "3600000",
     DATABASE_URL: "postgres://x",
     SIGNER_SOURCE: "local",
   } as const;
 
-  it("AUTO carries no key-shaped fields (and ignores signer/store vars)", () => {
+  it("AUTO carries no key-shaped fields (and ignores signer/store + MANUAL-only vars)", () => {
     expect(
       buildExecutionConfig({
         EXECUTION_MODE: "AUTO",
         SIGNER_SOURCE: "local",
         SIGNER_KEY_REF: "K",
+        // AUTO needs no custody declaration — a stray one is ignored, never required.
+        MANUAL_EXECUTOR_KIND: "safe",
         MANUAL_INTENT_TTL_MS: "10800000",
+        MANUAL_INTENT_STUCK_MS: "3600000",
       })
     ).toEqual({ mode: "AUTO" });
   });
 
-  it("MANUAL carries the broadcasting address + proposal TTL", () => {
+  it("MANUAL carries the broadcasting address, custody kind + proposal TTL", () => {
     expect(buildExecutionConfig(manualBase)).toEqual({
       mode: "MANUAL",
       manualExecutorAddress: ADDR,
+      executorKind: "eoa",
       intentTtlMs: 10_800_000,
+      intentStuckMs: 3_600_000,
     });
+  });
+
+  it("MANUAL carries a `safe` custody kind", () => {
+    expect(buildExecutionConfig({ ...manualBase, MANUAL_EXECUTOR_KIND: "safe" })).toMatchObject({
+      mode: "MANUAL",
+      executorKind: "safe",
+    });
+  });
+
+  it("rejects MANUAL without a declared custody kind", () => {
+    expect(() => buildExecutionConfig({ ...manualBase, MANUAL_EXECUTOR_KIND: undefined })).toThrow(
+      /MANUAL_EXECUTOR_KIND/
+    );
   });
 
   it("rejects MANUAL without a broadcasting address", () => {
@@ -196,7 +216,9 @@ describe("buildExecutionConfig", () => {
     expect(buildExecutionConfig(manualBase, { signerKeyPresent: false })).toEqual({
       mode: "MANUAL",
       manualExecutorAddress: ADDR,
+      executorKind: "eoa",
       intentTtlMs: 10_800_000,
+      intentStuckMs: 3_600_000,
     });
   });
 
@@ -206,6 +228,15 @@ describe("buildExecutionConfig", () => {
     });
     expect(buildExecutionConfig({ ...manualBase, MANUAL_INTENT_TTL_MS: "60000" })).toMatchObject({
       intentTtlMs: 60_000,
+    });
+  });
+
+  it("parses the intent-stuck threshold, and 0 to disable it", () => {
+    expect(buildExecutionConfig({ ...manualBase, MANUAL_INTENT_STUCK_MS: "0" })).toMatchObject({
+      intentStuckMs: 0,
+    });
+    expect(buildExecutionConfig({ ...manualBase, MANUAL_INTENT_STUCK_MS: "90000" })).toMatchObject({
+      intentStuckMs: 90_000,
     });
   });
 });

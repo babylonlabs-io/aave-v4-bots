@@ -166,6 +166,9 @@ importers:
 
   packages/execution:
     dependencies:
+      '@repo/abis':
+        specifier: workspace:*
+        version: link:../abis
       '@repo/logger':
         specifier: workspace:*
         version: link:../logger
@@ -285,6 +288,9 @@ importers:
 
   packages/runtime:
     dependencies:
+      '@repo/abis':
+        specifier: workspace:*
+        version: link:../abis
       '@repo/chain':
         specifier: workspace:*
         version: link:../chain
@@ -490,6 +496,55 @@ importers:
       '@repo/signer':
         specifier: workspace:*
         version: link:../../packages/signer
+      dotenv:
+        specifier: ^16.5.0
+        version: 16.6.1
+      viem:
+        specifier: ^2.37.0
+        version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.19.2
+      tsx:
+        specifier: ^4.19.3
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.2)
+
+  services/operator-cli:
+    dependencies:
+      '@repo/abis':
+        specifier: workspace:*
+        version: link:../../packages/abis
+      '@repo/chain':
+        specifier: workspace:*
+        version: link:../../packages/chain
+      '@repo/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@repo/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@repo/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
+      '@repo/logger':
+        specifier: workspace:*
+        version: link:../../packages/logger
+      '@repo/persistence':
+        specifier: workspace:*
+        version: link:../../packages/persistence
+      '@repo/secrets':
+        specifier: workspace:*
+        version: link:../../packages/secrets
       dotenv:
         specifier: ^16.5.0
         version: 16.6.1

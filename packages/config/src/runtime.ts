@@ -51,15 +51,29 @@ export const runtimeEnvFields = {
    */
   EXECUTION_MODE: z.enum(["AUTO", "MANUAL"]).optional().default("AUTO"),
   /**
-   * The EOA that will broadcast the proposals — the identity whose balances/allowances the engine
-   * reads and whose `from` its simulations use. An address, never a key. Required in MANUAL.
+   * The account that will broadcast the proposals — the identity whose balances/allowances the engine
+   * reads and whose `from` its simulations use. An address, never a key. In `safe` custody this is the
+   * Safe itself (the `msg.sender` of the inner call). Required in MANUAL.
    */
   MANUAL_EXECUTOR_ADDRESS: addressSchema.optional(),
+  /**
+   * The operator's custody model — `eoa` (a plain account: hardware wallet or a local dev key) or
+   * `safe` (a Safe{Wallet} multisig). Required in MANUAL, because it changes both how a proposal is
+   * broadcast and how it is confirmed (a Safe's inner success is an event, not the tx receipt). No
+   * default: a silent `eoa` would mis-confirm a Safe deployment.
+   */
+  MANUAL_EXECUTOR_KIND: z.enum(["eoa", "safe"]).optional(),
   /**
    * How long (ms) an un-actioned MANUAL proposal lives before it's swept to `expired` — freeing its
    * subject to be re-proposed (and re-notified). `0` disables expiry. Default 3 hours. MANUAL only.
    */
   MANUAL_INTENT_TTL_MS: nonNegativeIntSchema.optional().default("10800000"),
+  /**
+   * How long (ms) a `claimed` or `submitted` MANUAL intent may sit before the bot emits an
+   * `intent-stuck` alert — an abandoned claim or a dropped broadcast the operator must resolve. `0`
+   * disables the check. Default 1 hour. MANUAL only.
+   */
+  MANUAL_INTENT_STUCK_MS: nonNegativeIntSchema.optional().default("3600000"),
 } as const;
 
 /** The env shape the builders below consume. */
@@ -82,7 +96,9 @@ export interface ExecutionEnv {
   // Address vars stay `string` here — the `addressSchema` regex validates the format but zod infers
   // `string`; `buildExecutionConfig` narrows to `Hex40` on the way out.
   MANUAL_EXECUTOR_ADDRESS?: string;
+  MANUAL_EXECUTOR_KIND?: "eoa" | "safe";
   MANUAL_INTENT_TTL_MS: string;
+  MANUAL_INTENT_STUCK_MS: string;
   DATABASE_URL?: string;
   SIGNER_SOURCE: "local" | "aws";
   SIGNER_KEY_REF?: string;
@@ -99,10 +115,17 @@ export type ExecutionSettings =
   | { mode: "AUTO" }
   | {
       mode: "MANUAL";
-      /** The EOA whose balances/allowances the engine reads and whose `from` it simulates from. */
+      /** The account whose balances/allowances the engine reads and whose `from` it simulates from —
+       *  an EOA, or the Safe itself in `safe` custody. */
       manualExecutorAddress: Hex40;
+      /** The operator's custody model. Drives the operator-cli's signer and, critically, how the bot's
+       *  reconcile confirms an intent — `safe` resolves by the Safe's `Execution{Success,Failure}`
+       *  event, `eoa` by the tx receipt status. See `docs/design-020-operator-cli-v1.md`. */
+      executorKind: "eoa" | "safe";
       /** Sweep an un-actioned proposal to `expired` after this many ms (`0` disables). */
       intentTtlMs: number;
+      /** Alert (`intent-stuck`) on a claimed/submitted intent older than this many ms (`0` disables). */
+      intentStuckMs: number;
     };
 
 // `NotifierSettings` is owned by `@repo/notifications` (the consumer, `buildNotifier`), imported above
@@ -161,6 +184,14 @@ export function buildExecutionConfig(
   if (!env.DATABASE_URL) {
     throw new Error("EXECUTION_MODE=MANUAL requires DATABASE_URL — proposals must be persisted");
   }
+  // Required, no default: the custody model changes how a proposal is broadcast AND how it is
+  // confirmed, so a silent `eoa` default would mis-confirm a Safe deployment (its `execTransaction`
+  // succeeds even when the inner call reverts). Make the operator declare it.
+  if (!env.MANUAL_EXECUTOR_KIND) {
+    throw new Error(
+      "EXECUTION_MODE=MANUAL requires MANUAL_EXECUTOR_KIND (eoa | safe) — the operator's custody model"
+    );
+  }
   // We promised a MANUAL process holds no key: reject an explicitly configured signer, AND the raw
   // key material sitting in the env, rather than silently ignore either — so a mis-set deployment
   // stops at boot instead of running with a live key it did not expect to. (The composition root
@@ -182,6 +213,8 @@ export function buildExecutionConfig(
   return {
     mode: "MANUAL",
     manualExecutorAddress: env.MANUAL_EXECUTOR_ADDRESS as Hex40,
+    executorKind: env.MANUAL_EXECUTOR_KIND,
     intentTtlMs: Number.parseInt(env.MANUAL_INTENT_TTL_MS, 10),
+    intentStuckMs: Number.parseInt(env.MANUAL_INTENT_STUCK_MS, 10),
   };
 }

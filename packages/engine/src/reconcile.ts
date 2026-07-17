@@ -1,7 +1,23 @@
+import { safeAbi } from "@repo/abis";
 import { getNonce, getReceiptStatus, isTxKnown } from "@repo/chain";
 import type { Logger } from "@repo/logger";
-import type { StateStore } from "@repo/persistence";
-import type { Address, Hex, PublicClient } from "viem";
+import type {
+  IntentStatus,
+  SafeEnvelope,
+  StateStore,
+  TransitionMeta,
+  TxIntent,
+} from "@repo/persistence";
+import { type Address, type Hex, type PublicClient, parseEventLogs } from "viem";
+
+/**
+ * How a `safe`-custody intent's `execTransaction` resolved:
+ * - `success` / `failure` — the Safe's matching `Execution{Success,Failure}` event decided it;
+ * - `reverted` — the receipt exists but the outer `execTransaction` itself reverted (status 0);
+ * - `no-event` — receipt exists, status 1, but no matching Safe event (anomalous);
+ * - `null` — no receipt yet.
+ */
+export type SafeExecutionOutcome = "success" | "failure" | "reverted" | "no-event" | null;
 
 // Reconciliation is **orchestration**, not storage: it reads in-flight intents from the
 // `StateStore`, asks the chain what became of them, and writes the resolution back. It spans two
@@ -27,6 +43,16 @@ export interface ChainReader {
    * from "signed, but the node rejected the broadcast (e.g. insufficient funds)".
    */
   isKnown(hash: Hex): Promise<boolean>;
+  /**
+   * Resolve a Safe `execTransaction`: scan `txHash`'s receipt for `safeAddress`'s
+   * `Execution{Success,Failure}` event matching `safeTxHash`. See `SafeExecutionOutcome`. Used only
+   * for `safe`-custody intents (those carrying a `safeEnvelope`).
+   */
+  getSafeExecution(
+    txHash: Hex,
+    safeAddress: Address,
+    safeTxHash: Hex
+  ): Promise<SafeExecutionOutcome>;
 }
 
 /** Bind the `ChainReader` port to a viem `PublicClient`. */
@@ -35,6 +61,28 @@ export function createChainReader(publicClient: PublicClient): ChainReader {
     getReceiptStatus: (hash) => getReceiptStatus(publicClient, hash),
     getNonce: (address, tag) => getNonce(publicClient, address, tag),
     isKnown: (hash) => isTxKnown(publicClient, hash),
+    async getSafeExecution(txHash, safeAddress, safeTxHash) {
+      // No receipt yet ⇒ not mined ⇒ still in flight. viem throws when the receipt is absent.
+      const receipt = await publicClient.getTransactionReceipt({ hash: txHash }).catch(() => null);
+      if (!receipt) return null;
+      // The outer execTransaction itself reverted — the SafeTx never ran, nothing is on chain.
+      if (receipt.status === "reverted") return "reverted";
+      // Match on BOTH the emitting Safe and the SafeTx hash: another contract in the same tx could
+      // carry a same-signature event with a coincident bytes32, and must never be mistaken for ours.
+      const events = parseEventLogs({
+        abi: safeAbi,
+        eventName: ["ExecutionSuccess", "ExecutionFailure"],
+        logs: receipt.logs,
+        strict: false,
+      });
+      const match = events.find(
+        (e) =>
+          e.address.toLowerCase() === safeAddress.toLowerCase() &&
+          e.args.txHash?.toLowerCase() === safeTxHash.toLowerCase()
+      );
+      if (!match) return "no-event";
+      return match.eventName === "ExecutionSuccess" ? "success" : "failure";
+    },
   };
 }
 
@@ -87,31 +135,131 @@ export async function couldBeInFlight(
 }
 
 /**
- * Resolve the store's in-flight intents against the chain, **before** the engine re-drives —
- * the crux of no-double-submit after a crash or an ambiguous send. `signer` is the sending
- * address whose nonce sequence anchors the "was this broadcast?" checks.
- *
- * Senders sign locally and record `nonce` + `txHash` **before** broadcasting (see
- * `@repo/execution`'s `TxSender`), so the hash-bearing branch is the normal path: any intent
- * that could possibly exist on chain has its hash. The hash-less branches below are the
- * leftovers — the durable record itself failed, so nothing was broadcast.
- *
- * Per intent:
- * - **has a tx hash** → look up the receipt: `success` → `confirmed`, `reverted` → `failed`;
- *   no receipt but the signer's mined nonce has already passed the intent's nonce → the tx
- *   was dropped/replaced (or was signed and never broadcast, and something else took the
- *   slot) → `failed`; no receipt, the nonce slot is still free **and** the node does not know
- *   the hash **and** it is past the grace window (see `couldBeInFlight`) → the broadcast was
- *   rejected, so nothing is on chain → `failed`, safe to re-drive; otherwise it is genuinely
- *   pending → left in-flight.
- * - **no hash, but a reserved nonce the chain has mined past** (`latest > nonce`) → a tx took
- *   that nonce slot; we can't fetch a receipt without the hash, so mark `failed` and let the
- *   engine's fresh simulation be the final guard (an already-executed action reverts in
- *   simulation and is skipped; a still-open one is re-driven).
- * - **no hash, reserved nonce still only in the mempool** (`pending > nonce >= latest`) → a
- *   broadcast we did not finish recording is likely in flight; keep it live (marked
- *   `submitted`) so this boot does **not** re-drive it — a later boot resolves it once mined.
- * - **never broadcast** (no nonce, or `pending <= nonce`) → `failed`, safe to re-drive.
+ * What a resolver decided for one intent, kept separate from applying it: the `status` to write (or
+ * none — a genuinely-pending intent is left untouched), which summary counter to `bucket`, and an
+ * optional operator `warn`. This makes each resolver a small function with no store/log side-effects
+ * — the loop owns those — so the resolution logic reads and tests in isolation.
+ */
+interface Resolution {
+  status?: IntentStatus;
+  meta?: TransitionMeta;
+  bucket: "confirmed" | "failed" | "stillInFlight";
+  warn?: string;
+}
+
+const confirmedAs = (meta: TransitionMeta): Resolution => ({
+  status: "confirmed",
+  meta,
+  bucket: "confirmed",
+});
+const failedAs = (meta: TransitionMeta): Resolution => ({
+  status: "failed",
+  meta,
+  bucket: "failed",
+});
+/** Genuinely in flight — leave the row as-is, just count it. */
+const stillInFlight: Resolution = { bucket: "stillInFlight" };
+
+/**
+ * MANUAL + `safe`: the outer `execTransaction` receipt lies about the inner call (a Safe catches an
+ * inner revert and still succeeds), so judge by the Safe's `Execution{Success,Failure}` event — see
+ * the ladder in `SafeExecutionOutcome`.
+ */
+async function resolveSafeIntent(
+  reader: ChainReader,
+  safe: Address,
+  intent: TxIntent,
+  txHash: Hex,
+  envelope: SafeEnvelope
+): Promise<Resolution> {
+  const outcome = await reader.getSafeExecution(txHash, safe, envelope.safeTxHash);
+  switch (outcome) {
+    case "success":
+      return confirmedAs({ txHash });
+    case "failure":
+      return failedAs({ txHash, error: "Safe inner call reverted (ExecutionFailure)" });
+    case "reverted":
+      return failedAs({ txHash, error: "Safe execTransaction reverted" });
+    case "no-event":
+      // Mined, status 1, yet no matching Execution event — anomalous. Fail (safe: the engine's fresh
+      // simulation guards against re-executing an action that did land) and warn loudly, rather than
+      // confirm blind or leave it looping forever.
+      return {
+        ...failedAs({ txHash, error: "Safe tx mined without a matching Execution event" }),
+        warn: `Reconcile: ${intent.action} ${intent.subject} — Safe tx ${txHash} carries no Execution event for ${envelope.safeTxHash}`,
+      };
+    default:
+      return stillInFlight;
+  }
+}
+
+/**
+ * EOA / AUTO with a recorded hash — the normal path (senders record `nonce` + `txHash` before
+ * broadcasting). The receipt status *is* the inner call's, since the account called the target
+ * directly: `success` → confirmed, `reverted` → failed; else fall to the nonce-based liveness checks.
+ */
+async function resolveBroadcastIntent(
+  liveness: LivenessCheck,
+  nonces: { latest: number; pending: number },
+  intent: TxIntent,
+  txHash: Hex
+): Promise<Resolution> {
+  const { nonce, updatedAt } = intent;
+  const status = await liveness.reader.getReceiptStatus(txHash);
+  if (status === "success") return confirmedAs({ txHash });
+  if (status === "reverted") return failedAs({ txHash, error: "reverted (reconciled)" });
+  // No receipt, but the signer's mined nonce has passed this one → the tx was dropped/replaced (or
+  // signed-but-never-broadcast and something else took the slot).
+  if (nonce !== null && nonces.latest > nonce) {
+    return failedAs({ txHash, error: "dropped/replaced (reconciled)" });
+  }
+  // The nonce slot is still free and the node has not heard of this tx for long enough that
+  // propagation cannot explain it — so the broadcast was *rejected* (insufficient funds, underpriced,
+  // …), not merely unconfirmed. Nothing is on chain, so this is safe to re-drive. Without this an
+  // intent would pin live forever: a rejection that blocks one send blocks them all, so no later tx
+  // would ever mine past the nonce to release it.
+  if (
+    nonce !== null &&
+    nonces.pending <= nonce &&
+    !(await couldBeInFlight(liveness, { txHash, updatedAt }))
+  ) {
+    return failedAs({ txHash, error: "not accepted (reconciled)" });
+  }
+  return stillInFlight;
+}
+
+/**
+ * No recorded hash — the durable record itself failed mid-send, so resolution leans on the reserved
+ * nonce. `latest > nonce`: a tx took the slot; without a hash we can't fetch a receipt, so `failed`
+ * and let the engine's fresh simulation be the final guard. `pending > nonce`: likely in the mempool
+ * — keep it live (`submitted`) so this boot does not re-drive it; a later boot resolves it once mined.
+ * Otherwise it was never broadcast → `failed`, safe to re-drive.
+ */
+function resolveUnbroadcastIntent(
+  nonces: { latest: number; pending: number },
+  intent: TxIntent
+): Resolution {
+  const { nonce } = intent;
+  if (nonce !== null && nonces.latest > nonce) {
+    return failedAs({ error: "nonce mined without recorded hash" });
+  }
+  if (nonce !== null && nonces.pending > nonce) {
+    return {
+      status: "submitted",
+      meta: { error: "broadcast unconfirmed on boot" },
+      bucket: "stillInFlight",
+      warn: `Reconcile: ${intent.action} ${intent.subject} kept in-flight — nonce ${nonce} in mempool, no recorded tx hash`,
+    };
+  }
+  return failedAs({ error: "not broadcast (reconciled)" });
+}
+
+/**
+ * Resolve the store's in-flight intents against the chain, **before** the engine re-drives — the
+ * crux of no-double-submit after a crash or an ambiguous send. `signer` is the sending address whose
+ * nonce sequence anchors the "was this broadcast?" checks (and, in `safe` custody, the Safe whose
+ * `Execution*` event confirms). Each intent is routed to one of three resolvers by what it carries —
+ * a Safe envelope, a plain tx hash, or neither — and the decision is applied here.
  */
 export async function reconcilePending(args: {
   store: StateStore;
@@ -148,58 +296,20 @@ export async function reconcilePending(args: {
     ? await Promise.all([reader.getNonce(signer, "latest"), reader.getNonce(signer, "pending")])
     : [0, 0];
 
+  const nonces = { latest, pending };
   for (const intent of inflight) {
-    const { id, nonce, txHash } = intent;
+    // Route by what the intent carries: a Safe envelope (MANUAL `safe`), a plain tx hash
+    // (AUTO/EOA), or neither (a send whose durable record never completed). `safeEnvelope` is set
+    // only by the Safe claim path, so AUTO/EOA intents are never routed through the Safe resolver.
+    const resolution = intent.txHash
+      ? intent.safeEnvelope
+        ? await resolveSafeIntent(reader, signer, intent, intent.txHash, intent.safeEnvelope)
+        : await resolveBroadcastIntent(liveness, nonces, intent, intent.txHash)
+      : resolveUnbroadcastIntent(nonces, intent);
 
-    if (txHash) {
-      const status = await reader.getReceiptStatus(txHash);
-      if (status === "success") {
-        await store.transition(id, "confirmed", { txHash });
-        summary.confirmed++;
-      } else if (status === "reverted") {
-        await store.transition(id, "failed", { txHash, error: "reverted (reconciled)" });
-        summary.failed++;
-      } else if (nonce !== null && latest > nonce) {
-        await store.transition(id, "failed", { txHash, error: "dropped/replaced (reconciled)" });
-        summary.failed++;
-      } else if (
-        nonce !== null &&
-        pending <= nonce &&
-        !(await couldBeInFlight(liveness, { txHash, updatedAt: intent.updatedAt }))
-      ) {
-        // The nonce slot is still free and the node has not heard of this tx for long enough that
-        // propagation cannot explain it — so the broadcast was *rejected* (insufficient funds,
-        // underpriced, …), not merely unconfirmed. Nothing is on chain, so this is safe to
-        // re-drive. Without this branch such an intent would be pinned live forever: a rejection
-        // that blocks one send blocks them all, so no later tx would ever mine past the nonce to
-        // release it.
-        await store.transition(id, "failed", { txHash, error: "not accepted (reconciled)" });
-        summary.failed++;
-      } else {
-        summary.stillInFlight++;
-      }
-      continue;
-    }
-
-    if (nonce !== null && latest > nonce) {
-      // A tx already occupies this nonce; without the hash we resolve to failed and lean on
-      // the engine's on-chain simulation to avoid re-executing an already-done action.
-      await store.transition(id, "failed", { error: "nonce mined without recorded hash" });
-      summary.failed++;
-    } else if (nonce !== null && pending > nonce) {
-      // Likely in the mempool — keep it live so this boot does not re-drive it. Without a
-      // hash we can't confirm it; if such a tx never mines and never drops, the intent stays
-      // live across boots and this subject is refused until then (no-double-submit is favored
-      // over liveness). Warn so a stuck position is observable to an operator.
-      await store.transition(id, "submitted", { error: "broadcast unconfirmed on boot" });
-      logger?.warn(
-        `Reconcile: ${intent.action} ${intent.subject} kept in-flight — nonce ${nonce} in mempool, no recorded tx hash`
-      );
-      summary.stillInFlight++;
-    } else {
-      await store.transition(id, "failed", { error: "not broadcast (reconciled)" });
-      summary.failed++;
-    }
+    if (resolution.status) await store.transition(intent.id, resolution.status, resolution.meta);
+    if (resolution.warn) logger?.warn(resolution.warn);
+    summary[resolution.bucket]++;
   }
 
   logger?.info(

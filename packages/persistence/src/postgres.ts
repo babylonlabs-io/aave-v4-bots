@@ -7,6 +7,7 @@ import {
   type PersistenceConfig,
   type ProposedTx,
   type RecordResult,
+  type SafeEnvelope,
   type StateStore,
   TERMINAL,
   type TransitionMeta,
@@ -53,6 +54,8 @@ type IntentRow = {
   // `jsonb` — `pg` already parses it into an object; `null` for AUTO rows.
   payload: ProposedTx | null;
   payload_hash: string | null;
+  // `jsonb` — the Safe execution envelope, set at claim under `safe` custody; `null` otherwise.
+  safe_envelope: SafeEnvelope | null;
   created_at: string;
   updated_at: string;
 };
@@ -70,20 +73,23 @@ function mapIntent(row: IntentRow): TxIntent {
     error: row.error,
     payload: row.payload,
     payloadHash: row.payload_hash === null ? null : (row.payload_hash as Hex),
+    safeEnvelope: row.safe_envelope,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
 }
 
 const INTENT_COLUMNS =
-  "id, chain_id, target, action, subject, status, nonce, tx_hash, error, payload, payload_hash, created_at, updated_at";
+  "id, chain_id, target, action, subject, status, nonce, tx_hash, error, payload, payload_hash, safe_envelope, created_at, updated_at";
 
 /** A status set rendered as a SQL list literal — the single source is the exported const array. */
 const sqlList = (statuses: readonly string[]) => statuses.map((s) => `'${s}'`).join(", ");
 /** Terminal statuses a `recordIntent`/`propose` may revive from. */
 const TERMINAL_SQL = sqlList(TERMINAL);
-/** In-flight-on-chain statuses the reconcile work-list returns (excludes `proposed`). */
+/** In-flight-on-chain statuses the reconcile work-list returns (excludes `proposed`/`claimed`). */
 const IN_FLIGHT_SQL = sqlList(IN_FLIGHT_ON_CHAIN);
+/** Operator-owned, pre-chain proposal states the `proposals()` work-list returns. */
+const PROPOSAL_STATES_SQL = sqlList(["proposed", "claimed"]);
 
 export function createPostgresStateStore(config: PostgresStoreConfig): StateStore {
   const schema = config.schema ?? "bot";
@@ -114,13 +120,15 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
              error TEXT,
              payload JSONB,
              payload_hash TEXT,
+             safe_envelope JSONB,
              created_at BIGINT NOT NULL,
              updated_at BIGINT NOT NULL
            );
            CREATE INDEX IF NOT EXISTS tx_intents_status_idx ON ${intents} (status);
            -- Additive migration for databases created before the MANUAL proposal columns existed.
            ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload JSONB;
-           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload_hash TEXT;`
+           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload_hash TEXT;
+           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS safe_envelope JSONB;`
         )
         .then(() => undefined)
         .catch((error) => {
@@ -150,10 +158,10 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
     const res = await client.query<IntentRow>(
       `INSERT INTO ${intents} AS t
          (${INTENT_COLUMNS})
-       VALUES ($1, $2, $3, $4, $5, $7, NULL, NULL, NULL, $8, $9, $6, $6)
+       VALUES ($1, $2, $3, $4, $5, $7, NULL, NULL, NULL, $8, $9, NULL, $6, $6)
        ON CONFLICT (id) DO UPDATE
          SET status = $7, nonce = NULL, tx_hash = NULL, error = NULL,
-             payload = $8, payload_hash = $9, updated_at = $6
+             payload = $8, payload_hash = $9, safe_envelope = NULL, updated_at = $6
          WHERE t.status IN (${TERMINAL_SQL})
        RETURNING ${INTENT_COLUMNS}`,
       [
@@ -186,16 +194,84 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       return record(input, "proposed", payload, payloadHash);
     },
 
+    async proposals(action?: string) {
+      await ensureReady();
+      const res = await client.query<IntentRow>(
+        `SELECT ${INTENT_COLUMNS} FROM ${intents}
+         WHERE status IN (${PROPOSAL_STATES_SQL}) AND payload_hash IS NOT NULL
+           AND ($1::text IS NULL OR action = $1)
+         ORDER BY created_at ASC`,
+        [action ?? null]
+      );
+      return res.rows.map(mapIntent);
+    },
+
+    async getIntent(id: string) {
+      await ensureReady();
+      const res = await client.query<IntentRow>(
+        `SELECT ${INTENT_COLUMNS} FROM ${intents} WHERE id = $1`,
+        [id]
+      );
+      return res.rows.length > 0 ? mapIntent(res.rows[0]) : null;
+    },
+
+    async claimProposal(id, expectedPayloadHash, envelope) {
+      await ensureReady();
+      // Compare-and-set `proposed → claimed`: the fence. Applies only while still `proposed` and the
+      // payload the operator verified is on record. A superseded/expired/already-claimed row fails.
+      const res = await client.query<IntentRow>(
+        `UPDATE ${intents}
+           SET status = 'claimed', safe_envelope = $3, updated_at = $4
+         WHERE id = $1 AND status = 'proposed' AND payload_hash = $2
+         RETURNING ${INTENT_COLUMNS}`,
+        [id, expectedPayloadHash, envelope ? JSON.stringify(envelope) : null, Date.now()]
+      );
+      if (res.rows.length > 0) return { claimed: true, intent: mapIntent(res.rows[0]) };
+      // The CAS matched nothing — read the current row to explain why to the operator.
+      const existing = await client.query<IntentRow>(
+        `SELECT ${INTENT_COLUMNS} FROM ${intents} WHERE id = $1`,
+        [id]
+      );
+      if (existing.rows.length === 0)
+        return { claimed: false, reason: "not-found", existing: null };
+      const row = mapIntent(existing.rows[0]);
+      return {
+        claimed: false,
+        reason: row.status === "proposed" ? "hash-mismatch" : "not-proposed",
+        existing: row,
+      };
+    },
+
     async markBroadcast(id, txHash, expectedPayloadHash) {
       await ensureReady();
-      // Compare-and-set: apply only while still awaiting broadcast (`proposed`, no hash) and only if
-      // the payload the operator verified is still the one on record. A superseded/expired/reported
-      // row fails the WHERE and updates nothing.
+      // Compare-and-set: apply only to a `claimed` proposal (the claim fence ran) still awaiting
+      // broadcast, whose verified payload is unchanged. A released/superseded/reported row updates
+      // nothing.
       const res = await client.query(
         `UPDATE ${intents}
            SET status = 'submitted', tx_hash = $2, updated_at = $4
-         WHERE id = $1 AND status = 'proposed' AND tx_hash IS NULL AND payload_hash = $3`,
+         WHERE id = $1 AND status = 'claimed' AND tx_hash IS NULL AND payload_hash = $3`,
         [id, txHash, expectedPayloadHash, Date.now()]
+      );
+      return (res.rowCount ?? 0) > 0;
+    },
+
+    async release(id, expectedPayloadHash) {
+      await ensureReady();
+      const res = await client.query(
+        `UPDATE ${intents} SET status = 'proposed', safe_envelope = NULL, updated_at = $3
+         WHERE id = $1 AND status = 'claimed' AND payload_hash = $2`,
+        [id, expectedPayloadHash, Date.now()]
+      );
+      return (res.rowCount ?? 0) > 0;
+    },
+
+    async fail(id, error) {
+      await ensureReady();
+      const res = await client.query(
+        `UPDATE ${intents} SET status = 'failed', error = COALESCE($2, error), updated_at = $3
+         WHERE id = $1 AND status IN ('proposed', 'claimed', 'pending', 'submitted')`,
+        [id, error ?? null, Date.now()]
       );
       return (res.rowCount ?? 0) > 0;
     },
