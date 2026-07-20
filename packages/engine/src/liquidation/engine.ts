@@ -17,6 +17,7 @@ import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
 import { nextNonce } from "@repo/execution";
 import type { Logger } from "@repo/logger";
+import type { RiskGate } from "@repo/risk";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {
@@ -65,11 +66,13 @@ export interface LiquidationEngineConfig extends LiquidationEngineParams {
   publicClient: PublicClient;
   metrics: LiquidationMetrics;
   logger: Logger;
+  risk: RiskGate;
 }
 
 export class LiquidationEngine {
   private metrics: LiquidationMetrics;
   private logger: Logger;
+  private risk: RiskGate;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private adapterAddress: Address;
@@ -86,6 +89,7 @@ export class LiquidationEngine {
   constructor(config: LiquidationEngineConfig) {
     this.metrics = config.metrics;
     this.logger = config.logger;
+    this.risk = config.risk;
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.adapterAddress = config.adapterAddress;
@@ -161,6 +165,12 @@ export class LiquidationEngine {
     const startTime = Date.now();
 
     try {
+      // 0. Risk gate — a HALTED gate (kill-switch or tripped breaker) skips the cycle.
+      if (this.risk.state() === "HALTED") {
+        this.logger.warn("Risk gate is HALTED — skipping liquidation run");
+        return;
+      }
+
       // 1. Fetch liquidatable positions from Ponder
       const positions = await this.fetchLiquidatablePositions();
 
@@ -278,6 +288,15 @@ export class LiquidationEngine {
       const txHashes: Hex[] = [];
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, amounts } = validCandidates[i];
+
+        // Risk gate — per-candidate check just before submit (profit floor, freshness, …).
+        const decision = this.risk.check({ kind: "liquidation", subject: position.proxyAddress });
+        if (!decision.allow) {
+          this.metrics.recordError("risk_blocked");
+          this.logger.warn(`Risk gate blocked ${position.proxyAddress}: ${decision.reason}`);
+          continue;
+        }
+
         const priorityOrder = sequentialPriorityOrder(amounts.length);
         try {
           const hash = this.isDirectRedemption
@@ -339,16 +358,19 @@ export class LiquidationEngine {
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
+            this.risk.recordOutcome({ ok: true });
             this.metrics.recordLiquidationSuccess();
             this.logger.info(
               `Liquidation confirmed in block ${receipt.blockNumber}: ${txHashes[i]}`
             );
           } else {
+            this.risk.recordOutcome({ ok: false });
             this.metrics.recordLiquidationFailed();
             this.metrics.recordError("tx_reverted");
             this.logger.error(`Liquidation reverted: ${txHashes[i]}`);
           }
         } else {
+          this.risk.recordOutcome({ ok: false });
           this.metrics.recordLiquidationFailed();
           this.metrics.recordError("receipt_fetch_error");
           this.logger.error(`Failed to get receipt for ${txHashes[i]}: ${result.reason}`);

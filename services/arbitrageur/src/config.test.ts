@@ -151,4 +151,40 @@ describe("config validation", () => {
       expect(config.txReceiptTimeoutMs).toBe(60000);
     });
   });
+
+  describe("liquidation mode (opt-in dual engine)", () => {
+    const adapter = "0x1111111111111111111111111111111111111111";
+    const lens = "0x2222222222222222222222222222222222222222";
+
+    it("leaves liquidation undefined when ADAPTER/LENS are unset (arbitrage-only)", async () => {
+      process.env = { ...validEnv };
+      const { loadConfig } = await import("./config");
+      expect(loadConfig().liquidation).toBeUndefined();
+    });
+
+    it("populates liquidation when ADAPTER_ADDRESS + LENS_ADDRESS are both set", async () => {
+      process.env = { ...validEnv, ADAPTER_ADDRESS: adapter, LENS_ADDRESS: lens };
+      const { loadConfig } = await import("./config");
+      const liq = loadConfig().liquidation;
+
+      expect(liq).toBeDefined();
+      expect(liq?.adapterAddress).toBe(adapter);
+      expect(liq?.lensAddress).toBe(lens);
+      expect(liq?.wbtcAddress).toBe(validEnv.WBTC_ADDRESS); // shared with arbitrage
+      expect(liq?.ponderUrl).toBe(validEnv.PONDER_URL); // shared
+      expect(liq?.pollingIntervalMs).toBe(12000); // default
+    });
+
+    it("throws on a half-configured liquidation mode (only ADAPTER_ADDRESS)", async () => {
+      process.env = { ...validEnv, ADAPTER_ADDRESS: adapter };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(/BOTH ADAPTER_ADDRESS and LENS_ADDRESS/);
+    });
+
+    it("throws on a half-configured liquidation mode (only LENS_ADDRESS)", async () => {
+      process.env = { ...validEnv, LENS_ADDRESS: lens };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(/BOTH ADAPTER_ADDRESS and LENS_ADDRESS/);
+    });
+  });
 });

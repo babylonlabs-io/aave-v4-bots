@@ -5,7 +5,6 @@ import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {BaseBot} from "./abstract/BaseBot.sol";
 import {E2EConstants} from "./E2EConstants.sol";
-import {ArrayHelper} from "./lib/ArrayHelper.sol";
 
 /// @title LiquidationE2EVerify
 /// @notice Asserts the liquidation bot really executed the LLP-mode flow.
@@ -70,11 +69,7 @@ contract LiquidationE2EVerify is Script, BaseBot {
         console.log("\n--- Liquidator USDC ---");
         console.log("Initial:", initialUsdc / ONE_USDC, "USDC");
         console.log("Now:    ", nowUsdc / ONE_USDC, "USDC");
-        console.log(
-            "Spent:  ",
-            initialUsdc > nowUsdc ? (initialUsdc - nowUsdc) / ONE_USDC : 0,
-            "USDC"
-        );
+        console.log("Spent:  ", initialUsdc > nowUsdc ? (initialUsdc - nowUsdc) / ONE_USDC : 0, "USDC");
 
         console.log("\n--- Liquidator WBTC ---");
         console.log("Initial (sats):", initialWbtc);
@@ -111,50 +106,5 @@ contract LiquidationE2EVerify is Script, BaseBot {
             console.log("Check /tmp/liq-ponder.log and /tmp/liq-bot.log for details");
             revert("Liquidation did not occur as expected");
         }
-    }
-
-    /// @dev Canonical proxy lookup (matches LiquidationE2ESetup). The
-    ///      previous `Clones.predictDeterministicAddress` formula did not
-    ///      match what the new adapter actually deploys, which produced
-    ///      false-positive PASS readings (col=0/debt=0 from the wrong
-    ///      account).
-    function _getUserProxyAddress(address user) internal view returns (address) {
-        return aaveAdapter.getPosition(user).proxyContract;
-    }
-
-    function _getUsdcBalance(address user) internal returns (uint256) {
-        bytes memory result =
-            ffi_castCall(address(usdc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
-        return abi.decode(result, (uint256));
-    }
-
-    function _getWbtcBalance(address user) internal returns (uint256) {
-        bytes memory result =
-            ffi_castCall(address(wbtc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
-        return abi.decode(result, (uint256));
-    }
-
-    /// @dev Read live position info via FFI so the polling loop sees
-    ///      changes the bot makes outside this script's local EVM.
-    ///      ISpoke.UserAccountData is 7 uint256s in this order:
-    ///      (riskPremium, avgCollateralFactor, healthFactor,
-    ///      totalCollateralValue, totalDebtValueRay, activeCollateralCount,
-    ///      borrowCount).
-    function _getPositionInfo(address user)
-        internal
-        returns (uint256 totalCollateral, uint256 totalDebt, uint256 healthFactor)
-    {
-        address proxy = _getUserProxyAddress(user);
-        bytes memory result =
-            ffi_castCall(address(aaveSpoke), "getUserAccountData(address)", ArrayHelper.create(vm.toString(proxy)));
-        (,, healthFactor, totalCollateral, totalDebt,,) =
-            abi.decode(result, (uint256, uint256, uint256, uint256, uint256, uint256, uint256));
-    }
-
-    function _readInitialBalance(string memory filename) internal view returns (uint256) {
-        string memory content = vm.readFile(filename);
-        uint256 parsed = vm.parseUint(content);
-        require(parsed > 0, "Missing initial balance from setup");
-        return parsed;
     }
 }

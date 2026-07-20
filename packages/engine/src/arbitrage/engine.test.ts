@@ -1,4 +1,5 @@
 import type { Logger } from "@repo/logger";
+import { createRiskGate } from "@repo/risk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "./engine";
 import type { EscrowedVault } from "./types";
@@ -79,6 +80,7 @@ function createBot(
     txReceiptTimeoutMs: 1000,
     metrics,
     logger: silentLogger,
+    risk: createRiskGate(), // permissive by default
     ...overrides,
   });
 }
@@ -361,6 +363,33 @@ describe("ArbitrageEngine", () => {
 
       // Only 1 tx sent (second vault)
       expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("risk gate", () => {
+    it("blocks an acquisition when the gate is HALTED (no tx)", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate();
+      risk.halt("manual");
+      const bot = createBot(clients, { risk });
+
+      const result = await bot.acquireVault(mockVault);
+
+      expect(result).toBe(false);
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+    });
+
+    it("trips the breaker after a reverted acquisition", async () => {
+      const clients = createMockClients();
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 1n,
+      });
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+
+      await bot.acquireVault(mockVault); // reverts → recordOutcome(false) → breaker trips
+      expect(risk.state()).toBe("HALTED");
     });
   });
 });

@@ -1,14 +1,19 @@
 import {
+  addressListSchema,
   addressSchema,
+  bytes32Schema,
   nonNegativeIntSchema,
   parseEnv,
   positiveIntSchema,
   privateKeySchema,
   urlSchema,
 } from "@repo/config";
-import type { ArbitrageEngineParams } from "@repo/engine";
+import type { ArbitrageEngineParams, LiquidationEngineParams } from "@repo/engine";
 import type { Address, Hex } from "viem";
 import { z } from "zod";
+
+const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 /**
  * Environment variables schema
@@ -34,7 +39,21 @@ const envSchema = z.object({
 
   // Transaction timeout (optional)
   TX_RECEIPT_TIMEOUT_MS: positiveIntSchema.optional().default("120000"),
+
+  // Optional liquidation mode — when ADAPTER_ADDRESS + LENS_ADDRESS are set, the
+  // arbitrageur also runs the LiquidationEngine (both engines, one process). Unset
+  // ⇒ arbitrage-only (unchanged). Reuses WBTC_ADDRESS / PONDER_URL / the signer.
+  ADAPTER_ADDRESS: addressSchema.optional(),
+  LENS_ADDRESS: addressSchema.optional(),
+  BTC_REDEEM_KEY: bytes32Schema.optional().default(ZERO_BYTES32),
+  IS_DIRECT_REDEMPTION: z.string().optional(),
+  LLP_ADDRESS: addressSchema.optional().default(ZERO_ADDRESS),
+  DEBT_TOKEN_ADDRESSES: addressListSchema.optional(),
+  LIQUIDATION_POLLING_INTERVAL_MS: positiveIntSchema.optional().default("12000"),
 });
+
+/** The liquidation engine's params plus its own poll interval — present iff enabled. */
+export type LiquidationRunConfig = LiquidationEngineParams & { pollingIntervalMs: number };
 
 /**
  * Parsed and validated configuration
@@ -59,6 +78,9 @@ export interface Config extends ArbitrageEngineParams {
   retryMaxAttempts: number;
   retryInitialDelayMs: number;
   retryMaxDelayMs: number;
+
+  // Present iff the arbitrageur also runs the LiquidationEngine (opt-in via env).
+  liquidation?: LiquidationRunConfig;
 }
 
 /**
@@ -68,12 +90,44 @@ export interface Config extends ArbitrageEngineParams {
 export function loadConfig(): Config {
   const env = parseEnv(envSchema);
 
+  // A half-configured liquidation mode is almost certainly a typo — fail loudly.
+  if (!!env.ADAPTER_ADDRESS !== !!env.LENS_ADDRESS) {
+    throw new Error(
+      "Arbitrageur liquidation mode requires BOTH ADAPTER_ADDRESS and LENS_ADDRESS (set both or neither)."
+    );
+  }
+
+  const wbtcAddress = env.WBTC_ADDRESS as Address;
+  const ponderUrl = env.PONDER_URL;
+  const txReceiptTimeoutMs = Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10);
+
+  const debtTokenAddresses =
+    env.DEBT_TOKEN_ADDRESSES && env.DEBT_TOKEN_ADDRESSES.length > 0
+      ? (env.DEBT_TOKEN_ADDRESSES as Address[])
+      : undefined;
+
+  const liquidation: LiquidationRunConfig | undefined =
+    env.ADAPTER_ADDRESS && env.LENS_ADDRESS
+      ? {
+          adapterAddress: env.ADAPTER_ADDRESS as Address,
+          lensAddress: env.LENS_ADDRESS as Address,
+          wbtcAddress,
+          debtTokenAddresses,
+          btcRedeemKey: env.BTC_REDEEM_KEY as Hex,
+          isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
+          llpAddress: env.LLP_ADDRESS as Address,
+          ponderUrl,
+          txReceiptTimeoutMs,
+          pollingIntervalMs: Number.parseInt(env.LIQUIDATION_POLLING_INTERVAL_MS, 10),
+        }
+      : undefined;
+
   return {
     arbitrageurPrivateKey: env.ARBITRAGEUR_PRIVATE_KEY as Hex,
-    ponderUrl: env.PONDER_URL,
+    ponderUrl,
     rpcUrl: env.CLIENT_RPC_URL,
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,
-    wbtcAddress: env.WBTC_ADDRESS as Address,
+    wbtcAddress,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     vaultProcessingDelayMs: Number.parseInt(env.VAULT_PROCESSING_DELAY_MS, 10),
     maxSlippageBps: Number.parseInt(env.MAX_SLIPPAGE_BPS, 10),
@@ -81,6 +135,7 @@ export function loadConfig(): Config {
     retryMaxAttempts: Number.parseInt(env.RETRY_MAX_ATTEMPTS, 10),
     retryInitialDelayMs: Number.parseInt(env.RETRY_INITIAL_DELAY_MS, 10),
     retryMaxDelayMs: Number.parseInt(env.RETRY_MAX_DELAY_MS, 10),
-    txReceiptTimeoutMs: Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10),
+    txReceiptTimeoutMs,
+    liquidation,
   };
 }

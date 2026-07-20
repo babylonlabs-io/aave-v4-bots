@@ -2,6 +2,7 @@
 pragma solidity 0.8.28;
 
 import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
+import {ArrayHelper} from "../lib/ArrayHelper.sol";
 
 /// @title BaseBot
 /// @notice Adds live-RPC read helpers to BaseE2E for bot E2E scripts.
@@ -35,5 +36,50 @@ abstract contract BaseBot is BaseE2E {
         }
 
         return _vm.ffi(cmd);
+    }
+
+    /// @notice Canonical proxy for a user (matches the setup scripts).
+    function _getUserProxyAddress(address user) internal view returns (address) {
+        return aaveAdapter.getPosition(user).proxyContract;
+    }
+
+    /// @notice Read a borrower's live position (collateral, debt, health factor)
+    ///         via FFI, so a polling loop sees changes the bot makes outside this
+    ///         script's local EVM. `ISpoke.UserAccountData` is 7 uint256s:
+    ///         (riskPremium, avgCollateralFactor, healthFactor,
+    ///         totalCollateralValue, totalDebtValueRay, activeCollateralCount,
+    ///         borrowCount).
+    function _getPositionInfo(address user)
+        internal
+        returns (uint256 totalCollateral, uint256 totalDebt, uint256 healthFactor)
+    {
+        address proxy = _getUserProxyAddress(user);
+        bytes memory result =
+            ffi_castCall(address(aaveSpoke), "getUserAccountData(address)", ArrayHelper.create(_vm.toString(proxy)));
+        (,, healthFactor, totalCollateral, totalDebt,,) =
+            abi.decode(result, (uint256, uint256, uint256, uint256, uint256, uint256, uint256));
+    }
+
+    /// @notice ERC-20 balance of `token` for `user`, read live via FFI.
+    function _erc20Balance(address token, address user) internal returns (uint256) {
+        bytes memory result = ffi_castCall(token, "balanceOf(address)", ArrayHelper.create(_vm.toString(user)));
+        return abi.decode(result, (uint256));
+    }
+
+    function _getWbtcBalance(address user) internal returns (uint256) {
+        return _erc20Balance(address(wbtc), user);
+    }
+
+    function _getUsdcBalance(address user) internal returns (uint256) {
+        return _erc20Balance(address(usdc), user);
+    }
+
+    /// @notice Read a uint written by a setup script (e.g. an initial-balance
+    ///         snapshot). Uses `readFile`, not FFI, to avoid Foundry hex-decoding
+    ///         all-digit output.
+    function _readInitialBalance(string memory filename) internal view returns (uint256) {
+        uint256 parsed = _vm.parseUint(_vm.readFile(filename));
+        require(parsed > 0, "Missing initial balance from setup");
+        return parsed;
     }
 }
