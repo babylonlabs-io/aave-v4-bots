@@ -5,8 +5,8 @@ import {
   decodeExecTransaction,
   hashPayload,
 } from "@repo/execution";
-import type { StateStore, TxIntent } from "@repo/persistence";
-import { type Address, type Hex, type PublicClient, getAddress } from "viem";
+import type { SafeEnvelope, StateStore, TxIntent } from "@repo/persistence";
+import type { Address, Hex, PublicClient } from "viem";
 import type { OperatorSigner } from "./signer";
 
 // The operator-cli command brain — pure orchestration over the store, the signer seam, and chain
@@ -72,6 +72,31 @@ function assertSignerIsExecutor(ctx: OperatorContext): void {
 }
 
 /**
+ * The Safe-envelope tamper check: recompute the SafeTx hash from the persisted envelope + payload and
+ * require it to equal the stored `safeTxHash`. `payloadHash` covers only the inner call, NOT the
+ * envelope, so without this a modified `safeEnvelope.safeTxHash` could be surfaced for an operator to
+ * sign (`show`) or matched blindly (`confirm`). Both run it against the same persisted envelope.
+ */
+function assertSafeEnvelopeIntact(
+  ctx: OperatorContext,
+  id: string,
+  payload: ProposalPayload,
+  envelope: SafeEnvelope
+): void {
+  const recomputed = computeSafeTxHash({
+    inner: payload,
+    params: envelope,
+    safe: ctx.executorAddress,
+    chainId: ctx.chainId,
+  });
+  if (recomputed !== envelope.safeTxHash) {
+    throw new Error(
+      `recomputed safeTxHash ${recomputed} != persisted ${envelope.safeTxHash} for ${id} — refusing (tampered envelope?)`
+    );
+  }
+}
+
+/**
  * v1 handles ONE Safe SafeTx at a time. Each claim reads `Safe.nonce()` independently, so two
  * concurrent Safe claims would reserve the SAME nonce and one SafeTx would be dead on arrival (it
  * reverts, reconcile fails it, the subject revives — no fund loss, but wasted). Until the store
@@ -116,10 +141,17 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
 
   let safeTxHash = row.safeEnvelope?.safeTxHash;
   let safeTxHashIsPreview = false;
-  if (ctx.executorKind === "safe" && !safeTxHash) {
-    const preview = await ctx.signer.buildEnvelope(payload);
-    safeTxHash = preview?.safeTxHash;
-    safeTxHashIsPreview = true;
+  if (ctx.executorKind === "safe") {
+    if (row.safeEnvelope) {
+      // A claimed Safe row: recompute the hash from the persisted envelope and require it to match,
+      // so a tampered `safeEnvelope.safeTxHash` can never be shown to an operator to sign.
+      assertSafeEnvelopeIntact(ctx, row.id, payload, row.safeEnvelope);
+    } else {
+      // Not yet claimed: preview the hash the owners would sign (a chain read, allocates no nonce).
+      const preview = await ctx.signer.buildEnvelope(payload);
+      safeTxHash = preview?.safeTxHash;
+      safeTxHashIsPreview = true;
+    }
   }
 
   return {
@@ -269,17 +301,9 @@ function verifySafeTx(
   ) {
     throw new Error("execTransaction carries nonzero gas/refund fields — refusing");
   }
-  // Finally, the SafeTx must be the exact one we fixed at claim: recompute its hash from the envelope
-  // and payload and require it to match what we persisted (the hash owners signed).
-  const recomputed = computeSafeTxHash({
-    inner: payload,
-    params: envelope,
-    safe: ctx.executorAddress,
-    chainId: ctx.chainId,
-  });
-  if (recomputed !== envelope.safeTxHash) {
-    throw new Error(`recomputed safeTxHash ${recomputed} != persisted ${envelope.safeTxHash}`);
-  }
+  // Finally, the SafeTx must be the exact one we fixed at claim: recompute its hash from the persisted
+  // envelope + payload and require it to match what we persisted (the hash owners signed).
+  assertSafeEnvelopeIntact(ctx, row.id, payload, envelope);
 }
 
 /**

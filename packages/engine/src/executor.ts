@@ -362,7 +362,7 @@ export function createManualExecutor(deps: {
     // scoped, an operator-broadcast approval would sit `submitted` forever, unconfirmed (which in
     // `safe` custody wedges the one-live-claim guard). Expiry, reconcile, and the stuck sweep all run
     // unscoped; with two engines sharing the store either cycle clears the lot, the other finds none.
-    async reconcile(_action) {
+    async reconcile() {
       if (intentTtlMs > 0) {
         const swept = await store.expireProposals(intentTtlMs);
         if (swept > 0) logger.info(`Expired ${swept} un-actioned proposal(s)`);

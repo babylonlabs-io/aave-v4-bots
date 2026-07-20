@@ -14,7 +14,6 @@ const EXECUTOR = "0x1111111111111111111111111111111111111111" as Address;
 const SAFE = "0x2222222222222222222222222222222222222222" as Address;
 const TARGET = "0x3333333333333333333333333333333333333333" as Address;
 const OTHER = "0x4444444444444444444444444444444444444444" as Address;
-const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 const SENT_TX = `0x${"c".repeat(64)}` as Hex;
 const CHAIN = 31337;
 
@@ -83,6 +82,25 @@ describe("verifyProposal (tamper check)", () => {
     const p = payload({ chainId: 999 });
     await c.store.propose(input(), p, hashPayload(p));
     await expect(ops.showProposal(c, idempotencyKey(input()))).rejects.toThrow(/chain mismatch/);
+  });
+
+  it("refuses a claimed Safe row whose stored safeTxHash was tampered", async () => {
+    const c = ctx({ signer: safeSigner(), executorAddress: SAFE, executorKind: "safe" });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    // Tamper ONLY the stored safeTxHash — payload + payloadHash stay intact, so `verifyProposal`
+    // passes; the recompute in `show` is the only thing that catches it.
+    const row = await c.store.getIntent(id);
+    if (!row?.safeEnvelope) throw new Error("expected a persisted envelope");
+    const tampered = {
+      ...row,
+      safeEnvelope: { ...row.safeEnvelope, safeTxHash: `0x${"b".repeat(64)}` as Hex },
+    };
+    const tamperedCtx = { ...c, store: { ...c.store, getIntent: async () => tampered } };
+    await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/tampered envelope/);
   });
 });
 

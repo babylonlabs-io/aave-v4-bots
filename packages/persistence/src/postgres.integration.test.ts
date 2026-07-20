@@ -119,14 +119,20 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
   );
 
   it(
-    "markBroadcast is a guarded compare-and-set against the verified payload hash",
+    "markBroadcast is a guarded compare-and-set against a claimed proposal + verified hash",
     async () => {
       const id = idempotencyKey(input("prop-2"));
       await store.propose(input("prop-2"), payload(), HASH_A);
 
+      // A still-`proposed` (unclaimed) row is refused — markBroadcast only advances a claimed proposal.
+      expect(await store.markBroadcast(id, TX, HASH_A)).toBe(false);
+
+      // Claim it (proposed → claimed): the fence that must run before broadcast.
+      expect((await store.claimProposal(id, HASH_A)).claimed).toBe(true);
+
       // Wrong hash → refused, untouched.
       expect(await store.markBroadcast(id, TX, HASH_B)).toBe(false);
-      // Right hash → proposed becomes a hash-bearing in-flight intent.
+      // Right hash → claimed becomes a hash-bearing in-flight intent.
       expect(await store.markBroadcast(id, TX, HASH_A)).toBe(true);
 
       const inflight = await store.reconcile();
