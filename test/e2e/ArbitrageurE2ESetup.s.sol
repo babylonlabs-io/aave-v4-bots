@@ -20,15 +20,16 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
 
         console.log("\n=== E2E Arbitrageur Setup (one bot, both engines) ===");
 
-        // Fund the arbitrageur with ETH (gas), WBTC (LLP float + acquisitions),
-        // and USDC (debt repayment for the liquidation leg it now runs itself).
+        // Fund the arbitrageur with WBTC (LLP float + acquisitions) and USDC
+        // (debt repayment for the liquidation leg it now runs itself). Gas ETH
+        // comes from genesis — ARBITRAGEUR is an Anvil account, funded before the
+        // bot boots, so its startup approval never races the forge broadcast.
         console.log("\n--- Fund Arbitrageur ---");
         vm.startBroadcast(adminPrivateKey);
-        payable(E2EConstants.ARBITRAGEUR).transfer(10 ether);
         wbtc.mint(E2EConstants.ARBITRAGEUR, 10 * uint256(ONE_BTC));
         usdc.mint(E2EConstants.ARBITRAGEUR, 10_000 * ONE_USDC);
         vm.stopBroadcast();
-        console.log("Arbitrageur funded with 10 ETH, 10 WBTC, 10,000 USDC");
+        console.log("Arbitrageur funded with 10 WBTC, 10,000 USDC");
 
         AaveAdapterLens lens = _deployLens();
         string memory startBlock = _getCurrentBlockNumber();
