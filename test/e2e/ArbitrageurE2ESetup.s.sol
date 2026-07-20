@@ -20,16 +20,23 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
 
         console.log("\n=== E2E Arbitrageur Setup (one bot, both engines) ===");
 
-        // Fund the arbitrageur with WBTC (LLP float + acquisitions) and USDC
-        // (debt repayment for the liquidation leg it now runs itself). Gas ETH
-        // comes from genesis — ARBITRAGEUR is an Anvil account, funded before the
-        // bot boots, so its startup approval never races the forge broadcast.
+        // Gas: set the arbitrageur's ETH balance immediately (not via broadcast).
+        // ARBITRAGEUR is APP_OPERATOR_0 — a registered vault keeper, required for
+        // the acquisition leg — so it is not a genesis-funded Anvil account and
+        // needs gas provisioned. The bot is spawned mid-run() below, before forge
+        // broadcasts any funding tx, so a broadcast transfer would land too late
+        // and the bot's first approval would fail on gas; anvil_setBalance is instant.
+        _provisionGas(E2EConstants.ARBITRAGEUR, 10 ether);
+
+        // WBTC (LLP float + acquisitions) and USDC (debt repayment for the
+        // liquidation leg) are only needed once the bot acts on a position, well
+        // after these broadcasts land, so a normal mint is fine.
         console.log("\n--- Fund Arbitrageur ---");
         vm.startBroadcast(adminPrivateKey);
         wbtc.mint(E2EConstants.ARBITRAGEUR, 10 * uint256(ONE_BTC));
         usdc.mint(E2EConstants.ARBITRAGEUR, 10_000 * ONE_USDC);
         vm.stopBroadcast();
-        console.log("Arbitrageur funded with 10 WBTC, 10,000 USDC");
+        console.log("Arbitrageur funded with 10 ETH (gas), 10 WBTC, 10,000 USDC");
 
         AaveAdapterLens lens = _deployLens();
         string memory startBlock = _getCurrentBlockNumber();
