@@ -142,11 +142,19 @@ BOT_LOG_PATTERNS=(/tmp/liq-ponder.log /tmp/liq-bot.log /tmp/arb-ponder.log /tmp/
 # Process patterns spawned by LiquidationE2ESetup via FFI. The PIDs printed by
 # the setup script come from `echo $!` but get reinterpreted as uint256 in
 # Solidity — so they're useless for kill. Match by command line instead.
+#
+# The `pnpm <script>` parent carries the `*:run`/`*:indexer` name, but its real child (a `tsx
+# services/.../index.ts` bot, or `ponder dev`) re-parents to init and KEEPS THE PORT once the parent
+# is killed — so matching only the parent leaks a process holding 9095/42069 into the next run. Match
+# the children too.
 SERVICE_PATTERNS=(
   'liquidator:indexer'
   'liquidator:run'
   'arbitrageur:indexer'
   'arbitrageur:run'
+  'services/liquidator/src/index.ts'
+  'services/arbitrageur/src/index.ts'
+  'ponder dev'
 )
 
 cleanup() {
@@ -187,7 +195,8 @@ cleanup() {
   fi
 
   rm -f .env.liquidator .env.arbitrageur .e2e-vault-id .e2e-initial-arb-wbtc \
-        .e2e-initial-liq-wbtc .e2e-block-number 2>/dev/null || true
+        .e2e-initial-liq-wbtc .e2e-initial-liq-usdc .e2e-block-number \
+        .e2e-safe-address .e2e-initial-safe-wbtc .e2e-initial-safe-usdc 2>/dev/null || true
   [[ -n "$ANVIL_LOG" && -f "$ANVIL_LOG" ]] && rm -f "$ANVIL_LOG"
 
   exit "$rc"
@@ -328,11 +337,19 @@ log "Deploy + setup environment"
   forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment "${COMMON_FLAGS[@]}" )
 
 # Which suite to run (matches the CI matrix). Default: liquidator.
+# `DRIVE` (optional) runs between setup and verify — the MANUAL suites use it to play the operator.
 SUITE="${SUITE:-liquidator}"
+DRIVE=""
 case "$SUITE" in
   arbitrageur) SETUP="ArbitrageurE2ESetup"; VERIFY="ArbitrageurE2EVerify" ;;
   liquidator)  SETUP="LiquidationE2ESetup"; VERIFY="LiquidationE2EVerify" ;;
-  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | liquidator)"; exit 1 ;;
+  manual-liquidator)
+    SETUP="ManualLiquidationE2ESetup"; VERIFY="LiquidationE2EVerify"
+    DRIVE="test/e2e/scripts/operator-confirm.sh"; DRIVE_KIND="eoa" ;;
+  manual-safe-liquidator)
+    SETUP="ManualSafeLiquidationE2ESetup"; VERIFY="ManualSafeLiquidationE2EVerify"
+    DRIVE="test/e2e/scripts/operator-confirm.sh"; DRIVE_KIND="safe" ;;
+  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | liquidator | manual-liquidator | manual-safe-liquidator)"; exit 1 ;;
 esac
 
 if [[ "${E2E_SIGNER_SOURCE:-local}" == "aws" ]]; then
@@ -341,6 +358,13 @@ fi
 
 log "Setup ($SUITE) + start bots/ponders"
 forge script "test/e2e/${SETUP}.s.sol:${SETUP}" --ffi "${COMMON_FLAGS[@]}"
+
+# MANUAL suites: the bot is keyless and only proposes — play the operator and broadcast the proposals
+# before verification asserts the on-chain effect.
+if [[ -n "$DRIVE" ]]; then
+  log "Drive ($SUITE): operator-cli broadcast"
+  E2E_RPC_URL="$RPC_URL" MANUAL_EXECUTOR_KIND="${DRIVE_KIND:-eoa}" bash "$DRIVE"
+fi
 
 if [[ -n "${SKIP_VERIFY:-}" ]]; then
   log "SKIP_VERIFY=1 set; stopping before verification"

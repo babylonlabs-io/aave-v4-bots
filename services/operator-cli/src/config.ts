@@ -55,14 +55,9 @@ export function loadConfig(): Config {
   const env = parseEnv(envSchema);
 
   const kind = env.MANUAL_EXECUTOR_KIND;
-  if (kind === "eoa" && !env.OPERATOR_KEY_REF) {
-    // `broadcast`/`claim`+sign need the key; `confirm` (external signing) does not. We still require it
-    // so the common path is configured — a `confirm`-only deployment can set any placeholder ref it
-    // never resolves, but declaring intent up front beats a late failure mid-command.
-    throw new Error(
-      "MANUAL_EXECUTOR_KIND=eoa requires OPERATOR_KEY_REF (the operator key's secret ref)"
-    );
-  }
+  // No key is required to run the CLI: the production flow is keyless — `list`/`show`/`claim`/`confirm`
+  // hold no key (the operator signs in their own tooling). Only `broadcast` (the local-key automation
+  // path) needs one, and it fails at call time if the ref is absent.
 
   return {
     rpcUrl: env.CLIENT_RPC_URL,

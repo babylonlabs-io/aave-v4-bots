@@ -13,7 +13,7 @@ import {E2EConstants} from "./E2EConstants.sol";
 /// @dev Run LiquidationE2EVerify.s.sol after this. The arbitrageur suite (one arb
 ///      bot running both engines) lives in ArbitrageurE2ESetup.s.sol.
 contract LiquidationE2ESetup is BaseE2ESetup {
-    function run() public {
+    function run() public virtual {
         init(vm);
         uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
 
@@ -47,12 +47,12 @@ contract LiquidationE2ESetup is BaseE2ESetup {
         console.log("Borrower address:", borrower);
     }
 
-    function _saveInitialBalances() internal {
+    function _saveInitialBalances() internal virtual {
         vm.writeFile(".e2e-initial-liq-wbtc", vm.toString(wbtc.balanceOf(E2EConstants.LIQUIDATOR)));
         vm.writeFile(".e2e-initial-liq-usdc", vm.toString(usdc.balanceOf(E2EConstants.LIQUIDATOR)));
     }
 
-    function _createEnvFile(address lensAddress, string memory startBlock) internal {
+    function _createEnvFile(address lensAddress, string memory startBlock) internal virtual {
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";

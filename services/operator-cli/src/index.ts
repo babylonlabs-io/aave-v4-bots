@@ -58,8 +58,20 @@ async function buildSigner(
   const account = async (ref: string) => privateKeyToAccount((await secrets.get(ref)) as Hex);
 
   if (config.executorKind === "eoa") {
-    if (!config.operatorKeyRef)
-      throw new Error("MANUAL_EXECUTOR_KIND=eoa requires OPERATOR_KEY_REF");
+    // Keyless (the production/confirm flow): no key here, so `send`/`broadcast` is unavailable — the
+    // operator signs externally and reports back via `confirm`. `address` is the executor the operator
+    // signs as. With a key, the full local-signing `broadcast` path is available.
+    if (!config.operatorKeyRef) {
+      return {
+        address: config.executorAddress,
+        buildEnvelope: async () => undefined,
+        send: async () => {
+          throw new Error(
+            "no OPERATOR_KEY_REF configured — sign externally and record with `confirm --tx`"
+          );
+        },
+      };
+    }
     return createEoaOperatorSigner({
       account: await account(config.operatorKeyRef),
       chain,

@@ -102,12 +102,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
     config.client ?? (new pg.Pool({ connectionString: config.connectionString }) as PgClientLike);
 
   // Lazy, once-only schema creation — memoized so every op can `await ready` cheaply.
-  let ready: Promise<void> | undefined;
-  function ensureReady(): Promise<void> {
-    if (!ready) {
-      ready = client
-        .query(
-          `CREATE SCHEMA IF NOT EXISTS ${schema};
+  const initDdl = `CREATE SCHEMA IF NOT EXISTS ${schema};
            CREATE TABLE IF NOT EXISTS ${intents} (
              id TEXT PRIMARY KEY,
              chain_id BIGINT NOT NULL,
@@ -128,14 +123,38 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
            -- Additive migration for databases created before the MANUAL proposal columns existed.
            ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload JSONB;
            ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload_hash TEXT;
-           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS safe_envelope JSONB;`
-        )
-        .then(() => undefined)
-        .catch((error) => {
-          // Reset so a transient failure (e.g. DB not yet up) is retried on the next call.
-          ready = undefined;
-          throw error;
-        });
+           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS safe_envelope JSONB;`;
+
+  // `CREATE ... IF NOT EXISTS` is NOT concurrency-safe in Postgres: two backends running it at once
+  // (e.g. this bot and another process sharing the database, or two engines on first boot) can each
+  // pass the existence check and then collide inserting into `pg_namespace`/`pg_class`, raising a
+  // duplicate-key error even though the desired end state is idempotent. Retry once on exactly those
+  // races: the second run finds the object present and no-ops. Any other error propagates.
+  const CONCURRENT_CREATE_CODES = new Set([
+    "23505", // unique_violation (pg_namespace / pg_class index)
+    "42P06", // duplicate_schema
+    "42P07", // duplicate_table
+  ]);
+  async function runInit(): Promise<void> {
+    try {
+      await client.query(initDdl);
+    } catch (error) {
+      if (CONCURRENT_CREATE_CODES.has((error as { code?: string })?.code ?? "")) {
+        await client.query(initDdl);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  let ready: Promise<void> | undefined;
+  function ensureReady(): Promise<void> {
+    if (!ready) {
+      ready = runInit().catch((error) => {
+        // Reset so a transient failure (e.g. DB not yet up) is retried on the next call.
+        ready = undefined;
+        throw error;
+      });
     }
     return ready;
   }
