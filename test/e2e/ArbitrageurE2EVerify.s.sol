@@ -117,15 +117,17 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         return abi.decode(result, (bool));
     }
 
-    /// @dev Read via FFI. The public mapping getter `btcVaultsBasicInfo(bytes32)` flattens
+    /// @dev Read via FFI. `getBtcVaultBasicInfo(bytes32)` returns the full
     ///      `BTCVaultBasicInfo { depositor, depositorBtcPubKey, amount, vaultProvider, status,
-    ///      applicationEntryPoint, createdAt }` into a 7-element ABI tuple in field order.
+    ///      applicationEntryPoint, createdAt }` struct — all static members, so it ABI-encodes
+    ///      as the same 7-element tuple, in field order. (The `btcVaultsBasicInfo` mapping itself
+    ///      is `internal`; external reads go through this getter.)
     function _getVaultStatusAndAmount(bytes32 vaultId)
         internal
         returns (BTCVaultTypes.BTCVaultStatus status, uint256 amount)
     {
         bytes memory result = ffi_castCall(
-            address(btcVaultRegistry), "btcVaultsBasicInfo(bytes32)", ArrayHelper.create(vm.toString(vaultId))
+            address(btcVaultRegistry), "getBtcVaultBasicInfo(bytes32)", ArrayHelper.create(vm.toString(vaultId))
         );
         (,, amount,, status,,) =
             abi.decode(result, (address, bytes32, uint256, address, BTCVaultTypes.BTCVaultStatus, address, uint256));
