@@ -298,6 +298,7 @@ describe("reconcilePending — Safe custody (resolves by the Execution event, no
     refundReceiver: ZERO,
     safeVersion: "1.4.1",
     safeTxHash: `0x${"e".repeat(64)}` as Hex,
+    claimBlock: 1000,
   };
   const proposedTx = { chainId: 31337, to: TARGET, data: "0x" as Hex, value: "0" };
 

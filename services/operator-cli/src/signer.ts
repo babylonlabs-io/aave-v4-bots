@@ -85,18 +85,22 @@ export function createSafeOperatorSigner(deps: {
     address: deps.safe,
 
     async buildEnvelope(inner) {
-      const safeNonce = await deps.publicClient.readContract({
-        address: deps.safe,
-        abi: safeAbi,
-        functionName: "nonce",
-      });
-      return buildSafeExecution({
-        inner,
-        safe: deps.safe,
-        chainId: deps.chainId,
-        safeNonce: Number(safeNonce),
-        safeVersion: deps.safeVersion,
-      });
+      // Read the nonce (reserved for this SafeTx) and the current block (bounds `release`'s later
+      // "did our SafeTx execute?" log scan) together — both fix claim-time chain state.
+      const [safeNonce, claimBlock] = await Promise.all([
+        deps.publicClient.readContract({ address: deps.safe, abi: safeAbi, functionName: "nonce" }),
+        deps.publicClient.getBlockNumber(),
+      ]);
+      return {
+        ...buildSafeExecution({
+          inner,
+          safe: deps.safe,
+          chainId: deps.chainId,
+          safeNonce: Number(safeNonce),
+          safeVersion: deps.safeVersion,
+        }),
+        claimBlock: Number(claimBlock),
+      };
     },
 
     async send(inner, envelope) {

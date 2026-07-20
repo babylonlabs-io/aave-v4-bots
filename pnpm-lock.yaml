@@ -58,6 +58,9 @@ importers:
 
   packages/chain:
     dependencies:
+      '@repo/abis':
+        specifier: workspace:*
+        version: link:../abis
       '@repo/logger':
         specifier: workspace:*
         version: link:../logger

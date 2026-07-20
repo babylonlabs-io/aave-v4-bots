@@ -75,6 +75,7 @@ const SAFE_ENV: SafeEnvelope = {
   refundReceiver: ZERO,
   safeVersion: "1.4.1",
   safeTxHash: `0x${"e".repeat(64)}` as Hex,
+  claimBlock: 1000,
 };
 
 describe("MANUAL proposal lifecycle (memory model)", () => {

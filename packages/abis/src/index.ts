@@ -3,4 +3,4 @@ export { lensAbi } from "./lens";
 export { vaultSwapAbi } from "./vaultSwap";
 export { spokeAbi } from "./spoke";
 export { erc20Abi } from "./erc20";
-export { safeAbi } from "./safe";
+export { safeAbi, safeExecutionEvents } from "./safe";

@@ -1,4 +1,4 @@
-import { safeAbi } from "@repo/abis";
+import { findSafeExecutionByHash } from "@repo/chain";
 import {
   type ProposalPayload,
   computeSafeTxHash,
@@ -225,8 +225,9 @@ export async function broadcastProposal(
 
 /**
  * The external-signing report-back (hardware wallet / Safe UI): the operator executed elsewhere, so
- * verify the on-chain tx IS exactly the claimed proposal, then record it. Requires the row to be
- * `claimed` already (its envelope is what a Safe tx is checked against).
+ * verify the on-chain tx IS exactly the claimed proposal, then record it. The intended order is
+ * `claim → sign externally → confirm`: the claim is the fence (and fixes the Safe envelope a Safe tx
+ * is checked against), so `confirm` requires the row to be `claimed` and says so up front.
  */
 export async function confirmProposal(
   ctx: OperatorContext,
@@ -235,6 +236,14 @@ export async function confirmProposal(
 ): Promise<void> {
   const row = await load(ctx, id);
   const { payload, payloadHash } = verifyProposal(ctx, row);
+
+  // Surface the claim-first precondition here — before the getTransaction RPC — rather than letting it
+  // fail late at markBroadcast's CAS. (markBroadcast still re-checks: this is fail-fast UX, not the guard.)
+  if (row.status !== "claimed") {
+    throw new Error(
+      `confirm requires a claimed proposal (${id} is ${row.status}) — run \`claim ${id}\` first`
+    );
+  }
 
   const tx = await ctx.publicClient.getTransaction({ hash: txHash });
   if (ctx.executorKind === "eoa") {
@@ -307,9 +316,13 @@ function verifySafeTx(
 }
 
 /**
- * Recovery: revert a `claimed` proposal to `proposed` so it can re-notify. Refuses if the SafeTx may
- * already have executed (the Safe's on-chain nonce advanced past the reserved one) — that case is a
- * `confirm`, not a `release`, or a double-broadcast could follow.
+ * Recovery: revert a `claimed` proposal to `proposed` so it can re-notify. For `safe` custody, refuses
+ * if OUR exact SafeTx already executed — found by scanning the Safe's `Execution*` events for the
+ * reserved `safeTxHash` (precise: an unrelated SafeTx on the same Safe does not trip it, unlike a bare
+ * nonce compare). That case is a `confirm`, not a `release`, or a double-broadcast could follow. There
+ * is an irreducible window between this read and `store.release` — inherent to any check-then-act
+ * against the chain — but under one live claim it only opens if a concurrent process broadcast, and
+ * the engine's fresh simulation still guards against re-executing an action that landed.
  */
 export async function releaseProposal(ctx: OperatorContext, id: string): Promise<void> {
   const row = await load(ctx, id);
@@ -318,14 +331,15 @@ export async function releaseProposal(ctx: OperatorContext, id: string): Promise
     throw new Error(`only a claimed proposal can be released (${id} is ${row.status})`);
   }
   if (ctx.executorKind === "safe" && row.safeEnvelope) {
-    const current = await ctx.publicClient.readContract({
-      address: ctx.executorAddress,
-      abi: safeAbi,
-      functionName: "nonce",
-    });
-    if (Number(current) > row.safeEnvelope.safeNonce) {
+    const executed = await findSafeExecutionByHash(
+      ctx.publicClient,
+      ctx.executorAddress,
+      row.safeEnvelope.safeTxHash,
+      BigInt(row.safeEnvelope.claimBlock)
+    );
+    if (executed) {
       throw new Error(
-        `Safe nonce (${current}) has passed the reserved ${row.safeEnvelope.safeNonce} — the SafeTx may have executed; use \`confirm --tx\` instead`
+        `the SafeTx ${row.safeEnvelope.safeTxHash} already executed (tx ${executed.txHash}) — record it with \`confirm ${id} --tx ${executed.txHash}\`, not \`release\``
       );
     }
   }

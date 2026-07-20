@@ -9,7 +9,10 @@
 //     threshold re-fetch, and the boot probe that confirms `MANUAL_EXECUTOR_ADDRESS` really is a Safe.
 // Compatible across Safe v1.3.0 / v1.4.1 for these members.
 
-export const safeAbi = [
+// The Safe's `Execution{Success,Failure}(bytes32 txHash, uint256 payment)` events, exported on their
+// own so a `getLogs` `events` filter (which wants only event items, not the whole ABI) can reuse them.
+// Spread into `safeAbi` below, so both share this single definition.
+export const safeExecutionEvents = [
   {
     type: "event",
     name: "ExecutionSuccess",
@@ -26,6 +29,10 @@ export const safeAbi = [
       { name: "payment", type: "uint256", indexed: false },
     ],
   },
+] as const;
+
+export const safeAbi = [
+  ...safeExecutionEvents,
   {
     type: "function",
     name: "execTransaction",

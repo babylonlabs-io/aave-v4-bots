@@ -24,7 +24,7 @@ const USAGE = `usage: operator-cli <command> [id] [flags]
   show <id>                  verify + render a proposal (read-only)
   claim <id>                 claim it (fixes the Safe envelope); prints the hash to sign
   broadcast <id>             claim (if needed) + sign + send + record  [needs keys]
-  confirm <id> --tx <hash>   record an externally-signed tx after verifying it matches
+  confirm <id> --tx <hash>   record an externally-signed tx (claim it first) after verifying it matches
   release <id>               revert a claim back to proposed
   fail <id> [--reason <r>]   give up on an intent, reviving its subject`;
 

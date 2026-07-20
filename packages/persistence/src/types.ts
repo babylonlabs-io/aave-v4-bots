@@ -115,6 +115,13 @@ export interface SafeEnvelope {
   safeVersion: string;
   /** The EIP-712 SafeTx hash the owners sign; reconcile matches the Safe's `Execution*` event to it. */
   safeTxHash: Hex;
+  /**
+   * The chain block height read at claim time. NOT part of the SafeTx / `safeTxHash` — operational
+   * metadata that bounds `operator-cli release`'s log scan (from here to `latest`) when it checks
+   * whether this exact SafeTx already executed. Not covered by the hash recompute, so a smaller value
+   * only widens the scan; it is not security-critical.
+   */
+  claimBlock: number;
 }
 
 /** Why a `claimProposal` CAS did not apply. */

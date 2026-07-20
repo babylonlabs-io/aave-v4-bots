@@ -38,15 +38,21 @@ const eoaSigner = (address: Address = EXECUTOR): OperatorSigner => ({
 });
 const safeSigner = (safeNonce = 4): OperatorSigner => ({
   address: SAFE,
-  buildEnvelope: async (inner) =>
-    buildSafeExecution({ inner, safe: SAFE, chainId: CHAIN, safeNonce, safeVersion: "1.4.1" }),
+  buildEnvelope: async (inner) => ({
+    ...buildSafeExecution({ inner, safe: SAFE, chainId: CHAIN, safeNonce, safeVersion: "1.4.1" }),
+    claimBlock: 100,
+  }),
   send: async () => SENT_TX,
 });
 
-const fakeClient = (over: { tx?: unknown; safeNonce?: bigint } = {}): PublicClient =>
+const fakeClient = (
+  over: { tx?: unknown; safeNonce?: bigint; safeLogs?: unknown[]; blockNumber?: bigint } = {}
+): PublicClient =>
   ({
     getTransaction: async () => over.tx,
     readContract: async () => over.safeNonce ?? 0n,
+    getBlockNumber: async () => over.blockNumber ?? 0n,
+    getLogs: async () => over.safeLogs ?? [],
   }) as unknown as PublicClient;
 
 function ctx(over: Partial<ops.OperatorContext> = {}): ops.OperatorContext {
@@ -232,13 +238,13 @@ describe("confirmProposal (external report-back)", () => {
     );
   });
 
-  it("refuses when the proposal was never claimed", async () => {
+  it("refuses (fail-fast) when the proposal was never claimed", async () => {
     const c = ctx();
     const p = payload();
     await c.store.propose(input(), p, hashPayload(p)); // proposed, not claimed
-    c.publicClient = fakeClient({ tx: eoaTx() });
+    // No tx set on the client: the claim-first guard must fire BEFORE the getTransaction RPC.
     await expect(ops.confirmProposal(c, idempotencyKey(input()), SENT_TX)).rejects.toThrow(
-      /claim it first/
+      /requires a claimed proposal/
     );
   });
 
@@ -308,19 +314,49 @@ describe("release + fail (recovery)", () => {
     expect((await c.store.getIntent(idempotencyKey(input())))?.status).toBe("proposed");
   });
 
-  it("release refuses a Safe claim whose nonce may have executed", async () => {
-    const c = ctx({
-      signer: safeSigner(4),
-      executorAddress: SAFE,
-      executorKind: "safe",
-      publicClient: fakeClient({ safeNonce: 5n }), // Safe advanced past the reserved nonce 4
-    });
+  it("release refuses a Safe claim whose exact SafeTx already executed", async () => {
+    const c = ctx({ signer: safeSigner(), executorAddress: SAFE, executorKind: "safe" });
     const p = payload();
+    const id = idempotencyKey(input());
     await c.store.propose(input(), p, hashPayload(p));
-    await ops.claimProposal(c, idempotencyKey(input()));
-    await expect(ops.releaseProposal(c, idempotencyKey(input()))).rejects.toThrow(
-      /may have executed/
-    );
+    await ops.claimProposal(c, id);
+
+    // The Safe emitted an Execution event carrying OUR reserved safeTxHash → it landed; release must
+    // refuse and point at `confirm`.
+    const env = (await c.store.getIntent(id))?.safeEnvelope;
+    if (!env) throw new Error("expected an envelope");
+    c.publicClient = fakeClient({
+      safeLogs: [
+        {
+          eventName: "ExecutionSuccess",
+          args: { txHash: env.safeTxHash },
+          transactionHash: SENT_TX,
+        },
+      ],
+    });
+    await expect(ops.releaseProposal(c, id)).rejects.toThrow(/already executed/);
+    expect((await c.store.getIntent(id))?.status).toBe("claimed"); // untouched
+  });
+
+  it("release proceeds when only an UNRELATED SafeTx advanced the Safe (no matching hash)", async () => {
+    const c = ctx({ signer: safeSigner(), executorAddress: SAFE, executorKind: "safe" });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    // An Execution event exists, but for a DIFFERENT safeTxHash — ours never ran, so release applies.
+    c.publicClient = fakeClient({
+      safeLogs: [
+        {
+          eventName: "ExecutionSuccess",
+          args: { txHash: `0x${"9".repeat(64)}` },
+          transactionHash: SENT_TX,
+        },
+      ],
+    });
+    await ops.releaseProposal(c, id);
+    expect((await c.store.getIntent(id))?.status).toBe("proposed");
   });
 
   it("fail marks a proposal failed and revives the subject", async () => {
