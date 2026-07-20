@@ -11,7 +11,7 @@ RUN corepack enable && corepack prepare pnpm@9.13.2 --activate
 WORKDIR /app
 
 # Copy workspace configuration
-COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.json ./
 
 # Copy package.json files for all required workspace packages
 COPY packages/abis/package.json ./packages/abis/
@@ -47,6 +47,7 @@ WORKDIR /app
 
 # Copy built application from builder
 COPY --from=builder /app/pnpm-workspace.yaml ./
+COPY --from=builder /app/tsconfig.json ./
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-lock.yaml ./
 COPY --from=builder /app/node_modules ./node_modules
