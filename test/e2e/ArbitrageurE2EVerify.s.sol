@@ -43,15 +43,15 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         // ── Leg 2: vault acquisition (the bot's ArbitrageEngine) ──────────
         console.log("\n--- Leg 2: vault acquisition ---");
         console.log("Vault ID:", vm.toString(vaultId));
-        (bool vaultRedeemed, bool vaultEscrowed) = _waitForAcquisition(vaultId);
+        (bool vaultRedeemed, bool vaultAcquirable) = _waitForAcquisition(vaultId);
 
         uint256 arbWbtcNow = _getWbtcBalance(E2EConstants.ARBITRAGEUR);
         console.log("Arbitrageur WBTC now (sats):  ", arbWbtcNow);
         console.log("Arbitrageur WBTC initial (sats):", arbInitialWbtc);
         console.log("Is vault redeemed:", vaultRedeemed);
-        console.log("Is vault still escrowed:", vaultEscrowed);
+        console.log("Is vault still acquirable (escrowed):", vaultAcquirable);
 
-        bool acquired = vaultRedeemed || !vaultEscrowed;
+        bool acquired = vaultRedeemed || !vaultAcquirable;
         require(acquired, "Vault was not acquired by the arb bot's ArbitrageEngine");
         console.log("[PASS] Vault acquired (redeemed / left escrow)");
 
@@ -78,12 +78,12 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         return false;
     }
 
-    /// @dev Poll the vault until redeemed or no longer escrowed.
-    function _waitForAcquisition(bytes32 vaultId) internal returns (bool vaultRedeemed, bool vaultEscrowed) {
+    /// @dev Poll the vault until redeemed or no longer acquirable (i.e. acquired).
+    function _waitForAcquisition(bytes32 vaultId) internal returns (bool vaultRedeemed, bool vaultAcquirable) {
         (BTCVaultTypes.BTCVaultStatus status,) = _getVaultStatusAndAmount(vaultId);
         vaultRedeemed = status == BTCVaultTypes.BTCVaultStatus.Redeemed;
-        vaultEscrowed = _isVaultEscrowed(vaultId);
-        if (vaultRedeemed || !vaultEscrowed) return (vaultRedeemed, vaultEscrowed);
+        vaultAcquirable = _isVaultAcquirable(vaultId);
+        if (vaultRedeemed || !vaultAcquirable) return (vaultRedeemed, vaultAcquirable);
 
         console.log("Polling every 5 seconds for up to 120 seconds...");
         uint256 elapsed = 0;
@@ -92,10 +92,10 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
             elapsed += 5;
             (status,) = _getVaultStatusAndAmount(vaultId);
             vaultRedeemed = status == BTCVaultTypes.BTCVaultStatus.Redeemed;
-            vaultEscrowed = _isVaultEscrowed(vaultId);
-            if (vaultRedeemed || !vaultEscrowed) {
+            vaultAcquirable = _isVaultAcquirable(vaultId);
+            if (vaultRedeemed || !vaultAcquirable) {
                 console.log("Acquisition detected after", elapsed, "seconds");
-                return (vaultRedeemed, vaultEscrowed);
+                return (vaultRedeemed, vaultAcquirable);
             }
             console.log("Still waiting for acquisition...", elapsed, "/ 120");
         }
@@ -111,9 +111,12 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         }
     }
 
-    function _isVaultEscrowed(bytes32 vaultId) internal returns (bool) {
+    /// @dev A vault is "acquirable" while it sits escrowed in the VaultSwap awaiting
+    ///      a buyer (Active/AaveDeficit); once the arb bot acquires it the status flips
+    ///      to Redeemed and this returns false — our proxy for "no longer escrowed".
+    function _isVaultAcquirable(bytes32 vaultId) internal returns (bool) {
         bytes memory result =
-            ffi_castCall(address(vaultSwap), "isVaultEscrowed(bytes32)", ArrayHelper.create(vm.toString(vaultId)));
+            ffi_castCall(address(vaultSwap), "isVaultAcquirable(bytes32)", ArrayHelper.create(vm.toString(vaultId)));
         return abi.decode(result, (bool));
     }
 

@@ -189,7 +189,7 @@ export class ArbitrageEngine {
       }
 
       const preview = previewResults[0];
-      if (!preview.isProfitable) {
+      if (preview.amountProfitEst === 0n) {
         this.logger.warn(`Vault ${vaultId} is currently unprofitable, skipping`);
         this.logger.warn(
           `   Debt: ${formatUnits(preview.amountDebt, 8)} WBTC | Interest: ${formatUnits(preview.amountInterest, 8)} WBTC | Fee: ${formatUnits(preview.amountFee, 8)} WBTC`
