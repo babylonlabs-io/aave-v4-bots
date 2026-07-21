@@ -1,4 +1,3 @@
-import type { Address } from "viem";
 import type {
   IntentInput,
   IntentStatus,
@@ -10,9 +9,9 @@ import type {
 import { idempotencyKey } from "./utils";
 
 // In-memory `StateStore` — **non-durable**, for dev and tests (production uses `./postgres`).
-// Mirrors the Postgres adapter's semantics exactly: idempotency refuse/revive, a per-address
-// nonce lease, and the action-filtered reconcile work-list. Having one canonical fake avoids
-// each test re-implementing (and drifting) its own.
+// Mirrors the Postgres adapter's semantics exactly: idempotency refuse/revive and the
+// action-filtered reconcile work-list. Having one canonical fake avoids each test
+// re-implementing (and drifting) its own.
 
 /** A `StateStore` with in-memory introspection helpers for assertions. */
 export interface MemoryStateStore extends StateStore {
@@ -25,26 +24,11 @@ export interface MemoryStateStore extends StateStore {
 /** Build a non-durable in-memory `StateStore`. */
 export function createMemoryStateStore(): MemoryStateStore {
   const rows = new Map<string, TxIntent>();
-  const leases = new Map<string, number>();
   const live: IntentStatus[] = ["pending", "submitted"];
 
   return {
     all: () => [...rows.values()],
     get: (id) => rows.get(id),
-
-    async reserveNonce(address: Address) {
-      const key = address.toLowerCase();
-      const value = leases.get(key);
-      if (value === undefined) {
-        throw new Error(`nonce lease for ${address} is not seeded (call syncNonce first)`);
-      }
-      leases.set(key, value + 1);
-      return value;
-    },
-
-    async syncNonce(address: Address, chainNonce: number) {
-      leases.set(address.toLowerCase(), chainNonce);
-    },
 
     async recordIntent(input: IntentInput): Promise<RecordResult> {
       const id = idempotencyKey(input);

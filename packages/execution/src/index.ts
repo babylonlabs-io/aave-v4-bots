@@ -28,11 +28,10 @@ export function nextNonce(client: PublicClient, address: Address): Promise<numbe
 // ── Shared nonce authority ────────────────────────────────────────────────────────────
 //
 // One signer, possibly two engines (arbitrageur runs both) polling concurrently. A single
-// `NonceAllocator` — shared across engines — is the sole nonce owner. Correctness comes from
-// two things, neither needing persistence: an in-process **mutex** (so two engines never
-// reserve the same nonce) and **re-seeding from the chain** (`resync`, so the chain is the
-// source of truth and a restart needs no persisted counter). Persistence, when present, is a
-// separate concern (intent idempotency) and lives in `@repo/persistence`.
+// `NonceAllocator` — shared across engines — is the sole nonce owner. Correctness rests on two
+// things: an in-process **mutex** (so two engines never reserve the same nonce) and **re-seeding
+// from the chain** (`resync`), which makes the chain the source of truth across restarts. Intent
+// idempotency is a separate concern and lives in `@repo/persistence`.
 //
 // **No rollback:** a thrown `send` does not prove the tx was not broadcast (an RPC timeout can
 // fire after the node accepted it), so the reserved nonce is NOT reused within the cycle; the
@@ -191,6 +190,23 @@ export async function signContractCall(
 }
 
 /**
+ * A send that failed **before** the tx reached the wire — while preparing, while signing, or
+ * inside `onSigned` (the durable record). Nothing is on chain and the reserved nonce is still
+ * free, so this is categorically not "the chain rejected us".
+ *
+ * Callers must be able to tell it apart from a failed *broadcast*, which is ambiguous (the tx
+ * may be in flight). A risk gate in particular must settle this as `abandoned` — feeding it to
+ * the consecutive-failure breaker would let a database blip or an RPC hiccup halt the bot as if
+ * the chain were refusing its transactions.
+ */
+export class PreBroadcastError extends Error {
+  constructor(readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "PreBroadcastError";
+  }
+}
+
+/**
  * The default `TxSender`: local signing + public-mempool broadcast. `submit` overrides where
  * the signed tx goes (e.g. a private relay — `@repo/signer`'s `Submitter.send` fits as-is).
  */
@@ -204,9 +220,16 @@ export function createTxSender(
     ((serializedTransaction: Hex) => publicClient.sendRawTransaction({ serializedTransaction }));
   return {
     async send(call, onSigned) {
-      const signed = await signContractCall(walletClient, call);
-      // Durable BEFORE the tx can exist on chain. A throw here means nothing was broadcast.
-      await onSigned?.(signed);
+      let signed: SignedTx;
+      try {
+        signed = await signContractCall(walletClient, call);
+        // Durable BEFORE the tx can exist on chain.
+        await onSigned?.(signed);
+      } catch (error) {
+        // Nothing was broadcast — say so, rather than letting the caller assume the worst.
+        throw new PreBroadcastError(error);
+      }
+      // From here on the tx may be on the wire: a throw is ambiguous, not a clean abort.
       await broadcast(signed.serialized);
       // Prefer the locally-derived hash: it is what `onSigned` persisted, and it is what the
       // node returns anyway (same signed bytes).

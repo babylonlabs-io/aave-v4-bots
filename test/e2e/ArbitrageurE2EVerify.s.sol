@@ -55,6 +55,16 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         require(acquired, "Vault was not acquired by the arb bot's ArbitrageEngine");
         console.log("[PASS] Vault acquired (redeemed / left escrow)");
 
+        // Both engines traded, which proves the ONE shared gate let them: the code-hash guard
+        // accepted the real deployed bytecode of VaultSwap, the adapter and the lens (a mismatch
+        // boots the process HALTED, stopping *both* engines). Now exercise the control plane on
+        // the live process, last so a kill-switch failure can never mask a trading failure.
+        console.log("\n--- Verifying kill switch on the running bot ---");
+        _checkKillSwitch(
+            E2EConstants.ARBITRAGEUR_CONTROL_PORT, E2EConstants.ARBITRAGEUR_METRICS_PORT, E2EConstants.CONTROL_TOKEN
+        );
+        console.log("[PASS] Kill switch: auth, method + traversal guards, halt/resume, loopback-only");
+
         console.log("\n=== E2E Arbitrageur Test PASSED (both engines) ===\n");
     }
 

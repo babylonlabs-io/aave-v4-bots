@@ -18,19 +18,15 @@ import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@re
 import {
   type ContractCall,
   type NonceAllocator,
+  PreBroadcastError,
   type TxSender,
   createTxSender,
   nextNonce,
 } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { StateStore } from "@repo/persistence";
-import type { RiskGate } from "@repo/risk";
-import {
-  bestEffortTransition,
-  reconcileIntents,
-  resyncNonces,
-  sendMaybeAllocated,
-} from "../crashSafety";
+import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
+import { type CrashSafety, createCrashSafety } from "../crashSafety";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {
@@ -100,8 +96,8 @@ export class LiquidationEngine {
   private metrics: LiquidationMetrics;
   private logger: Logger;
   private risk: RiskGate;
-  private store?: StateStore;
-  private nonces?: NonceAllocator;
+  /** Intent + nonce plumbing. Owns the optional `store` / `nonces`, so no call site threads them. */
+  private crash: CrashSafety;
   private sender: TxSender;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
@@ -120,8 +116,6 @@ export class LiquidationEngine {
     this.metrics = config.metrics;
     this.logger = config.logger;
     this.risk = config.risk;
-    this.store = config.store;
-    this.nonces = config.nonces;
     this.sender = config.sender ?? createTxSender(config.publicClient, config.walletClient);
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
@@ -134,6 +128,13 @@ export class LiquidationEngine {
     this.llpAddress = config.llpAddress;
     this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
+    this.crash = createCrashSafety({
+      store: config.store,
+      nonces: config.nonces,
+      publicClient: config.publicClient,
+      signer: config.walletClient.account.address,
+      logger: config.logger,
+    });
   }
 
   /** Resolve a token's symbol/decimals via the shared, cached reader. */
@@ -197,13 +198,7 @@ export class LiquidationEngine {
    * re-drive on settled state; not-broadcast ⇒ re-drive). No-op without a store.
    */
   async reconcile(): Promise<void> {
-    await reconcileIntents(
-      this.store,
-      this.publicClient,
-      this.walletClient.account.address,
-      "liquidation",
-      this.logger
-    );
+    await this.crash.reconcile("liquidation");
   }
 
   /**
@@ -212,6 +207,9 @@ export class LiquidationEngine {
    */
   async run(): Promise<void> {
     const startTime = Date.now();
+    // Every exposure slot this cycle opens. The `finally` releases any the code below missed,
+    // so an unexpected throw can never leak a slot and wedge the exposure cap.
+    const slots: RiskSlot[] = [];
 
     try {
       // 0. Risk gate — a HALTED gate (kill-switch or tripped breaker) skips the cycle.
@@ -225,10 +223,10 @@ export class LiquidationEngine {
       // Both no-op without a store / allocator. Done before fetching so a position stuck as a
       // live intent is resolved even in a cycle that would otherwise skip it.
       await this.reconcile();
-      await resyncNonces(this.nonces, this.publicClient, this.walletClient.account.address);
+      await this.crash.resyncNonces();
 
-      // 1. Fetch liquidatable positions from Ponder
-      const positions = await this.fetchLiquidatablePositions();
+      // 1. Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
+      const { positions, dataTimestampMs } = await this.fetchLiquidatablePositions();
 
       this.metrics.recordPositionsLiquidatable(positions.length);
 
@@ -343,38 +341,45 @@ export class LiquidationEngine {
       // propagated): the intent is kept LIVE (never terminal) and the cycle stops — the next
       // cycle's reconcile resolves it by nonce vs. chain.
       const signer = this.walletClient.account.address;
-      let localNonce = this.nonces ? 0 : await nextNonce(this.publicClient, signer);
+      let localNonce = this.crash.allocated ? 0 : await nextNonce(this.publicClient, signer);
 
-      // Each sent tx is paired with its intent id so the receipt phase can transition it.
-      const sent: Array<{ hash: Hex; intentId?: string }> = [];
+      // Each sent tx is paired with its intent id (so the receipt phase can transition it) and
+      // its risk slot (so the receipt phase settles the exposure it reserved).
+      const sent: Array<{ hash: Hex; intentId?: string; slot: RiskSlot }> = [];
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, amounts } = validCandidates[i];
 
-        // Risk gate — per-candidate check just before submit (profit floor, freshness, …).
-        const decision = this.risk.check({ kind: "liquidation", subject: position.proxyAddress });
-        if (!decision.allow) {
+        // Risk gate — per-candidate check just before submit. An allowed check reserves an
+        // exposure slot that MUST be settled on every path below (see `RiskSlot`).
+        //
+        // `expectedProfit` is intentionally **not** passed: liquidation profit is not derivable
+        // off-chain today. The Lens `estimateLiquidation` returns debt amounts (in debt-token
+        // units) + `wbtcPayment` + vault *ids*, and `liquidate`/`liquidateWithLLP` return only
+        // `vaultIds` — so neither the estimate nor a simulation yields a WBTC-denominated
+        // profit. Pricing it needs an oracle, a new Lens view, or the on-chain WBTC-delta
+        // ProfitGuard (RFC-001). The gate skips the profit floor when this is undefined.
+        const slot = this.risk.openSlot({
+          kind: "liquidation",
+          subject: position.proxyAddress,
+          dataTimestampMs,
+        });
+        if (!slot.allowed) {
           this.metrics.recordError("risk_blocked");
-          this.logger.warn(`Risk gate blocked ${position.proxyAddress}: ${decision.reason}`);
+          this.logger.warn(`Risk gate blocked ${position.proxyAddress}: ${slot.reason}`);
           continue;
         }
+        slots.push(slot);
 
         // Crash-safety: refuse a duplicate live intent (already pending/submitted on chain).
-        let intentId: string | undefined;
-        if (this.store) {
-          const record = await this.store.recordIntent({
-            chainId: this.walletClient.chain.id,
-            target: this.adapterAddress,
-            action: "liquidation",
-            subject: position.proxyAddress,
-          });
-          if (!record.recorded) {
-            this.metrics.recordError("intent_in_flight");
-            this.logger.warn(
-              `Skipping ${position.proxyAddress}: intent already ${record.existing.status}`
-            );
-            continue;
-          }
-          intentId = record.id;
+        const { claimed, intentId } = await this.crash.claim(slot, {
+          chainId: this.walletClient.chain.id,
+          target: this.adapterAddress,
+          action: "liquidation",
+          subject: position.proxyAddress,
+        });
+        if (!claimed) {
+          this.metrics.recordError("intent_in_flight");
+          continue;
         }
 
         const priorityOrder = sequentialPriorityOrder(amounts.length);
@@ -404,28 +409,29 @@ export class LiquidationEngine {
 
         const broadcast = (nonce: number): Promise<Hex> =>
           this.sender.send({ ...call, nonce }, async (signed) => {
-            if (this.store && intentId) {
-              await this.store.transition(intentId, "pending", {
-                nonce: signed.nonce,
-                txHash: signed.hash,
-              });
-            }
+            if (intentId) await this.crash.markPending(intentId, signed.nonce, signed.hash);
           });
 
         let hash: Hex;
         try {
-          hash = this.nonces ? await this.nonces.withNonce(broadcast) : await broadcast(localNonce);
+          // With an allocator the reserved nonce arrives here; without one, `send` calls back
+          // with `undefined` and we fall through to the engine's own sequence.
+          hash = await this.crash.send((nonce) => broadcast(nonce ?? localNonce));
         } catch (error) {
           this.metrics.recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           this.logger.error(`Failed to send liquidation for ${position.borrower}: ${errorMsg}`);
+          // Only a failed *broadcast* is a real failure signal for the breaker. A failure to
+          // prepare, sign, or durably record never reached the chain — settle it as abandoned,
+          // or an RPC/database blip would trip the breaker as if the chain were rejecting us.
+          slot.settle({ ok: false, abandoned: error instanceof PreBroadcastError });
           // Ambiguous — keep the intent LIVE (not terminal); next-cycle reconcile decides.
           if (intentId) {
-            await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
+            await this.crash.transition(intentId, "submitted", {
               error: errorMsg,
             });
           }
-          if (this.nonces) break; // allocator: stop the cycle; resync reclaims the nonce
+          if (this.crash.allocated) break; // allocator: stop the cycle; resync reclaims the nonce
           // Legacy (no allocator): re-sync the local nonce from the chain and continue.
           try {
             localNonce = await nextNonce(this.publicClient, signer);
@@ -443,12 +449,12 @@ export class LiquidationEngine {
         // pre-broadcast (see `sender.send`), so losing this write costs nothing.
         this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
         if (intentId) {
-          await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
+          await this.crash.transition(intentId, "submitted", {
             txHash: hash,
           });
         }
-        sent.push({ hash, intentId });
-        if (!this.nonces) localNonce += 1;
+        sent.push({ hash, intentId, slot });
+        if (!this.crash.allocated) localNonce += 1;
       }
 
       if (sent.length === 0) {
@@ -466,30 +472,30 @@ export class LiquidationEngine {
 
       for (let i = 0; i < receipts.length; i++) {
         const result = receipts[i];
-        const { hash, intentId } = sent[i];
+        const { hash, intentId, slot } = sent[i];
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
-            this.risk.recordOutcome({ ok: true });
+            slot.settle({ ok: true });
             this.metrics.recordLiquidationSuccess();
             this.logger.info(`Liquidation confirmed in block ${receipt.blockNumber}: ${hash}`);
             if (intentId)
-              await bestEffortTransition(this.store, this.logger, intentId, "confirmed", {
+              await this.crash.transition(intentId, "confirmed", {
                 txHash: hash,
               });
           } else {
-            this.risk.recordOutcome({ ok: false });
+            slot.settle({ ok: false });
             this.metrics.recordLiquidationFailed();
             this.metrics.recordError("tx_reverted");
             this.logger.error(`Liquidation reverted: ${hash}`);
             if (intentId)
-              await bestEffortTransition(this.store, this.logger, intentId, "failed", {
+              await this.crash.transition(intentId, "failed", {
                 txHash: hash,
                 error: "reverted",
               });
           }
         } else {
-          this.risk.recordOutcome({ ok: false });
+          slot.settle({ ok: false });
           this.metrics.recordLiquidationFailed();
           this.metrics.recordError("receipt_fetch_error");
           this.logger.error(`Failed to get receipt for ${hash}: ${result.reason}`);
@@ -500,14 +506,20 @@ export class LiquidationEngine {
       this.metrics.recordError("poll_error");
       this.logger.error("Error in bot run:", error);
     } finally {
+      settleUnfinished(slots);
       this.metrics.recordPollDuration(Date.now() - startTime);
     }
   }
 
   /**
-   * Fetch liquidatable positions from Ponder indexer
+   * Fetch liquidatable positions from Ponder indexer, along with the chain-block timestamp its
+   * live reads were evaluated at (the risk gate's freshness input; `undefined` if the indexer
+   * doesn't report it).
    */
-  private async fetchLiquidatablePositions(): Promise<LiquidatablePosition[]> {
+  private async fetchLiquidatablePositions(): Promise<{
+    positions: LiquidatablePosition[];
+    dataTimestampMs?: number;
+  }> {
     try {
       const response = await fetchWithRetry(
         `${this.ponderUrl}/liquidatable-positions`,
@@ -521,11 +533,11 @@ export class LiquidationEngine {
 
       const data: PonderResponse = await response.json();
       this.metrics.recordPositionsChecked(data.checked);
-      return data.liquidatable;
+      return { positions: data.liquidatable, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
       this.metrics.recordError("ponder_fetch_error");
       this.logger.error("Failed to fetch liquidatable positions:", error);
-      return [];
+      return { positions: [] };
     }
   }
 
@@ -557,7 +569,7 @@ export class LiquidationEngine {
         // Approvals are signer txs too — route through the allocator so they don't collide
         // with the other engine's nonces (only the broadcast is under the lock; the receipt
         // wait is outside). An ambiguous approval is idempotent — re-checked here next boot.
-        const hash = await sendMaybeAllocated(this.nonces, (nonce) =>
+        const hash = await this.crash.send((nonce) =>
           approveMax(this.walletClient, tokenAddress, this.adapterAddress, nonce)
         );
 

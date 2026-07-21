@@ -1,9 +1,15 @@
 import {
+  type RiskSettings,
   addressListSchema,
   addressSchema,
+  buildPersistenceConfig,
+  buildRiskConfig,
+  buildSecretsConfig,
   bytes32Schema,
   parseEnv,
   positiveIntSchema,
+  riskEnvFields,
+  runtimeEnvFields,
   urlSchema,
 } from "@repo/config";
 import type { LiquidationEngineParams } from "@repo/engine";
@@ -19,7 +25,7 @@ const DEFAULT_KEY_REF = "LIQUIDATOR_PRIVATE_KEY";
 // The engine's domain params (addresses, ponder URL, redemption flags, tx
 // timeout) are declared in `@repo/engine` and inherited here; this interface
 // only adds the composition-root fields the service needs to wire the engine up.
-export interface Config extends LiquidationEngineParams {
+export interface Config extends LiquidationEngineParams, RiskSettings {
   // RPC endpoint the bot's viem clients connect to
   rpcUrl: string;
 
@@ -46,6 +52,13 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 // field — see index.ts. This schema only selects *where* the signer and secrets come
 // from; the key material itself never appears here.
 const envSchema = z.object({
+  // Secrets/signer source selection + crash-safety persistence, shared by every bot service.
+  ...runtimeEnvFields,
+
+  // Risk gate thresholds + kill-switch (all optional; unset ⇒ the guard is off, which is the
+  // pre-existing permissive behavior).
+  ...riskEnvFields,
+
   // Required
   PONDER_URL: urlSchema,
   CLIENT_RPC_URL: urlSchema,
@@ -87,6 +100,7 @@ export function loadConfig(): Config {
       : undefined;
 
   return {
+    ...buildRiskConfig(env),
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     ponderUrl: env.PONDER_URL,
     rpcUrl: env.CLIENT_RPC_URL,
@@ -99,7 +113,8 @@ export function loadConfig(): Config {
     llpAddress: env.LLP_ADDRESS as Address,
     metricsPort: Number.parseInt(env.METRICS_PORT, 10),
     txReceiptTimeoutMs: Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10),
-    secrets: { source: env.SECRETS_PROVIDER, region: env.AWS_REGION },
+    secrets: buildSecretsConfig(env),
+    persistence: buildPersistenceConfig(env),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,
@@ -108,8 +123,5 @@ export function loadConfig(): Config {
       address: env.SIGNER_ADDRESS as Address | undefined,
       region: env.AWS_REGION,
     }),
-    persistence: env.DATABASE_URL
-      ? { connectionString: env.DATABASE_URL, schema: env.PERSISTENCE_SCHEMA }
-      : undefined,
   };
 }

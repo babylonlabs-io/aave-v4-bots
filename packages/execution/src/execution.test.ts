@@ -2,6 +2,7 @@ import { keccak256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ContractCall,
+  PreBroadcastError,
   type SignedTx,
   createNonceAllocator,
   createNonceLease,
@@ -295,6 +296,58 @@ describe("@repo/execution", () => {
       // Nothing reached the chain, so the reserved nonce is still free — the caller may treat
       // this exactly like any other send failure.
       expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
+    });
+
+    // A caller cannot settle its risk slot correctly without knowing WHICH side of the
+    // broadcast it failed on: everything before the wire is `abandoned` (nothing is on chain,
+    // so it says nothing about whether the chain is rejecting us), and only a failed broadcast
+    // is a genuine failure signal. Conflating them lets a database or RPC blip trip the
+    // consecutive-failure breaker and halt the bot.
+    describe("pre-broadcast failures are distinguishable from broadcast failures", () => {
+      it("types a failed durable record as PreBroadcastError", async () => {
+        const { walletClient, publicClient } = txClients();
+        const sender = createTxSender(
+          publicClient as unknown as PublicClientArg,
+          walletClient as unknown as WalletClientArg
+        );
+
+        const error = await sender
+          .send(CALL, async () => {
+            throw new Error("store unavailable");
+          })
+          .catch((e) => e);
+
+        expect(error).toBeInstanceOf(PreBroadcastError);
+        expect(error.cause).toBeInstanceOf(Error); // the original is preserved, not swallowed
+        expect(error.message).toBe("store unavailable");
+      });
+
+      it("types a failed signing as PreBroadcastError", async () => {
+        const { walletClient, publicClient } = txClients();
+        walletClient.signTransaction.mockRejectedValue(new Error("signer offline"));
+        const sender = createTxSender(
+          publicClient as unknown as PublicClientArg,
+          walletClient as unknown as WalletClientArg
+        );
+
+        await expect(sender.send(CALL)).rejects.toBeInstanceOf(PreBroadcastError);
+        expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
+      });
+
+      it("does NOT type an ambiguous broadcast failure as PreBroadcastError", async () => {
+        const { walletClient, publicClient } = txClients({
+          sendRawTransaction: () => Promise.reject(new Error("rpc timeout")),
+        });
+        const sender = createTxSender(
+          publicClient as unknown as PublicClientArg,
+          walletClient as unknown as WalletClientArg
+        );
+
+        // The tx may be in flight — the caller MUST treat this as a real failure, not abandon it.
+        const error = await sender.send(CALL, async () => {}).catch((e) => e);
+        expect(error).not.toBeInstanceOf(PreBroadcastError);
+        expect(error.message).toBe("rpc timeout");
+      });
     });
 
     it("reports the signed nonce when the caller does not reserve one", async () => {

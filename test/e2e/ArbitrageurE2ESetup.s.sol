@@ -145,7 +145,9 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "MAX_SLIPPAGE_BPS=100\n",
             "POLLING_INTERVAL_MS=1000\n",
             "VAULT_PROCESSING_DELAY_MS=1000\n",
-            "METRICS_PORT=9091\n",
+            "METRICS_PORT=",
+            vm.toString(E2EConstants.ARBITRAGEUR_METRICS_PORT),
+            "\n",
             "\n",
             "# Liquidation engine (enabled by ADAPTER_ADDRESS + LENS_ADDRESS)\n",
             "LENS_ADDRESS=",
@@ -164,8 +166,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "RETRY_INITIAL_DELAY_MS=1000\n",
             "RETRY_MAX_DELAY_MS=30000\n",
             "TX_RECEIPT_TIMEOUT_MS=120000\n",
-            "EOF"
-        );
-        vm.ffi(inputs);
-    }
+            "\n",
+            "# Risk gate (ONE gate shared by BOTH engines this process runs)\n",
+            _riskEnv(lensAddress),
 }

@@ -6,11 +6,12 @@ dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
 import { type Chain, createPublicClient, createWalletClient } from "viem";
 
-import { instrumentedHttp } from "@repo/chain";
+import { instrumentedHttp, readCodeHash } from "@repo/chain";
 import { createNonceAllocator, createNonceLease, nextNonce } from "@repo/execution";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { type StateStore, createStateStore } from "@repo/persistence";
+import { startRiskRuntime } from "@repo/risk";
 import { createSecrets } from "@repo/secrets";
 import { resolveSigner } from "@repo/signer";
 import { LiquidationBot } from "./bot";
@@ -69,7 +70,23 @@ async function createBot(config: Config) {
   // `run()`), so it needs no persisted state. One per signer.
   const nonces = createNonceAllocator(createNonceLease(), signer.address);
 
+  // Exactly ONE risk gate per process, injected into every engine — a kill-switch or tripped
+  // breaker must halt everything this process drives. Also verifies the pinned adapter/lens
+  // bytecode before any tx goes out, and — when a control token is configured — starts the
+  // authenticated kill-switch server on its own loopback socket.
+  const { gate: risk } = await startRiskRuntime({
+    config: config.risk,
+    codeCheckIntervalMs: config.codeCheckIntervalMs,
+    controlTokenRef: config.controlTokenRef,
+    controlPort: config.controlPort,
+    controlHost: config.controlHost,
+    read: (address) => readCodeHash(publicClient, address),
+    getSecret: (ref) => secrets.get(ref),
+    logger,
+  });
+
   const bot = new LiquidationBot({
+    risk,
     walletClient,
     publicClient,
     adapterAddress: config.adapterAddress,
@@ -100,7 +117,8 @@ async function main() {
     const { bot, publicClient, store } = await createBot(config);
     storeForShutdown = store;
 
-    // Start the observability server (metrics + health/readiness probes)
+    // Metrics + health/readiness probes only. The kill switch is not here: `startRiskRuntime`
+    // already serves it on its own socket, so this port stays safe to expose to a scrape network.
     setPublicClient(publicClient);
     startObservabilityServer({
       port: config.metricsPort,

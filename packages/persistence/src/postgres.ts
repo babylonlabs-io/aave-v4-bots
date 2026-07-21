@@ -76,7 +76,6 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
     throw new Error(`invalid persistence schema name: "${schema}"`);
   }
   const intents = `${schema}.tx_intents`;
-  const leases = `${schema}.nonce_leases`;
 
   const client: PgClientLike =
     config.client ?? (new pg.Pool({ connectionString: config.connectionString }) as PgClientLike);
@@ -101,12 +100,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
              created_at BIGINT NOT NULL,
              updated_at BIGINT NOT NULL
            );
-           CREATE INDEX IF NOT EXISTS tx_intents_status_idx ON ${intents} (status);
-           CREATE TABLE IF NOT EXISTS ${leases} (
-             address TEXT PRIMARY KEY,
-             next_nonce BIGINT NOT NULL,
-             updated_at BIGINT NOT NULL
-           );`
+           CREATE INDEX IF NOT EXISTS tx_intents_status_idx ON ${intents} (status);`
         )
         .then(() => undefined)
         .catch((error) => {
@@ -119,30 +113,6 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
   }
 
   return {
-    async reserveNonce(address) {
-      await ensureReady();
-      const key = address.toLowerCase();
-      const res = await client.query<{ allocated: string }>(
-        `UPDATE ${leases} SET next_nonce = next_nonce + 1, updated_at = $2
-         WHERE address = $1 RETURNING next_nonce - 1 AS allocated`,
-        [key, Date.now()]
-      );
-      if (res.rows.length === 0) {
-        throw new Error(`nonce lease for ${address} is not seeded (call syncNonce first)`);
-      }
-      return Number(res.rows[0].allocated);
-    },
-
-    async syncNonce(address, chainNonce) {
-      await ensureReady();
-      const key = address.toLowerCase();
-      await client.query(
-        `INSERT INTO ${leases} (address, next_nonce, updated_at) VALUES ($1, $2, $3)
-         ON CONFLICT (address) DO UPDATE SET next_nonce = $2, updated_at = $3`,
-        [key, chainNonce, Date.now()]
-      );
-    },
-
     async recordIntent(input: IntentInput): Promise<RecordResult> {
       await ensureReady();
       const id = idempotencyKey(input);

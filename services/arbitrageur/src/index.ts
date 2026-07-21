@@ -14,7 +14,7 @@ import {
   createWalletClient,
 } from "viem";
 
-import { instrumentedHttp } from "@repo/chain";
+import { instrumentedHttp, readCodeHash } from "@repo/chain";
 import { LiquidationEngine } from "@repo/engine";
 import {
   type NonceAllocator,
@@ -25,7 +25,7 @@ import {
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { type StateStore, createStateStore } from "@repo/persistence";
-import { createRiskGate } from "@repo/risk";
+import { type RiskGate, startRiskRuntime } from "@repo/risk";
 import { createSecrets } from "@repo/secrets";
 import { resolveSigner } from "@repo/signer";
 import { ArbitrageurBot } from "./bot";
@@ -61,6 +61,7 @@ interface BotWithClients {
   walletClient: WalletClient<Transport, Chain, Account>;
   store: StateStore | undefined;
   nonces: NonceAllocator;
+  risk: RiskGate;
 }
 
 async function createBot(config: Config): Promise<BotWithClients> {
@@ -111,7 +112,24 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // their concurrent sends never collide. In-memory (chain-seeded), no persisted state.
   const nonces = createNonceAllocator(createNonceLease(), signer.address);
 
+  // ONE shared risk gate for the process — injected into BOTH engines, so a kill-switch or a
+  // tripped breaker halts arbitrage *and* liquidation together. (Each engine used to build its
+  // own gate, which meant halting one left the other trading.) Also verifies the pinned target
+  // bytecode before any tx goes out, and — when a control token is configured — starts the
+  // authenticated kill-switch server on its own loopback socket.
+  const { gate: risk } = await startRiskRuntime({
+    config: config.risk,
+    codeCheckIntervalMs: config.codeCheckIntervalMs,
+    controlTokenRef: config.controlTokenRef,
+    controlPort: config.controlPort,
+    controlHost: config.controlHost,
+    read: (address) => readCodeHash(publicClient, address),
+    getSecret: (ref) => secrets.get(ref),
+    logger,
+  });
+
   const bot = new ArbitrageurBot({
+    risk,
     walletClient,
     publicClient,
     vaultSwapAddress: config.vaultSwapAddress,
@@ -133,7 +151,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // Seed the shared lease from the chain once, before either engine sends.
   await nonces.resync(() => nextNonce(publicClient, signer.address));
 
-  return { bot, publicClient, walletClient, store, nonces };
+  return { bot, publicClient, walletClient, store, nonces, risk };
 }
 
 /**
@@ -147,7 +165,8 @@ async function startLiquidationEngine(
   walletClient: WalletClient<Transport, Chain, Account>,
   publicClient: PublicClient,
   store: StateStore | undefined,
-  nonces: NonceAllocator
+  nonces: NonceAllocator,
+  risk: RiskGate
 ): Promise<void> {
   const liqLogger = createLogger({ prefix: "[Arbitrageur:Liq] " });
   const { pollingIntervalMs, ...params } = liq;
@@ -158,9 +177,10 @@ async function startLiquidationEngine(
     publicClient,
     metrics: createLiquidationMetricsSet(),
     logger: liqLogger,
-    risk: createRiskGate(),
+    // The SAME gate and allocator the arbitrage engine uses: one risk authority and one nonce
+    // owner per process, so halting or nonce-sequencing covers both engines.
+    risk,
     store,
-    // The SAME allocator the arbitrage engine uses — the shared signer's single nonce owner.
     nonces,
   });
 
@@ -190,10 +210,11 @@ async function runPollingMode(config: Config): Promise<void> {
   logger.info("Aave V4 Arbitrageur Bot Starting...");
   logger.info("===================================");
 
-  const { bot, publicClient, walletClient, store, nonces } = await createBot(config);
+  const { bot, publicClient, walletClient, store, nonces, risk } = await createBot(config);
   storeForShutdown = store;
 
-  // Start the observability server (metrics + health/readiness probes)
+  // Metrics + health/readiness probes only. The kill switch is not here: `startRiskRuntime`
+  // already serves it on its own socket, so this port stays safe to expose to a scrape network.
   setPublicClient(publicClient);
   startObservabilityServer({
     port: config.metricsPort,
@@ -206,7 +227,14 @@ async function runPollingMode(config: Config): Promise<void> {
   // Opt-in: also run the liquidation engine (both engines, one process) — sharing the one
   // nonce allocator so the two engines' concurrent sends never collide on the signer.
   if (config.liquidation) {
-    await startLiquidationEngine(config.liquidation, walletClient, publicClient, store, nonces);
+    await startLiquidationEngine(
+      config.liquidation,
+      walletClient,
+      publicClient,
+      store,
+      nonces,
+      risk
+    );
   }
 
   logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);

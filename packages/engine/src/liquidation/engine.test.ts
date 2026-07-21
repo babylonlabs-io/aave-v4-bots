@@ -1,4 +1,4 @@
-import { createNonceAllocator, createNonceLease } from "@repo/execution";
+import { PreBroadcastError, createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
@@ -66,6 +66,9 @@ function createMockClients() {
     sender: mockSender(),
     walletClient: {
       account: { address: "0xliquidator" as `0x${string}` },
+      // A real `WalletClient<Transport, Chain, Account>` always has a chain; the engine reads
+      // `chain.id` for the intent's idempotency key.
+      chain: { id: 31337 },
       writeContract: vi.fn().mockResolvedValue("0xtxhash"), // approvals only
     },
     publicClient: {
@@ -79,8 +82,9 @@ function createMockClients() {
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
-      // Reconcile's receipt lookup: not mined by default. Must throw the viem not-found error
-      // (not an arbitrary one) — the chain reader only maps *that* to "no receipt yet".
+      // Reconcile asks for receipts. The default answer is viem's "not mined yet" signal — a
+      // *typed* error, not a bare throw: `getReceiptStatus` only reads this one as "no receipt",
+      // and propagates anything else (an RPC outage must never look like "not mined").
       getTransactionReceipt: vi
         .fn()
         .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: "0xtxhash" })),
@@ -224,12 +228,115 @@ describe("LiquidationEngine", () => {
       const bot = createBot(clients, { risk });
       global.fetch = vi.fn().mockResolvedValue(liquidatable());
 
-      await bot.run(); // sends 1 tx → reverts → recordOutcome(false) → breaker trips
+      await bot.run(); // sends 1 tx → reverts → slot settles !ok → breaker trips
       expect(risk.state()).toBe("HALTED");
 
       clients.publicClient.simulateContract.mockClear();
       await bot.run(); // now HALTED → short-circuits before simulate
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+    });
+
+    // The breaker exists to stop us when THE CHAIN is rejecting our txs. A failure to prepare,
+    // sign, or durably record never reaches the chain, so it must settle as `abandoned` and
+    // leave the breaker alone — otherwise a database or RPC blip halts a healthy bot.
+    it("does NOT trip the breaker when the send fails before broadcasting", async () => {
+      const clients = createMockClients();
+      clients.sender.send = vi
+        .fn()
+        .mockRejectedValue(new PreBroadcastError(new Error("store unavailable")));
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run();
+
+      expect(clients.sender.send).toHaveBeenCalled(); // we really did attempt the send
+      expect(risk.state()).not.toBe("HALTED");
+      expect(risk.inFlight()).toBe(0); // and the exposure slot was still released
+    });
+
+    // The counterpart: an ambiguous *broadcast* failure may be on chain, so it IS a real
+    // failure signal and must feed the breaker.
+    it("trips the breaker when the broadcast itself fails (ambiguous)", async () => {
+      const clients = createMockClients();
+      clients.sender.send = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run();
+
+      expect(risk.state()).toBe("HALTED");
+    });
+
+    const NOW = 1_000_000_000;
+    const feedAt = (dataTimestampMs?: number) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({ liquidatable: [mockPosition], total: 1, checked: 1, dataTimestampMs }),
+      });
+
+    it("blocks a stale candidate (maxDataStalenessMs) — no tx", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ maxDataStalenessMs: 60_000, now: () => NOW });
+      const bot = createBot(clients, { risk });
+      global.fetch = feedAt(NOW - 120_000); // indexer's reads are 2 min old
+
+      await bot.run();
+
+      expect(clients.sender.send).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("allows a fresh candidate (positive control)", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ maxDataStalenessMs: 60_000, now: () => NOW });
+      const bot = createBot(clients, { risk });
+      global.fetch = feedAt(NOW - 5_000);
+
+      await bot.run();
+
+      expect(clients.sender.send).toHaveBeenCalledOnce();
+    });
+
+    // Fail-closed: an operator who opts into a staleness bound must not silently trade on data
+    // of unknown age (old indexer, or its block-timestamp probe failed).
+    it("blocks when the freshness guard is configured but the indexer reports no timestamp", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ maxDataStalenessMs: 60_000, now: () => NOW });
+      const bot = createBot(clients, { risk });
+      global.fetch = feedAt(undefined); // older indexer / failed probe
+
+      await bot.run();
+
+      expect(clients.sender.send).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("ignores a missing timestamp when the freshness guard is not configured (default)", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients, { risk: createRiskGate() }); // permissive default
+      global.fetch = feedAt(undefined);
+
+      await bot.run();
+
+      expect(clients.sender.send).toHaveBeenCalledOnce();
+    });
+
+    // Documents a known gap: liquidation profit is not derivable off-chain today (the Lens
+    // estimate and the tx return value carry no WBTC-denominated profit), so the engine passes
+    // no `expectedProfit` and the floor cannot bite here. If someone later wires a profit value,
+    // this test fails loudly — which is the point.
+    it("does NOT apply the profit floor to liquidations (expectedProfit not derivable)", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ minProfit: 10n ** 30n }); // absurd floor
+      const bot = createBot(clients, { risk });
+      global.fetch = feedAt(NOW);
+
+      await bot.run();
+
+      expect(clients.sender.send).toHaveBeenCalledOnce();
     });
   });
 

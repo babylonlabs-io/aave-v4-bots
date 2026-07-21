@@ -34,6 +34,19 @@ library E2EConstants {
     uint256 internal constant LIQUIDATOR_PONDER_PORT = 42069;
     uint256 internal constant ARBITRAGEUR_PONDER_PORT = 42070;
 
+    // Metrics servers (Prometheus scrape target: /metrics, /health, /ready — never the kill switch)
+    uint256 internal constant LIQUIDATOR_METRICS_PORT = 9090;
+    uint256 internal constant ARBITRAGEUR_METRICS_PORT = 9091;
+
+    // Kill-switch control servers. A SEPARATE socket from the metrics port, bound to loopback:
+    // an endpoint that can stop trading must not share an exposure decision with a scrape target.
+    uint256 internal constant LIQUIDATOR_CONTROL_PORT = 9095;
+    uint256 internal constant ARBITRAGEUR_CONTROL_PORT = 9096;
+    /// @dev E2E-only. Real deployments resolve this through `@repo/secrets`; the env var here is
+    ///      the `env` provider's backing store, which is what `RISK_CONTROL_TOKEN_REF` names.
+    string internal constant CONTROL_TOKEN = "e2e-kill-switch-token";
+    string internal constant CONTROL_TOKEN_REF = "BOT_CONTROL_TOKEN";
+
     // RPC URL for local Anvil
     string internal constant RPC_URL = "http://localhost:8545";
 

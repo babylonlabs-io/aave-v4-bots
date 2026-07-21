@@ -50,6 +50,52 @@ async function isMulticallSupported(publicClient: PublicClient): Promise<boolean
   }
 }
 
+/**
+ * The block this endpoint's **live** contract reads are pinned to, and its timestamp.
+ *
+ * Read the block *and* pin every subsequent `eth_call` to it, so `dataTimestampMs` describes the
+ * exact state the caller is being handed. Timestamping one block and then reading at "latest"
+ * would decouple the two: a load-balanced RPC URL can serve the reads from a lagging replica, and
+ * a reorg can replace the head between the calls — either way the reported age would not be the
+ * age of the data, which is precisely what the risk gate's freshness guard relies on.
+ *
+ * Clients pass the timestamp to the risk gate as `dataTimestampMs`: if the RPC behind this indexer
+ * is lagging, `now - dataTimestampMs` exceeds the freshness threshold and the action is blocked.
+ * Note it measures *RPC* staleness, not indexer **head** lag — that is a separate guard the
+ * indexer-liveness work owns.
+ *
+ * A failed probe returns `undefined`, and the reads fall back to unpinned "latest". Be clear about
+ * what that means downstream: the risk gate is **fail-closed** on freshness. A client with
+ * `RISK_MAX_DATA_STALENESS_MS` set will block *every* action when the timestamp is missing — it
+ * will not "skip the guard". That is the safe direction (never trade on data of unknown age), but
+ * it means a sustained failure of this probe stops the bot trading while this endpoint still
+ * returns 200 with candidates. Alert on the warning below, not just on HTTP status.
+ */
+interface BlockRef {
+  /** Pin live reads here, so the data and the timestamp describe the same state. */
+  blockNumber: bigint;
+  dataTimestampMs: number;
+}
+
+async function readBlockRef(publicClient: PublicClient): Promise<BlockRef | undefined> {
+  try {
+    const block = await publicClient.getBlock();
+    // `getBlock()` defaults to the latest *mined* block, so `number` is never null here.
+    if (block.number === null) return undefined;
+    return { blockNumber: block.number, dataTimestampMs: Number(block.timestamp) * 1000 };
+  } catch (error) {
+    // The severity is the point: a client with RISK_MAX_DATA_STALENESS_MS set fail-closes on the
+    // missing field and stops submitting entirely, while this endpoint keeps returning 200 with
+    // candidates. This line is the only signal of that, so it must not read as benign.
+    logger.warn(
+      "Could not read block timestamp; omitting dataTimestampMs — clients with " +
+        "RISK_MAX_DATA_STALENESS_MS set will BLOCK every action until this recovers:",
+      error
+    );
+    return undefined;
+  }
+}
+
 const app = new Hono();
 
 // GraphQL endpoint
@@ -90,6 +136,11 @@ app.get("/liquidatable-positions", async (c) => {
     return c.json({ liquidatable: [], total: 0, checked: 0 });
   }
 
+  // Pin the live `estimateLiquidation` reads below to one block, and report its timestamp as the
+  // risk-gate `dataTimestampMs`. `blockNumber: undefined` (failed probe) means unpinned "latest".
+  const blockRef = await readBlockRef(publicClient);
+  const dataTimestampMs = blockRef?.dataTimestampMs;
+
   // Build proxy -> borrower lookup
   const proxyToBorrower = new Map<string, string>();
   for (const m of proxyMappings) {
@@ -123,6 +174,7 @@ app.get("/liquidatable-positions", async (c) => {
       })),
       allowFailure: true,
       multicallAddress: MULTICALL3_ADDRESS,
+      blockNumber: blockRef?.blockNumber,
     });
     probes = results.map((r) =>
       r.status === "success"
@@ -138,6 +190,7 @@ app.get("/liquidatable-positions", async (c) => {
           abi: lensAbi,
           functionName: "estimateLiquidation",
           args: [p.proxyAddress as Address, false],
+          blockNumber: blockRef?.blockNumber,
         })
       )
     );
@@ -193,6 +246,7 @@ app.get("/liquidatable-positions", async (c) => {
       liquidatable,
       total: liquidatable.length,
       checked: positions.length,
+      dataTimestampMs,
     })
   );
 });
@@ -246,6 +300,11 @@ app.get("/escrowed-vaults", async (c) => {
     return c.json({ vaults: [], total: 0, failedVaultsCount: 0 });
   }
 
+  // Pin the live `previewEscrowedVaults` reads below to one block, and report its timestamp as the
+  // risk-gate `dataTimestampMs`. `blockNumber: undefined` (failed probe) means unpinned "latest".
+  const blockRef = await readBlockRef(publicClient);
+  const dataTimestampMs = blockRef?.dataTimestampMs;
+
   // Build vault ID array and createdAt lookup
   const vaultIds = vaults.map((v) => v.vaultId);
   const createdAtMap = new Map(vaults.map((v) => [v.vaultId, v.createdAt]));
@@ -272,6 +331,7 @@ app.get("/escrowed-vaults", async (c) => {
       abi: vaultSwapAbi,
       functionName: "previewEscrowedVaults",
       args: [vaultIds],
+      blockNumber: blockRef?.blockNumber,
     });
 
     const enrichedVaults = vaultsInfo.map(toApiVault);
@@ -281,6 +341,7 @@ app.get("/escrowed-vaults", async (c) => {
         vaults: enrichedVaults,
         total: enrichedVaults.length,
         failedVaultsCount: 0,
+        dataTimestampMs,
       })
     );
   } catch (error) {
@@ -293,6 +354,7 @@ app.get("/escrowed-vaults", async (c) => {
           abi: vaultSwapAbi,
           functionName: "previewEscrowedVaults",
           args: [[vaultId]],
+          blockNumber: blockRef?.blockNumber,
         })
       )
     );
@@ -319,6 +381,7 @@ app.get("/escrowed-vaults", async (c) => {
         vaults: enrichedVaults,
         total: enrichedVaults.length,
         failedVaultsCount: failed,
+        dataTimestampMs,
       }),
       enrichedVaults.length > 0 ? 200 : 500
     );

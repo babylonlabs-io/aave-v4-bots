@@ -16,7 +16,6 @@ import { createPostgresStateStore } from "./postgres";
 
 const DATABASE_URL = process.env.PERSISTENCE_E2E_DATABASE_URL;
 const SCHEMA = `bot_e2e_${Date.now()}`;
-const SIGNER = "0x1111111111111111111111111111111111111111" as Address;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
 const TIMEOUT = 30_000;
 
@@ -55,22 +54,6 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
       });
       const revived = await store.recordIntent(input("pos-1"));
       expect(revived.recorded).toBe(true); // terminal → new attempt allowed
-    },
-    TIMEOUT
-  );
-
-  it(
-    "reserveNonce throws until seeded, then allocates a gapless sequence",
-    async () => {
-      await expect(store.reserveNonce(SIGNER)).rejects.toThrow(/not seeded/);
-
-      await store.syncNonce(SIGNER, 10);
-      expect(await store.reserveNonce(SIGNER)).toBe(10);
-      expect(await store.reserveNonce(SIGNER)).toBe(11);
-
-      // A re-sync to a higher chain nonce (e.g. an external tx) wins.
-      await store.syncNonce(SIGNER, 20);
-      expect(await store.reserveNonce(SIGNER)).toBe(20);
     },
     TIMEOUT
   );

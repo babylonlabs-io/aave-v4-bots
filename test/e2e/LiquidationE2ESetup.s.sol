@@ -101,9 +101,56 @@ contract LiquidationE2ESetup is BaseE2ESetup {
             vm.toString(address(vaultSwap)),
             "\n",
             "POLLING_INTERVAL_MS=1000\n",
-            "METRICS_PORT=9090\n",
+            "METRICS_PORT=",
+            vm.toString(E2EConstants.LIQUIDATOR_METRICS_PORT),
+            "\n",
+            "\n",
+            "# Risk gate\n",
+            _riskEnv(lensAddress),
             "EOF"
         );
         vm.ffi(inputs);
+    }
+
+    /// @notice Risk-gate env for the bot under test.
+    /// @dev The point of pinning code hashes here is that they are the **real deployed bytecode**
+    ///      of this run's contracts: `address.codehash` is `keccak256(runtime code)`, exactly what
+    ///      the bot's `readCodeHash` computes from `eth_getCode`. If the two ever disagree the bot
+    ///      boots HALTED, never liquidates, and the verify script times out — so this suite is the
+    ///      only place the code-hash guard is exercised against a real chain.
+    ///
+    ///      `RISK_MAX_DATA_STALENESS_MS` is deliberately NOT set: the freshness guard is
+    ///      fail-closed and keyed to the latest block's timestamp, which on an idle Anvil ages
+    ///      while the bot polls. That would make this suite flaky for a property the engine unit
+    ///      tests already cover.
+    function _riskEnv(address lensAddress) internal view returns (string memory) {
+        return string.concat(
+            // Generous on purpose. These two exist here to prove the env parses and the gate is
+            // wired into the engines, not to be exercised: a genuinely broken bot fails this suite
+            // by never trading. Tight thresholds would only add CI flake.
+            "RISK_MAX_CONSECUTIVE_FAILURES=10\n",
+            "RISK_MAX_IN_FLIGHT=5\n",
+            "RISK_EXPECTED_CODE_HASHES=",
+            vm.toString(address(aaveAdapter)),
+            "=",
+            vm.toString(address(aaveAdapter).codehash),
+            ",",
+            vm.toString(lensAddress),
+            "=",
+            vm.toString(lensAddress.codehash),
+            "\n",
+            "RISK_CODE_CHECK_INTERVAL_MS=5000\n",
+            "RISK_CONTROL_TOKEN_REF=",
+            E2EConstants.CONTROL_TOKEN_REF,
+            "\n",
+            E2EConstants.CONTROL_TOKEN_REF,
+            "=",
+            E2EConstants.CONTROL_TOKEN,
+            "\n",
+            "RISK_CONTROL_PORT=",
+            vm.toString(E2EConstants.LIQUIDATOR_CONTROL_PORT),
+            "\n",
+            "RISK_CONTROL_HOST=127.0.0.1\n"
+        );
     }
 }
