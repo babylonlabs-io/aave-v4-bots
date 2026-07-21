@@ -7,8 +7,10 @@ dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 import { type Chain, createPublicClient, createWalletClient } from "viem";
 
 import { instrumentedHttp } from "@repo/chain";
+import { createNonceAllocator, createNonceLease, nextNonce } from "@repo/execution";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
+import { type StateStore, createStateStore } from "@repo/persistence";
 import { createSecrets } from "@repo/secrets";
 import { resolveSigner } from "@repo/signer";
 import { LiquidationBot } from "./bot";
@@ -16,6 +18,9 @@ import { type Config, loadConfig } from "./config";
 import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
 
 const logger = createLogger({ prefix: "[Bot] " });
+
+// Held at module scope so the signal handlers can release the DB pool on shutdown.
+let storeForShutdown: StateStore | undefined;
 
 async function createBot(config: Config) {
   // Secrets + signer sources are selected by config (env/aws, local/aws). For a `local`
@@ -56,6 +61,14 @@ async function createBot(config: Config) {
     account: signer.account,
   });
 
+  // Crash-safety StateStore (Postgres) when configured; otherwise undefined (unchanged).
+  const store = config.persistence ? createStateStore(config.persistence) : undefined;
+  logger.info(`Persistence: ${store ? "postgres" : "disabled"}`);
+
+  // The shared in-memory nonce authority. Seeded from the chain below (and every cycle in
+  // `run()`), so it needs no persisted state. One per signer.
+  const nonces = createNonceAllocator(createNonceLease(), signer.address);
+
   const bot = new LiquidationBot({
     walletClient,
     publicClient,
@@ -68,9 +81,14 @@ async function createBot(config: Config) {
     llpAddress: config.llpAddress,
     ponderUrl: config.ponderUrl,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
+    store,
+    nonces,
   });
 
-  return { bot, publicClient };
+  // Seed the nonce lease from the chain before any send (approvals below reserve nonces).
+  await nonces.resync(() => nextNonce(publicClient, signer.address));
+
+  return { bot, publicClient, store };
 }
 
 async function main() {
@@ -79,7 +97,8 @@ async function main() {
 
   if (command === "poll") {
     logger.info("Aave V4 Liquidation Bot Starting...");
-    const { bot, publicClient } = await createBot(config);
+    const { bot, publicClient, store } = await createBot(config);
+    storeForShutdown = store;
 
     // Start the observability server (metrics + health/readiness probes)
     setPublicClient(publicClient);
@@ -102,6 +121,11 @@ async function main() {
 
     await bot.ensureApproval();
     await bot.logBalances();
+
+    // Crash-safety: resolve any in-flight intents from a previous run against the chain
+    // before the poll loop re-drives, so a crash mid-submit doesn't double-send. No-op
+    // without a store.
+    await bot.reconcile();
 
     logger.info(
       `Redemption mode: ${config.isDirectRedemption ? "direct BTC" : "WBTC via VaultSwap"}`
@@ -131,15 +155,14 @@ async function main() {
   }
 }
 
-process.on("SIGINT", () => {
+async function shutdown() {
   logger.info("\nShutting down...");
+  await storeForShutdown?.close().catch(() => {});
   process.exit(0);
-});
+}
 
-process.on("SIGTERM", () => {
-  logger.info("\nShutting down...");
-  process.exit(0);
-});
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 main().catch((error) => {
   logger.error("Fatal error:", error);

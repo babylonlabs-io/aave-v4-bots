@@ -22,6 +22,7 @@
     "@repo/logger": "workspace:*",
     "@repo/metrics": "workspace:*",
     "@repo/observability": "workspace:*",
+    "@repo/persistence": "workspace:*",
     "@repo/risk": "workspace:*",
     "@repo/secrets": "workspace:*",
     "@repo/signer": "workspace:*",

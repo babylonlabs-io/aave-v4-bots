@@ -15,9 +15,22 @@ import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
 import { TokenMetaCache, approveMax, readAllowance, readBalance } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry } from "@repo/chain";
 import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
-import { nextNonce } from "@repo/execution";
+import {
+  type ContractCall,
+  type NonceAllocator,
+  type TxSender,
+  createTxSender,
+  nextNonce,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
+import type { StateStore } from "@repo/persistence";
 import type { RiskGate } from "@repo/risk";
+import {
+  bestEffortTransition,
+  reconcileIntents,
+  resyncNonces,
+  sendMaybeAllocated,
+} from "../crashSafety";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {
@@ -67,12 +80,29 @@ export interface LiquidationEngineConfig extends LiquidationEngineParams {
   metrics: LiquidationMetrics;
   logger: Logger;
   risk: RiskGate;
+  /**
+   * Crash-safety store (intent idempotency). When present, each submit is recorded under an
+   * idempotency key so a crash/ambiguous-send doesn't double-execute an action; absent ⇒ no
+   * intent tracking (behavior-preserving).
+   */
+  store?: StateStore;
+  /**
+   * Shared nonce authority. When present, every signer tx routes through it (so the
+   * arbitrageur's two engines never collide); absent ⇒ in-memory chain-nonce sequencing
+   * (behavior-preserving). Paired with `store` at the composition root.
+   */
+  nonces?: NonceAllocator;
+  /** How txs are signed + broadcast; absent ⇒ local signing to the public mempool. */
+  sender?: TxSender;
 }
 
 export class LiquidationEngine {
   private metrics: LiquidationMetrics;
   private logger: Logger;
   private risk: RiskGate;
+  private store?: StateStore;
+  private nonces?: NonceAllocator;
+  private sender: TxSender;
   private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private adapterAddress: Address;
@@ -90,6 +120,9 @@ export class LiquidationEngine {
     this.metrics = config.metrics;
     this.logger = config.logger;
     this.risk = config.risk;
+    this.store = config.store;
+    this.nonces = config.nonces;
+    this.sender = config.sender ?? createTxSender(config.publicClient, config.walletClient);
     this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.adapterAddress = config.adapterAddress;
@@ -158,6 +191,22 @@ export class LiquidationEngine {
   }
 
   /**
+   * Resolve this engine's in-flight `liquidation` intents against the chain — the crash- and
+   * ambiguous-send-safety step. Run **every cycle** (start of `run()`) so an intent left live
+   * by a send error is resolved by its reserved nonce vs. the chain (mempool ⇒ hold; mined ⇒
+   * re-drive on settled state; not-broadcast ⇒ re-drive). No-op without a store.
+   */
+  async reconcile(): Promise<void> {
+    await reconcileIntents(
+      this.store,
+      this.publicClient,
+      this.walletClient.account.address,
+      "liquidation",
+      this.logger
+    );
+  }
+
+  /**
    * Run one iteration of the liquidation bot.
    * For each position: estimate via Lens, simulate, then execute.
    */
@@ -170,6 +219,13 @@ export class LiquidationEngine {
         this.logger.warn("Risk gate is HALTED — skipping liquidation run");
         return;
       }
+
+      // 0.5. Crash-/ambiguous-send-safety: resolve in-flight intents against the chain, then
+      // re-seed the shared nonce lease from the chain (reclaiming any not-broadcast nonce).
+      // Both no-op without a store / allocator. Done before fetching so a position stuck as a
+      // live intent is resolved even in a cycle that would otherwise skip it.
+      await this.reconcile();
+      await resyncNonces(this.nonces, this.publicClient, this.walletClient.account.address);
 
       // 1. Fetch liquidatable positions from Ponder
       const positions = await this.fetchLiquidatablePositions();
@@ -281,11 +337,16 @@ export class LiquidationEngine {
 
       this.logger.info(`${validCandidates.length}/${positions.length} positions passed simulation`);
 
-      // 5. Send all liquidation txs with explicit nonces.
-      // Re-sync nonce after send failures to avoid gaps/stuck sequence.
-      let nonce = await nextNonce(this.publicClient, this.walletClient.account.address);
+      // 5. Send. Every tx routes through the shared nonce allocator (`withNonce`) when one is
+      // injected — the single nonce owner across both engines; otherwise nonces stay in-memory
+      // (behavior-preserving). A send error is treated as AMBIGUOUS (the tx may have
+      // propagated): the intent is kept LIVE (never terminal) and the cycle stops — the next
+      // cycle's reconcile resolves it by nonce vs. chain.
+      const signer = this.walletClient.account.address;
+      let localNonce = this.nonces ? 0 : await nextNonce(this.publicClient, signer);
 
-      const txHashes: Hex[] = [];
+      // Each sent tx is paired with its intent id so the receipt phase can transition it.
+      const sent: Array<{ hash: Hex; intentId?: string }> = [];
       for (let i = 0; i < validCandidates.length; i++) {
         const { position, amounts } = validCandidates[i];
 
@@ -297,39 +358,77 @@ export class LiquidationEngine {
           continue;
         }
 
+        // Crash-safety: refuse a duplicate live intent (already pending/submitted on chain).
+        let intentId: string | undefined;
+        if (this.store) {
+          const record = await this.store.recordIntent({
+            chainId: this.walletClient.chain.id,
+            target: this.adapterAddress,
+            action: "liquidation",
+            subject: position.proxyAddress,
+          });
+          if (!record.recorded) {
+            this.metrics.recordError("intent_in_flight");
+            this.logger.warn(
+              `Skipping ${position.proxyAddress}: intent already ${record.existing.status}`
+            );
+            continue;
+          }
+          intentId = record.id;
+        }
+
         const priorityOrder = sequentialPriorityOrder(amounts.length);
-        try {
-          const hash = this.isDirectRedemption
-            ? await this.walletClient.writeContract({
-                address: this.adapterAddress,
-                abi: adapterAbi,
-                functionName: "liquidate",
-                args: [
-                  position.borrower,
-                  this.btcRedeemKey,
-                  [...amounts],
-                  [...priorityOrder],
-                  0n,
-                  maxUint256,
-                ],
-                nonce,
-              })
-            : await this.walletClient.writeContract({
-                address: this.adapterAddress,
-                abi: adapterAbi,
-                functionName: "liquidateWithLLP",
-                args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
-                nonce,
+        // Runs under the nonce lock (when allocated). The sender signs locally first, so the
+        // intent gets nonce + hash durably recorded BEFORE anything is broadcast — a crash or
+        // ambiguous send then leaves an intent reconcile can resolve by receipt lookup.
+        const call: ContractCall = this.isDirectRedemption
+          ? {
+              address: this.adapterAddress,
+              abi: adapterAbi,
+              functionName: "liquidate",
+              args: [
+                position.borrower,
+                this.btcRedeemKey,
+                [...amounts],
+                [...priorityOrder],
+                0n,
+                maxUint256,
+              ],
+            }
+          : {
+              address: this.adapterAddress,
+              abi: adapterAbi,
+              functionName: "liquidateWithLLP",
+              args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
+            };
+
+        const broadcast = (nonce: number): Promise<Hex> =>
+          this.sender.send({ ...call, nonce }, async (signed) => {
+            if (this.store && intentId) {
+              await this.store.transition(intentId, "pending", {
+                nonce: signed.nonce,
+                txHash: signed.hash,
               });
-          this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
-          txHashes.push(hash);
-          nonce += 1;
+            }
+          });
+
+        let hash: Hex;
+        try {
+          hash = this.nonces ? await this.nonces.withNonce(broadcast) : await broadcast(localNonce);
         } catch (error) {
           this.metrics.recordError("tx_send_error");
           const errorMsg = error instanceof Error ? error.message : "Unknown error";
           this.logger.error(`Failed to send liquidation for ${position.borrower}: ${errorMsg}`);
+          // Ambiguous — keep the intent LIVE (not terminal); next-cycle reconcile decides.
+          if (intentId) {
+            await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
+              error: errorMsg,
+            });
+          }
+          if (this.nonces) break; // allocator: stop the cycle; resync reclaims the nonce
+          // Legacy (no allocator): re-sync the local nonce from the chain and continue.
           try {
-            nonce = await nextNonce(this.publicClient, this.walletClient.account.address);
+            localNonce = await nextNonce(this.publicClient, signer);
           } catch (nonceError) {
             this.logger.error(
               "Failed to re-sync nonce, skipping remaining candidates:",
@@ -337,43 +436,64 @@ export class LiquidationEngine {
             );
             break;
           }
+          continue;
         }
+
+        // Broadcast succeeded — status bump only, best-effort: the hash was already persisted
+        // pre-broadcast (see `sender.send`), so losing this write costs nothing.
+        this.logger.info(`Sent liquidation for ${position.borrower}: ${hash}`);
+        if (intentId) {
+          await bestEffortTransition(this.store, this.logger, intentId, "submitted", {
+            txHash: hash,
+          });
+        }
+        sent.push({ hash, intentId });
+        if (!this.nonces) localNonce += 1;
       }
 
-      if (txHashes.length === 0) {
+      if (sent.length === 0) {
         this.logger.info("No liquidation txs were sent");
         return;
       }
 
       // 6. Batch-wait for all receipts
-      this.logger.info(`Waiting for ${txHashes.length} liquidation receipt(s)...`);
+      this.logger.info(`Waiting for ${sent.length} liquidation receipt(s)...`);
       const receipts = await Promise.allSettled(
-        txHashes.map((hash) =>
+        sent.map(({ hash }) =>
           this.publicClient.waitForTransactionReceipt({ hash, timeout: this.txReceiptTimeoutMs })
         )
       );
 
       for (let i = 0; i < receipts.length; i++) {
         const result = receipts[i];
+        const { hash, intentId } = sent[i];
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
             this.risk.recordOutcome({ ok: true });
             this.metrics.recordLiquidationSuccess();
-            this.logger.info(
-              `Liquidation confirmed in block ${receipt.blockNumber}: ${txHashes[i]}`
-            );
+            this.logger.info(`Liquidation confirmed in block ${receipt.blockNumber}: ${hash}`);
+            if (intentId)
+              await bestEffortTransition(this.store, this.logger, intentId, "confirmed", {
+                txHash: hash,
+              });
           } else {
             this.risk.recordOutcome({ ok: false });
             this.metrics.recordLiquidationFailed();
             this.metrics.recordError("tx_reverted");
-            this.logger.error(`Liquidation reverted: ${txHashes[i]}`);
+            this.logger.error(`Liquidation reverted: ${hash}`);
+            if (intentId)
+              await bestEffortTransition(this.store, this.logger, intentId, "failed", {
+                txHash: hash,
+                error: "reverted",
+              });
           }
         } else {
           this.risk.recordOutcome({ ok: false });
           this.metrics.recordLiquidationFailed();
           this.metrics.recordError("receipt_fetch_error");
-          this.logger.error(`Failed to get receipt for ${txHashes[i]}: ${result.reason}`);
+          this.logger.error(`Failed to get receipt for ${hash}: ${result.reason}`);
+          // Leave the intent 'submitted' — boot reconcile resolves it against the chain.
         }
       }
     } catch (error) {
@@ -434,7 +554,12 @@ export class LiquidationEngine {
 
         this.logger.info(`Approving ${symbol} for AaveAdapter...`);
 
-        const hash = await approveMax(this.walletClient, tokenAddress, this.adapterAddress);
+        // Approvals are signer txs too — route through the allocator so they don't collide
+        // with the other engine's nonces (only the broadcast is under the lock; the receipt
+        // wait is outside). An ambiguous approval is idempotent — re-checked here next boot.
+        const hash = await sendMaybeAllocated(this.nonces, (nonce) =>
+          approveMax(this.walletClient, tokenAddress, this.adapterAddress, nonce)
+        );
 
         const receipt = await this.publicClient.waitForTransactionReceipt({
           hash,

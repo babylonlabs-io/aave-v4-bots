@@ -1,18 +1,12 @@
-// Secrets seam. A `SecretsProvider` resolves a secret *ref* (an env
-// var name today, an AWS Secrets Manager id later) at boot — RPC keys, DB passwords,
-// the Slack webhook, and the signer's key ref all flow through it, so no plaintext
-// secret is hard-wired into a service. The signing key material itself lives in
-// `@repo/signer`, not here — this only resolves the ref to a value.
+// `@repo/secrets` public surface: the `SecretsProvider` port (`./types`), the `./env` adapter
+// + selector below, and the `./aws` adapter. See `./types` for the seam's rationale.
 
 import { type AwsSecretsConfig, type SecretsSend, createAwsSecrets } from "./aws";
+import type { SecretsProvider } from "./types";
 
+export type { SecretsProvider } from "./types";
 // `./aws` adapter — resolves refs from AWS Secrets Manager (implemented in `./aws.ts`).
 export { type AwsSecretsConfig, type SecretsSend, createAwsSecrets };
-
-export interface SecretsProvider {
-  /** Resolve a secret by ref; throws if missing/unset. */
-  get(ref: string): Promise<string>;
-}
 
 /**
  * `./env` adapter — the ref is an environment variable name. Empty strings count as

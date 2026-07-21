@@ -16,8 +16,15 @@ import {
 
 import { instrumentedHttp } from "@repo/chain";
 import { LiquidationEngine } from "@repo/engine";
+import {
+  type NonceAllocator,
+  createNonceAllocator,
+  createNonceLease,
+  nextNonce,
+} from "@repo/execution";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
+import { type StateStore, createStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
 import { createSecrets } from "@repo/secrets";
 import { resolveSigner } from "@repo/signer";
@@ -31,6 +38,9 @@ import {
 } from "./metrics";
 
 const logger = createLogger({ prefix: "[Arbitrageur] " });
+
+// Held at module scope so the signal handlers can release the DB pool on shutdown.
+let storeForShutdown: StateStore | undefined;
 
 function printUsage(): void {
   logger.info(`
@@ -49,6 +59,8 @@ interface BotWithClients {
   bot: ArbitrageurBot;
   publicClient: PublicClient;
   walletClient: WalletClient<Transport, Chain, Account>;
+  store: StateStore | undefined;
+  nonces: NonceAllocator;
 }
 
 async function createBot(config: Config): Promise<BotWithClients> {
@@ -91,6 +103,14 @@ async function createBot(config: Config): Promise<BotWithClients> {
     account: signer.account,
   });
 
+  // Crash-safety StateStore (Postgres) shared by both engines when configured.
+  const store = config.persistence ? createStateStore(config.persistence) : undefined;
+  logger.info(`Persistence: ${store ? "postgres" : "disabled"}`);
+
+  // ONE shared nonce authority for the signer — both engines route every tx through it, so
+  // their concurrent sends never collide. In-memory (chain-seeded), no persisted state.
+  const nonces = createNonceAllocator(createNonceLease(), signer.address);
+
   const bot = new ArbitrageurBot({
     walletClient,
     publicClient,
@@ -106,9 +126,14 @@ async function createBot(config: Config): Promise<BotWithClients> {
       backoffMultiplier: 2,
     },
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
+    store,
+    nonces,
   });
 
-  return { bot, publicClient, walletClient };
+  // Seed the shared lease from the chain once, before either engine sends.
+  await nonces.resync(() => nextNonce(publicClient, signer.address));
+
+  return { bot, publicClient, walletClient, store, nonces };
 }
 
 /**
@@ -120,7 +145,9 @@ async function createBot(config: Config): Promise<BotWithClients> {
 async function startLiquidationEngine(
   liq: LiquidationRunConfig,
   walletClient: WalletClient<Transport, Chain, Account>,
-  publicClient: PublicClient
+  publicClient: PublicClient,
+  store: StateStore | undefined,
+  nonces: NonceAllocator
 ): Promise<void> {
   const liqLogger = createLogger({ prefix: "[Arbitrageur:Liq] " });
   const { pollingIntervalMs, ...params } = liq;
@@ -132,9 +159,12 @@ async function startLiquidationEngine(
     metrics: createLiquidationMetricsSet(),
     logger: liqLogger,
     risk: createRiskGate(),
+    store,
+    // The SAME allocator the arbitrage engine uses — the shared signer's single nonce owner.
+    nonces,
   });
 
-  liqLogger.info("Liquidation engine enabled (running alongside arbitrage)");
+  liqLogger.info(`Liquidation engine enabled (persistence: ${store ? "postgres" : "disabled"})`);
   if (!params.debtTokenAddresses) {
     await engine.discoverDebtTokens();
   }
@@ -160,7 +190,8 @@ async function runPollingMode(config: Config): Promise<void> {
   logger.info("Aave V4 Arbitrageur Bot Starting...");
   logger.info("===================================");
 
-  const { bot, publicClient, walletClient } = await createBot(config);
+  const { bot, publicClient, walletClient, store, nonces } = await createBot(config);
+  storeForShutdown = store;
 
   // Start the observability server (metrics + health/readiness probes)
   setPublicClient(publicClient);
@@ -172,9 +203,10 @@ async function runPollingMode(config: Config): Promise<void> {
     getMetricsContentType,
   });
 
-  // Opt-in: also run the liquidation engine (both engines, one process).
+  // Opt-in: also run the liquidation engine (both engines, one process) — sharing the one
+  // nonce allocator so the two engines' concurrent sends never collide on the signer.
   if (config.liquidation) {
-    await startLiquidationEngine(config.liquidation, walletClient, publicClient);
+    await startLiquidationEngine(config.liquidation, walletClient, publicClient, store, nonces);
   }
 
   logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);
@@ -235,15 +267,14 @@ async function main() {
 }
 
 // Graceful shutdown
-process.on("SIGINT", () => {
+async function shutdown() {
   logger.info("\nShutting down...");
+  await storeForShutdown?.close().catch(() => {});
   process.exit(0);
-});
+}
 
-process.on("SIGTERM", () => {
-  logger.info("\nShutting down...");
-  process.exit(0);
-});
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
 main().catch((error) => {
   logger.error("Fatal error:", error);

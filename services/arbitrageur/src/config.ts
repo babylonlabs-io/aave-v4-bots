@@ -8,6 +8,7 @@ import {
   urlSchema,
 } from "@repo/config";
 import type { ArbitrageEngineParams, LiquidationEngineParams } from "@repo/engine";
+import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { type SignerConfig, buildSignerConfig } from "@repo/signer";
 import type { Address, Hex } from "viem";
@@ -55,6 +56,11 @@ const envSchema = z.object({
   // Transaction timeout (optional)
   TX_RECEIPT_TIMEOUT_MS: positiveIntSchema.optional().default("120000"),
 
+  // Crash-safety persistence (optional; used by the opt-in liquidation engine). DATABASE_URL
+  // enables the Postgres StateStore; PERSISTENCE_SCHEMA isolates the bot tables (default "bot").
+  DATABASE_URL: z.string().min(1).optional(),
+  PERSISTENCE_SCHEMA: z.string().min(1).optional(),
+
   // Optional liquidation mode — when ADAPTER_ADDRESS + LENS_ADDRESS are set, the
   // arbitrageur also runs the LiquidationEngine (both engines, one process). Unset
   // ⇒ arbitrage-only (unchanged). Reuses WBTC_ADDRESS / PONDER_URL / the signer.
@@ -95,6 +101,9 @@ export interface Config extends ArbitrageEngineParams {
   // `SecretsProvider` + `Signer` at boot (index.ts); no key material lives in `Config`.
   secrets: SecretsConfig;
   signer: SignerConfig;
+
+  // Crash-safety persistence for the liquidation engine. Present iff DATABASE_URL is set.
+  persistence?: PersistenceConfig;
 
   // Present iff the arbitrageur also runs the LiquidationEngine (opt-in via env).
   liquidation?: LiquidationRunConfig;
@@ -161,6 +170,9 @@ export function loadConfig(): Config {
       address: env.SIGNER_ADDRESS as Address | undefined,
       region: env.AWS_REGION,
     }),
+    persistence: env.DATABASE_URL
+      ? { connectionString: env.DATABASE_URL, schema: env.PERSISTENCE_SCHEMA }
+      : undefined,
     liquidation,
   };
 }

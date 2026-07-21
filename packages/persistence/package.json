@@ -1,5 +1,5 @@
 {
-  "name": "@repo/engine",
+  "name": "@repo/persistence",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -12,18 +12,12 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@repo/abis": "workspace:*",
-    "@repo/capital": "workspace:*",
-    "@repo/chain": "workspace:*",
-    "@repo/domain": "workspace:*",
-    "@repo/execution": "workspace:*",
-    "@repo/logger": "workspace:*",
-    "@repo/persistence": "workspace:*",
-    "@repo/risk": "workspace:*",
+    "pg": "^8.16.0",
     "viem": "^2.37.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",
+    "@types/pg": "^8.15.0",
     "typescript": "^5.7.3",
     "vitest": "^2.1.0"
   }

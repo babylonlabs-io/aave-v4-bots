@@ -1,6 +1,8 @@
+import { createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
+import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
-import { maxUint256 } from "viem";
+import { TransactionReceiptNotFoundError, maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
@@ -36,11 +38,35 @@ const mockPosition: LiquidatablePosition = {
   suppliedShares: "1000000000",
 };
 
+/**
+ * A `TxSender` that skips real signing but honors the contract that matters: `onSigned` (the
+ * durable nonce + hash record) runs BEFORE the broadcast resolves, so crash-safety tests
+ * exercise the same ordering as the real sender.
+ */
+function mockSender() {
+  return {
+    send: vi.fn(
+      async (
+        call: { nonce?: number },
+        onSigned?: (tx: {
+          hash: `0x${string}`;
+          nonce: number;
+          serialized: `0x${string}`;
+        }) => Promise<void>
+      ) => {
+        await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+        return "0xtxhash" as `0x${string}`;
+      }
+    ),
+  };
+}
+
 function createMockClients() {
   return {
+    sender: mockSender(),
     walletClient: {
       account: { address: "0xliquidator" as `0x${string}` },
-      writeContract: vi.fn().mockResolvedValue("0xtxhash"),
+      writeContract: vi.fn().mockResolvedValue("0xtxhash"), // approvals only
     },
     publicClient: {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
@@ -53,6 +79,14 @@ function createMockClients() {
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
+      // Reconcile's receipt lookup: not mined by default. Must throw the viem not-found error
+      // (not an arbitrary one) — the chain reader only maps *that* to "no receipt yet".
+      getTransactionReceipt: vi
+        .fn()
+        .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: "0xtxhash" })),
+      // Reconcile also asks whether the node knows the tx at all: here it was broadcast, so
+      // it does (in flight). Returning "unknown" would read as a rejected broadcast.
+      getTransaction: vi.fn().mockResolvedValue({ hash: "0xtxhash" }),
       waitForTransactionReceipt: vi
         .fn()
         .mockResolvedValue({ status: "success", blockNumber: 123n, logs: [] }),
@@ -67,6 +101,7 @@ function createBot(
   return new LiquidationEngine({
     walletClient: clients.walletClient as unknown as LiquidationEngineConfig["walletClient"],
     publicClient: clients.publicClient as unknown as LiquidationEngineConfig["publicClient"],
+    sender: clients.sender as unknown as LiquidationEngineConfig["sender"],
     adapterAddress: "0xadapter" as `0x${string}`,
     lensAddress: "0xlens" as `0x${string}`,
     wbtcAddress: "0xwbtc" as `0x${string}`,
@@ -112,7 +147,7 @@ describe("LiquidationEngine", () => {
       // Should call Lens estimate + simulate + send liquidation tx
       expect(clients.publicClient.readContract).toHaveBeenCalled();
       expect(clients.publicClient.simulateContract).toHaveBeenCalledOnce();
-      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
+      expect(clients.sender.send).toHaveBeenCalledOnce();
     });
 
     it("does nothing when no liquidatable positions found", async () => {
@@ -132,7 +167,7 @@ describe("LiquidationEngine", () => {
       await bot.run();
 
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("continues when ponder API fails (no crash)", async () => {
@@ -175,7 +210,7 @@ describe("LiquidationEngine", () => {
       await bot.run();
 
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("trips the breaker on a reverted liquidation, halting subsequent runs", async () => {
@@ -220,7 +255,7 @@ describe("LiquidationEngine", () => {
 
       // Should not simulate or send tx since Lens failed
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
   });
 
@@ -244,7 +279,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.publicClient.simulateContract).toHaveBeenCalledOnce();
       // No tx sent since simulation failed
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("sends tx only for positions that pass simulation", async () => {
@@ -277,7 +312,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.publicClient.simulateContract).toHaveBeenCalledTimes(2);
       // Only 1 tx sent (first position)
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -299,11 +334,12 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 42,
           functionName: "liquidateWithLLP",
-        })
+        }),
+        expect.any(Function)
       );
     });
 
@@ -328,7 +364,7 @@ describe("LiquidationEngine", () => {
 
       // Bot adds 1% buffer to Lens-returned amounts to cover interest accrual
       const bufferedAmounts = mockAmounts.map((amt) => (amt * 10100n) / 10000n);
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
@@ -336,7 +372,8 @@ describe("LiquidationEngine", () => {
           // maxUint256 is the sentinel for "unbounded prefix" (the new params from the
           // bumped adapter).
           args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n], 0n, maxUint256],
-        })
+        }),
+        expect.any(Function)
       );
     });
 
@@ -364,14 +401,16 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
-      expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
-        expect.objectContaining({ nonce: 10 })
+        expect.objectContaining({ nonce: 10 }),
+        expect.any(Function)
       );
-      expect(clients.walletClient.writeContract).toHaveBeenNthCalledWith(
+      expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
-        expect.objectContaining({ nonce: 11 })
+        expect.objectContaining({ nonce: 11 }),
+        expect.any(Function)
       );
     });
 
@@ -385,7 +424,7 @@ describe("LiquidationEngine", () => {
       };
 
       // First writeContract fails, second succeeds
-      clients.walletClient.writeContract
+      clients.sender.send
         .mockRejectedValueOnce(new Error("nonce too low"))
         .mockResolvedValueOnce("0xtxhash2");
 
@@ -404,7 +443,7 @@ describe("LiquidationEngine", () => {
       await bot.run();
 
       // Both attempted
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
       // Only one receipt waited for
       expect(clients.publicClient.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
     });
@@ -622,6 +661,182 @@ describe("LiquidationEngine", () => {
       // Second cycle should only re-read balanceOf for each token (1 debt + 1 WBTC = 2),
       // not symbol/decimals (cached).
       expect(callsAfterSecond - callsAfterFirst).toBe(2);
+    });
+  });
+
+  describe("crash-safety (StateStore)", () => {
+    const feed = (positions: LiquidatablePosition[]) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: positions, total: 1, checked: 1 }),
+      });
+
+    // A bot wired with the store + a fresh in-memory nonce allocator (as the composition root
+    // does). A new allocator per bot models a restart (in-memory lease resets; the store
+    // persists). The allocator is seeded from the chain by run()'s cycle-start resync.
+    function storeBot(store: MemoryStateStore) {
+      const clients = createMockClients();
+      // The store path reads chainId off the wallet's chain.
+      (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
+      const nonces = createNonceAllocator(createNonceLease(), clients.walletClient.account.address);
+      const bot = createBot(clients, { store, nonces });
+      return { bot, clients };
+    }
+
+    it("re-drives after a crash mid-submit without double-sending", async () => {
+      const store = createMemoryStateStore();
+
+      // Run 1: the tx is broadcast, but the receipt never lands (simulated crash before
+      // confirmation), so the intent is left 'submitted' (in-flight).
+      const first = storeBot(store);
+      first.clients.publicClient.waitForTransactionReceipt = vi
+        .fn()
+        .mockRejectedValue(new Error("process killed"));
+      global.fetch = feed([mockPosition]);
+      await first.bot.run();
+
+      expect(first.clients.sender.send).toHaveBeenCalledOnce();
+      const inflight = await store.reconcile();
+      expect(inflight).toHaveLength(1);
+      expect(inflight[0].status).toBe("submitted");
+
+      // Restart: a fresh engine over the same store reconciles (receipt still not found →
+      // left in-flight), then re-drives the same position — which is refused as a duplicate.
+      const second = storeBot(store);
+      await second.bot.reconcile();
+      global.fetch = feed([mockPosition]);
+      await second.bot.run();
+
+      expect(second.clients.sender.send).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("intent_in_flight");
+    });
+
+    it("keeps a failed send live, then re-drives it once the chain shows the nonce free", async () => {
+      const store = createMemoryStateStore();
+      const { bot, clients } = storeBot(store);
+      // Chain nonce stays 0 (the failed tx never broadcast), so next-cycle reconcile can prove
+      // the reserved nonce is free and re-drive. First send throws, second succeeds.
+      clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(0);
+      clients.sender.send = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("boom"))
+        .mockResolvedValue("0xtxhash");
+
+      global.fetch = feed([mockPosition]);
+      await bot.run(); // send fails → intent kept LIVE (not terminal), never re-driven this cycle
+      const id = store.all()[0].id;
+      expect(store.get(id)?.status).toBe("submitted");
+
+      global.fetch = feed([mockPosition]);
+      await bot.run(); // cycle-start reconcile: nonce free ⇒ terminal ⇒ re-drive
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
+      expect(store.get(id)?.status).toBe("confirmed");
+    });
+
+    it("holds (does not re-drive) a live intent whose reserved nonce is still in the mempool", async () => {
+      const store = createMemoryStateStore();
+      const { bot, clients } = storeBot(store);
+      // Run 1: chain nonce 6 → the send reserves 6 then throws AFTER (mocked) broadcast.
+      clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(6);
+      clients.sender.send = vi.fn(
+        async (
+          call: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          // Ambiguous send: signed + durably recorded, then the broadcast blows up.
+          await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new Error("rpc timeout");
+        }
+      );
+
+      global.fetch = feed([mockPosition]);
+      await bot.run(); // send throws → intent kept live at nonce 6
+      const id = store.all()[0].id;
+      expect(store.get(id)?.status).toBe("submitted");
+      expect(store.get(id)?.nonce).toBe(6);
+
+      // Run 2: the ambiguous tx is now visible in the mempool — pending advanced past nonce 6.
+      clients.publicClient.getTransactionCount = vi
+        .fn()
+        .mockImplementation(({ blockTag }: { blockTag: string }) =>
+          Promise.resolve(blockTag === "pending" ? 7 : 6)
+        );
+      global.fetch = feed([mockPosition]);
+      await bot.run(); // reconcile: pending(7) > nonce(6), latest(6) ⇒ hold, no re-drive
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
+    });
+
+    it("allocates nonces from the persisted lease, seeded from the chain", async () => {
+      const store = createMemoryStateStore();
+      const { bot, clients } = storeBot(store);
+      // Chain's next nonce is 7; the lease should seed there and the tx use it.
+      clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(7);
+      global.fetch = feed([mockPosition]);
+
+      await bot.run();
+
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({ nonce: 7 }),
+        expect.any(Function)
+      );
+    });
+
+    it("does not mark an intent failed when post-broadcast bookkeeping fails", async () => {
+      const store = createMemoryStateStore();
+      // The 'submitted' write fails *after* writeContract has broadcast the tx. This must not
+      // flip the intent to terminal 'failed' (which would let the next run double-submit).
+      const realTransition = store.transition;
+      store.transition = (async (id, to, meta) => {
+        if (to === "submitted") throw new Error("db blip after broadcast");
+        return realTransition(id, to, meta);
+      }) as typeof store.transition;
+
+      const { bot, clients } = storeBot(store);
+      global.fetch = feed([mockPosition]);
+      await bot.run();
+
+      expect(clients.sender.send).toHaveBeenCalledOnce();
+      expect(store.all()[0]?.status).not.toBe("failed");
+    });
+
+    it("stops the cycle on a send error (does not send later candidates at a gapped nonce)", async () => {
+      const store = createMemoryStateStore();
+      const { bot, clients } = storeBot(store);
+      clients.publicClient.getTransactionCount = vi.fn().mockResolvedValue(10);
+      const p2: LiquidatablePosition = {
+        ...mockPosition,
+        proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        borrower: "0xborrower0000000000000000000000000000000002",
+      };
+      const p3: LiquidatablePosition = {
+        ...mockPosition,
+        proxyAddress: "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed",
+        borrower: "0xborrower0000000000000000000000000000000003",
+      };
+      clients.sender.send = vi
+        .fn()
+        .mockResolvedValueOnce("0xA") // p1 @ nonce 10 — ok
+        .mockRejectedValueOnce(new Error("send failed")); // p2 @ nonce 11 — fails → break
+      global.fetch = feed([mockPosition, p2, p3]);
+
+      await bot.run();
+
+      // p1 sent (10), p2 attempted (11) and failed → cycle stops → p3 NOT attempted.
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ nonce: 10 }),
+        expect.any(Function)
+      );
+      expect(clients.sender.send).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ nonce: 11 }),
+        expect.any(Function)
+      );
     });
   });
 });

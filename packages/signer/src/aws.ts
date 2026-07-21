@@ -17,7 +17,7 @@ import {
 } from "viem";
 import { toAccount } from "viem/accounts";
 import { publicKeyToAddress } from "viem/utils";
-import type { Signer } from "./index";
+import type { Signer } from "./types";
 
 // `@repo/signer` `./aws` adapter — signing via AWS KMS. Named after the *provider*
 // (`aws`), like `@repo/secrets`'s `./aws`; KMS is the specific AWS service it uses.
