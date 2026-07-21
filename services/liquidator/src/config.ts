@@ -4,20 +4,21 @@ import {
   bytes32Schema,
   parseEnv,
   positiveIntSchema,
-  privateKeySchema,
   urlSchema,
 } from "@repo/config";
 import type { LiquidationEngineParams } from "@repo/engine";
+import type { SecretsConfig } from "@repo/secrets";
+import { type SignerConfig, buildSignerConfig } from "@repo/signer";
 import type { Address, Hex } from "viem";
 import { z } from "zod";
+
+/** Default key ref for the `local` signer — preserves the pre-config-selection behavior. */
+const DEFAULT_KEY_REF = "LIQUIDATOR_PRIVATE_KEY";
 
 // The engine's domain params (addresses, ponder URL, redemption flags, tx
 // timeout) are declared in `@repo/engine` and inherited here; this interface
 // only adds the composition-root fields the service needs to wire the engine up.
 export interface Config extends LiquidationEngineParams {
-  // Signer for the bot's wallet client
-  liquidatorPrivateKey: Hex;
-
   // RPC endpoint the bot's viem clients connect to
   rpcUrl: string;
 
@@ -26,19 +27,35 @@ export interface Config extends LiquidationEngineParams {
 
   // Metrics/health HTTP server port
   metricsPort: number;
+
+  // Where secrets are resolved from, and how the signer is obtained. Resolved into a
+  // `SecretsProvider` + `Signer` at boot (index.ts); no key material lives in `Config`.
+  secrets: SecretsConfig;
+  signer: SignerConfig;
 }
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
+// The signing key is a secret resolved at boot via `@repo/secrets`, not a config
+// field — see index.ts. This schema only selects *where* the signer and secrets come
+// from; the key material itself never appears here.
 const envSchema = z.object({
   // Required
-  LIQUIDATOR_PRIVATE_KEY: privateKeySchema,
   PONDER_URL: urlSchema,
   CLIENT_RPC_URL: urlSchema,
   ADAPTER_ADDRESS: addressSchema,
   LENS_ADDRESS: addressSchema,
   WBTC_ADDRESS: addressSchema,
+
+  // Signer + secrets source selection (all optional; defaults preserve current behavior:
+  // a local signer whose key is read from the LIQUIDATOR_PRIVATE_KEY env var).
+  SECRETS_PROVIDER: z.enum(["env", "aws"]).optional().default("env"),
+  SIGNER_SOURCE: z.enum(["local", "aws"]).optional().default("local"),
+  SIGNER_KEY_REF: z.string().min(1).optional(),
+  KMS_KEY_ID: z.string().min(1).optional(),
+  SIGNER_ADDRESS: addressSchema.optional(),
+  AWS_REGION: z.string().min(1).optional(),
 
   // Optional
   DEBT_TOKEN_ADDRESSES: addressListSchema.optional(),
@@ -60,7 +77,6 @@ export function loadConfig(): Config {
       : undefined;
 
   return {
-    liquidatorPrivateKey: env.LIQUIDATOR_PRIVATE_KEY as Hex,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     ponderUrl: env.PONDER_URL,
     rpcUrl: env.CLIENT_RPC_URL,
@@ -73,5 +89,14 @@ export function loadConfig(): Config {
     llpAddress: env.LLP_ADDRESS as Address,
     metricsPort: Number.parseInt(env.METRICS_PORT, 10),
     txReceiptTimeoutMs: Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10),
+    secrets: { source: env.SECRETS_PROVIDER, region: env.AWS_REGION },
+    signer: buildSignerConfig({
+      source: env.SIGNER_SOURCE,
+      keyRef: env.SIGNER_KEY_REF,
+      defaultKeyRef: DEFAULT_KEY_REF,
+      kmsKeyId: env.KMS_KEY_ID,
+      address: env.SIGNER_ADDRESS as Address | undefined,
+      region: env.AWS_REGION,
+    }),
   };
 }

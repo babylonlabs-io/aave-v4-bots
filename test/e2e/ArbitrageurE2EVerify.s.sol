@@ -45,7 +45,7 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         console.log("Vault ID:", vm.toString(vaultId));
         (bool vaultRedeemed, bool vaultAcquirable) = _waitForAcquisition(vaultId);
 
-        uint256 arbWbtcNow = _getWbtcBalance(E2EConstants.ARBITRAGEUR);
+        uint256 arbWbtcNow = _getWbtcBalance(vm.envOr("E2E_ARB_ADDRESS", E2EConstants.ARBITRAGEUR));
         console.log("Arbitrageur WBTC now (sats):  ", arbWbtcNow);
         console.log("Arbitrageur WBTC initial (sats):", arbInitialWbtc);
         console.log("Is vault redeemed:", vaultRedeemed);

@@ -17,8 +17,8 @@ describe("config validation", () => {
     process.env = originalEnv;
   });
 
+  // The signing key is a secret (@repo/secrets), no longer a config field.
   const validEnv = {
-    LIQUIDATOR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42069",
     CLIENT_RPC_URL: "http://localhost:8545",
     ADAPTER_ADDRESS: "0x1234567890123456789012345678901234567890",
@@ -28,7 +28,6 @@ describe("config validation", () => {
 
   describe("required fields", () => {
     for (const key of [
-      "LIQUIDATOR_PRIVATE_KEY",
       "PONDER_URL",
       "CLIENT_RPC_URL",
       "ADAPTER_ADDRESS",
@@ -49,7 +48,6 @@ describe("config validation", () => {
 
   describe("format validation", () => {
     const badCases: Array<[string, string]> = [
-      ["LIQUIDATOR_PRIVATE_KEY", "0x1234"],
       ["ADAPTER_ADDRESS", "not-an-address"],
       ["BTC_REDEEM_KEY", "not-a-hex"],
       ["BTC_REDEEM_KEY", "0x1234"],
@@ -79,7 +77,6 @@ describe("config validation", () => {
       const { loadConfig } = await import("./config");
       const config = loadConfig();
 
-      expect(config.liquidatorPrivateKey).toBe(validEnv.LIQUIDATOR_PRIVATE_KEY);
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
       expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
       expect(config.adapterAddress).toBe(validEnv.ADAPTER_ADDRESS);
@@ -167,6 +164,65 @@ describe("config validation", () => {
       );
       expect(config.pollingIntervalMs).toBe(12000);
       expect(config.metricsPort).toBe(9090);
+    });
+  });
+
+  describe("signer / secrets source selection", () => {
+    it("defaults to local signer + env secrets with the conventional key ref", async () => {
+      process.env = { ...validEnv };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.secrets).toEqual({ source: "env", region: undefined });
+      expect(config.signer).toEqual({ source: "local", keyRef: "LIQUIDATOR_PRIVATE_KEY" });
+    });
+
+    it("honors a custom local key ref", async () => {
+      process.env = { ...validEnv, SIGNER_KEY_REF: "CUSTOM_KEY_SECRET" };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.signer).toEqual({ source: "local", keyRef: "CUSTOM_KEY_SECRET" });
+    });
+
+    it("selects aws signer + aws secrets when configured", async () => {
+      process.env = {
+        ...validEnv,
+        SECRETS_PROVIDER: "aws",
+        SIGNER_SOURCE: "aws",
+        KMS_KEY_ID: "arn:aws:kms:us-east-1:0:key/abc",
+        AWS_REGION: "us-east-1",
+      };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.secrets).toEqual({ source: "aws", region: "us-east-1" });
+      expect(config.signer).toEqual({
+        source: "aws",
+        keyId: "arn:aws:kms:us-east-1:0:key/abc",
+        address: undefined,
+        region: "us-east-1",
+      });
+    });
+
+    it("fails when SIGNER_SOURCE=aws but KMS_KEY_ID is missing", async () => {
+      process.env = { ...validEnv, SIGNER_SOURCE: "aws" };
+
+      const { loadConfig } = await import("./config");
+
+      // buildSignerConfig throws; loadConfig lets it propagate (fail-fast at boot).
+      expect(() => loadConfig()).toThrow(/SIGNER_SOURCE=aws requires KMS_KEY_ID/);
+    });
+
+    it("rejects an invalid SIGNER_SOURCE", async () => {
+      process.env = { ...validEnv, SIGNER_SOURCE: "gcp" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow("process.exit called");
     });
   });
 

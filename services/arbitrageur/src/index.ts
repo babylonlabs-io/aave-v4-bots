@@ -13,13 +13,14 @@ import {
   createPublicClient,
   createWalletClient,
 } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 
 import { instrumentedHttp } from "@repo/chain";
 import { LiquidationEngine } from "@repo/engine";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
 import { createRiskGate } from "@repo/risk";
+import { createSecrets } from "@repo/secrets";
+import { resolveSigner } from "@repo/signer";
 import { ArbitrageurBot } from "./bot";
 import { type Config, type LiquidationRunConfig, loadConfig } from "./config";
 import {
@@ -51,8 +52,13 @@ interface BotWithClients {
 }
 
 async function createBot(config: Config): Promise<BotWithClients> {
-  const account = privateKeyToAccount(config.arbitrageurPrivateKey);
-  logger.info(`Arbitrageur address: ${account.address}`);
+  // Secrets + signer sources are selected by config (env/aws, local/aws). For a `local`
+  // signer we resolve the key ref via the secrets provider and hand the *value* to the
+  // signer; `aws` (KMS) resolves nothing. The key is never a plaintext `Config` field.
+  // Both engines (arbitrage + optional liquidation) share this one signer.
+  const secrets = createSecrets(config.secrets);
+  const signer = await resolveSigner(config.signer, (ref) => secrets.get(ref));
+  logger.info(`Arbitrageur signer: ${config.signer.source} (${signer.address})`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound
   // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.
@@ -82,7 +88,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
   const walletClient = createWalletClient({
     chain,
     transport,
-    account,
+    account: signer.account,
   });
 
   const bot = new ArbitrageurBot({

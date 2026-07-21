@@ -3,10 +3,17 @@
 # Boots dependencies, runs the three forge scripts, tears everything down on exit.
 #
 # Usage:
-#   scripts/e2e-local.sh                  # full run from cold state
+#   scripts/e2e-local.sh                  # full run from cold state (SUITE=liquidator)
+#   SUITE=arbitrageur scripts/e2e-local.sh # run the arbitrageur suite (one bot, both engines)
 #   KEEP_DEPS=1 scripts/e2e-local.sh      # reuse already-running postgres / btc / anvil
 #   SKIP_VERIFY=1 scripts/e2e-local.sh    # stop after setup (debug mid-flow)
 #   E2E_RPC_URL=http://...:8545 ...       # override anvil RPC URL
+#
+# Sign the arbitrageur bot's txs with AWS KMS instead of a local key (SUITE=arbitrageur):
+#   set -a; . ./.env.test; set +a          # KMS_E2E_KEY_ID, AWS_REGION (+ AWS creds/profile)
+#   export E2E_SIGNER_SOURCE=aws KMS_KEY_ID="$KMS_E2E_KEY_ID"
+#   export E2E_ARB_ADDRESS=0x…             # the KMS key's derived address (gets funded)
+#   SUITE=arbitrageur scripts/e2e-local.sh
 #
 # Requires: foundry, node 20, pnpm 9, docker, postgresql-client (psql), python3.
 # Python `base58` and `coincurve` are installed automatically in a venv at
@@ -36,7 +43,8 @@ log_warn() { printf "%s! %s%s\n" "$C_YELLOW" "$*" "$C_OFF" >&2; }
 log_err()  { printf "%s✗ %s%s\n" "$C_RED" "$*" "$C_OFF" >&2; }
 
 # ── Tool preflight ───────────────────────────────────────────────────────────
-REQUIRED=(forge cast anvil node pnpm jq curl python3 psql docker)
+# psql is NOT required on the host — DB creation runs inside the postgres container.
+REQUIRED=(forge cast anvil node pnpm jq curl python3 docker)
 missing=()
 for tool in "${REQUIRED[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
@@ -203,11 +211,11 @@ fi
 
 log "Creating ponder databases (idempotent)"
 for db in ponder_liquidator ponder_arbitrageur; do
-  PGPASSWORD=ponder psql -h localhost -U ponder -d ponder -tAc \
-    "SELECT 1 FROM pg_database WHERE datname='$db'" 2>/dev/null \
+  docker exec -e PGPASSWORD=ponder "$PG_CONTAINER" \
+    psql -U ponder -d ponder -tAc "SELECT 1 FROM pg_database WHERE datname='$db'" 2>/dev/null \
     | grep -q 1 \
-    || PGPASSWORD=ponder psql -h localhost -U ponder -d ponder \
-        -c "CREATE DATABASE $db;" >/dev/null
+    || docker exec -e PGPASSWORD=ponder "$PG_CONTAINER" \
+        psql -U ponder -d ponder -c "CREATE DATABASE $db;" >/dev/null
 done
 
 # ── Bitcoin regtest ──────────────────────────────────────────────────────────
@@ -319,8 +327,20 @@ log "Deploy + setup environment"
 ( cd contracts && \
   forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment "${COMMON_FLAGS[@]}" )
 
-log "Setup unhealthy position + start bots/ponders"
-forge script test/e2e/LiquidationE2ESetup.s.sol:LiquidationE2ESetup --ffi "${COMMON_FLAGS[@]}"
+# Which suite to run (matches the CI matrix). Default: liquidator.
+SUITE="${SUITE:-liquidator}"
+case "$SUITE" in
+  arbitrageur) SETUP="ArbitrageurE2ESetup"; VERIFY="ArbitrageurE2EVerify" ;;
+  liquidator)  SETUP="LiquidationE2ESetup"; VERIFY="LiquidationE2EVerify" ;;
+  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | liquidator)"; exit 1 ;;
+esac
+
+if [[ "${E2E_SIGNER_SOURCE:-local}" == "aws" ]]; then
+  log_warn "Signer: AWS KMS (KMS_KEY_ID=${KMS_KEY_ID:-<unset>}, arb addr=${E2E_ARB_ADDRESS:-<unset>})"
+fi
+
+log "Setup ($SUITE) + start bots/ponders"
+forge script "test/e2e/${SETUP}.s.sol:${SETUP}" --ffi "${COMMON_FLAGS[@]}"
 
 if [[ -n "${SKIP_VERIFY:-}" ]]; then
   log "SKIP_VERIFY=1 set; stopping before verification"
@@ -328,10 +348,7 @@ if [[ -n "${SKIP_VERIFY:-}" ]]; then
   while true; do sleep 60; done
 fi
 
-log "Verify liquidation"
-forge script test/e2e/LiquidationE2EVerify.s.sol:LiquidationE2EVerify --ffi "${COMMON_FLAGS[@]}"
+log "Verify ($SUITE)"
+forge script "test/e2e/${VERIFY}.s.sol:${VERIFY}" --ffi "${COMMON_FLAGS[@]}"
 
-log "Verify arbitrageur"
-forge script test/e2e/ArbitrageurE2EVerify.s.sol:ArbitrageurE2EVerify --ffi "${COMMON_FLAGS[@]}"
-
-log_ok "PASS"
+log_ok "PASS ($SUITE)"

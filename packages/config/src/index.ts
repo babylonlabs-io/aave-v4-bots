@@ -4,18 +4,13 @@ import { z } from "zod";
 const logger = createLogger();
 
 // Shared, validated env-var field schemas + a fail-fast parser. Each service
-// composes these into its own env schema (per docs/production-architecture-proposal.md
-// §8). Schemas validate the raw string env value; clients coerce to number/Hex/etc.
+// composes these into its own env schema. Schemas validate the raw string env
+// value; clients coerce to number/Hex/etc.
 
 /** 0x + 40 hex chars (20-byte address). */
 export const addressSchema = z
   .string()
   .regex(/^0x[a-fA-F0-9]{40}$/, "must be a 0x-prefixed 20-byte hex address");
-
-/** 0x + 64 hex chars (32-byte private key). */
-export const privateKeySchema = z
-  .string()
-  .regex(/^0x[a-fA-F0-9]{64}$/, "must be a 0x-prefixed 32-byte hex private key");
 
 /** 0x + 64 hex chars (bytes32, e.g. a BTC redeem key). */
 export const bytes32Schema = z

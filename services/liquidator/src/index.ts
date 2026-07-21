@@ -4,12 +4,13 @@ import { config as dotenvConfig } from "dotenv";
 // Load .env.liquidator from root directory
 dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
-import { type Chain, type Hex, createPublicClient, createWalletClient } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { type Chain, createPublicClient, createWalletClient } from "viem";
 
 import { instrumentedHttp } from "@repo/chain";
 import { createLogger } from "@repo/logger";
 import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
+import { createSecrets } from "@repo/secrets";
+import { resolveSigner } from "@repo/signer";
 import { LiquidationBot } from "./bot";
 import { type Config, loadConfig } from "./config";
 import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
@@ -17,8 +18,12 @@ import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
 const logger = createLogger({ prefix: "[Bot] " });
 
 async function createBot(config: Config) {
-  const account = privateKeyToAccount(config.liquidatorPrivateKey);
-  logger.info(`Liquidator address: ${account.address}`);
+  // Secrets + signer sources are selected by config (env/aws, local/aws). For a `local`
+  // signer we resolve the key ref via the secrets provider and hand the *value* to the
+  // signer; `aws` (KMS) resolves nothing. The key is never a plaintext `Config` field.
+  const secrets = createSecrets(config.secrets);
+  const signer = await resolveSigner(config.signer, (ref) => secrets.get(ref));
+  logger.info(`Liquidator signer: ${config.signer.source} (${signer.address})`);
 
   // Every viem call routes through `instrumentedHttp` so that each outbound
   // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.
@@ -48,7 +53,7 @@ async function createBot(config: Config) {
   const walletClient = createWalletClient({
     chain,
     transport,
-    account,
+    account: signer.account,
   });
 
   const bot = new LiquidationBot({

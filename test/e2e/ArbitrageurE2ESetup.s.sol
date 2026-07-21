@@ -14,27 +14,34 @@ import {E2EConstants} from "./E2EConstants.sol";
 ///         then acquires it.
 /// @dev Run ArbitrageurE2EVerify.s.sol after this.
 contract ArbitrageurE2ESetup is BaseE2ESetup {
+    /// @dev The arbitrageur's signer address to fund. Defaults to the baked-in local key's
+    ///      address; override with `E2E_ARB_ADDRESS` when the bot signs via AWS KMS (the KMS
+    ///      key derives a different address, and that is what must hold the funds).
+    address internal arbAddr;
+
     function run() public {
         init(vm);
         uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        arbAddr = vm.envOr("E2E_ARB_ADDRESS", E2EConstants.ARBITRAGEUR);
 
         console.log("\n=== E2E Arbitrageur Setup (one bot, both engines) ===");
+        console.log("Arbitrageur signer address:", arbAddr);
 
         // Gas: set the arbitrageur's ETH balance immediately (not via broadcast).
-        // ARBITRAGEUR is APP_OPERATOR_0 — a registered vault keeper, required for
-        // the acquisition leg — so it is not a genesis-funded Anvil account and
-        // needs gas provisioned. The bot is spawned mid-run() below, before forge
-        // broadcasts any funding tx, so a broadcast transfer would land too late
-        // and the bot's first approval would fail on gas; anvil_setBalance is instant.
-        _provisionGas(E2EConstants.ARBITRAGEUR, 10 ether);
+        // arbAddr is APP_OPERATOR_0 (or the KMS-derived signer via E2E_ARB_ADDRESS) —
+        // a registered vault keeper, so not a genesis-funded Anvil account. The bot is
+        // spawned mid-run() below, before forge broadcasts any funding tx, so a broadcast
+        // transfer would land too late and the bot's first approval would fail on gas;
+        // anvil_setBalance is instant.
+        _provisionGas(arbAddr, 10 ether);
 
         // WBTC (LLP float + acquisitions) and USDC (debt repayment for the
         // liquidation leg) are only needed once the bot acts on a position, well
         // after these broadcasts land, so a normal mint is fine.
         console.log("\n--- Fund Arbitrageur ---");
         vm.startBroadcast(adminPrivateKey);
-        wbtc.mint(E2EConstants.ARBITRAGEUR, 10 * uint256(ONE_BTC));
-        usdc.mint(E2EConstants.ARBITRAGEUR, 10_000 * ONE_USDC);
+        wbtc.mint(arbAddr, 10 * uint256(ONE_BTC));
+        usdc.mint(arbAddr, 10_000 * ONE_USDC);
         vm.stopBroadcast();
         console.log("Arbitrageur funded with 10 ETH (gas), 10 WBTC, 10,000 USDC");
 
@@ -58,8 +65,35 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
     }
 
     function _saveInitialBalances() internal {
-        vm.writeFile(".e2e-initial-arb-wbtc", vm.toString(wbtc.balanceOf(E2EConstants.ARBITRAGEUR)));
-        vm.writeFile(".e2e-initial-arb-usdc", vm.toString(usdc.balanceOf(E2EConstants.ARBITRAGEUR)));
+        vm.writeFile(".e2e-initial-arb-wbtc", vm.toString(wbtc.balanceOf(arbAddr)));
+        vm.writeFile(".e2e-initial-arb-usdc", vm.toString(usdc.balanceOf(arbAddr)));
+    }
+
+    /// @dev The signer lines for `.env.arbitrageur`. Default: the baked-in local private key
+    ///      (unchanged). With `E2E_SIGNER_SOURCE=aws`, the bot signs via AWS KMS instead —
+    ///      no key material in the env; `KMS_KEY_ID` + `AWS_REGION` come from the run env
+    ///      (credentials resolve from the ambient AWS profile the bot process inherits).
+    function _signerEnvLines() internal view returns (string memory) {
+        bool useKms = keccak256(bytes(vm.envOr("E2E_SIGNER_SOURCE", string("local")))) == keccak256(bytes("aws"));
+        if (!useKms) {
+            return string.concat(
+                "ARBITRAGEUR_PRIVATE_KEY=", vm.toString(bytes32(E2EConstants.ARBITRAGEUR_PRIVATE_KEY)), "\n"
+            );
+        }
+        return string.concat(
+            "SIGNER_SOURCE=aws\n",
+            "KMS_KEY_ID=",
+            vm.envString("KMS_KEY_ID"),
+            "\n",
+            "AWS_REGION=",
+            vm.envString("AWS_REGION"),
+            "\n",
+            // Assert the KMS key derives the address we funded — the bot fails fast at
+            // boot on a mismatch instead of dying later on gas/timeout errors.
+            "SIGNER_ADDRESS=",
+            vm.toString(arbAddr),
+            "\n"
+        );
     }
 
     /// @dev One `.env` for the whole bot: the unified Ponder mode-gates on the
@@ -98,9 +132,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "DATABASE_SCHEMA=public\n",
             "\n",
             "# Arbitrageur Client (both engines)\n",
-            "ARBITRAGEUR_PRIVATE_KEY=",
-            vm.toString(bytes32(E2EConstants.ARBITRAGEUR_PRIVATE_KEY)),
-            "\n",
+            _signerEnvLines(),
             "PONDER_URL=",
             E2EConstants.ARBITRAGEUR_PONDER_URL,
             "\n",

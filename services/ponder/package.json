@@ -12,6 +12,7 @@
   "dependencies": {
     "@repo/abis": "workspace:*",
     "@repo/logger": "workspace:*",
+    "@repo/secrets": "workspace:*",
     "ponder": "^0.13.6",
     "hono": "^4.5.0",
     "viem": "^2.37.0"

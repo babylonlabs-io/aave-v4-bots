@@ -19,8 +19,8 @@ describe("config validation", () => {
     process.env = originalEnv;
   });
 
+  // The signing key is a secret (@repo/secrets), no longer a config field.
   const validEnv = {
-    ARBITRAGEUR_PRIVATE_KEY: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
     PONDER_URL: "http://localhost:42070",
     CLIENT_RPC_URL: "http://localhost:8545",
     VAULT_SWAP_ADDRESS: "0x1234567890123456789012345678901234567890",
@@ -28,16 +28,6 @@ describe("config validation", () => {
   };
 
   describe("required fields", () => {
-    it("should fail when ARBITRAGEUR_PRIVATE_KEY is missing", async () => {
-      process.env = { ...validEnv };
-      process.env.ARBITRAGEUR_PRIVATE_KEY = undefined;
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("process.exit called");
-      expect(mockExit).toHaveBeenCalledWith(1);
-    });
-
     it("should fail when PONDER_URL is missing", async () => {
       process.env = { ...validEnv };
       process.env.PONDER_URL = undefined;
@@ -60,22 +50,6 @@ describe("config validation", () => {
   });
 
   describe("format validation", () => {
-    it("should fail with invalid private key format", async () => {
-      process.env = { ...validEnv, ARBITRAGEUR_PRIVATE_KEY: "not-a-hex" };
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("process.exit called");
-    });
-
-    it("should fail with private key too short", async () => {
-      process.env = { ...validEnv, ARBITRAGEUR_PRIVATE_KEY: "0x1234" };
-
-      const { loadConfig } = await import("./config");
-
-      expect(() => loadConfig()).toThrow("process.exit called");
-    });
-
     it("should fail with invalid address format", async () => {
       process.env = { ...validEnv, VAULT_SWAP_ADDRESS: "not-an-address" };
 
@@ -108,7 +82,6 @@ describe("config validation", () => {
       const { loadConfig } = await import("./config");
       const config = loadConfig();
 
-      expect(config.arbitrageurPrivateKey).toBe(validEnv.ARBITRAGEUR_PRIVATE_KEY);
       expect(config.ponderUrl).toBe(validEnv.PONDER_URL);
       expect(config.rpcUrl).toBe(validEnv.CLIENT_RPC_URL);
       expect(config.vaultSwapAddress).toBe(validEnv.VAULT_SWAP_ADDRESS);
@@ -149,6 +122,63 @@ describe("config validation", () => {
       expect(config.metricsPort).toBe(3000);
       expect(config.retryMaxAttempts).toBe(5);
       expect(config.txReceiptTimeoutMs).toBe(60000);
+    });
+  });
+
+  describe("signer / secrets source selection", () => {
+    it("defaults to local signer + env secrets with the conventional key ref", async () => {
+      process.env = { ...validEnv };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.secrets).toEqual({ source: "env", region: undefined });
+      expect(config.signer).toEqual({ source: "local", keyRef: "ARBITRAGEUR_PRIVATE_KEY" });
+    });
+
+    it("selects aws signer + aws secrets when configured", async () => {
+      process.env = {
+        ...validEnv,
+        SECRETS_PROVIDER: "aws",
+        SIGNER_SOURCE: "aws",
+        KMS_KEY_ID: "arn:aws:kms:us-east-1:0:key/abc",
+        AWS_REGION: "us-east-1",
+      };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.secrets).toEqual({ source: "aws", region: "us-east-1" });
+      expect(config.signer).toEqual({
+        source: "aws",
+        keyId: "arn:aws:kms:us-east-1:0:key/abc",
+        address: undefined,
+        region: "us-east-1",
+      });
+    });
+
+    it("fails when SIGNER_SOURCE=aws but KMS_KEY_ID is missing", async () => {
+      process.env = { ...validEnv, SIGNER_SOURCE: "aws" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow(/SIGNER_SOURCE=aws requires KMS_KEY_ID/);
+    });
+
+    it("shares one signer across both engines (dual-engine mode)", async () => {
+      process.env = {
+        ...validEnv,
+        ADAPTER_ADDRESS: "0x1111111111111111111111111111111111111111",
+        LENS_ADDRESS: "0x2222222222222222222222222222222222222222",
+      };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      // The liquidation engine has no signer of its own — index.ts wires the single
+      // `config.signer` into both engines' shared wallet client.
+      expect(config.liquidation).toBeDefined();
+      expect(config.signer).toEqual({ source: "local", keyRef: "ARBITRAGEUR_PRIVATE_KEY" });
     });
   });
 
