@@ -5,11 +5,14 @@ import {
   type PublicClient,
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
+  encodeAbiParameters,
+  toEventSelector,
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   type ChainReader,
+  type SafeExecutionOutcome,
   UNKNOWN_TX_GRACE_MS,
   createChainReader,
   reconcilePending,
@@ -35,6 +38,7 @@ const aged = (ms: number) => () => Date.now() + ms;
  */
 function reader(over: {
   receipts?: Record<string, "success" | "reverted" | null>;
+  safeExec?: Record<string, SafeExecutionOutcome>;
   latest?: number;
   pending?: number;
   known?: boolean;
@@ -48,6 +52,9 @@ function reader(over: {
     },
     async isKnown() {
       return over.known ?? true;
+    },
+    async getSafeExecution(txHash) {
+      return over.safeExec?.[txHash] ?? null;
     },
   };
 }
@@ -274,6 +281,126 @@ describe("reconcilePending", () => {
   });
 });
 
+describe("reconcilePending — Safe custody (resolves by the Execution event, not the receipt)", () => {
+  // In MANUAL the executor address IS the Safe, and the executor passes it to `reconcilePending`
+  // as `signer` — which is exactly the address the Safe's Execution event is matched against.
+  const SAFE = SIGNER;
+  const EXEC_TX = `0x${"c".repeat(64)}` as Hex;
+  const HASH = `0x${"a".repeat(64)}` as Hex;
+  const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+  const safeEnvelope = {
+    safeNonce: 3,
+    operation: 0 as const,
+    safeTxGas: "0",
+    baseGas: "0",
+    gasPrice: "0",
+    gasToken: ZERO,
+    refundReceiver: ZERO,
+    safeVersion: "1.4.1",
+    safeTxHash: `0x${"e".repeat(64)}` as Hex,
+    claimBlock: 1000,
+  };
+  const proposedTx = { chainId: 31337, to: TARGET, data: "0x" as Hex, value: "0" };
+
+  // A submitted Safe intent: proposed → claimed (with envelope) → markBroadcast(execTransaction tx).
+  async function submittedSafeIntent(store: ReturnType<typeof createMemoryStateStore>) {
+    const id = idempotencyKey(input("p"));
+    await store.propose(input("p"), proposedTx, HASH);
+    await store.claimProposal(id, HASH, safeEnvelope);
+    await store.markBroadcast(id, EXEC_TX, HASH);
+    return id;
+  }
+
+  it("confirms on ExecutionSuccess", async () => {
+    const store = createMemoryStateStore();
+    const id = await submittedSafeIntent(store);
+
+    const summary = await reconcilePending({
+      store,
+      signer: SAFE,
+      reader: reader({ safeExec: { [EXEC_TX]: "success" } }),
+    });
+
+    expect(summary).toMatchObject({ confirmed: 1, failed: 0, stillInFlight: 0 });
+    expect(store.get(id)?.status).toBe("confirmed");
+  });
+
+  it("fails on ExecutionFailure — the inner call reverted though the outer tx succeeded", async () => {
+    const store = createMemoryStateStore();
+    const id = await submittedSafeIntent(store);
+
+    const summary = await reconcilePending({
+      store,
+      signer: SAFE,
+      reader: reader({ safeExec: { [EXEC_TX]: "failure" } }),
+    });
+
+    expect(summary).toMatchObject({ failed: 1, confirmed: 0 });
+    expect(store.get(id)?.status).toBe("failed");
+    // ...and the subject is revivable for a fresh proposal.
+    expect((await store.propose(input("p"), proposedTx, HASH)).recorded).toBe(true);
+  });
+
+  it("fails when the outer execTransaction itself reverted (receipt status 0)", async () => {
+    const store = createMemoryStateStore();
+    const id = await submittedSafeIntent(store);
+
+    const summary = await reconcilePending({
+      store,
+      signer: SAFE,
+      reader: reader({ safeExec: { [EXEC_TX]: "reverted" } }),
+    });
+
+    expect(summary.failed).toBe(1);
+    expect(store.get(id)?.status).toBe("failed");
+  });
+
+  it("does NOT confirm a mined tx with no matching Execution event — fails + warns", async () => {
+    const store = createMemoryStateStore();
+    const id = await submittedSafeIntent(store);
+    const warn = vi.fn();
+
+    const summary = await reconcilePending({
+      store,
+      signer: SAFE,
+      reader: reader({ safeExec: { [EXEC_TX]: "no-event" } }),
+      logger: { info: vi.fn(), warn },
+    });
+
+    expect(summary).toMatchObject({ failed: 1, confirmed: 0 });
+    expect(store.get(id)?.status).toBe("failed");
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("leaves it in-flight while the tx is not mined yet", async () => {
+    const store = createMemoryStateStore();
+    const id = await submittedSafeIntent(store);
+
+    const summary = await reconcilePending({
+      store,
+      signer: SAFE,
+      reader: reader({ safeExec: {} }), // null ⇒ no receipt yet
+    });
+
+    expect(summary).toMatchObject({ stillInFlight: 1, confirmed: 0, failed: 0 });
+    expect(store.get(id)?.status).toBe("submitted");
+  });
+
+  it("never reads the signer nonce for a Safe intent (nonce is null)", async () => {
+    const store = createMemoryStateStore();
+    await submittedSafeIntent(store);
+    const getNonce = vi.fn(async () => 0);
+
+    await reconcilePending({
+      store,
+      signer: SAFE,
+      reader: { ...reader({ safeExec: { [EXEC_TX]: "success" } }), getNonce },
+    });
+
+    expect(getNonce).not.toHaveBeenCalled();
+  });
+});
+
 describe("reconcilePending under a chain outage", () => {
   // Fail closed: if we cannot read the chain we must leave in-flight intents exactly as they are.
   // Marking them failed would re-drive a possibly-mined tx on the next cycle.
@@ -290,6 +417,7 @@ describe("reconcilePending under a chain outage", () => {
         throw new Error("ECONNREFUSED");
       },
       getNonce: async (_a, tag) => (tag === "latest" ? 9 : 9), // chain has moved well past nonce 5
+      getSafeExecution: async () => null,
       isKnown: async () => true,
     };
 
@@ -366,6 +494,65 @@ describe("createChainReader", () => {
         throw new Error("429 rate limited");
       });
       await expect(reader.isKnown("0xhash")).rejects.toThrow("429 rate limited");
+    });
+  });
+
+  describe("getSafeExecution", () => {
+    const SAFE = "0x3333333333333333333333333333333333333333" as Address;
+    const OTHER = "0x4444444444444444444444444444444444444444" as Address;
+    const SAFE_TX = `0x${"e".repeat(64)}` as Hex;
+    const OTHER_TX = `0x${"f".repeat(64)}` as Hex;
+
+    // Both params are non-indexed, so a real Safe log is topic0 alone + the two values in `data`.
+    const log = (
+      eventName: "ExecutionSuccess" | "ExecutionFailure",
+      txHash: Hex,
+      address: Address = SAFE
+    ) => ({
+      address,
+      topics: [toEventSelector(`${eventName}(bytes32,uint256)`)],
+      data: encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }], [txHash, 0n]),
+    });
+
+    const readerFor = (status: "success" | "reverted", logs: unknown[]) =>
+      createChainReader({
+        getTransactionReceipt: async () => ({ status, logs }),
+      } as unknown as PublicClient);
+
+    it("returns success on a matching ExecutionSuccess from the Safe", async () => {
+      const reader = readerFor("success", [log("ExecutionSuccess", SAFE_TX)]);
+      expect(await reader.getSafeExecution("0xexec" as Hex, SAFE, SAFE_TX)).toBe("success");
+    });
+
+    it("returns failure on a matching ExecutionFailure from the Safe", async () => {
+      const reader = readerFor("success", [log("ExecutionFailure", SAFE_TX)]);
+      expect(await reader.getSafeExecution("0xexec" as Hex, SAFE, SAFE_TX)).toBe("failure");
+    });
+
+    it("returns reverted when the outer execTransaction reverted (status 0)", async () => {
+      const reader = readerFor("reverted", []);
+      expect(await reader.getSafeExecution("0xexec" as Hex, SAFE, SAFE_TX)).toBe("reverted");
+    });
+
+    it("returns no-event when the matching event is for a different SafeTx hash", async () => {
+      const reader = readerFor("success", [log("ExecutionSuccess", OTHER_TX)]);
+      expect(await reader.getSafeExecution("0xexec" as Hex, SAFE, SAFE_TX)).toBe("no-event");
+    });
+
+    it("ignores a same-signature event emitted by a different contract", async () => {
+      const reader = readerFor("success", [log("ExecutionSuccess", SAFE_TX, OTHER)]);
+      expect(await reader.getSafeExecution("0xexec" as Hex, SAFE, SAFE_TX)).toBe("no-event");
+    });
+
+    it("returns null when the receipt is not found yet", async () => {
+      const publicClient = {
+        getTransactionReceipt: async () => {
+          throw new TransactionReceiptNotFoundError({ hash: "0xexec" });
+        },
+      } as unknown as PublicClient;
+      expect(
+        await createChainReader(publicClient).getSafeExecution("0xexec" as Hex, SAFE, SAFE_TX)
+      ).toBeNull();
     });
   });
 });

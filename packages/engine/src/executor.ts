@@ -1,5 +1,5 @@
 import { erc20Abi } from "@repo/abis";
-import { approveMax, readAllowance } from "@repo/capital";
+import { approveMax, readAllowance } from "@repo/chain";
 import {
   type ContractCall,
   type ExecutionIdentity,
@@ -262,9 +262,49 @@ export function createManualExecutor(deps: {
    * "expire everything" (`expireProposals(0)` would sweep every live proposal).
    */
   intentTtlMs: number;
+  /**
+   * Warn (`intent-stuck`) when a `claimed` (operator mid-signing) or `submitted` (broadcast, not yet
+   * mined) intent has sat this long — the signal that a claim was abandoned or a tx dropped, which an
+   * operator resolves with `confirm`/`release`/`fail`. `0` disables the check.
+   */
+  intentStuckMs: number;
+  /** Injectable clock for the stuck-age check (tests); defaults to `Date.now`. */
+  now?: () => number;
 }): ManualExecutor {
-  const { store, publicClient, notifier, identity, logger, intentTtlMs } = deps;
+  const { store, publicClient, notifier, identity, logger, intentTtlMs, intentStuckMs } = deps;
+  const now = deps.now ?? Date.now;
   const reader = createChainReader(publicClient);
+
+  // Ids we've already warned as stuck, so a persistently-stuck intent alerts once, not every cycle.
+  // Re-derived to the currently-stuck set each cycle: an intent that recovers drops out (and would
+  // re-warn if it got stuck again), and the set never grows unbounded.
+  let warnedStuck = new Set<string>();
+
+  /** Alert once for each `claimed`/`submitted` intent past `intentStuckMs`. Runs AFTER reconcile, so
+   *  an intent resolved this cycle is already gone and never draws a spurious warning. */
+  async function emitStuck(): Promise<void> {
+    if (intentStuckMs <= 0) return;
+    const at = now();
+    const candidates = [
+      ...(await store.proposals()).filter((r) => r.status === "claimed"),
+      ...(await store.reconcile()).filter((r) => r.status === "submitted"),
+    ];
+    const stuck = new Set<string>();
+    for (const intent of candidates) {
+      const ageMs = at - intent.updatedAt;
+      if (ageMs < intentStuckMs) continue;
+      stuck.add(intent.id);
+      if (!warnedStuck.has(intent.id)) {
+        await notifier.notify({
+          kind: "intent-stuck",
+          intentId: intent.id,
+          subject: intent.subject,
+          ageMs,
+        });
+      }
+    }
+    warnedStuck = stuck;
+  }
 
   const buildPayload = (call: ContractCall): { payload: ProposedTx; hash: `0x${string}` } => {
     const { to, data } = encodeCall(call);
@@ -315,18 +355,20 @@ export function createManualExecutor(deps: {
     identity,
 
     // A keyless bot still reconciles: the operator broadcasts, records the hash (markBroadcast), and
-    // the next cycle resolves that intent by receipt — with no nonce reads (all intents nonce-less).
-    // It also sweeps un-actioned proposals past the TTL: without this a proposal nobody signs stays
-    // live forever (and, deduped on payload hash, blocks its subject from ever re-notifying) — the
-    // liveness hole the TTL closes. Swept across **all** actions, not just this engine's: a stale
-    // proposal is stale whoever made it (and `approval` proposals belong to no engine's reconcile),
-    // so either engine's cycle clears the lot; the other engine's call then finds nothing to do.
-    async reconcile(action) {
+    // the next cycle resolves that intent by receipt/event — with no nonce reads (all intents
+    // nonce-less). Everything here works across **all** actions, not just the calling engine's, and
+    // deliberately ignores `action`: a keyless MANUAL bot has no per-signer nonce fence that would
+    // require scoping, and `approval` proposals belong to no engine's action — so if reconcile were
+    // scoped, an operator-broadcast approval would sit `submitted` forever, unconfirmed (which in
+    // `safe` custody wedges the one-live-claim guard). Expiry, reconcile, and the stuck sweep all run
+    // unscoped; with two engines sharing the store either cycle clears the lot, the other finds none.
+    async reconcile() {
       if (intentTtlMs > 0) {
         const swept = await store.expireProposals(intentTtlMs);
         if (swept > 0) logger.info(`Expired ${swept} un-actioned proposal(s)`);
       }
-      await reconcilePending({ store, reader, signer: identity.from, action, logger });
+      await reconcilePending({ store, reader, signer: identity.from, logger });
+      await emitStuck();
     },
     resyncNonces: () => Promise.resolve(),
     async recordOutcome(id, outcome) {

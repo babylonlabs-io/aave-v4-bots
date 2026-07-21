@@ -14,6 +14,10 @@ import {
   keccak256,
 } from "viem";
 
+// Safe{Wallet} execution primitives (the pure `safe`-custody half) live in `./safe`, re-exported so
+// consumers keep importing everything off `@repo/execution`.
+export * from "./safe";
+
 const logger = createLogger();
 
 // Transaction execution primitives — nonce sourcing and receipt-waiting. The

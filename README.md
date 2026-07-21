@@ -8,14 +8,20 @@ A monorepo of keeper bots for Babylon's Aave V4 integration:
   `ADAPTER_ADDRESS` + `LENS_ADDRESS` — also runs the same `LiquidationEngine` the
   standalone liquidator uses. (That bot-side opt-in is distinct from the indexer's mode
   gating below.)
+- **operator-cli** — the human side of **MANUAL** mode: review, sign, and broadcast the
+  transaction proposals a keyless bot persisted (see [Execution modes](#execution-modes)).
+
+Both bots run in one of two **execution modes**, and everything below — the signer, the
+crash-safety store, the risk gate — is opt-in and off by default, so a minimal deployment
+behaves exactly like a simple keeper.
 
 ## Architecture
 
 The repo is a **package-per-concern monorepo**. Each `@repo/*` package owns exactly one
 concern; the **services are thin composition roots** that wire those packages together,
 own their env/metrics, and run a poll loop. The pipeline logic lives in `@repo/engine`,
-and the *decisions* it makes are delegated to `@repo/domain`, which is pure (no IO) and
-unit-tested in isolation. IO concerns (signing, secrets, nonces, approvals, RPC) are each
+whose *decision* logic is kept in pure, no-IO modules unit-tested in isolation. IO
+concerns (signing, secrets, nonces, approvals, RPC) are each
 isolated behind their own package + seam, so e.g. swapping a local key for AWS KMS is a
 config change with no engine edit.
 
@@ -23,38 +29,93 @@ config change with no engine edit.
 services/  ── thin composition roots: wire packages, own env + metrics, run the poll loop
   ├── arbitrageur   one bot, BOTH engines (arbitrage always; liquidation opt-in), one signer
   ├── liquidator    standalone liquidation bot (LiquidationEngine only)
+  ├── operator-cli  the human side of MANUAL mode: list / show / claim / broadcast / confirm proposals
   └── ponder        unified indexer — index mode gated by which contract addresses are set
         │                (SPOKE + ADAPTER ⇒ liquidation; VAULT_SWAP ⇒ arbitrage; set either/both)
         ▼
 packages/  ── @repo/*, one concern each
-  engine          the pipelines: LiquidationEngine + ArbitrageEngine (orchestration/IO)
-  domain          pure math — amount buffering, slippage caps, priority ordering, reserve checks (no IO)
+  ── pipelines ────────────────────────────────────────────────────────────────────────
+  engine          the pipelines: LiquidationEngine + ArbitrageEngine, the Executor seam, and the
+                  pure decision math (amount buffering, slippage caps, priority ordering, reserve checks)
   ── chain IO ─────────────────────────────────────────────────────────────────────────
-  abis            hand-maintained contract ABIs (spoke, adapter, lens, vaultSwap, erc20)
-  capital         allowances / approvals / balances + cached token metadata
-  chain           retry-with-backoff + instrumented HTTP transport
-  execution       transaction execution — nonce authority, receipt waiting
+  abis            hand-maintained contract ABIs (spoke, adapter, lens, vaultSwap, safe, erc20)
+  chain           retry-with-backoff, instrumented HTTP transport, generic chain reads, and ERC-20
+                  balances / allowances / approvals + cached token metadata
+  execution       nonce authority (shared allocator + lease), receipt waiting, tx signing
+  ── identity & durability ────────────────────────────────────────────────────────────
   signer          a viem Account backed by a local key OR AWS KMS (drop-in either way)
-  secrets         resolve a secret ref (an env var today, AWS Secrets Manager later)
+  secrets         resolve a secret ref (an env var, or AWS Secrets Manager)
+  persistence     the crash-safety StateStore — intent idempotency (Postgres / in-memory adapters)
+  runtime         the shared boot: builds the ONE Executor (AUTO/MANUAL) + risk gate a service runs on
+  ── safety & alerts ──────────────────────────────────────────────────────────────────
+  risk            pre-execution risk gate: breaker, profit floor, code-hash guard, remote kill switch
+  notifications   outbound-alert seam (Slack) for risk halts + MANUAL proposals awaiting a signature
   ── cross-cutting ────────────────────────────────────────────────────────────────────
   config          shared validated env-var schemas (zod) + fail-fast parser
-  risk            pre-execution risk gate checked before each action
   logger          structured, tagged logger
   metrics         Prometheus registry + per-engine metric sets
   observability   HTTP server exposing /health, /ready, /metrics
 ```
 
-**Composition happens at the edges.** A *service* is the composition root: it wires the
-engine together with a `signer`, `secrets`, `config`, `metrics`, and `observability`, and
-injects the built wallet client into the engine. `@repo/engine` itself depends only on
-`domain` (pure) plus the chain-IO packages (`abis`, `capital`, `chain`, `execution`) and
-`risk`/`logger` — **not** on `signer`/`secrets`, and never on a service. `domain` imports
-nothing with IO, which keeps it pure and fast to test.
+**Composition happens at the edges.** A *service* is the composition root. It hands its
+`config` to `@repo/runtime`'s `startRuntime`, which builds the process's **one** `Executor`
+and **one** risk gate; the service then constructs the engine(s) around them and runs the
+poll loop. `@repo/engine` holds that `Executor`, **never a raw signer** — so the same
+pipeline runs whether the process is keyed (AUTO) or keyless (MANUAL) — and it depends on
+the chain-IO packages and the durability/safety packages (`persistence`, `risk`,
+`notifications`), but **not** on `signer`/`secrets`: the runtime resolves those and hands the
+engine a finished `Executor`. The engine's decision math is pure (no IO), which keeps it fast
+to test.
+
+**Everything risky is opt-in.** A local key + public-mempool sends, no persisted state, no
+risk guards is the default; AWS KMS, a Postgres crash-safety store, the code-hash guard, and
+the remote kill switch each switch on only when their env is set — so a minimal deployment
+behaves exactly as it did before these seams existed.
 
 Smart contracts live in the `contracts/` git submodule (Babylon's `vault-contracts-aave-v4`),
 but the bots don't build it or read from it at runtime: deployment addresses come from each
 service's env config, and ABIs are hand-maintained in `@repo/abis`. The submodule is the
 contract *source* — used to compile and deploy the protocol during the e2e suite.
+
+## Execution modes
+
+Each bot runs in one of two modes, set by `EXECUTION_MODE` (default `AUTO`):
+
+- **AUTO** — the bot holds the signing key and **signs + broadcasts** transactions itself.
+  This is the classic keeper. The key is a local private key or an AWS KMS key (see
+  [Signer & secrets](#signer--secrets)).
+- **MANUAL** — the bot is **keyless**. Instead of sending, it persists a content-hashed
+  **proposal** to the crash-safety store and notifies an operator. A human then uses
+  **`operator-cli`** to `list` / `show` / `claim` / `broadcast` (or `confirm` an
+  externally-signed tx). Custody is `eoa` (a plain account / hardware wallet) or `safe` (a
+  Safe{Wallet} multisig), set by `MANUAL_EXECUTOR_KIND`. Nothing hot-signs in the bot process.
+
+Both modes route every send through one `Executor` and one shared **nonce authority**, and
+record each action as an **intent** in the store so a crash or ambiguous send can't
+double-execute — on the next cycle the bot reconciles in-flight intents against the chain
+before re-driving. The store (`DATABASE_URL`) is optional in AUTO and **required** in MANUAL
+(the proposals must survive a restart).
+
+## Signer & secrets
+
+Two orthogonal seams, both defaulting to local/dev:
+
+- **`SIGNER_SOURCE`** = `local` (a key read from an env ref, default) or `aws` (an AWS KMS
+  key — the key never leaves KMS). AUTO only; MANUAL holds no key.
+- **`SECRETS_PROVIDER`** = `env` (a ref is an env-var name, default) or `aws` (a ref is an
+  AWS Secrets Manager id). Resolves the signer key ref, the kill-switch token, the Slack
+  webhook — so no plaintext secret is hard-wired into a service.
+
+## Risk gate & kill switch
+
+One `RiskGate` per process, injected into every engine it runs, gates each action before it
+executes (all `RISK_*`, all opt-in): a consecutive-failure **circuit breaker**, a **profit
+floor**, an **in-flight cap**, a **data-staleness** guard, and a **code-hash guard** that
+pins the deployed bytecode of the contracts the bot calls (a mismatch boots it HALTED,
+fail-closed). A **remote kill switch** (`RISK_CONTROL_TOKEN_REF`) serves authenticated
+`POST /halt` · `POST /resume` · `GET /status` on **its own loopback socket** — deliberately
+separate from the metrics port, so `/metrics` stays scrapeable while the trading-stop button
+is not exposed to the scrape network.
 
 ## Quick Start
 
@@ -196,25 +257,28 @@ pnpm test:coverage          # With coverage
 
 ```
 ├── packages/                       # @repo/* — one concern per package
-│   ├── engine/                     #   LiquidationEngine + ArbitrageEngine (the pipelines)
-│   ├── domain/                     #   pure math: amount buffering, slippage, ordering, reserve checks
-│   ├── abis/                       #   hand-maintained contract ABIs
-│   ├── capital/                    #   allowances / approvals / balances / token metadata
-│   ├── chain/                      #   retry + instrumented HTTP transport
-│   ├── execution/                  #   nonce authority + receipt waiting
+│   ├── engine/                     #   LiquidationEngine + ArbitrageEngine + Executor seam + pure decision math
+│   ├── abis/                       #   hand-maintained contract ABIs (spoke/adapter/lens/vaultSwap/safe/erc20)
+│   ├── chain/                      #   retry + instrumented HTTP transport + chain reads + ERC-20 balances/approvals/metadata
+│   ├── execution/                  #   shared nonce authority (allocator + lease) + receipt waiting + signing
 │   ├── signer/                     #   viem Account from a local key OR AWS KMS
 │   ├── secrets/                    #   resolve a secret ref (env OR AWS Secrets Manager)
+│   ├── persistence/                #   crash-safety StateStore — intent idempotency (Postgres / memory)
+│   ├── runtime/                    #   startRuntime: builds the one Executor (AUTO/MANUAL) + risk gate
+│   ├── risk/                       #   risk gate: breaker, profit floor, code-hash guard, kill switch
+│   ├── notifications/              #   outbound alerts (Slack) — risk halts + MANUAL proposals
 │   ├── config/                     #   shared env-var schemas (zod) + fail-fast parser
-│   ├── risk/                       #   pre-execution risk gate
 │   ├── logger/                     #   structured tagged logger
 │   ├── metrics/                    #   Prometheus registry + metric sets
 │   └── observability/              #   /health, /ready, /metrics HTTP server
 │
 ├── services/
 │   ├── liquidator/                 # @services/liquidator — standalone liquidation bot
-│   │   └── src/                    #   index.ts (boot) · config.ts · bot.ts · metrics.ts
+│   │   └── src/                    #   index.ts (boot via startRuntime) · config.ts · bot.ts · metrics.ts
 │   ├── arbitrageur/                # @services/arbitrageur — one bot, both engines
 │   │   └── src/                    #   index.ts (boot + opt-in liq engine) · config.ts · bot.ts · metrics.ts
+│   ├── operator-cli/               # @services/operator-cli — MANUAL-mode operator tool
+│   │   └── src/                    #   index.ts (commands) · operations.ts · signer.ts (eoa/safe) · config.ts
 │   └── ponder/                     # @services/ponder — unified indexer (mode-gated)
 │       ├── ponder.config.ts        #   contracts included per active mode
 │       ├── ponder.schema.ts        #   union schema
@@ -222,7 +286,7 @@ pnpm test:coverage          # With coverage
 │
 ├── contracts/                      # git submodule — vault-contracts-aave-v4 (source + deployed addrs)
 ├── test/e2e/                       # forge scripts driving the bots against a live Anvil + Bitcoin regtest
-│
+│                                   #   (incl. MANUAL suites: manual-liquidator, manual-safe-liquidator)
 ├── docker/                         # liquidator / arbitrageur / ponder Dockerfiles
 ├── docker-compose.yml              # all services orchestration
 ├── env.liquidator.example          # env templates (copy to .env.liquidator / .env.arbitrageur)
@@ -243,3 +307,8 @@ pnpm test:coverage          # With coverage
 
 - Liquidator: [overview](./docs/liquidator-overview.md), [operation guide](./docs/liquidator-operation-guide.md), [metrics](./docs/liquidator-metrics.md)
 - Arbitrageur: [overview](./docs/arbitrageur-overview.md), [operation guide](./docs/arbitrageur-operation-guide.md), [metrics](./docs/arbitrageur-metrics.md)
+
+The operation guides cover both execution modes; for the MANUAL workflow (proposals →
+`operator-cli`) and the shared seams (signer/secrets, crash-safety store, risk gate & kill
+switch), see the corresponding sections above and the env templates
+(`env.liquidator.example`, `env.arbitrageur.example`).

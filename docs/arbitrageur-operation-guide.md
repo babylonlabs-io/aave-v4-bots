@@ -19,7 +19,8 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [Environment Files](#51-environment-files)
    - [Ponder Indexer Configuration](#52-ponder-indexer-configuration)
    - [Arbitrageur Client Configuration](#53-arbitrageur-client-configuration)
-   - [Contract Addresses](#54-contract-addresses)
+   - [Execution Modes](#54-execution-modes)
+   - [Contract Addresses](#55-contract-addresses)
 6. [Wallet Setup](#6-wallet-setup)
    - [Funding Requirements](#61-funding-requirements)
 7. [Starting the Service](#7-starting-the-service)
@@ -70,7 +71,7 @@ The service consists of two components:
 | Service | Purpose | Default Endpoint |
 |---------|---------|------------------|
 | Ethereum RPC | Event indexing, transaction execution | Configurable |
-| PostgreSQL | Ponder indexer data storage | `localhost:5433` |
+| PostgreSQL | Ponder indexer data storage and optional bot StateStore | `localhost:5433` |
 
 ### 2.3. Network Requirements
 
@@ -80,6 +81,7 @@ The service consists of two components:
 |------|----------|---------|
 | 42070 | HTTP | Ponder indexer API |
 | 9091 | HTTP | Metrics, health, and readiness endpoints |
+| 9095 | HTTP | Optional risk-control kill switch, loopback by default |
 | 5433 | TCP | PostgreSQL database |
 
 ## 3. Architecture Overview
@@ -103,11 +105,24 @@ The service consists of two components:
 │         Arbitrageur Client              │              │
 │  - Polls indexer at configured interval │              │
 │  - Evaluates vault profitability        │              │
-│  - Executes swapWbtcForVault()          │──────────────┘
+│  - AUTO: signs and broadcasts           │──────────────┘
+│  - MANUAL: persists proposals for       │
+│    operator-cli                         │
+│  - Executes swapWbtcForVault()          │
 │  - Acquisition + redemption is atomic   │
+│  - (optional) also runs the liquidation │
+│    engine (see note below)              │
 │  - Exposes /metrics, /health, /ready    │
 └─────────────────────────────────────────┘
 ```
+
+**Optional liquidation engine.** When `ADAPTER_ADDRESS` + `LENS_ADDRESS` are configured, the
+same process **also** runs the liquidation engine alongside arbitrage — the Ponder indexer
+additionally indexes the Spoke + Adapter and serves `/liquidatable-positions`, and the client
+liquidates unhealthy positions. Both engines share **one** signer, executor, nonce authority,
+and risk gate, so a kill-switch halt or a tripped breaker stops **both** at once. With neither
+address set, the process runs arbitrage only. See the
+[Liquidator Operation Guide](./liquidator-operation-guide.md) for the liquidation pipeline.
 
 ## 4. Installation
 
@@ -134,11 +149,10 @@ pnpm install
 ```
 aave-v4-bots/
 ├── services/
-│   └── arbitrageur/
-│       ├── client/          # Arbitrageur bot
-│       └── ponder/          # Blockchain indexer
-├── packages/
-│   └── shared/              # Shared utilities
+│   ├── arbitrageur/         # Arbitrageur bot composition root
+│   ├── operator-cli/        # MANUAL-mode operator workflow
+│   └── ponder/              # Unified blockchain indexer
+├── packages/                # @repo/* packages by concern
 ├── .env.arbitrageur         # Client configuration
 └── docker-compose.yml       # Docker orchestration
 ```
@@ -197,22 +211,22 @@ CHAIN_ID=1
 START_BLOCK=20000000
 
 # Blockchain polling interval (milliseconds)
-PONDER_POLLING_INTERVAL=1000
+PONDER_POLLING_INTERVAL=4000
 
 # PostgreSQL connection (note: port 5433 to avoid conflict with liquidator)
 DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
 DATABASE_SCHEMA=public
 ```
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Required |
-| `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Required |
-| `CHAIN_ID` | Network chain ID (1 for mainnet, 11155111 for Sepolia) | `1` |
-| `START_BLOCK` | Block to begin indexing | `0` |
-| `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | `1000` |
-| `DATABASE_URL` | PostgreSQL connection string | Required |
-| `DATABASE_SCHEMA` | PostgreSQL schema | `public` |
+| Parameter | Description | Required? | Default |
+|-----------|-------------|-----------|---------|
+| `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Yes | — |
+| `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Yes | — |
+| `CHAIN_ID` | Network chain ID (1 for mainnet, 11155111 for Sepolia) | No | `1` |
+| `START_BLOCK` | Block to begin indexing | No | `0` |
+| `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | No | `4000` |
+| `DATABASE_URL` | PostgreSQL connection string | Yes | — |
+| `DATABASE_SCHEMA` | PostgreSQL schema | No | `public` |
 
 ### 5.3. Arbitrageur Client Configuration
 
@@ -220,9 +234,6 @@ Configure the client in `.env.arbitrageur`:
 
 ```bash
 # ====== Required ======
-
-# Private key of arbitrageur wallet (must be registered as keeper)
-ARBITRAGEUR_PRIVATE_KEY=0x...
 
 # Ponder indexer API URL
 PONDER_URL=http://localhost:42070
@@ -248,6 +259,47 @@ VAULT_PROCESSING_DELAY_MS=5000
 # Metrics server port (default: 9091)
 METRICS_PORT=9091
 
+# Execution mode (default: AUTO). MANUAL is keyless and writes proposals.
+EXECUTION_MODE=AUTO
+# MANUAL_EXECUTOR_ADDRESS=0x...
+# MANUAL_EXECUTOR_KIND=eoa
+# MANUAL_INTENT_TTL_MS=10800000
+# MANUAL_INTENT_STUCK_MS=3600000
+
+# Signer and secrets (defaults: env-backed local key from ARBITRAGEUR_PRIVATE_KEY)
+SECRETS_PROVIDER=env
+SIGNER_SOURCE=local
+ARBITRAGEUR_PRIVATE_KEY=0x...
+# SIGNER_KEY_REF=ARBITRAGEUR_PRIVATE_KEY
+# KMS_KEY_ID=arn:aws:kms:...
+# SIGNER_ADDRESS=0x...
+# AWS_REGION=us-east-1
+
+# Persistence / crash-safety. Required in MANUAL; optional in AUTO.
+DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
+# PERSISTENCE_SCHEMA=bot
+
+# Notifications (default: log-only)
+NOTIFIER=none
+# SLACK_WEBHOOK_REF=SLACK_WEBHOOK_URL
+
+# Optional liquidation engine, sharing the same signer/executor/risk gate
+# ADAPTER_ADDRESS=0x...
+# LENS_ADDRESS=0x...
+# LIQUIDATION_POLLING_INTERVAL_MS=12000
+
+# Risk gate (unset variables disable their guard)
+# RISK_MAX_CONSECUTIVE_FAILURES=5
+# RISK_MIN_PROFIT=0
+# RISK_MAX_IN_FLIGHT=3
+# RISK_MAX_DATA_STALENESS_MS=60000
+# RISK_START_HALTED=false
+# RISK_EXPECTED_CODE_HASHES=0xVaultSwap...=0xhash...
+# RISK_CODE_CHECK_INTERVAL_MS=300000
+# RISK_CONTROL_TOKEN_REF=BOT_CONTROL_TOKEN
+# RISK_CONTROL_PORT=9095
+# RISK_CONTROL_HOST=127.0.0.1
+
 # ====== Retry Configuration (Optional) ======
 
 # Maximum retry attempts (default: 3)
@@ -263,23 +315,73 @@ RETRY_MAX_DELAY_MS=30000
 TX_RECEIPT_TIMEOUT_MS=120000
 ```
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `ARBITRAGEUR_PRIVATE_KEY` | Private key for signing transactions | Required |
-| `PONDER_URL` | Indexer API endpoint | Required |
-| `CLIENT_RPC_URL` | RPC for transaction execution | Required |
-| `VAULT_SWAP_ADDRESS` | BTCVaultSwap contract address | Required |
-| `WBTC_ADDRESS` | WBTC token address | Required |
-| `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | `100` (1%) |
-| `POLLING_INTERVAL_MS` | How often to check for vaults | `30000` |
-| `VAULT_PROCESSING_DELAY_MS` | Delay between vault acquisitions | `5000` |
-| `METRICS_PORT` | HTTP server port for metrics/health | `9091` |
-| `RETRY_MAX_ATTEMPTS` | Max retry attempts on failure | `3` |
-| `RETRY_INITIAL_DELAY_MS` | Initial retry delay | `1000` |
-| `RETRY_MAX_DELAY_MS` | Maximum retry delay | `30000` |
-| `TX_RECEIPT_TIMEOUT_MS` | Transaction receipt timeout | `120000` |
+| Parameter | Description | Required? | Default |
+|-----------|-------------|-----------|---------|
+| `ARBITRAGEUR_PRIVATE_KEY` | Default local signer key ref target; not used with KMS or MANUAL | AUTO + local | — |
+| `PONDER_URL` | Indexer API endpoint | Yes | — |
+| `CLIENT_RPC_URL` | RPC for transaction execution | Yes | — |
+| `VAULT_SWAP_ADDRESS` | BTCVaultSwap contract address | Yes | — |
+| `WBTC_ADDRESS` | WBTC token address | Yes | — |
+| `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | No | `100` |
+| `POLLING_INTERVAL_MS` | How often to check for vaults | No | `30000` |
+| `VAULT_PROCESSING_DELAY_MS` | Delay between vault acquisitions | No | `5000` |
+| `METRICS_PORT` | HTTP server port for metrics/health | No | `9091` |
+| `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
+| `MANUAL_EXECUTOR_ADDRESS` | Address the operator signs/broadcasts from; Safe address in `safe` custody | MANUAL only | — |
+| `MANUAL_EXECUTOR_KIND` | Operator custody model: `eoa` or `safe` | MANUAL only | — |
+| `MANUAL_INTENT_TTL_MS` | Expire un-actioned MANUAL proposals after this many ms; `0` disables expiry | No | `10800000` |
+| `MANUAL_INTENT_STUCK_MS` | Alert on `claimed`/`submitted` MANUAL intents older than this; `0` disables | No | `3600000` |
+| `SECRETS_PROVIDER` | Secret reference backend: `env` or `aws` Secrets Manager | No | `env` |
+| `SIGNER_SOURCE` | AUTO signer backend: `local` or `aws` KMS | No | `local` |
+| `SIGNER_KEY_REF` | Local signer secret reference; defaults to the service private-key env var | No | `ARBITRAGEUR_PRIVATE_KEY` |
+| `KMS_KEY_ID` | AWS KMS key id/ARN/alias for `SIGNER_SOURCE=aws` | KMS only | — |
+| `SIGNER_ADDRESS` | Expected KMS signer address; boot fails on mismatch | No | — |
+| `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
+| `DATABASE_URL` | Enables Postgres StateStore for intent idempotency and reconcile-on-boot | MANUAL only | — |
+| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables, separate from Ponder | No | `bot` |
+| `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
+| `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
+| `ADAPTER_ADDRESS` | Enables the optional liquidation engine when set with `LENS_ADDRESS` | Liquidation only | — |
+| `LENS_ADDRESS` | AaveAdapterLens for optional liquidation mode; requires `ADAPTER_ADDRESS` | Liquidation only | — |
+| `LIQUIDATION_POLLING_INTERVAL_MS` | Poll interval for the optional liquidation engine | No | `12000` |
+| `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit | No | — |
+| `RISK_MAX_IN_FLIGHT` | Maximum in-flight actions across both engines | No | — |
+| `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old or missing | No | — |
+| `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
+| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` | No | — |
+| `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
+| `RISK_CONTROL_TOKEN_REF` | Secret reference enabling authenticated `/halt`, `/resume`, `/status` | if `RISK_START_HALTED=true` | — |
+| `RISK_CONTROL_PORT` | Kill-switch server port, separate from `METRICS_PORT` | No | `9095` |
+| `RISK_CONTROL_HOST` | Kill-switch bind host; loopback by default | No | `127.0.0.1` |
+| `RETRY_MAX_ATTEMPTS` | Max retry attempts on failure | No | `3` |
+| `RETRY_INITIAL_DELAY_MS` | Initial retry delay | No | `1000` |
+| `RETRY_MAX_DELAY_MS` | Maximum retry delay | No | `30000` |
+| `TX_RECEIPT_TIMEOUT_MS` | Transaction receipt timeout | No | `120000` |
 
-### 5.4. Contract Addresses
+### 5.4. Execution Modes
+
+`EXECUTION_MODE=AUTO` is the default keeper mode: the process resolves one
+signer, shares it across every engine this service runs, signs approvals and
+actions, broadcasts them, and waits for receipts.
+
+`EXECUTION_MODE=MANUAL` is keyless. The bot must have `DATABASE_URL`,
+`MANUAL_EXECUTOR_ADDRESS`, and `MANUAL_EXECUTOR_KIND`; it must not have a signer
+configured or the effective private-key env var present. Instead of broadcasting,
+it writes a content-hashed proposal to the StateStore and sends a notification.
+The operator uses `operator-cli` against the same `DATABASE_URL` and
+`PERSISTENCE_SCHEMA`:
+
+```bash
+pnpm --filter @services/operator-cli operator-cli list
+pnpm --filter @services/operator-cli operator-cli show <id>
+pnpm --filter @services/operator-cli operator-cli claim <id>
+pnpm --filter @services/operator-cli operator-cli broadcast <id>
+# or, after signing externally:
+pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
+```
+
+### 5.5. Contract Addresses
 
 Testnet contract addresses are provided as part of the onboarding requirements.
 
@@ -307,6 +409,7 @@ The arbitrageur wallet requires:
 **Recommended monitoring:**
 - Set up alerts for low ETH balance
 - Set up alerts for low WBTC balance
+- In MANUAL mode, monitor proposals with `operator-cli list` and Slack/log notifications
 
 ## 7. Starting the Service
 
@@ -406,16 +509,23 @@ Returns HTTP 200 if ready, HTTP 503 if dependencies unreachable.
 
 Available at `GET http://localhost:9091/metrics`
 
+The risk-control kill switch, when enabled, is not served from this port. It
+listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
+
 **Key metrics:**
 
 | Metric | Type | Description |
 |--------|------|-------------|
+| `eth_rpc_calls_total` | Counter | Outbound JSON-RPC calls by `method` |
 | `arbitrageur_vaults_acquired_total` | Counter | Total vaults acquired |
 | `arbitrageur_wbtc_spent_total` | Counter | Total WBTC spent (satoshis) |
 | `arbitrageur_wbtc_balance` | Gauge | Current WBTC balance (satoshis) |
 | `arbitrageur_errors_total` | Counter | Errors by type |
 | `arbitrageur_poll_duration_seconds` | Histogram | Poll cycle duration |
 | `arbitrageur_last_poll_timestamp` | Gauge | Last poll timestamp |
+
+If `ADAPTER_ADDRESS` and `LENS_ADDRESS` enable the optional liquidation engine,
+the same endpoint also exposes the `liquidator_*` metric set.
 
 **Recommended alerts:**
 
@@ -439,6 +549,35 @@ Available at `GET http://localhost:9091/metrics`
 ```
 
 ### 8.3. Indexer Endpoints
+
+**MANUAL proposals:**
+
+```bash
+# Proposals awaiting an operator
+pnpm --filter @services/operator-cli operator-cli list --action vault-acquisition
+
+# Inspect and claim a proposal before signing
+pnpm --filter @services/operator-cli operator-cli show <id>
+pnpm --filter @services/operator-cli operator-cli claim <id>
+
+# Broadcast with configured operator keys, or record an externally signed tx
+pnpm --filter @services/operator-cli operator-cli broadcast <id>
+pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
+```
+
+The CLI uses `CLIENT_RPC_URL`, `DATABASE_URL`, `PERSISTENCE_SCHEMA`,
+`MANUAL_EXECUTOR_ADDRESS`, and `MANUAL_EXECUTOR_KIND`. `broadcast` additionally
+needs `OPERATOR_KEY_REF` for EOA custody or `SAFE_OWNER_KEY_REFS` for Safe
+custody; `claim` and `confirm` can remain keyless.
+
+**Risk-control kill switch:**
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9095/status
+curl -XPOST -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:9095/halt?reason=incident"
+curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9095/resume
+```
 
 **Query indexer endpoints:**
 
@@ -502,6 +641,9 @@ and `isProfitable`. Slippage is applied to `currentDebt`:
 | "Gas estimation failed" | Contract call would revert | Vault state changed, will retry |
 | "Transaction timeout" | Network congestion | Increase `TX_RECEIPT_TIMEOUT_MS` |
 | "Insufficient WBTC" | Low balance | Fund wallet with more WBTC |
+| "EXECUTION_MODE=MANUAL requires DATABASE_URL" | MANUAL proposals need durable storage | Set `DATABASE_URL` and matching `PERSISTENCE_SCHEMA` |
+| "EXECUTION_MODE=MANUAL is keyless" | A signer or private key is present in MANUAL | Unset signer env and the effective private-key env var |
+| "halted (...)" | Risk gate is HALTED | Inspect logs or `GET /status`; use `POST /resume` if appropriate |
 
 ### 10.2. Error Types
 
@@ -510,7 +652,10 @@ and `isProfitable`. Slippage is applied to `currentDebt`:
 | `poll_error` | Exception escaped the poll cycle | Check logs for stack trace |
 | `ponder_fetch_error` | Failed to fetch from indexer | Verify Ponder is running |
 | `vault_skipped` | Vault no longer in escrow at preview time, or `isProfitable=false` | Normal skip — the indexer is one block behind reality, or the vault was already acquired |
+| `risk_blocked` | Risk gate blocked an otherwise executable candidate | Check risk config and kill-switch state |
+| `intent_in_flight` | Existing live intent/proposal already owns this vault | Let reconcile/operator workflow finish, or inspect the StateStore |
 | `gas_estimation_failed` | `estimateContractGas` reverted | Contract would revert; usually transient |
+| `swap_send_error` | Executor failed or aborted before a receipt wait | Check RPC, balance, approvals, or MANUAL proposal status |
 | `tx_timeout` | Receipt wait exceeded `TX_RECEIPT_TIMEOUT_MS` | Check network, increase timeout |
 | `swap_reverted` | Receipt status was `reverted` | Vault likely acquired by another |
 | `contract_revert` | `writeContract` rejected with a contract revert | Check transaction for reason |

@@ -1,3 +1,4 @@
+import { safeAbi } from "@repo/abis";
 import { type RpcCallObserver, instrumentedHttp, readCodeHash } from "@repo/chain";
 import type { ExecutionSettings, NotifierSettings, RiskSettings } from "@repo/config";
 import { type Executor, createAutoExecutorFromWallet, createManualExecutor } from "@repo/engine";
@@ -10,6 +11,7 @@ import { type RiskGate, startRiskRuntime } from "@repo/risk";
 import { type SecretsConfig, type SecretsProvider, createSecrets } from "@repo/secrets";
 import { type SignerConfig, resolveSigner } from "@repo/signer";
 import {
+  type Address,
   type Chain,
   type PublicClient,
   type Transport,
@@ -167,6 +169,46 @@ function registerGracefulShutdown(store: StateStore | undefined, logger: Logger)
 }
 
 /**
+ * Fail boot unless the MANUAL executor address matches the declared custody model. `eoa` must be a
+ * plain account (no code); `safe` must be a contract that answers the Safe interface (`getThreshold` +
+ * `nonce`) — "has code" alone is too weak, since any contract has code. A mismatch is a
+ * misconfiguration that would otherwise surface later as mis-confirmed intents, so it stops here.
+ */
+async function assertCustody(
+  publicClient: PublicClient,
+  address: Address,
+  kind: "eoa" | "safe",
+  logger: Logger
+): Promise<void> {
+  const code = await publicClient.getCode({ address });
+  const hasCode = code !== undefined && code !== "0x";
+  if (kind === "eoa") {
+    if (hasCode) {
+      throw new Error(
+        `MANUAL_EXECUTOR_KIND=eoa but ${address} has contract code — set MANUAL_EXECUTOR_KIND=safe or fix the address`
+      );
+    }
+    return;
+  }
+  if (!hasCode) {
+    throw new Error(`MANUAL_EXECUTOR_KIND=safe but ${address} has no contract code`);
+  }
+  try {
+    const threshold = await publicClient.readContract({
+      address,
+      abi: safeAbi,
+      functionName: "getThreshold",
+    });
+    await publicClient.readContract({ address, abi: safeAbi, functionName: "nonce" });
+    logger.info(`MANUAL executor ${address} verified as a Safe (threshold ${threshold})`);
+  } catch (error) {
+    throw new Error(
+      `MANUAL_EXECUTOR_KIND=safe but ${address} does not answer the Safe interface (getThreshold/nonce): ${error}`
+    );
+  }
+}
+
+/**
  * Build the process's single `Executor` from the execution mode. AUTO resolves the signing key and
  * builds the wallet + shared nonce authority (seeded from the chain before any send); MANUAL builds a
  * keyless proposer that holds no key, wallet, or nonce at all.
@@ -189,7 +231,12 @@ async function buildExecutor(
     // Keyless: no signer, no WalletClient, no NonceAllocator anywhere in this process.
     if (!store) throw new Error("MANUAL execution requires a StateStore (DATABASE_URL)");
     const identity = { from: config.execution.manualExecutorAddress, chainId: chain.id };
-    logger.info(`Execution mode: MANUAL — proposing from ${identity.from} (keyless)`);
+    // Confirm the on-chain account matches the operator's declared custody, so a `safe` deployment
+    // pointed at a bare EOA (or vice-versa) stops at boot instead of mis-confirming intents later.
+    await assertCustody(publicClient, identity.from, config.execution.executorKind, logger);
+    logger.info(
+      `Execution mode: MANUAL (${config.execution.executorKind}) — proposing from ${identity.from} (keyless)`
+    );
     return createManualExecutor({
       store,
       publicClient,
@@ -197,6 +244,7 @@ async function buildExecutor(
       identity,
       logger,
       intentTtlMs: config.execution.intentTtlMs,
+      intentStuckMs: config.execution.intentStuckMs,
     });
   }
 

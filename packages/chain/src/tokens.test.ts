@@ -1,6 +1,6 @@
 import { maxUint256 } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { TokenMetaCache, approveMax, readAllowance, readBalance, readTokenMeta } from "./index";
+import { TokenMetaCache, approveMax, readAllowance, readBalance, readTokenMeta } from "./tokens";
 
 const TOKEN = "0xtoken" as `0x${string}`;
 const OTHER = "0xother" as `0x${string}`;
@@ -29,7 +29,7 @@ function mockPublicClient() {
   };
 }
 
-describe("@repo/capital", () => {
+describe("token reads", () => {
   it("readTokenMeta reads symbol + decimals", async () => {
     const client = mockPublicClient();
     const meta = await readTokenMeta(client as unknown as PublicClientArg, TOKEN);

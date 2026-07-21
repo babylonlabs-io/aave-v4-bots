@@ -29,9 +29,13 @@ export interface MemoryStateStore extends StateStore {
   get(id: string): TxIntent | undefined;
 }
 
-/** Deep-enough copy: a fresh row and a fresh `payload`, so nothing stored is reachable by ref. */
+/** Deep-enough copy: a fresh row + fresh `payload`/`safeEnvelope`, so nothing stored is reachable by ref. */
 function clone(row: TxIntent): TxIntent {
-  return { ...row, payload: row.payload === null ? null : { ...row.payload } };
+  return {
+    ...row,
+    payload: row.payload === null ? null : { ...row.payload },
+    safeEnvelope: row.safeEnvelope === null ? null : { ...row.safeEnvelope },
+  };
 }
 
 /**
@@ -66,6 +70,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       // Copy on store too: the caller must not be able to mutate the payload after proposing.
       payload: payload === null ? null : { ...payload },
       payloadHash,
+      safeEnvelope: null,
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
     });
@@ -87,13 +92,62 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       return record(input, "proposed", payload, payloadHash);
     },
 
+    async proposals(action?: string) {
+      return [...rows.values()]
+        .filter(
+          (r) =>
+            (r.status === "proposed" || r.status === "claimed") &&
+            r.payloadHash !== null &&
+            (action === undefined || r.action === action)
+        )
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map(clone);
+    },
+
+    async getIntent(id: string) {
+      const row = rows.get(id);
+      return row === undefined ? null : clone(row);
+    },
+
+    async claimProposal(id, expectedPayloadHash, envelope) {
+      const row = rows.get(id);
+      if (!row) return { claimed: false, reason: "not-found", existing: null };
+      if (row.status !== "proposed")
+        return { claimed: false, reason: "not-proposed", existing: clone(row) };
+      if (row.payloadHash !== expectedPayloadHash)
+        return { claimed: false, reason: "hash-mismatch", existing: clone(row) };
+      const updated: TxIntent = {
+        ...row,
+        status: "claimed",
+        safeEnvelope: envelope ? { ...envelope } : null,
+        updatedAt: now(),
+      };
+      rows.set(id, updated);
+      return { claimed: true, intent: clone(updated) };
+    },
+
     async markBroadcast(id, txHash, expectedPayloadHash) {
       const row = rows.get(id);
-      // Same guards as the Postgres compare-and-set: still awaiting broadcast, still the payload the
-      // operator verified. A superseded/expired/already-reported row fails all the same.
-      if (!row || row.status !== "proposed" || row.txHash !== null) return false;
+      // Same guards as the Postgres compare-and-set: a `claimed` row (the fence ran) still awaiting
+      // broadcast, still the payload the operator verified. A released/superseded/reported row fails.
+      if (!row || row.status !== "claimed" || row.txHash !== null) return false;
       if (row.payloadHash !== expectedPayloadHash) return false;
       rows.set(id, { ...row, status: "submitted", txHash, updatedAt: now() });
+      return true;
+    },
+
+    async release(id, expectedPayloadHash) {
+      const row = rows.get(id);
+      if (!row || row.status !== "claimed" || row.payloadHash !== expectedPayloadHash) return false;
+      rows.set(id, { ...row, status: "proposed", safeEnvelope: null, updatedAt: now() });
+      return true;
+    },
+
+    async fail(id, error) {
+      const row = rows.get(id);
+      if (!row) return false;
+      if (!["proposed", "claimed", "pending", "submitted"].includes(row.status)) return false;
+      rows.set(id, { ...row, status: "failed", error: error ?? row.error, updatedAt: now() });
       return true;
     },
 

@@ -1,15 +1,16 @@
 {
-  "name": "@services/arbitrageur",
+  "name": "@services/operator-cli",
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "operator-cli": "src/index.ts"
+  },
   "scripts": {
     "start": "tsx src/index.ts",
-    "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@repo/abis": "workspace:*",
@@ -18,14 +19,8 @@
     "@repo/engine": "workspace:*",
     "@repo/execution": "workspace:*",
     "@repo/logger": "workspace:*",
-    "@repo/notifications": "workspace:*",
-    "@repo/metrics": "workspace:*",
-    "@repo/observability": "workspace:*",
     "@repo/persistence": "workspace:*",
-    "@repo/risk": "workspace:*",
-    "@repo/runtime": "workspace:*",
     "@repo/secrets": "workspace:*",
-    "@repo/signer": "workspace:*",
     "dotenv": "^16.5.0",
     "viem": "^2.37.0",
     "zod": "^3.24.0"

@@ -3,6 +3,14 @@
 Polls the Ponder indexer for escrowed vaults and acquires them by paying
 WBTC to BTCVaultSwap. Vault redemption happens atomically in the same tx.
 
+> **Execution modes.** The "Acquire" step goes through the process's one `Executor`. In
+> **AUTO** mode (default) it signs + broadcasts. In **MANUAL** mode (`EXECUTION_MODE=MANUAL`)
+> the bot is keyless: it persists a signed-tx proposal to the crash-safety store and notifies
+> an operator, who broadcasts it with [`operator-cli`](../operator-cli/README.md). This is one
+> bot running **both** engines (arbitrage always; liquidation opt-in via `ADAPTER_ADDRESS` +
+> `LENS_ADDRESS`) off one signer. The risk gate, kill switch, and crash-safety store are opt-in
+> — see the root [README](../../README.md#execution-modes) and `env.arbitrageur.example`.
+
 ## How It Works
 
 1. **Poll** — fetches `/escrowed-vaults` from the indexer every

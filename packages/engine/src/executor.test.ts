@@ -225,7 +225,9 @@ function manualExecutor(
   store: MemoryStateStore,
   notifier: Notifier,
   publicClient = manualPublicClient(),
-  intentTtlMs = 0 // expiry disabled by default; the expiry tests set it explicitly
+  intentTtlMs = 0, // expiry disabled by default; the expiry tests set it explicitly
+  intentStuckMs = 0, // stuck-check disabled by default; the stuck tests set it explicitly
+  now?: () => number
 ) {
   return createManualExecutor({
     store,
@@ -234,6 +236,8 @@ function manualExecutor(
     identity: { from: OPERATOR, chainId: 31337 },
     logger: silentLogger,
     intentTtlMs,
+    intentStuckMs,
+    now,
   });
 }
 
@@ -431,6 +435,66 @@ describe("createManualExecutor (keyless)", () => {
       await exec.reconcile("liquidation"); // a DIFFERENT action still sweeps it
 
       expect(store.all()[0]?.status).toBe("expired");
+    });
+  });
+
+  // A claimed proposal (operator mid-signing) or a submitted intent (broadcast, not yet mined) that
+  // sits too long is the signal of an abandoned claim or a dropped tx — surfaced, once, for a human.
+  describe("intent-stuck alerts (reconcile)", () => {
+    const stuckEvents = (events: NotificationEvent[]) =>
+      events.filter((e) => e.kind === "intent-stuck");
+
+    async function claimedProposal(store: MemoryStateStore) {
+      // Build a real proposal, then claim it — both at the store's current clock.
+      const notifier = fakeNotifier().notifier;
+      await manualExecutor(store, notifier).commit(CALL, claim("p"));
+      const id = idempotencyKey(claim("p"));
+      const row = store.get(id);
+      if (!row?.payloadHash) throw new Error("expected a proposed row");
+      await store.claimProposal(id, row.payloadHash);
+      return id;
+    }
+
+    it("warns for a claimed proposal past the threshold", async () => {
+      let clock = 1_000;
+      const store = createMemoryStateStore(() => clock);
+      const id = await claimedProposal(store);
+      const { notifier, events } = fakeNotifier();
+      const exec = manualExecutor(store, notifier, manualPublicClient(), 0, 60_000, () => clock);
+
+      clock = 1_000 + 60_001; // past the stuck window
+      await exec.reconcile("liquidation");
+
+      expect(stuckEvents(events)).toMatchObject([{ kind: "intent-stuck", intentId: id }]);
+    });
+
+    it("stays quiet within the threshold, then warns only once", async () => {
+      let clock = 1_000;
+      const store = createMemoryStateStore(() => clock);
+      await claimedProposal(store);
+      const { notifier, events } = fakeNotifier();
+      const exec = manualExecutor(store, notifier, manualPublicClient(), 0, 60_000, () => clock);
+
+      clock = 1_000 + 100; // still fresh
+      await exec.reconcile("liquidation");
+      expect(stuckEvents(events)).toHaveLength(0);
+
+      clock = 1_000 + 60_001; // now stuck
+      await exec.reconcile("liquidation");
+      await exec.reconcile("liquidation"); // a persistently-stuck intent must not re-alert
+      expect(stuckEvents(events)).toHaveLength(1);
+    });
+
+    it("intentStuckMs=0 disables the check", async () => {
+      let clock = 1_000;
+      const store = createMemoryStateStore(() => clock);
+      await claimedProposal(store);
+      const { notifier, events } = fakeNotifier();
+      const exec = manualExecutor(store, notifier, manualPublicClient(), 0, 0, () => clock);
+
+      clock = 1_000 + 10 ** 9;
+      await exec.reconcile("liquidation");
+      expect(stuckEvents(events)).toHaveLength(0);
     });
   });
 });

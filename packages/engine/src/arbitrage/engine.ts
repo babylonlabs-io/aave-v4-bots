@@ -7,13 +7,19 @@ import {
 } from "viem";
 
 import { vaultSwapAbi } from "@repo/abis";
-import { type TokenMeta, readBalance, readTokenMeta } from "@repo/capital";
-import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
-import { maxWbtcInWithSlippage } from "@repo/domain";
+import {
+  type RetryConfig,
+  type TokenMeta,
+  fetchWithRetry,
+  readBalance,
+  readTokenMeta,
+  withRetry,
+} from "@repo/chain";
 import { type ExecutionIdentity, waitForReceiptWithTimeout } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
 import type { AllowanceResult, Executor } from "../executor";
+import { maxWbtcInWithSlippage } from "./domain";
 import type { EscrowedVault, PonderResponse } from "./types";
 
 /**

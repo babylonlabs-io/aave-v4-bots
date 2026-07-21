@@ -1,3 +1,4 @@
+import { safeExecutionEvents } from "@repo/abis";
 import {
   type Address,
   type Hex,
@@ -8,8 +9,9 @@ import {
 } from "viem";
 
 // Chain queries: plain functions over a viem `PublicClient`, offered to whoever needs them.
-// `chain` sits at the bottom of the graph — it imports nothing from a sibling package, not even a
-// type, and declares no interface on any consumer's behalf.
+// `chain` sits near the bottom of the graph — its only sibling import is `@repo/abis` (a pure leaf:
+// contract ABIs, no logic), so contract shapes stay single-sourced there rather than duplicated here;
+// it declares no interface on any consumer's behalf.
 
 /**
  * keccak256 of the deployed bytecode at `address`, or `undefined` when the account has no code.
@@ -81,4 +83,35 @@ export function getNonce(
   blockTag: "latest" | "pending"
 ): Promise<number> {
   return publicClient.getTransactionCount({ address, blockTag });
+}
+
+/**
+ * Scan `safe`'s `Execution{Success,Failure}` events from `fromBlock` to `latest` for one whose
+ * `txHash` equals `safeTxHash`, returning the tx that emitted it (and whether the inner call
+ * succeeded) or `null` — i.e. "has the SafeTx with this exact hash executed since it was reserved?".
+ *
+ * Precise by hash, so — unlike the Safe nonce, which ANY SafeTx advances — an unrelated execution on
+ * a shared Safe never trips it. `operator-cli release` uses it to refuse releasing a claim whose
+ * SafeTx already landed (that case is a `confirm`). `fromBlock` is the claim-time height the envelope
+ * recorded, bounding the scan.
+ */
+export async function findSafeExecutionByHash(
+  publicClient: PublicClient,
+  safe: Address,
+  safeTxHash: Hex,
+  fromBlock: bigint
+): Promise<{ txHash: Hex; success: boolean } | null> {
+  const logs = await publicClient.getLogs({
+    address: safe,
+    events: safeExecutionEvents,
+    fromBlock,
+    toBlock: "latest",
+  });
+  for (const log of logs) {
+    const emitted = (log.args as { txHash?: Hex }).txHash;
+    if (emitted && emitted.toLowerCase() === safeTxHash.toLowerCase() && log.transactionHash) {
+      return { txHash: log.transactionHash, success: log.eventName === "ExecutionSuccess" };
+    }
+  }
+  return null;
 }

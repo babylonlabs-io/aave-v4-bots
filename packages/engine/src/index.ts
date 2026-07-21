@@ -1,6 +1,6 @@
-// Orchestration engines — each drives a pipeline over the domain / chain / capital /
-// execution modules and reports through an injected metrics port. Two engines because
-// the arbitrageur will run both (direct-redemption liquidation + vault arbitrage).
+// Orchestration engines — each drives a pipeline over the domain / chain / execution
+// modules and reports through an injected metrics port. Two engines because the
+// arbitrageur will run both (direct-redemption liquidation + vault arbitrage).
 
 export {
   LiquidationEngine,

@@ -13,9 +13,7 @@
   },
   "dependencies": {
     "@repo/abis": "workspace:*",
-    "@repo/capital": "workspace:*",
     "@repo/chain": "workspace:*",
-    "@repo/domain": "workspace:*",
     "@repo/execution": "workspace:*",
     "@repo/logger": "workspace:*",
     "@repo/notifications": "workspace:*",

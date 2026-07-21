@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@repo/abis": "workspace:*",
     "@repo/chain": "workspace:*",
     "@repo/config": "workspace:*",
     "@repo/engine": "workspace:*",

@@ -8,13 +8,12 @@ import {
 } from "viem";
 
 import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
-import { TokenMetaCache, readBalance } from "@repo/capital";
-import { type RetryConfig, fetchWithRetry } from "@repo/chain";
-import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "@repo/domain";
+import { type RetryConfig, TokenMetaCache, fetchWithRetry, readBalance } from "@repo/chain";
 import type { ContractCall, ExecutionIdentity } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
 import type { Executor } from "../executor";
+import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "./domain";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {

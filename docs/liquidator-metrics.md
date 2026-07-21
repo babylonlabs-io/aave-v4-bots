@@ -1,7 +1,15 @@
 # Metrics
 
 Exposed at `GET /metrics` on port `9090` (configurable via `METRICS_PORT`).
-Default Node.js process metrics are also collected.
+Default Node.js process metrics are also collected. The risk-control kill
+switch is a separate authenticated server on `RISK_CONTROL_HOST:RISK_CONTROL_PORT`
+when `RISK_CONTROL_TOKEN_REF` is set; it is not mounted on the metrics port.
+
+## Shared Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `eth_rpc_calls_total` | Counter | `method` | Outbound JSON-RPC calls, incremented by the instrumented HTTP transport |
 
 ## Liquidator Metrics
 
@@ -27,6 +35,8 @@ following label values:
 | `poll_error` | Exception escaped the poll cycle |
 | `ponder_fetch_error` | Failed to fetch `/liquidatable-positions` from Ponder |
 | `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate |
+| `risk_blocked` | Risk gate denied the action before execution |
+| `intent_in_flight` | A live persisted intent/proposal already exists for the position |
 | `tx_send_error` | Failed to broadcast the liquidation transaction |
 | `tx_reverted` | Transaction reverted on-chain (also bumps `liquidations_failed_total`) |
 | `receipt_fetch_error` | Failed to fetch transaction receipt (also bumps `liquidations_failed_total`) |

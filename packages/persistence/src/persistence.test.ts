@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import { type IntentInput, type ProposedTx, idempotencyKey } from "./index";
+import { type IntentInput, type ProposedTx, type SafeEnvelope, idempotencyKey } from "./index";
 import { createMemoryStateStore } from "./memory";
 
 // `reconcilePending` moved to `@repo/engine` (it orchestrates this store *and* chain queries);
@@ -64,6 +64,20 @@ const payload = (over: Partial<ProposedTx> = {}): ProposedTx => ({
   ...over,
 });
 
+const ZERO = "0x0000000000000000000000000000000000000000" as Address;
+const SAFE_ENV: SafeEnvelope = {
+  safeNonce: 7,
+  operation: 0,
+  safeTxGas: "0",
+  baseGas: "0",
+  gasPrice: "0",
+  gasToken: ZERO,
+  refundReceiver: ZERO,
+  safeVersion: "1.4.1",
+  safeTxHash: `0x${"e".repeat(64)}` as Hex,
+  claimBlock: 1000,
+};
+
 describe("MANUAL proposal lifecycle (memory model)", () => {
   it("propose persists the payload + hash as a `proposed` intent", async () => {
     const store = createMemoryStateStore();
@@ -100,11 +114,96 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
     expect(await store.reconcile()).toEqual([]);
   });
 
-  describe("markBroadcast", () => {
-    it("moves proposed → submitted and records the hash", async () => {
+  describe("claimProposal (the fence)", () => {
+    it("moves proposed → claimed on a matching hash", async () => {
       const store = createMemoryStateStore();
       const id = idempotencyKey(input("p"));
       await store.propose(input("p"), payload(), HASH_A);
+
+      const res = await store.claimProposal(id, HASH_A);
+      expect(res.claimed).toBe(true);
+      expect(store.get(id)?.status).toBe("claimed");
+    });
+
+    it("refuses a hash mismatch, leaving the proposal claimable", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+
+      expect(await store.claimProposal(id, HASH_B)).toMatchObject({
+        claimed: false,
+        reason: "hash-mismatch",
+      });
+      expect(store.get(id)?.status).toBe("proposed");
+    });
+
+    it("refuses a superseded proposal — the stale-broadcast race, closed before signing", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.supersede(id);
+      expect(await store.claimProposal(id, HASH_A)).toMatchObject({
+        claimed: false,
+        reason: "not-proposed",
+      });
+    });
+
+    it("refuses a second claim — the proposal is already spoken-for", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A);
+      expect(await store.claimProposal(id, HASH_A)).toMatchObject({
+        claimed: false,
+        reason: "not-proposed",
+      });
+    });
+
+    it("reports not-found for an unknown id", async () => {
+      const store = createMemoryStateStore();
+      expect(await store.claimProposal("nope", HASH_A)).toEqual({
+        claimed: false,
+        reason: "not-found",
+        existing: null,
+      });
+    });
+
+    it("persists the Safe envelope for `safe` custody", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+
+      const res = await store.claimProposal(id, HASH_A, SAFE_ENV);
+      expect(res.claimed && res.intent.safeEnvelope).toMatchObject({
+        safeTxHash: SAFE_ENV.safeTxHash,
+        safeNonce: 7,
+      });
+      expect(store.get(id)?.safeEnvelope?.safeNonce).toBe(7);
+    });
+
+    it("a claimed proposal dedups a re-propose, stays off reconcile, and survives the expiry sweep", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A);
+
+      expect((await store.propose(input("p"), payload(), HASH_A)).recorded).toBe(false);
+      expect(await store.reconcile()).toEqual([]); // no tx yet — not on-chain
+      expect(await store.expireProposals(0)).toBe(0); // sweep only touches `proposed`
+      expect(store.get(id)?.status).toBe("claimed");
+    });
+  });
+
+  describe("markBroadcast (claimed → submitted)", () => {
+    const claim = async (store: ReturnType<typeof createMemoryStateStore>, id: string) => {
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A);
+    };
+
+    it("moves claimed → submitted and records the hash", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await claim(store, id);
 
       expect(await store.markBroadcast(id, TX, HASH_A)).toBe(true);
       expect(store.get(id)).toMatchObject({ status: "submitted", txHash: TX });
@@ -112,31 +211,94 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
       expect((await store.reconcile()).map((r) => r.id)).toContain(id);
     });
 
-    it("rejects a hash that does not match the proposal the operator verified", async () => {
+    it("refuses an unclaimed proposal — broadcast requires the fence", async () => {
       const store = createMemoryStateStore();
       const id = idempotencyKey(input("p"));
       await store.propose(input("p"), payload(), HASH_A);
 
-      expect(await store.markBroadcast(id, TX, HASH_B)).toBe(false);
+      expect(await store.markBroadcast(id, TX, HASH_A)).toBe(false);
       expect(store.get(id)).toMatchObject({ status: "proposed", txHash: null });
     });
 
-    it("rejects once the proposal was superseded (payload changed under the operator)", async () => {
+    it("rejects a hash that no longer matches the claimed payload", async () => {
       const store = createMemoryStateStore();
       const id = idempotencyKey(input("p"));
-      await store.propose(input("p"), payload(), HASH_A);
-      await store.supersede(id);
-      // The operator tries to broadcast the hash they saw; it is no longer live.
-      expect(await store.markBroadcast(id, TX, HASH_A)).toBe(false);
+      await claim(store, id);
+      expect(await store.markBroadcast(id, TX, HASH_B)).toBe(false);
     });
 
     it("is not idempotent — a second report is refused (no hash overwrite)", async () => {
       const store = createMemoryStateStore();
       const id = idempotencyKey(input("p"));
-      await store.propose(input("p"), payload(), HASH_A);
+      await claim(store, id);
       await store.markBroadcast(id, TX, HASH_A);
       expect(await store.markBroadcast(id, HASH_B, HASH_A)).toBe(false);
       expect(store.get(id)?.txHash).toBe(TX);
+    });
+  });
+
+  describe("release + fail (recovery)", () => {
+    it("release reverts claimed → proposed and clears the envelope", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A, SAFE_ENV);
+
+      expect(await store.release(id, HASH_A)).toBe(true);
+      expect(store.get(id)).toMatchObject({ status: "proposed", safeEnvelope: null });
+    });
+
+    it("release refuses a non-claimed row or a hash mismatch", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      expect(await store.release(id, HASH_A)).toBe(false); // still `proposed`, not claimed
+      await store.claimProposal(id, HASH_A);
+      expect(await store.release(id, HASH_B)).toBe(false); // wrong hash
+      expect(store.get(id)?.status).toBe("claimed");
+    });
+
+    it("fail marks a live intent failed and revives the subject", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A);
+
+      expect(await store.fail(id, "dropped")).toBe(true);
+      expect(store.get(id)).toMatchObject({ status: "failed", error: "dropped" });
+      expect((await store.propose(input("p"), payload(), HASH_B)).recorded).toBe(true);
+    });
+
+    it("fail refuses a terminal intent", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.recordIntent(input("p"));
+      await store.transition(id, "confirmed");
+      expect(await store.fail(id)).toBe(false);
+    });
+  });
+
+  describe("proposals (operator work-list)", () => {
+    it("returns proposed + claimed rows, oldest first, and scopes by action", async () => {
+      const store = createMemoryStateStore();
+      await store.propose(input("a", { action: "liquidation" }), payload(), HASH_A);
+      await store.propose(input("b", { action: "vault-acquisition" }), payload(), HASH_B);
+      const idA = idempotencyKey(input("a", { action: "liquidation" }));
+      await store.claimProposal(idA, HASH_A);
+
+      const all = await store.proposals();
+      expect(all.map((r) => r.subject)).toEqual(["a", "b"]);
+      expect(all.find((r) => r.subject === "a")?.status).toBe("claimed");
+
+      expect((await store.proposals("liquidation")).map((r) => r.subject)).toEqual(["a"]);
+    });
+
+    it("excludes AUTO `pending` (no payload) and terminal rows", async () => {
+      const store = createMemoryStateStore();
+      await store.recordIntent(input("auto")); // AUTO `pending`, no payload
+      await store.propose(input("man"), payload(), HASH_A);
+
+      expect((await store.proposals()).map((r) => r.subject)).toEqual(["man"]);
     });
   });
 
