@@ -4,10 +4,10 @@
 // secret is hard-wired into a service. The signing key material itself lives in
 // `@repo/signer`, not here — this only resolves the ref to a value.
 
-import { type AwsSecretsConfig, type SecretsClientLike, createAwsSecrets } from "./aws";
+import { type AwsSecretsConfig, type SecretsSend, createAwsSecrets } from "./aws";
 
 // `./aws` adapter — resolves refs from AWS Secrets Manager (implemented in `./aws.ts`).
-export { type AwsSecretsConfig, type SecretsClientLike, createAwsSecrets };
+export { type AwsSecretsConfig, type SecretsSend, createAwsSecrets };
 
 export interface SecretsProvider {
   /** Resolve a secret by ref; throws if missing/unset. */

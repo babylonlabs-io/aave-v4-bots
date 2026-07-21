@@ -34,7 +34,15 @@ import type { Signer } from "./index";
 //   2. **recovery id:** KMS returns a bare `(r, s)` with no `v`; we recover the address
 //      for each candidate parity and keep the one that matches the key's address.
 
-/** The slice of the AWS `KMSClient` this adapter uses — just `send`. */
+/**
+ * The slice of the AWS `KMSClient` this adapter uses — just `send`.
+ *
+ * `send` is the single dispatch method of every AWS SDK v3 client: you hand it a
+ * `Command` object (here `GetPublicKeyCommand` / `SignCommand`) and it performs the HTTP
+ * call and resolves to that command's typed output. Since it's the only thing we call,
+ * picking it is enough to type the injected client — and to fake it in tests without
+ * standing up a real `KMSClient`.
+ */
 export type KmsSend = Pick<KMSClient, "send">;
 
 export interface AwsSignerConfig {
