@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createRiskGate } from "./gate";
-import type { ActionOutcome, RiskAction, RiskGate } from "./types";
+import type { ActionOutcome, RiskAction, RiskEvent, RiskGate } from "./types";
 
 const action = (over: Partial<RiskAction> = {}): RiskAction => ({
   kind: "liquidation",
@@ -58,6 +58,66 @@ describe("@repo/risk createRiskGate", () => {
       act(gate, { ok: false });
       act(gate, { ok: false });
       expect(gate.state()).toBe("RUNNING"); // only 2 in a row since the reset
+    });
+  });
+
+  describe("onEvent (operator alerting)", () => {
+    it("fires once when a tripped breaker halts, and again on resume", () => {
+      const events: RiskEvent[] = [];
+      const gate = createRiskGate({ maxConsecutiveFailures: 1, onEvent: (e) => events.push(e) });
+
+      act(gate, { ok: false }); // trips → halted
+      expect(events).toEqual([{ kind: "halted", reason: "1 consecutive failures" }]);
+
+      gate.resume();
+      expect(events).toEqual([
+        { kind: "halted", reason: "1 consecutive failures" },
+        { kind: "resumed" },
+      ]);
+    });
+
+    it("fires on an explicit kill-switch halt", () => {
+      const events: RiskEvent[] = [];
+      const gate = createRiskGate({ onEvent: (e) => events.push(e) });
+      gate.halt("manual kill-switch");
+      expect(events).toEqual([{ kind: "halted", reason: "manual kill-switch" }]);
+    });
+
+    it("emits on the transition only — a re-halt while already HALTED is silent", () => {
+      // The code-hash guard re-halts every tick while a mismatch persists; the operator must not
+      // get that alert once a minute forever.
+      const events: RiskEvent[] = [];
+      const gate = createRiskGate({ onEvent: (e) => events.push(e) });
+      gate.halt("first");
+      gate.halt("second"); // already HALTED
+      gate.halt("third");
+      expect(events).toEqual([{ kind: "halted", reason: "first" }]);
+    });
+
+    it("does not fire on a resume that changes nothing", () => {
+      const events: RiskEvent[] = [];
+      const gate = createRiskGate({ onEvent: (e) => events.push(e) });
+      gate.resume(); // already RUNNING
+      expect(events).toEqual([]);
+    });
+
+    it("swallows a throwing sink — alerting must never break the gate", () => {
+      const gate = createRiskGate({
+        onEvent: () => {
+          throw new Error("sink is broken");
+        },
+      });
+      // The halt must still take effect even though the sink threw.
+      expect(() => gate.halt("x")).not.toThrow();
+      expect(gate.state()).toBe("HALTED");
+    });
+
+    it("does not fire when startHalted (no RUNNING→HALTED transition happened)", () => {
+      const events: RiskEvent[] = [];
+      const gate = createRiskGate({ startHalted: true, onEvent: (e) => events.push(e) });
+      // Booting halted is a cold start, not a state change an operator needs re-told about.
+      expect(events).toEqual([]);
+      expect(gate.state()).toBe("HALTED");
     });
   });
 

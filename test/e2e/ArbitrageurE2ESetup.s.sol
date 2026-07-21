@@ -55,7 +55,9 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
         _createArbitrageurEnvFile(address(lens), startBlock);
         _startProcess(".env.arbitrageur", "arbitrageur:indexer", "/tmp/arb-ponder.log");
         vm.sleep(10000); // Wait 10s for the unified Ponder to initialize
-        _startProcess(".env.arbitrageur", "arbitrageur:run", "/tmp/arb-bot.log");
+        // The bot waits for the Lens (this script's last-broadcast deploy) before booting, so its
+        // risk-gate code-hash check never races the forge broadcast phase. See `_startBotProcess`.
+        _startBotProcess(".env.arbitrageur", "arbitrageur:run", "/tmp/arb-bot.log", address(lens));
         _saveInitialBalances();
 
         (address borrower,) = _setupLiquidatablePosition(lens);
@@ -169,4 +171,58 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "\n",
             "# Risk gate (ONE gate shared by BOTH engines this process runs)\n",
             _riskEnv(lensAddress),
+            "EOF"
+        );
+        vm.ffi(inputs);
+    }
+
+    /// @notice Risk-gate env for the arbitrageur, which runs the arbitrage AND liquidation engines
+    ///         off one signer and therefore one shared `RiskGate`.
+    /// @dev Pins the **real deployed bytecode** of every contract the process calls:
+    ///      `address.codehash` is `keccak256(runtime code)`, exactly what the bot's `readCodeHash`
+    ///      computes from `eth_getCode`. Disagreement boots the bot HALTED, so it never acquires a
+    ///      vault and the verify script times out — this suite is the only place the code-hash
+    ///      guard runs against a real chain.
+    ///
+    ///      `RISK_MIN_PROFIT` and `RISK_MAX_DATA_STALENESS_MS` are deliberately unset: both are
+    ///      covered by engine unit tests, and both would couple this suite to Anvil's block
+    ///      cadence and to e2e-specific pricing.
+    function _riskEnv(address lensAddress) internal view returns (string memory) {
+        string memory hashes = string.concat(
+            "RISK_EXPECTED_CODE_HASHES=",
+            vm.toString(address(vaultSwap)),
+            "=",
+            vm.toString(address(vaultSwap).codehash),
+            ",",
+            vm.toString(address(aaveAdapter)),
+            "=",
+            vm.toString(address(aaveAdapter).codehash),
+            ",",
+            vm.toString(lensAddress),
+            "=",
+            vm.toString(lensAddress.codehash),
+            "\n"
+        );
+
+        return string.concat(
+            // Generous on purpose. These two exist here to prove the env parses and the gate is
+            // wired into the engines, not to be exercised: a genuinely broken bot fails this suite
+            // by never trading. Tight thresholds would only add CI flake.
+            "RISK_MAX_CONSECUTIVE_FAILURES=10\n",
+            "RISK_MAX_IN_FLIGHT=5\n",
+            hashes,
+            "RISK_CODE_CHECK_INTERVAL_MS=5000\n",
+            "RISK_CONTROL_TOKEN_REF=",
+            E2EConstants.CONTROL_TOKEN_REF,
+            "\n",
+            E2EConstants.CONTROL_TOKEN_REF,
+            "=",
+            E2EConstants.CONTROL_TOKEN,
+            "\n",
+            "RISK_CONTROL_PORT=",
+            vm.toString(E2EConstants.ARBITRAGEUR_CONTROL_PORT),
+            "\n",
+            "RISK_CONTROL_HOST=127.0.0.1\n"
+        );
+    }
 }

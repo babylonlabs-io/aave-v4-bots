@@ -6,7 +6,7 @@ import {
   TransactionNotFoundError,
   TransactionReceiptNotFoundError,
 } from "viem";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   type ChainReader,
@@ -230,6 +230,47 @@ describe("reconcilePending", () => {
     const store = createMemoryStateStore();
     const summary = await reconcilePending({ store, signer: SIGNER, reader: reader({}) });
     expect(summary.examined).toBe(0);
+  });
+
+  // A keyless MANUAL bot has no signer nonce to read: its in-flight intents were broadcast by the
+  // operator, so every one has `nonce === null`. Reconcile must resolve them by receipt alone and
+  // issue no `getTransactionCount` — otherwise a keyless process makes a call it has no basis for.
+  it("issues NO nonce reads when every in-flight intent is nonce-less (keyless path)", async () => {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    // An operator-broadcast intent: a hash, but no nonce (see StateStore.markBroadcast).
+    await store.transition(id, "submitted", { txHash: "0xhash" as Hex });
+
+    const getNonce = vi.fn(async () => 0);
+    const summary = await reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: { ...reader({ receipts: { "0xhash": "success" } }), getNonce },
+    });
+
+    expect(getNonce).not.toHaveBeenCalled();
+    expect(summary).toMatchObject({ confirmed: 1 }); // still resolved, by receipt
+  });
+
+  it("does read the signer nonce when some in-flight intent carries one (AUTO path)", async () => {
+    const store = createMemoryStateStore();
+    await store.recordIntent(input("p"));
+    await store.transition(idempotencyKey(input("p")), "submitted", {
+      nonce: 5,
+      txHash: "0xhash" as Hex,
+    });
+
+    const getNonce = vi.fn(async (_a: Address, tag: "latest" | "pending") =>
+      tag === "latest" ? 5 : 6
+    );
+    await reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: { ...reader({ receipts: { "0xhash": null } }), getNonce },
+    });
+
+    expect(getNonce).toHaveBeenCalled(); // the nonce branches need real counts
   });
 });
 

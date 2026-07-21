@@ -1,9 +1,16 @@
-import { PreBroadcastError, createNonceAllocator, createNonceLease } from "@repo/execution";
+import {
+  type NonceAllocator,
+  PreBroadcastError,
+  createNonceAllocator,
+  createNonceLease,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
-import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
+import type { NotificationEvent, Notifier } from "@repo/notifications";
+import { type MemoryStateStore, type StateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
-import { TransactionReceiptNotFoundError, maxUint256 } from "viem";
+import { type PublicClient, TransactionReceiptNotFoundError, maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAutoExecutorFromWallet, createManualExecutor } from "../executor";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
 
@@ -41,10 +48,12 @@ const mockPosition: LiquidatablePosition = {
 /**
  * A `TxSender` that skips real signing but honors the contract that matters: `onSigned` (the
  * durable nonce + hash record) runs BEFORE the broadcast resolves, so crash-safety tests
- * exercise the same ordering as the real sender.
+ * exercise the same ordering as the real sender. Carries an `identity` like a real sender — the
+ * engine reads `sender.identity` for the intent's chain id and the simulation `from`.
  */
-function mockSender() {
+function mockSender(identity = { from: "0xliquidator" as `0x${string}`, chainId: 31337 }) {
   return {
+    identity,
     send: vi.fn(
       async (
         call: { nonce?: number },
@@ -98,14 +107,33 @@ function createMockClients() {
   };
 }
 
+/**
+ * A pre-seeded pass-through allocator: hands out nonce 0 and treats `resync` as a no-op. For tests
+ * that drive a send path directly (e.g. `ensureApproval`) without a `run()` to seed the lease from
+ * the chain; `run()`-based tests keep the default real allocator, seeded from `getTransactionCount`.
+ */
+const passthroughNonces = (): NonceAllocator => ({
+  withNonce: (send) => send(0),
+  resync: async () => {},
+});
+
+type AutoDeps = Parameters<typeof createAutoExecutorFromWallet>[0];
+
+/**
+ * Build the engine with a default AUTO executor over the mock wallet + sender (the composition the
+ * `@repo/runtime` root does in production), unless a test injects its own `executor` (e.g. a keyless
+ * `ManualExecutor`). `store`/`nonces` steer the executor's crash-safety + nonce plumbing.
+ */
 function createBot(
   clients: ReturnType<typeof createMockClients>,
-  overrides: Partial<LiquidationEngineConfig> = {}
+  overrides: Partial<LiquidationEngineConfig> & {
+    store?: StateStore;
+    nonces?: NonceAllocator;
+  } = {}
 ): LiquidationEngine {
+  const { store, nonces, executor, ...engineOverrides } = overrides;
   return new LiquidationEngine({
-    walletClient: clients.walletClient as unknown as LiquidationEngineConfig["walletClient"],
     publicClient: clients.publicClient as unknown as LiquidationEngineConfig["publicClient"],
-    sender: clients.sender as unknown as LiquidationEngineConfig["sender"],
     adapterAddress: "0xadapter" as `0x${string}`,
     lensAddress: "0xlens" as `0x${string}`,
     wbtcAddress: "0xwbtc" as `0x${string}`,
@@ -117,7 +145,18 @@ function createBot(
     metrics,
     logger: silentLogger,
     risk: createRiskGate(), // permissive by default
-    ...overrides,
+    executor:
+      executor ??
+      createAutoExecutorFromWallet({
+        store,
+        nonces,
+        sender: clients.sender as unknown as AutoDeps["sender"],
+        publicClient: clients.publicClient as unknown as AutoDeps["publicClient"],
+        walletClient: clients.walletClient as unknown as AutoDeps["walletClient"],
+        txReceiptTimeoutMs: 60000,
+        logger: silentLogger,
+      }),
+    ...engineOverrides,
   });
 }
 
@@ -521,7 +560,7 @@ describe("LiquidationEngine", () => {
       );
     });
 
-    it("handles tx send failure gracefully (continues to next)", async () => {
+    it("stops the cycle after a send error (does not process later positions)", async () => {
       const clients = createMockClients();
 
       const position2: LiquidatablePosition = {
@@ -530,10 +569,11 @@ describe("LiquidationEngine", () => {
         borrower: "0xborrower0000000000000000000000000000000002",
       };
 
-      // First writeContract fails, second succeeds
-      clients.sender.send
-        .mockRejectedValueOnce(new Error("nonce too low"))
-        .mockResolvedValueOnce("0xtxhash2");
+      // The first send throws — an AMBIGUOUS broadcast (the tx may be on the wire). The loop must
+      // break rather than reserve the next nonce for position 2: continuing could leave a gap that
+      // wedges every later tx, or double-act if position 1 actually landed. The next cycle's
+      // reconcile + resync resolves the in-flight intent by nonce vs. chain.
+      clients.sender.send.mockRejectedValueOnce(new Error("nonce too low"));
 
       const bot = createBot(clients);
 
@@ -549,10 +589,10 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      // Both attempted
-      expect(clients.sender.send).toHaveBeenCalledTimes(2);
-      // Only one receipt waited for
-      expect(clients.publicClient.waitForTransactionReceipt).toHaveBeenCalledTimes(1);
+      // Only the first position was attempted; the cycle stopped before position 2.
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      // Nothing was successfully sent, so no receipt is awaited.
+      expect(clients.publicClient.waitForTransactionReceipt).not.toHaveBeenCalled();
     });
 
     it("records failed liquidation when receipt shows reverted", async () => {
@@ -610,6 +650,7 @@ describe("LiquidationEngine", () => {
 
       const bot = createBot(clients, {
         debtTokenAddresses: ["0xtoken1" as `0x${string}`],
+        nonces: passthroughNonces(),
       });
 
       await bot.ensureApproval();
@@ -648,7 +689,7 @@ describe("LiquidationEngine", () => {
           return Promise.resolve(0n);
         }
       );
-      const bot = createBot(clients, { debtTokenAddresses: [] });
+      const bot = createBot(clients, { debtTokenAddresses: [], nonces: passthroughNonces() });
 
       // WBTC approval is unconditional — the adapter pulls WBTC from msg.sender
       // for fairness + direct-redemption fee, independent of whether WBTC is a
@@ -944,6 +985,148 @@ describe("LiquidationEngine", () => {
         expect.objectContaining({ nonce: 11 }),
         expect.any(Function)
       );
+    });
+  });
+
+  describe("execution identity", () => {
+    const feed = () =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: [mockPosition], total: 1, checked: 1 }),
+      });
+
+    it("reads identity off the sender (intent chain id + simulation `from`)", async () => {
+      const store = createMemoryStateStore();
+      const clients = createMockClients(); // sender identity: { from: 0xliquidator, chainId: 31337 }
+      const bot = createBot(clients, { store });
+      global.fetch = feed();
+
+      await bot.run();
+
+      expect(store.all()[0]?.chainId).toBe(31337);
+      expect(clients.publicClient.simulateContract).toHaveBeenCalledWith(
+        expect.objectContaining({ account: "0xliquidator" })
+      );
+    });
+
+    it("follows the sender's identity, not the wallet (the keyless-MANUAL substitution)", async () => {
+      const store = createMemoryStateStore();
+      const clients = createMockClients();
+      // A sender carrying the OPERATOR's identity — as a keyless MANUAL bot would inject. The
+      // wallet still says chain 31337 / 0xliquidator, but the sender is the source of truth.
+      clients.sender = mockSender({ from: "0xoperator" as `0x${string}`, chainId: 424242 });
+      const bot = createBot(clients, { store });
+      global.fetch = feed();
+
+      await bot.run();
+
+      expect(store.all()[0]?.chainId).toBe(424242);
+      expect(clients.publicClient.simulateContract).toHaveBeenCalledWith(
+        expect.objectContaining({ account: "0xoperator" })
+      );
+    });
+  });
+
+  // End-to-end at the engine level: a MANUAL bot finds opportunities the same way (risk gate,
+  // simulation, all keyless reads) and, at the commit, writes a proposal + notifies instead of
+  // broadcasting. The `Executor` seam is unit-tested in `executor.test.ts`; this proves the engine
+  // loop drives it correctly — including the keyless promise (no signer nonce reads).
+  describe("MANUAL mode (keyless)", () => {
+    const OPERATOR = "0xoperator00000000000000000000000000000000" as `0x${string}`;
+    // Unlike AUTO's mocked sender, MANUAL's `propose` ABI-encodes the call for real — so the
+    // position's addresses must be valid hex. `mockPosition.borrower` is a readable placeholder
+    // (`0xborrower…`, not hex), which the encoder rejects; give this one a real address.
+    const manualPosition: LiquidatablePosition = {
+      ...mockPosition,
+      borrower: "0x00000000000000000000000000000000000b0b01",
+    };
+    const feed = () =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: [manualPosition], total: 1, checked: 1 }),
+      });
+
+    function manualBot(store: MemoryStateStore) {
+      const clients = createMockClients();
+      const events: NotificationEvent[] = [];
+      const notifier: Notifier = { notify: async (e) => void events.push(e) };
+      // A keyless publicClient for the executor (reconcile's reader + allowance reads). Its
+      // `getTransactionCount` is spied so the test can prove a MANUAL cycle issues NO nonce reads.
+      const getTransactionCount = vi.fn(async () => 0);
+      const executorPublicClient = {
+        getTransaction: vi.fn(async () => ({ hash: "0xhash" })),
+        getTransactionReceipt: vi.fn(),
+        readContract: vi.fn(async () => 0n),
+        getTransactionCount,
+      } as unknown as PublicClient;
+      const executor = createManualExecutor({
+        store,
+        publicClient: executorPublicClient,
+        notifier,
+        identity: { from: OPERATOR, chainId: 31337 },
+        logger: silentLogger,
+        intentTtlMs: 0, // expiry not under test here
+      });
+      // Injecting an executor makes the engine keyless: no `walletClient`, `sender`, or `nonces`.
+      // The adapter/LLP addresses must be real hex too — MANUAL encodes the call + hashes the
+      // payload (`getAddress`) for real, where AUTO's mocked sender skips both.
+      const bot = createBot(clients, {
+        store,
+        executor,
+        adapterAddress: "0x00000000000000000000000000000000000ada01",
+        llpAddress: "0x0000000000000000000000000000000000011b01",
+      });
+      return { bot, clients, events, getTransactionCount };
+    }
+
+    it("proposes + notifies for a liquidatable position, broadcasting nothing", async () => {
+      const store = createMemoryStateStore();
+      const { bot, clients, events } = manualBot(store);
+      global.fetch = feed();
+
+      await bot.run();
+
+      // A proposal was persisted (keyless: `proposed`, no nonce) — not a broadcast.
+      const row = store.all()[0];
+      expect(row).toMatchObject({
+        action: "liquidation",
+        subject: mockPosition.proxyAddress,
+        status: "proposed",
+        nonce: null,
+      });
+      // The operator was notified once, with the payload hash out-of-band (their tamper check).
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        kind: "manual-intent",
+        action: "liquidation",
+        subject: mockPosition.proxyAddress,
+        payloadHash: row?.payloadHash,
+      });
+      // Nothing was signed or broadcast — the (unused) AUTO sender is never touched.
+      expect(clients.sender.send).not.toHaveBeenCalled();
+    });
+
+    it("issues no signer nonce reads across the cycle (the keyless bar)", async () => {
+      const store = createMemoryStateStore();
+      const { bot, clients, getTransactionCount } = manualBot(store);
+      global.fetch = feed();
+
+      await bot.run();
+
+      expect(getTransactionCount).not.toHaveBeenCalled();
+      expect(clients.publicClient.getTransactionCount).not.toHaveBeenCalled();
+    });
+
+    it("dedups across cycles — one proposal, one notification for a stable position", async () => {
+      const store = createMemoryStateStore();
+      const { bot, events } = manualBot(store);
+      global.fetch = feed();
+
+      await bot.run();
+      await bot.run();
+
+      expect(store.all()).toHaveLength(1);
+      expect(events).toHaveLength(1);
     });
   });
 });

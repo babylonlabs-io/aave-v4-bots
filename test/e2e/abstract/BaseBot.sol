@@ -40,7 +40,7 @@ abstract contract BaseBot is BaseE2E {
 
     /// @notice Assert the running bot's kill switch behaves, via `test/e2e/scripts/killswitch-check.sh`.
     /// @dev The only place the whole control-plane path is exercised in a real process: the token
-    ///      resolved through `@repo/secrets`, the control server bound to loopback on its own
+    ///      resolved through `repo/secrets`, the control server bound to loopback on its own
     ///      socket, and — critically — the metrics port serving no control route at all. The
     ///      script exits non-zero on any failed assertion, which reverts this script.
     ///      Requires `--ffi`, and a cwd of the repo root (how CI and e2e-local.sh invoke forge).

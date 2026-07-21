@@ -1,8 +1,9 @@
-import { createNonceAllocator, createNonceLease } from "@repo/execution";
+import { type NonceAllocator, createNonceAllocator, createNonceLease } from "@repo/execution";
 import type { Logger } from "@repo/logger";
-import { type MemoryStateStore, createMemoryStateStore } from "@repo/persistence";
+import { type MemoryStateStore, type StateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAutoExecutorFromWallet } from "../executor";
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "./engine";
 import type { EscrowedVault } from "./types";
 
@@ -32,8 +33,9 @@ const mockVault: EscrowedVault = {
  * durable nonce + hash record) runs BEFORE the broadcast resolves, so crash-safety tests
  * exercise the same ordering as the real sender.
  */
-function mockSender() {
+function mockSender(identity = { from: "0xarbitrageur" as `0x${string}`, chainId: 31337 }) {
   return {
+    identity,
     send: vi.fn(
       async (
         call: { nonce?: number },
@@ -94,14 +96,33 @@ function createMockClients() {
   };
 }
 
+/**
+ * A pre-seeded pass-through allocator: hands out nonce 0 and treats `resync` as a no-op. The
+ * default for tests that drive `acquireVault` directly (no `run()` to seed the lease from the
+ * chain); the crash-safety / nonce-sequencing tests inject a real allocator instead.
+ */
+const passthroughNonces = (): NonceAllocator => ({
+  withNonce: (send) => send(0),
+  resync: async () => {},
+});
+
+type AutoDeps = Parameters<typeof createAutoExecutorFromWallet>[0];
+
+/**
+ * Build the engine with a default AUTO executor over the mock wallet + sender (the composition the
+ * `@repo/runtime` root does in production), unless a test injects its own `executor`. `store`/`nonces`
+ * steer the executor's crash-safety + nonce plumbing; `nonces` defaults to the pass-through allocator.
+ */
 function createBot(
   clients: ReturnType<typeof createMockClients>,
-  overrides: Partial<ArbitrageEngineConfig> = {}
+  overrides: Partial<ArbitrageEngineConfig> & {
+    store?: StateStore;
+    nonces?: NonceAllocator;
+  } = {}
 ): ArbitrageEngine {
+  const { store, nonces, executor, ...engineOverrides } = overrides;
   return new ArbitrageEngine({
-    walletClient: clients.walletClient as unknown as ArbitrageEngineConfig["walletClient"],
     publicClient: clients.publicClient as unknown as ArbitrageEngineConfig["publicClient"],
-    sender: clients.sender as unknown as ArbitrageEngineConfig["sender"],
     vaultSwapAddress: "0xvaultswap",
     wbtcAddress: "0xwbtc",
     ponderUrl: "http://localhost:42070",
@@ -112,7 +133,18 @@ function createBot(
     metrics,
     logger: silentLogger,
     risk: createRiskGate(), // permissive by default
-    ...overrides,
+    executor:
+      executor ??
+      createAutoExecutorFromWallet({
+        store,
+        nonces: nonces ?? passthroughNonces(),
+        sender: clients.sender as unknown as AutoDeps["sender"],
+        publicClient: clients.publicClient as unknown as AutoDeps["publicClient"],
+        walletClient: clients.walletClient as unknown as AutoDeps["walletClient"],
+        txReceiptTimeoutMs: 1000,
+        logger: silentLogger,
+      }),
+    ...engineOverrides,
   });
 }
 

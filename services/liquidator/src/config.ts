@@ -1,7 +1,11 @@
 import {
+  type ExecutionSettings,
+  type NotifierSettings,
   type RiskSettings,
   addressListSchema,
   addressSchema,
+  buildExecutionConfig,
+  buildNotifierConfig,
   buildPersistenceConfig,
   buildRiskConfig,
   buildSecretsConfig,
@@ -43,6 +47,14 @@ export interface Config extends LiquidationEngineParams, RiskSettings {
   // Crash-safety persistence. Present iff DATABASE_URL is set — otherwise the bot runs
   // without a StateStore (in-memory nonce sequencing, no idempotency), unchanged.
   persistence?: PersistenceConfig;
+
+  // Outbound alerts (risk halts, and MANUAL proposals). The Slack webhook is resolved from a
+  // secret ref at boot (index.ts); `none` (default) logs only.
+  notifier: NotifierSettings;
+
+  // Execution mode. AUTO (default) signs + broadcasts; MANUAL is keyless — persists proposals and
+  // notifies an operator. In MANUAL the boot resolves no signing key (see index.ts).
+  execution: ExecutionSettings;
 }
 
 const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -115,6 +127,12 @@ export function loadConfig(): Config {
     txReceiptTimeoutMs: Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10),
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),
+    notifier: buildNotifierConfig(env),
+    // Pass whether the effective signing-key env var actually holds a value, so a MANUAL boot
+    // rejects a raw key left in the process env (see `buildExecutionConfig`).
+    execution: buildExecutionConfig(env, {
+      signerKeyPresent: Boolean(process.env[env.SIGNER_KEY_REF ?? DEFAULT_KEY_REF]),
+    }),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,

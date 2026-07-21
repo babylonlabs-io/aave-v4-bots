@@ -36,7 +36,9 @@ contract LiquidationE2ESetup is BaseE2ESetup {
         _createEnvFile(address(lens), startBlock);
         _startProcess(".env.liquidator", "liquidator:indexer", "/tmp/liq-ponder.log");
         vm.sleep(10000); // Wait 10s for Ponder to initialize
-        _startProcess(".env.liquidator", "liquidator:run", "/tmp/liq-bot.log");
+        // The bot waits for the Lens (this script's last-broadcast deploy) before booting, so its
+        // risk-gate code-hash check never races the forge broadcast phase. See `_startBotProcess`.
+        _startBotProcess(".env.liquidator", "liquidator:run", "/tmp/liq-bot.log", address(lens));
         _saveInitialBalances();
 
         (address borrower,) = _setupLiquidatablePosition(lens);

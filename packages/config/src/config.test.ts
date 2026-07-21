@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   addressListSchema,
   addressSchema,
+  buildExecutionConfig,
+  buildNotifierConfig,
   bytes32Schema,
   nonNegativeIntSchema,
   parseEnv,
@@ -107,5 +109,103 @@ describe("parseEnv", () => {
 
   it("fails fast when a value is invalid", () => {
     expect(() => parseEnv(schema, { REQUIRED: "not-a-url" })).toThrow("process.exit:1");
+  });
+});
+
+describe("buildNotifierConfig", () => {
+  const base = { SECRETS_PROVIDER: "env" } as const;
+
+  it("defaults to the log-only `none` backend", () => {
+    expect(buildNotifierConfig({ ...base, NOTIFIER: "none" })).toEqual({
+      source: "none",
+      webhookRef: undefined,
+    });
+  });
+
+  it("carries the webhook reference through for `slack`", () => {
+    expect(
+      buildNotifierConfig({ ...base, NOTIFIER: "slack", SLACK_WEBHOOK_REF: "SLACK_URL" })
+    ).toEqual({ source: "slack", webhookRef: "SLACK_URL" });
+  });
+
+  it("rejects `slack` with no webhook reference at config time, not at first alert", () => {
+    expect(() => buildNotifierConfig({ ...base, NOTIFIER: "slack" })).toThrow(/SLACK_WEBHOOK_REF/);
+  });
+});
+
+describe("buildExecutionConfig", () => {
+  // A valid MANUAL setup: the broadcasting address + a store, and NO signer configured.
+  const manualBase = {
+    EXECUTION_MODE: "MANUAL",
+    MANUAL_EXECUTOR_ADDRESS: ADDR,
+    MANUAL_INTENT_TTL_MS: "10800000",
+    DATABASE_URL: "postgres://x",
+    SIGNER_SOURCE: "local",
+  } as const;
+
+  it("AUTO carries no key-shaped fields (and ignores signer/store vars)", () => {
+    expect(
+      buildExecutionConfig({
+        EXECUTION_MODE: "AUTO",
+        SIGNER_SOURCE: "local",
+        SIGNER_KEY_REF: "K",
+        MANUAL_INTENT_TTL_MS: "10800000",
+      })
+    ).toEqual({ mode: "AUTO" });
+  });
+
+  it("MANUAL carries the broadcasting address + proposal TTL", () => {
+    expect(buildExecutionConfig(manualBase)).toEqual({
+      mode: "MANUAL",
+      manualExecutorAddress: ADDR,
+      intentTtlMs: 10_800_000,
+    });
+  });
+
+  it("rejects MANUAL without a broadcasting address", () => {
+    expect(() =>
+      buildExecutionConfig({ ...manualBase, MANUAL_EXECUTOR_ADDRESS: undefined })
+    ).toThrow(/MANUAL_EXECUTOR_ADDRESS/);
+  });
+
+  it("rejects MANUAL without a persisted store (proposals must survive a restart)", () => {
+    expect(() => buildExecutionConfig({ ...manualBase, DATABASE_URL: undefined })).toThrow(
+      /DATABASE_URL/
+    );
+  });
+
+  // The keyless promise: a MANUAL process must not carry a signer, so a mis-set one fails at boot.
+  it.each([
+    ["SIGNER_SOURCE=aws", { SIGNER_SOURCE: "aws" as const }],
+    ["SIGNER_KEY_REF", { SIGNER_KEY_REF: "LIQUIDATOR_PRIVATE_KEY" }],
+    ["KMS_KEY_ID", { KMS_KEY_ID: "arn:aws:kms:..." }],
+    ["SIGNER_ADDRESS", { SIGNER_ADDRESS: ADDR }],
+  ])("rejects MANUAL with a configured signer (%s)", (needle, extra) => {
+    expect(() => buildExecutionConfig({ ...manualBase, ...extra })).toThrow(needle);
+  });
+
+  // The gap the schema-field checks can't see: no explicit signer var, but the raw key sits in the
+  // process env. A compromised MANUAL process could read + exfiltrate it, so boot must reject it.
+  it("rejects MANUAL when the raw signing key is present in the env", () => {
+    expect(() => buildExecutionConfig(manualBase, { signerKeyPresent: true })).toThrow(
+      /keyless|signing key/
+    );
+  });
+
+  it("allows MANUAL when no signing key is present", () => {
+    expect(buildExecutionConfig(manualBase, { signerKeyPresent: false })).toEqual({
+      mode: "MANUAL",
+      manualExecutorAddress: ADDR,
+      intentTtlMs: 10_800_000,
+    });
+  });
+
+  it("parses a custom TTL, and 0 to disable expiry", () => {
+    expect(buildExecutionConfig({ ...manualBase, MANUAL_INTENT_TTL_MS: "0" })).toMatchObject({
+      intentTtlMs: 0,
+    });
+    expect(buildExecutionConfig({ ...manualBase, MANUAL_INTENT_TTL_MS: "60000" })).toMatchObject({
+      intentTtlMs: 60_000,
+    });
   });
 });

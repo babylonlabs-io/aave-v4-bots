@@ -1,6 +1,6 @@
+import type { NonceAllocator } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type StateStore, createPostgresStateStore, idempotencyKey } from "@repo/persistence";
-import type { RiskSlot } from "@repo/risk";
 import pg from "pg";
 import type { Address, Hex, PublicClient } from "viem";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -36,12 +36,6 @@ const intent = (subject: string) => ({
   subject,
 });
 
-/** A slot that records what it was settled with, standing in for the risk gate's. */
-function fakeSlot(): RiskSlot & { settled: unknown[] } {
-  const settled: unknown[] = [];
-  return { allowed: true, reason: "", settle: (o) => settled.push(o), settled };
-}
-
 /**
  * A `ChainReader` with scripted receipts and nonce counts. `known` defaults to `true` — a
  * recorded hash the node still knows about, i.e. a tx that really was broadcast.
@@ -65,8 +59,17 @@ const reader = (over: {
 
 const publicClient = { getTransactionCount: vi.fn(async () => 0) } as unknown as PublicClient;
 
+/** A pass-through allocator (identity nonce sequencing) — these tests exercise the store, not the lease. */
+const allocator = (): NonceAllocator => ({ withNonce: (send) => send(0), resync: async () => {} });
+
 const crashSafety = (store: StateStore) =>
-  createCrashSafety({ store, publicClient, signer: SIGNER, logger: silentLogger });
+  createCrashSafety({
+    store,
+    nonces: allocator(),
+    publicClient,
+    signer: SIGNER,
+    logger: silentLogger,
+  });
 
 describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", () => {
   let store: StateStore;
@@ -97,15 +100,14 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
   it(
     "refuses a duplicate live intent across two CrashSafety instances",
     async () => {
-      const first = await crashSafety(store).claim(fakeSlot(), intent("pos-1"));
+      const first = await crashSafety(store).claim(intent("pos-1"));
       expect(first).toEqual({ claimed: true, intentId: idempotencyKey(intent("pos-1")) });
 
       // A fresh process over the same durable store — the restart case.
-      const slot = fakeSlot();
-      const second = await crashSafety(store).claim(slot, intent("pos-1"));
+      const second = await crashSafety(store).claim(intent("pos-1"));
 
-      expect(second).toEqual({ claimed: false });
-      expect(slot.settled).toEqual([{ ok: false, abandoned: true }]); // exposure released
+      expect(second.claimed).toBe(false);
+      expect(second.existing).toMatchObject({ subject: "pos-1" });
     },
     TIMEOUT
   );
@@ -114,12 +116,12 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
     "allows a re-drive once the intent reaches a terminal state",
     async () => {
       const cs = crashSafety(store);
-      const { intentId } = await cs.claim(fakeSlot(), intent("pos-1"));
+      const { intentId } = await cs.claim(intent("pos-1"));
       if (!intentId) throw new Error("expected an intent id");
 
       await cs.transition(intentId, "failed", { error: "reverted" });
 
-      expect(await cs.claim(fakeSlot(), intent("pos-1"))).toMatchObject({ claimed: true });
+      expect(await cs.claim(intent("pos-1"))).toMatchObject({ claimed: true });
     },
     TIMEOUT
   );
@@ -129,7 +131,7 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
     "markPending durably records the reserved nonce before broadcast",
     async () => {
       const cs = crashSafety(store);
-      const { intentId } = await cs.claim(fakeSlot(), intent("pos-1"));
+      const { intentId } = await cs.claim(intent("pos-1"));
       if (!intentId) throw new Error("expected an intent id");
 
       await cs.markPending(intentId, 7);
@@ -145,7 +147,7 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
       "confirms an intent whose tx mined successfully",
       async () => {
         const cs = crashSafety(store);
-        const { intentId } = await cs.claim(fakeSlot(), intent("pos-1"));
+        const { intentId } = await cs.claim(intent("pos-1"));
         if (!intentId) throw new Error("expected an intent id");
         await cs.markPending(intentId, 5);
         await cs.transition(intentId, "submitted", { txHash: TX });
@@ -169,8 +171,8 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
       "frees a never-broadcast intent but holds one still in the mempool",
       async () => {
         const cs = crashSafety(store);
-        const a = await cs.claim(fakeSlot(), intent("never-sent"));
-        const b = await cs.claim(fakeSlot(), intent("in-mempool"));
+        const a = await cs.claim(intent("never-sent"));
+        const b = await cs.claim(intent("in-mempool"));
         if (!a.intentId || !b.intentId) throw new Error("expected intent ids");
         await cs.markPending(a.intentId, 9); // reserved nonce 9, chain never saw it
         await cs.markPending(b.intentId, 7); // reserved nonce 7, sitting in the mempool
@@ -184,8 +186,8 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
         expect(summary).toMatchObject({ examined: 2, failed: 1, stillInFlight: 1 });
 
         // never-sent is terminal ⇒ re-drivable; in-mempool is still live ⇒ refused.
-        expect(await cs.claim(fakeSlot(), intent("never-sent"))).toMatchObject({ claimed: true });
-        expect(await cs.claim(fakeSlot(), intent("in-mempool"))).toEqual({ claimed: false });
+        expect(await cs.claim(intent("never-sent"))).toMatchObject({ claimed: true });
+        expect(await cs.claim(intent("in-mempool"))).toMatchObject({ claimed: false });
       },
       TIMEOUT
     );
@@ -194,7 +196,7 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
       "leaves everything untouched when the chain is unreachable (fail closed)",
       async () => {
         const cs = crashSafety(store);
-        const { intentId } = await cs.claim(fakeSlot(), intent("pos-1"));
+        const { intentId } = await cs.claim(intent("pos-1"));
         if (!intentId) throw new Error("expected an intent id");
         await cs.markPending(intentId, 5);
         await cs.transition(intentId, "submitted", { txHash: TX });

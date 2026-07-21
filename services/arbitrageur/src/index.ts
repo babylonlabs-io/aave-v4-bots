@@ -4,30 +4,13 @@ import { config as dotenvConfig } from "dotenv";
 // Load .env.arbitrageur from root directory BEFORE importing config
 dotenvConfig({ path: resolve(process.cwd(), ".env.arbitrageur") });
 
-import {
-  type Account,
-  type Chain,
-  type PublicClient,
-  type Transport,
-  type WalletClient,
-  createPublicClient,
-  createWalletClient,
-} from "viem";
+import type { PublicClient } from "viem";
 
-import { instrumentedHttp, readCodeHash } from "@repo/chain";
-import { LiquidationEngine } from "@repo/engine";
-import {
-  type NonceAllocator,
-  createNonceAllocator,
-  createNonceLease,
-  nextNonce,
-} from "@repo/execution";
+import { type Executor, LiquidationEngine } from "@repo/engine";
 import { createLogger } from "@repo/logger";
-import { setPublicClient, startObservabilityServer, updateLastPollTime } from "@repo/observability";
-import { type StateStore, createStateStore } from "@repo/persistence";
-import { type RiskGate, startRiskRuntime } from "@repo/risk";
-import { createSecrets } from "@repo/secrets";
-import { resolveSigner } from "@repo/signer";
+import { updateLastPollTime } from "@repo/observability";
+import type { RiskGate } from "@repo/risk";
+import { startRuntime } from "@repo/runtime";
 import { ArbitrageurBot } from "./bot";
 import { type Config, type LiquidationRunConfig, loadConfig } from "./config";
 import {
@@ -38,9 +21,6 @@ import {
 } from "./metrics";
 
 const logger = createLogger({ prefix: "[Arbitrageur] " });
-
-// Held at module scope so the signal handlers can release the DB pool on shutdown.
-let storeForShutdown: StateStore | undefined;
 
 function printUsage(): void {
   logger.info(`
@@ -58,80 +38,38 @@ Environment variables:
 interface BotWithClients {
   bot: ArbitrageurBot;
   publicClient: PublicClient;
-  walletClient: WalletClient<Transport, Chain, Account>;
-  store: StateStore | undefined;
-  nonces: NonceAllocator;
+  /**
+   * The ONE execution collaborator for the whole process, injected into every engine — the same
+   * "one per process" shape as the single risk gate. AUTO signs+broadcasts off the shared signer +
+   * nonce authority; MANUAL is keyless (proposals from the operator's address). Both engines the
+   * arbitrageur runs share this instance, so they can never collide on a nonce.
+   */
+  executor: Executor;
   risk: RiskGate;
 }
 
 async function createBot(config: Config): Promise<BotWithClients> {
-  // Secrets + signer sources are selected by config (env/aws, local/aws). For a `local`
-  // signer we resolve the key ref via the secrets provider and hand the *value* to the
-  // signer; `aws` (KMS) resolves nothing. The key is never a plaintext `Config` field.
-  // Both engines (arbitrage + optional liquidation) share this one signer.
-  const secrets = createSecrets(config.secrets);
-  const signer = await resolveSigner(config.signer, (ref) => secrets.get(ref));
-  logger.info(`Arbitrageur signer: ${config.signer.source} (${signer.address})`);
-
-  // Every viem call routes through `instrumentedHttp` so that each outbound
-  // JSON-RPC method increments the `eth_rpc_calls_total{method=...}` counter.
-  const transport = instrumentedHttp(config.rpcUrl, recordRpcCall);
-
-  // Create custom chain - auto-detect chainId from RPC
-  const tempClient = createPublicClient({
-    transport,
-  });
-  const chainId = await tempClient.getChainId();
-  logger.info(`Chain ID: ${chainId}`);
-
-  const chain: Chain = {
-    id: chainId,
-    name: "Local",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: {
-      default: { http: [config.rpcUrl] },
-    },
-  };
-
-  const publicClient = createPublicClient({
-    chain,
-    transport,
-  });
-
-  const walletClient = createWalletClient({
-    chain,
-    transport,
-    account: signer.account,
-  });
-
-  // Crash-safety StateStore (Postgres) shared by both engines when configured.
-  const store = config.persistence ? createStateStore(config.persistence) : undefined;
-  logger.info(`Persistence: ${store ? "postgres" : "disabled"}`);
-
-  // ONE shared nonce authority for the signer — both engines route every tx through it, so
-  // their concurrent sends never collide. In-memory (chain-seeded), no persisted state.
-  const nonces = createNonceAllocator(createNonceLease(), signer.address);
-
-  // ONE shared risk gate for the process — injected into BOTH engines, so a kill-switch or a
-  // tripped breaker halts arbitrage *and* liquidation together. (Each engine used to build its
-  // own gate, which meant halting one left the other trading.) Also verifies the pinned target
-  // bytecode before any tx goes out, and — when a control token is configured — starts the
-  // authenticated kill-switch server on its own loopback socket.
-  const { gate: risk } = await startRiskRuntime({
-    config: config.risk,
-    codeCheckIntervalMs: config.codeCheckIntervalMs,
-    controlTokenRef: config.controlTokenRef,
-    controlPort: config.controlPort,
-    controlHost: config.controlHost,
-    read: (address) => readCodeHash(publicClient, address),
-    getSecret: (ref) => secrets.get(ref),
+  // The shared runtime boots everything mode-independent + the ONE executor (AUTO signer or keyless
+  // MANUAL) that both engines this process runs will share, starts the metrics/health server, and
+  // registers graceful shutdown. The kill switch is NOT on that server — `startRiskRuntime` serves it
+  // on its own socket. This service adds the arbitrage engine on top, and (optionally) a second
+  // liquidation engine off the same executor.
+  const { publicClient, risk, executor } = await startRuntime(config, {
+    recordRpcCall,
     logger,
+    observability: {
+      port: config.metricsPort,
+      ponderUrl: config.ponderUrl,
+      ponderHealthEndpoint: "/escrowed-vaults",
+      getMetrics,
+      getMetricsContentType,
+    },
   });
 
   const bot = new ArbitrageurBot({
     risk,
-    walletClient,
     publicClient,
+    executor,
     vaultSwapAddress: config.vaultSwapAddress,
     wbtcAddress: config.wbtcAddress,
     ponderUrl: config.ponderUrl,
@@ -144,14 +82,8 @@ async function createBot(config: Config): Promise<BotWithClients> {
       backoffMultiplier: 2,
     },
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
-    store,
-    nonces,
   });
-
-  // Seed the shared lease from the chain once, before either engine sends.
-  await nonces.resync(() => nextNonce(publicClient, signer.address));
-
-  return { bot, publicClient, walletClient, store, nonces, risk };
+  return { bot, publicClient, executor, risk };
 }
 
 /**
@@ -162,10 +94,8 @@ async function createBot(config: Config): Promise<BotWithClients> {
  */
 async function startLiquidationEngine(
   liq: LiquidationRunConfig,
-  walletClient: WalletClient<Transport, Chain, Account>,
   publicClient: PublicClient,
-  store: StateStore | undefined,
-  nonces: NonceAllocator,
+  executor: Executor,
   risk: RiskGate
 ): Promise<void> {
   const liqLogger = createLogger({ prefix: "[Arbitrageur:Liq] " });
@@ -173,18 +103,17 @@ async function startLiquidationEngine(
 
   const engine = new LiquidationEngine({
     ...params,
-    walletClient,
     publicClient,
     metrics: createLiquidationMetricsSet(),
     logger: liqLogger,
-    // The SAME gate and allocator the arbitrage engine uses: one risk authority and one nonce
-    // owner per process, so halting or nonce-sequencing covers both engines.
+    // The SAME gate and executor the arbitrage engine uses: one risk authority and one execution
+    // collaborator per process (one nonce owner in AUTO; one keyless proposer in MANUAL), so both
+    // engines act as one.
     risk,
-    store,
-    nonces,
+    executor,
   });
 
-  liqLogger.info(`Liquidation engine enabled (persistence: ${store ? "postgres" : "disabled"})`);
+  liqLogger.info(`Liquidation engine enabled (execution: ${executor.mode})`);
   if (!params.debtTokenAddresses) {
     await engine.discoverDebtTokens();
   }
@@ -210,31 +139,12 @@ async function runPollingMode(config: Config): Promise<void> {
   logger.info("Aave V4 Arbitrageur Bot Starting...");
   logger.info("===================================");
 
-  const { bot, publicClient, walletClient, store, nonces, risk } = await createBot(config);
-  storeForShutdown = store;
-
-  // Metrics + health/readiness probes only. The kill switch is not here: `startRiskRuntime`
-  // already serves it on its own socket, so this port stays safe to expose to a scrape network.
-  setPublicClient(publicClient);
-  startObservabilityServer({
-    port: config.metricsPort,
-    ponderUrl: config.ponderUrl,
-    ponderHealthEndpoint: "/escrowed-vaults",
-    getMetrics,
-    getMetricsContentType,
-  });
+  const { bot, publicClient, executor, risk } = await createBot(config);
 
   // Opt-in: also run the liquidation engine (both engines, one process) — sharing the one
   // nonce allocator so the two engines' concurrent sends never collide on the signer.
   if (config.liquidation) {
-    await startLiquidationEngine(
-      config.liquidation,
-      walletClient,
-      publicClient,
-      store,
-      nonces,
-      risk
-    );
+    await startLiquidationEngine(config.liquidation, publicClient, executor, risk);
   }
 
   logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);
@@ -293,16 +203,6 @@ async function main() {
       process.exit(1);
   }
 }
-
-// Graceful shutdown
-async function shutdown() {
-  logger.info("\nShutting down...");
-  await storeForShutdown?.close().catch(() => {});
-  process.exit(0);
-}
-
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
 
 main().catch((error) => {
   logger.error("Fatal error:", error);

@@ -1,36 +1,19 @@
 import {
-  type Account,
   type Address,
-  type Chain,
   ContractFunctionRevertedError,
   type Hex,
   type PublicClient,
-  type Transport,
-  type WalletClient,
   formatUnits,
 } from "viem";
 
 import { vaultSwapAbi } from "@repo/abis";
-import {
-  type TokenMeta,
-  approveMax,
-  readAllowance,
-  readBalance,
-  readTokenMeta,
-} from "@repo/capital";
+import { type TokenMeta, readBalance, readTokenMeta } from "@repo/capital";
 import { type RetryConfig, fetchWithRetry, withRetry } from "@repo/chain";
 import { maxWbtcInWithSlippage } from "@repo/domain";
-import {
-  type NonceAllocator,
-  PreBroadcastError,
-  type TxSender,
-  createTxSender,
-  waitForReceiptWithTimeout,
-} from "@repo/execution";
+import { type ExecutionIdentity, waitForReceiptWithTimeout } from "@repo/execution";
 import type { Logger } from "@repo/logger";
-import type { StateStore } from "@repo/persistence";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
-import { type CrashSafety, createCrashSafety } from "../crashSafety";
+import type { AllowanceResult, Executor } from "../executor";
 import type { EscrowedVault, PonderResponse } from "./types";
 
 /**
@@ -64,18 +47,20 @@ export interface ArbitrageEngineParams {
 }
 
 export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
-  walletClient: WalletClient<Transport, Chain, Account>;
   publicClient: PublicClient;
   retryConfig: RetryConfig;
   metrics: ArbitrageMetrics;
   logger: Logger;
   risk: RiskGate;
-  /** Crash-safety store (intent idempotency); absent ⇒ no intent tracking. */
-  store?: StateStore;
-  /** Shared nonce authority; absent ⇒ viem auto-nonce (behavior-preserving). */
-  nonces?: NonceAllocator;
-  /** How txs are signed + broadcast; absent ⇒ local signing to the public mempool. */
-  sender?: TxSender;
+  /**
+   * The execution-mode seam and the engine's sole execution collaborator: how each acquisition is
+   * committed (AUTO sign+broadcast vs keyless MANUAL propose+notify), plus who the txs come from
+   * (`executor.identity`). The composition root (`@repo/runtime`) builds it — an `AutoExecutor`
+   * wrapping the wallet + shared nonce authority, or a keyless `ManualExecutor` — and injects it, so
+   * the engine holds no `WalletClient`, `TxSender`, or nonce state of its own. Both engines the
+   * arbitrageur runs share one instance, so they never collide on a nonce.
+   */
+  executor: Executor;
   /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
   onPollComplete?: () => void;
 }
@@ -84,11 +69,9 @@ export class ArbitrageEngine {
   private metrics: ArbitrageMetrics;
   private logger: Logger;
   private risk: RiskGate;
-  /** Intent + nonce plumbing. Owns the optional `store` / `nonces`, so no call site threads them. */
-  private crash: CrashSafety;
-  private sender: TxSender;
+  /** The engine's one execution collaborator (see `executor.ts`). The engine reaches nothing lower. */
+  private executor: Executor;
   private onPollComplete?: () => void;
-  private walletClient: WalletClient<Transport, Chain, Account>;
   private publicClient: PublicClient;
   private vaultSwapAddress: Address;
   private wbtcAddress: Address;
@@ -99,13 +82,16 @@ export class ArbitrageEngine {
   private txReceiptTimeoutMs: number;
   private wbtcMeta?: TokenMeta;
 
+  /** Who these txs come from — the executor's identity (the signer in AUTO, the operator in MANUAL). */
+  private get identity(): ExecutionIdentity {
+    return this.executor.identity;
+  }
+
   constructor(config: ArbitrageEngineConfig) {
     this.metrics = config.metrics;
     this.logger = config.logger;
     this.risk = config.risk;
-    this.sender = config.sender ?? createTxSender(config.publicClient, config.walletClient);
     this.onPollComplete = config.onPollComplete;
-    this.walletClient = config.walletClient;
     this.publicClient = config.publicClient;
     this.vaultSwapAddress = config.vaultSwapAddress;
     this.wbtcAddress = config.wbtcAddress;
@@ -114,13 +100,7 @@ export class ArbitrageEngine {
     this.vaultProcessingDelayMs = config.vaultProcessingDelayMs;
     this.retryConfig = config.retryConfig;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
-    this.crash = createCrashSafety({
-      store: config.store,
-      nonces: config.nonces,
-      publicClient: config.publicClient,
-      signer: config.walletClient.account.address,
-      logger: config.logger,
-    });
+    this.executor = config.executor;
   }
 
   /**
@@ -136,10 +116,11 @@ export class ArbitrageEngine {
         return;
       }
 
-      // 0.5. Crash-/ambiguous-send-safety: resolve in-flight vault-acquisition intents, then
-      // re-seed the shared nonce lease from the chain. Both no-op without a store / allocator.
+      // 0.5. Crash-/ambiguous-send-safety: resolve in-flight vault-acquisition intents (no-op
+      // without a store), then re-seed the shared nonce lease from the chain (reclaiming any
+      // reserved-but-not-broadcast nonce).
       await this.reconcile();
-      await this.crash.resyncNonces();
+      await this.executor.resyncNonces();
 
       // 1. Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
       const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();
@@ -183,7 +164,7 @@ export class ArbitrageEngine {
    * and ambiguous-send-safety step, run every cycle (start of `run()`). No-op without a store.
    */
   async reconcile(): Promise<void> {
-    await this.crash.reconcile("vault-acquisition");
+    await this.executor.reconcile("vault-acquisition");
   }
 
   /**
@@ -281,8 +262,16 @@ export class ArbitrageEngine {
         return "skipped";
       }
 
-      // Ensure WBTC approval covers the slippage-adjusted max spend amount
-      await this.ensureApproval(maxWbtcIn);
+      // Ensure WBTC approval covers the slippage-adjusted max spend amount. AUTO broadcasts +
+      // waits (only ever returns `satisfied`); MANUAL proposes the approval for the operator to
+      // sign and returns `proposed`/`duplicate` — the swap cannot go out until they do, so free
+      // the slot and skip this vault (the approval intent stands; a later cycle retries the swap).
+      const approval = await this.ensureApproval(maxWbtcIn);
+      if (approval.kind !== "satisfied") {
+        this.logger.info(`WBTC approval ${approval.kind} — awaiting operator signature`);
+        slot.settle({ ok: false, abandoned: true });
+        return "skipped";
+      }
 
       this.logger.info(
         `Max WBTC willing to pay: ${formatUnits(maxWbtcIn, 8)} (${this.maxSlippageBps / 100}% slippage)`
@@ -295,7 +284,7 @@ export class ArbitrageEngine {
           abi: vaultSwapAbi,
           functionName: "swapWbtcForVault",
           args: [vaultId as Hex, maxWbtcIn],
-          account: this.walletClient.account,
+          account: this.identity.from,
         });
       } catch (gasError) {
         const errorMsg = gasError instanceof Error ? gasError.message : String(gasError);
@@ -307,66 +296,45 @@ export class ArbitrageEngine {
         return "skipped";
       }
 
-      // Crash-safety: refuse a duplicate live acquisition intent (already in flight on chain).
-      const { claimed, intentId } = await this.crash.claim(slot, {
-        chainId: this.walletClient.chain.id,
-        target: this.vaultSwapAddress,
-        action: "vault-acquisition",
-        subject: vaultId,
-      });
-      if (!claimed) {
-        this.metrics.recordError("intent_in_flight");
-        return "skipped";
-      }
+      // Commit the swap through the mode seam. AUTO signs + broadcasts under the shared nonce lock
+      // (claim → send → markPending → submitted, all inside `commit`); MANUAL proposes + notifies.
+      const out = await this.executor.commit(
+        {
+          address: this.vaultSwapAddress,
+          abi: vaultSwapAbi,
+          functionName: "swapWbtcForVault",
+          args: [vaultId as Hex, maxWbtcIn],
+        },
+        { target: this.vaultSwapAddress, action: "vault-acquisition", subject: vaultId }
+      );
 
-      // Execute swap via VaultSwap (redemption is atomic). Route through the shared nonce
-      // allocator when present; otherwise viem fills the nonce from the chain. The sender signs
-      // locally first, so `onSigned` durably records nonce + hash while the tx is still local —
-      // an ambiguous broadcast then leaves an intent reconcile can resolve by receipt lookup.
-      const broadcast = (nonce?: number): Promise<Hex> =>
-        this.sender.send(
-          {
-            address: this.vaultSwapAddress,
-            abi: vaultSwapAbi,
-            functionName: "swapWbtcForVault",
-            args: [vaultId as Hex, maxWbtcIn],
-            ...(nonce !== undefined ? { nonce } : {}),
-          },
-          async (signed) => {
-            if (intentId) await this.crash.markPending(intentId, signed.nonce, signed.hash);
-          }
-        );
-
-      let hash: Hex;
-      try {
-        hash = await this.crash.send((nonce) => broadcast(nonce));
-      } catch (sendError) {
-        const errorMsg = sendError instanceof Error ? sendError.message : String(sendError);
-        this.logger.error(`Failed to send swap for vault ${vaultId}: ${errorMsg}`);
-        this.metrics.recordError("swap_send_error");
-        // A failure to prepare, sign, or durably record never reached the chain, so it is not
-        // evidence the chain is rejecting us — settle it as abandoned, or an RPC/database blip
-        // would trip the consecutive-failure breaker. Only an actual broadcast attempt counts.
-        const nothingBroadcast = sendError instanceof PreBroadcastError;
-        slot.settle({ ok: false, abandoned: nothingBroadcast });
-        // Ambiguous — keep the intent live. The signed hash is already durable (unless the
-        // failure *was* that record, in which case nothing was broadcast), so next-cycle
-        // reconcile resolves it by receipt lookup rather than inferring from the nonce.
-        if (intentId) {
-          await this.crash.transition(intentId, "submitted", {
-            error: errorMsg,
-          });
+      if (out.kind !== "broadcast") {
+        switch (out.kind) {
+          case "duplicate":
+            // A live intent for this subject already exists — nothing broadcast; free the slot.
+            slot.settle({ ok: false, abandoned: true });
+            this.metrics.recordError("intent_in_flight");
+            return "skipped";
+          case "proposed":
+            // MANUAL — written down for an operator; nothing on chain, no receipt to await.
+            slot.settle({ ok: false, abandoned: true });
+            return "skipped";
+          case "aborted":
+            this.logger.error(`Failed to send swap for vault ${vaultId}: ${out.error}`);
+            this.metrics.recordError("swap_send_error");
+            // Only a failed *broadcast* is a real failure signal for the breaker; a pre-broadcast
+            // failure reached no chain, so an RPC/database blip cannot trip it.
+            slot.settle({ ok: false, abandoned: !out.broadcastAttempted });
+            // The send left a possible nonce gap — stop the cycle; the next resync reclaims it.
+            return "send-error";
+          default:
+            return out satisfies never; // exhaustiveness — a new `CommitResult` kind must be handled
         }
-        return "send-error"; // stop the cycle — possible nonce gap
       }
 
+      // Broadcast (or ambiguously so). The intent is already `submitted` (recorded inside `commit`).
+      const { hash, intentId } = out;
       this.logger.info(`Swap transaction sent: ${hash}`);
-      // Status bump only — the hash was persisted pre-broadcast, so losing this write is safe.
-      if (intentId) {
-        await this.crash.transition(intentId, "submitted", {
-          txHash: hash,
-        });
-      }
 
       // Wait for confirmation with timeout
       const receipt = await waitForReceiptWithTimeout(
@@ -389,16 +357,15 @@ export class ArbitrageEngine {
         this.logger.info(`Vault acquired and redeemed in block ${receipt.blockNumber}`);
         this.metrics.recordVaultAcquired(currentDebtBigInt);
         if (intentId)
-          await this.crash.transition(intentId, "confirmed", {
-            txHash: hash,
-          });
+          await this.executor.recordOutcome(intentId, { kind: "confirmed", txHash: hash });
         return "acquired";
       }
       slot.settle({ ok: false });
       this.logger.error("Swap transaction reverted");
       this.metrics.recordError("swap_reverted");
       if (intentId)
-        await this.crash.transition(intentId, "failed", {
+        await this.executor.recordOutcome(intentId, {
+          kind: "failed",
           txHash: hash,
           error: "reverted",
         });
@@ -428,42 +395,19 @@ export class ArbitrageEngine {
   }
 
   /**
-   * Ensure arbitrageur has approved VaultSwap to spend WBTC
+   * Ensure the arbitrageur has approved VaultSwap to spend at least `requiredAmount` of WBTC,
+   * through the mode seam. AUTO reads the allowance and, if short, broadcasts `approve(max)` + waits
+   * (key and all, inside the executor); MANUAL proposes the approval for an operator to sign. The
+   * approval runs mid-poll, so the executor routes its broadcast through the shared nonce allocator
+   * — otherwise it would collide with the liquidation engine's nonces.
    */
-  private async ensureApproval(requiredAmount: bigint): Promise<void> {
-    const arbitrageur = this.walletClient.account.address;
-
-    // Check current allowance for VaultSwap contract with retry
-    const allowance = await withRetry(
-      () => readAllowance(this.publicClient, this.wbtcAddress, arbitrageur, this.vaultSwapAddress),
-      this.retryConfig,
-      "allowance check"
-    );
-
-    // If allowance is insufficient, approve max
-    if (allowance < requiredAmount) {
-      this.logger.info("Approving WBTC for VaultSwap...");
-
-      // Route through the allocator (this approval runs mid-poll and would otherwise collide
-      // with the liquidation engine's nonces). Only the broadcast is under the lock.
-      const hash = await this.crash.send((nonce) =>
-        approveMax(this.walletClient, this.wbtcAddress, this.vaultSwapAddress, nonce)
-      );
-
-      const receipt = await waitForReceiptWithTimeout(
-        this.publicClient,
-        hash,
-        this.txReceiptTimeoutMs,
-        "approval"
-      );
-      if (!receipt) {
-        throw new Error("Approval transaction timed out");
-      }
-      if (receipt.status !== "success") {
-        throw new Error("Approval transaction reverted");
-      }
-      this.logger.info("Approval confirmed");
-    }
+  private ensureApproval(requiredAmount: bigint): Promise<AllowanceResult> {
+    return this.executor.ensureAllowance({
+      token: this.wbtcAddress,
+      spender: this.vaultSwapAddress,
+      required: requiredAmount,
+      label: "WBTC",
+    });
   }
 
   /**
@@ -485,7 +429,7 @@ export class ArbitrageEngine {
    * Log arbitrageur's WBTC balance
    */
   async logBalance(): Promise<void> {
-    const arbitrageur = this.walletClient.account.address;
+    const arbitrageur = this.identity.from;
 
     try {
       // Run metadata + balanceOf in parallel: cold-start is no slower than

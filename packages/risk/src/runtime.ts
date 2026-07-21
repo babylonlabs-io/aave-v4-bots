@@ -2,7 +2,7 @@ import { createControlRoutes, resolveControlToken } from "./control";
 import { startControlServer } from "./controlServer";
 import { createRiskGate } from "./gate";
 import { startCodeHashGuard } from "./guard";
-import type { CodeHashReader, RiskConfig, RiskGate } from "./types";
+import type { CodeHashReader, RiskConfig, RiskEventSink, RiskGate } from "./types";
 
 /**
  * Everything a bot process needs to stand up its one risk gate. Both composition roots did this
@@ -23,6 +23,12 @@ export interface RiskRuntimeConfig {
   read: CodeHashReader;
   /** Resolves a secret reference to its value (the service's `@repo/secrets` provider). */
   getSecret: (ref: string) => Promise<string>;
+  /**
+   * Where a halt/resume goes — e.g. `riskEventSink(notifier)`. A plain callback, so this package
+   * stays free of `@repo/notifications` (or any other dependency). Unset ⇒ state changes are
+   * logged and nothing more.
+   */
+  onEvent?: RiskEventSink;
   logger: { info(msg: string): void; warn(msg: string, ...rest: unknown[]): void };
 }
 
@@ -41,7 +47,9 @@ export interface RiskRuntime {
 export async function startRiskRuntime(config: RiskRuntimeConfig): Promise<RiskRuntime> {
   const { logger } = config;
 
-  const gate = createRiskGate(config.config);
+  // The sink is wired here rather than left to each composition root, so a service cannot build a
+  // gate that silently alerts nobody.
+  const gate = createRiskGate({ ...config.config, onEvent: config.onEvent });
   if (config.config.startHalted) {
     logger.warn("RISK_START_HALTED=true — bot boots HALTED; POST /resume to start trading");
   }

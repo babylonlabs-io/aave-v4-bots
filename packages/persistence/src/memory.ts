@@ -1,53 +1,120 @@
-import type {
-  IntentInput,
-  IntentStatus,
-  RecordResult,
-  StateStore,
-  TransitionMeta,
-  TxIntent,
+import type { Hex } from "viem";
+import {
+  IN_FLIGHT_ON_CHAIN,
+  type IntentInput,
+  type IntentStatus,
+  LIVE_FOR_DEDUP,
+  type ProposedTx,
+  type RecordResult,
+  type StateStore,
+  type TransitionMeta,
+  type TxIntent,
 } from "./types";
 import { idempotencyKey } from "./utils";
 
 // In-memory `StateStore` — **non-durable**, for dev and tests (production uses `./postgres`).
-// Mirrors the Postgres adapter's semantics exactly: idempotency refuse/revive and the
-// action-filtered reconcile work-list. Having one canonical fake avoids each test
-// re-implementing (and drifting) its own.
+// Mirrors the Postgres adapter's semantics exactly: idempotency refuse/revive, the MANUAL proposal
+// lifecycle, and the action-filtered reconcile work-list. Having one canonical fake avoids each
+// test re-implementing (and drifting) its own.
+//
+// Every row leaves this store as a **copy** (`clone`). Postgres hands back a fresh object on every
+// read, so a caller can never reach through a returned row to mutate stored state; the in-memory
+// model must behave the same or a test could pass against a mutation Postgres would reject.
 
 /** A `StateStore` with in-memory introspection helpers for assertions. */
 export interface MemoryStateStore extends StateStore {
-  /** Every intent, any status. */
+  /** Every intent, any status (defensive copies). */
   all(): TxIntent[];
-  /** One intent by id (idempotency key), or `undefined`. */
+  /** One intent by id (idempotency key), or `undefined` (a defensive copy). */
   get(id: string): TxIntent | undefined;
 }
 
-/** Build a non-durable in-memory `StateStore`. */
-export function createMemoryStateStore(): MemoryStateStore {
+/** Deep-enough copy: a fresh row and a fresh `payload`, so nothing stored is reachable by ref. */
+function clone(row: TxIntent): TxIntent {
+  return { ...row, payload: row.payload === null ? null : { ...row.payload } };
+}
+
+/**
+ * Build a non-durable in-memory `StateStore`. `now` is injectable so tests can drive the TTL clock
+ * `expireProposals` reads without mutating stored rows (Postgres uses wall-clock; both agree that
+ * time only advances between calls).
+ */
+export function createMemoryStateStore(now: () => number = Date.now): MemoryStateStore {
   const rows = new Map<string, TxIntent>();
-  const live: IntentStatus[] = ["pending", "submitted"];
+  const isLive = (status: IntentStatus) => LIVE_FOR_DEDUP.includes(status);
+
+  /** Shared record/revive: refuse a live intent, else (re)create it in `status`. */
+  function record(
+    input: IntentInput,
+    status: "pending" | "proposed",
+    payload: ProposedTx | null,
+    payloadHash: Hex | null
+  ): RecordResult {
+    const id = idempotencyKey(input);
+    const existing = rows.get(id);
+    if (existing && isLive(existing.status)) {
+      return { recorded: false, existing: clone(existing) };
+    }
+    const ts = now();
+    rows.set(id, {
+      id,
+      ...input,
+      status,
+      nonce: null,
+      txHash: null,
+      error: null,
+      // Copy on store too: the caller must not be able to mutate the payload after proposing.
+      payload: payload === null ? null : { ...payload },
+      payloadHash,
+      createdAt: existing?.createdAt ?? ts,
+      updatedAt: ts,
+    });
+    return { recorded: true, id };
+  }
 
   return {
-    all: () => [...rows.values()],
-    get: (id) => rows.get(id),
+    all: () => [...rows.values()].map(clone),
+    get: (id) => {
+      const row = rows.get(id);
+      return row === undefined ? undefined : clone(row);
+    },
 
-    async recordIntent(input: IntentInput): Promise<RecordResult> {
-      const id = idempotencyKey(input);
-      const existing = rows.get(id);
-      if (existing && live.includes(existing.status)) {
-        return { recorded: false, existing };
+    async recordIntent(input) {
+      return record(input, "pending", null, null);
+    },
+
+    async propose(input, payload, payloadHash) {
+      return record(input, "proposed", payload, payloadHash);
+    },
+
+    async markBroadcast(id, txHash, expectedPayloadHash) {
+      const row = rows.get(id);
+      // Same guards as the Postgres compare-and-set: still awaiting broadcast, still the payload the
+      // operator verified. A superseded/expired/already-reported row fails all the same.
+      if (!row || row.status !== "proposed" || row.txHash !== null) return false;
+      if (row.payloadHash !== expectedPayloadHash) return false;
+      rows.set(id, { ...row, status: "submitted", txHash, updatedAt: now() });
+      return true;
+    },
+
+    async supersede(id) {
+      const row = rows.get(id);
+      if (!row || row.status !== "proposed") return false;
+      rows.set(id, { ...row, status: "superseded", updatedAt: now() });
+      return true;
+    },
+
+    async expireProposals(ttlMs, action) {
+      const cutoff = now() - ttlMs;
+      let swept = 0;
+      for (const [id, row] of rows) {
+        if (row.status !== "proposed") continue;
+        if (action !== undefined && row.action !== action) continue;
+        if (row.updatedAt > cutoff) continue;
+        rows.set(id, { ...row, status: "expired", updatedAt: now() });
+        swept++;
       }
-      const now = Date.now();
-      rows.set(id, {
-        id,
-        ...input,
-        status: "pending",
-        nonce: null,
-        txHash: null,
-        error: null,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      });
-      return { recorded: true, id };
+      return swept;
     },
 
     async transition(id: string, to: IntentStatus, meta?: TransitionMeta) {
@@ -59,14 +126,18 @@ export function createMemoryStateStore(): MemoryStateStore {
         nonce: meta?.nonce ?? row.nonce,
         txHash: meta?.txHash ?? row.txHash,
         error: meta?.error ?? row.error,
-        updatedAt: Date.now(),
+        updatedAt: now(),
       });
     },
 
     async reconcile(action?: string) {
-      return [...rows.values()].filter(
-        (r) => live.includes(r.status) && (action === undefined || r.action === action)
-      );
+      // IN_FLIGHT_ON_CHAIN only — `proposed` has no tx to reconcile and must not appear here.
+      return [...rows.values()]
+        .filter(
+          (r) =>
+            IN_FLIGHT_ON_CHAIN.includes(r.status) && (action === undefined || r.action === action)
+        )
+        .map(clone);
     },
 
     async close() {},

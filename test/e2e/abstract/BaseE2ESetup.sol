@@ -102,6 +102,42 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         return pid;
     }
 
+    /// @notice Start a bot process that first waits for `waitForCode`'s bytecode to be on-chain.
+    /// @dev The bot's risk-gate code-hash guard verifies the pinned contracts at boot and HALTS
+    ///      (fail-closed) if any is missing. Forge broadcasts THIS script's `vm.broadcast` deploys
+    ///      only after `run()` returns — i.e. after this FFI has already launched the bot — so a bot
+    ///      that booted immediately would check the not-yet-deployed contracts, halt, and never
+    ///      trade. Polling until the last-deployed pinned contract (the Lens) is visible closes that
+    ///      race deterministically, in both `e2e-local.sh` and CI. `CLIENT_RPC_URL` comes from the
+    ///      sourced env; `${#CODE} -gt 2` means "more than the empty `0x`", robust to RPC blips.
+    function _startBotProcess(
+        string memory envFile,
+        string memory pnpmScript,
+        string memory logFile,
+        address waitForCode
+    ) internal returns (string memory) {
+        string[] memory inputs = new string[](3);
+        inputs[0] = "bash";
+        inputs[1] = "-c";
+        inputs[2] = string.concat(
+            "{ set -a; [ -f ",
+            envFile,
+            " ] && . ",
+            envFile,
+            "; set +a; ( for i in $(seq 1 300); do CODE=$(cast code ",
+            vm.toString(waitForCode),
+            " --rpc-url $CLIENT_RPC_URL 2>/dev/null); [ ${#CODE} -gt 2 ] && break; sleep 0.2; done; exec pnpm ",
+            pnpmScript,
+            " ) > ",
+            logFile,
+            " 2>&1 & echo $!; }"
+        );
+        bytes memory result = vm.ffi(inputs);
+        string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
+        console.log(string.concat(pnpmScript, " started (awaiting pinned code) with PID:"), pid);
+        return pid;
+    }
+
     /// @notice Set `account`'s ETH balance on-chain *immediately* via Anvil's
     ///         `anvil_setBalance` cheat.
     /// @dev Bot processes are spawned (via `_startProcess`) mid-`run()`, but forge

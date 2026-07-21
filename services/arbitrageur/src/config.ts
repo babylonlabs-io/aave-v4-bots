@@ -1,7 +1,11 @@
 import {
+  type ExecutionSettings,
+  type NotifierSettings,
   type RiskSettings,
   addressListSchema,
   addressSchema,
+  buildExecutionConfig,
+  buildNotifierConfig,
   buildPersistenceConfig,
   buildRiskConfig,
   buildSecretsConfig,
@@ -114,6 +118,14 @@ export interface Config extends ArbitrageEngineParams, RiskSettings {
   // Crash-safety persistence for the liquidation engine. Present iff DATABASE_URL is set.
   persistence?: PersistenceConfig;
 
+  // Outbound alerts (risk halts, and MANUAL proposals). Slack webhook resolved from a secret ref
+  // at boot (index.ts); `none` (default) logs only.
+  notifier: NotifierSettings;
+
+  // Execution mode — per PROCESS, so it covers BOTH engines this service may run. AUTO (default)
+  // signs + broadcasts; MANUAL is keyless (one shared `ManualExecutor` injected into both engines).
+  execution: ExecutionSettings;
+
   // Present iff the arbitrageur also runs the LiquidationEngine (opt-in via env).
   liquidation?: LiquidationRunConfig;
 }
@@ -173,6 +185,12 @@ export function loadConfig(): Config {
     txReceiptTimeoutMs,
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),
+    notifier: buildNotifierConfig(env),
+    // Pass whether the effective signing-key env var actually holds a value, so a MANUAL boot
+    // rejects a raw key left in the process env (see `buildExecutionConfig`).
+    execution: buildExecutionConfig(env, {
+      signerKeyPresent: Boolean(process.env[env.SIGNER_KEY_REF ?? DEFAULT_KEY_REF]),
+    }),
     signer: buildSignerConfig({
       source: env.SIGNER_SOURCE,
       keyRef: env.SIGNER_KEY_REF,

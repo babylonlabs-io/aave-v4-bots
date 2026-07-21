@@ -1,13 +1,16 @@
 import pg from "pg";
 import type { Address, Hex } from "viem";
-import type {
-  IntentInput,
-  IntentStatus,
-  PersistenceConfig,
-  RecordResult,
-  StateStore,
-  TransitionMeta,
-  TxIntent,
+import {
+  IN_FLIGHT_ON_CHAIN,
+  type IntentInput,
+  type IntentStatus,
+  type PersistenceConfig,
+  type ProposedTx,
+  type RecordResult,
+  type StateStore,
+  TERMINAL,
+  type TransitionMeta,
+  type TxIntent,
 } from "./types";
 import { idempotencyKey } from "./utils";
 
@@ -47,6 +50,9 @@ type IntentRow = {
   nonce: string | null;
   tx_hash: string | null;
   error: string | null;
+  // `jsonb` — `pg` already parses it into an object; `null` for AUTO rows.
+  payload: ProposedTx | null;
+  payload_hash: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -62,13 +68,22 @@ function mapIntent(row: IntentRow): TxIntent {
     nonce: row.nonce === null ? null : Number(row.nonce),
     txHash: row.tx_hash === null ? null : (row.tx_hash as Hex),
     error: row.error,
+    payload: row.payload,
+    payloadHash: row.payload_hash === null ? null : (row.payload_hash as Hex),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
 }
 
 const INTENT_COLUMNS =
-  "id, chain_id, target, action, subject, status, nonce, tx_hash, error, created_at, updated_at";
+  "id, chain_id, target, action, subject, status, nonce, tx_hash, error, payload, payload_hash, created_at, updated_at";
+
+/** A status set rendered as a SQL list literal — the single source is the exported const array. */
+const sqlList = (statuses: readonly string[]) => statuses.map((s) => `'${s}'`).join(", ");
+/** Terminal statuses a `recordIntent`/`propose` may revive from. */
+const TERMINAL_SQL = sqlList(TERMINAL);
+/** In-flight-on-chain statuses the reconcile work-list returns (excludes `proposed`). */
+const IN_FLIGHT_SQL = sqlList(IN_FLIGHT_ON_CHAIN);
 
 export function createPostgresStateStore(config: PostgresStoreConfig): StateStore {
   const schema = config.schema ?? "bot";
@@ -97,10 +112,15 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
              nonce BIGINT,
              tx_hash TEXT,
              error TEXT,
+             payload JSONB,
+             payload_hash TEXT,
              created_at BIGINT NOT NULL,
              updated_at BIGINT NOT NULL
            );
-           CREATE INDEX IF NOT EXISTS tx_intents_status_idx ON ${intents} (status);`
+           CREATE INDEX IF NOT EXISTS tx_intents_status_idx ON ${intents} (status);
+           -- Additive migration for databases created before the MANUAL proposal columns existed.
+           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload JSONB;
+           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload_hash TEXT;`
         )
         .then(() => undefined)
         .catch((error) => {
@@ -112,31 +132,92 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
     return ready;
   }
 
-  return {
-    async recordIntent(input: IntentInput): Promise<RecordResult> {
-      await ensureReady();
-      const id = idempotencyKey(input);
-      const now = Date.now();
-      // Insert as pending; on conflict, only *revive* a terminal (confirmed/failed) row. A
-      // live (pending/submitted) row fails the WHERE, so the statement returns no row — the
-      // signal that a second submit must be refused.
-      const res = await client.query<IntentRow>(
-        `INSERT INTO ${intents} AS t
-           (${INTENT_COLUMNS})
-         VALUES ($1, $2, $3, $4, $5, 'pending', NULL, NULL, NULL, $6, $6)
-         ON CONFLICT (id) DO UPDATE
-           SET status = 'pending', nonce = NULL, tx_hash = NULL, error = NULL, updated_at = $6
-           WHERE t.status IN ('confirmed', 'failed')
-         RETURNING ${INTENT_COLUMNS}`,
-        [id, input.chainId, input.target.toLowerCase(), input.action, input.subject, now]
-      );
-      if (res.rows.length > 0) return { recorded: true, id };
+  /**
+   * Shared insert-or-revive for `recordIntent` (AUTO, `pending`) and `propose` (MANUAL,
+   * `proposed`). On conflict it revives only a `TERMINAL` row; a live row (`LIVE_FOR_DEDUP`) fails
+   * the WHERE, returns no row, and is reported as a refusal.
+   */
+  async function record(
+    input: IntentInput,
+    status: "pending" | "proposed",
+    payload: ProposedTx | null,
+    payloadHash: Hex | null
+  ): Promise<RecordResult> {
+    await ensureReady();
+    const id = idempotencyKey(input);
+    const now = Date.now();
+    const payloadJson = payload === null ? null : JSON.stringify(payload);
+    const res = await client.query<IntentRow>(
+      `INSERT INTO ${intents} AS t
+         (${INTENT_COLUMNS})
+       VALUES ($1, $2, $3, $4, $5, $7, NULL, NULL, NULL, $8, $9, $6, $6)
+       ON CONFLICT (id) DO UPDATE
+         SET status = $7, nonce = NULL, tx_hash = NULL, error = NULL,
+             payload = $8, payload_hash = $9, updated_at = $6
+         WHERE t.status IN (${TERMINAL_SQL})
+       RETURNING ${INTENT_COLUMNS}`,
+      [
+        id,
+        input.chainId,
+        input.target.toLowerCase(),
+        input.action,
+        input.subject,
+        now,
+        status,
+        payloadJson,
+        payloadHash,
+      ]
+    );
+    if (res.rows.length > 0) return { recorded: true, id };
 
-      const existing = await client.query<IntentRow>(
-        `SELECT ${INTENT_COLUMNS} FROM ${intents} WHERE id = $1`,
-        [id]
+    const existing = await client.query<IntentRow>(
+      `SELECT ${INTENT_COLUMNS} FROM ${intents} WHERE id = $1`,
+      [id]
+    );
+    return { recorded: false, existing: mapIntent(existing.rows[0]) };
+  }
+
+  return {
+    recordIntent(input) {
+      return record(input, "pending", null, null);
+    },
+
+    propose(input, payload, payloadHash) {
+      return record(input, "proposed", payload, payloadHash);
+    },
+
+    async markBroadcast(id, txHash, expectedPayloadHash) {
+      await ensureReady();
+      // Compare-and-set: apply only while still awaiting broadcast (`proposed`, no hash) and only if
+      // the payload the operator verified is still the one on record. A superseded/expired/reported
+      // row fails the WHERE and updates nothing.
+      const res = await client.query(
+        `UPDATE ${intents}
+           SET status = 'submitted', tx_hash = $2, updated_at = $4
+         WHERE id = $1 AND status = 'proposed' AND tx_hash IS NULL AND payload_hash = $3`,
+        [id, txHash, expectedPayloadHash, Date.now()]
       );
-      return { recorded: false, existing: mapIntent(existing.rows[0]) };
+      return (res.rowCount ?? 0) > 0;
+    },
+
+    async supersede(id) {
+      await ensureReady();
+      const res = await client.query(
+        `UPDATE ${intents} SET status = 'superseded', updated_at = $2
+         WHERE id = $1 AND status = 'proposed'`,
+        [id, Date.now()]
+      );
+      return (res.rowCount ?? 0) > 0;
+    },
+
+    async expireProposals(ttlMs, action) {
+      await ensureReady();
+      const res = await client.query(
+        `UPDATE ${intents} SET status = 'expired', updated_at = $1
+         WHERE status = 'proposed' AND updated_at <= $2 AND ($3::text IS NULL OR action = $3)`,
+        [Date.now(), Date.now() - ttlMs, action ?? null]
+      );
+      return res.rowCount ?? 0;
     },
 
     async transition(id: string, to: IntentStatus, meta?: TransitionMeta) {
@@ -157,7 +238,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       await ensureReady();
       const res = await client.query<IntentRow>(
         `SELECT ${INTENT_COLUMNS} FROM ${intents}
-         WHERE status IN ('pending', 'submitted') AND ($1::text IS NULL OR action = $1)
+         WHERE status IN (${IN_FLIGHT_SQL}) AND ($1::text IS NULL OR action = $1)
          ORDER BY created_at ASC`,
         [action ?? null]
       );
