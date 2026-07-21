@@ -102,6 +102,26 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         return pid;
     }
 
+    /// @notice Set `account`'s ETH balance on-chain *immediately* via Anvil's
+    ///         `anvil_setBalance` cheat.
+    /// @dev Bot processes are spawned (via `_startProcess`) mid-`run()`, but forge
+    ///      defers broadcasting any in-script funding tx until after `run()`
+    ///      returns — so a plain `transfer` lands ~tens of seconds too late and the
+    ///      bot's first tx fails on gas. `anvil_setBalance` is instant, needs no
+    ///      nonce, and does not disturb forge's pending broadcast bundle, so gas is
+    ///      guaranteed present the moment the bot boots. Anvil-only (e2e runs on Anvil).
+    function _provisionGas(address account, uint256 amountWei) internal {
+        string[] memory inputs = new string[](6);
+        inputs[0] = "cast";
+        inputs[1] = "rpc";
+        inputs[2] = "anvil_setBalance";
+        inputs[3] = vm.toString(account);
+        inputs[4] = vm.toString(amountWei);
+        inputs[5] = string.concat("--rpc-url=", E2EConstants.RPC_URL);
+        vm.ffi(inputs);
+        console.log("Provisioned gas via anvil_setBalance:", account, amountWei);
+    }
+
     // ============ Shared position helpers ============
 
     function _doPegInScript(uint256 depositorPrivateKey, bytes32 depositorBtcPubKey, uint256 amountSats)
