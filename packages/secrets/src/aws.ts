@@ -6,26 +6,27 @@ import type { SecretsProvider } from "./types";
 // JSON secret — e.g. `prod/liquidator/config#LIQUIDATOR_PRIVATE_KEY`. Only ref→value
 // resolution lives here; the signing key itself is still owned by `@repo/signer`.
 
-/** Minimal structural view of the AWS `SecretsManagerClient` — only the `send` we use. */
-export interface SecretsClientLike {
-  send(
-    command: GetSecretValueCommand
-  ): Promise<{ SecretString?: string; SecretBinary?: Uint8Array }>;
-}
+/**
+ * The slice of the AWS `SecretsManagerClient` this adapter uses — just `send`.
+ *
+ * `send` is the single dispatch method of every AWS SDK v3 client: you hand it a
+ * `Command` object (here `GetSecretValueCommand`) and it performs the HTTP call and
+ * resolves to that command's typed output. Since it's the only thing we call, picking
+ * it is enough to type the injected client — and to fake it in tests without standing
+ * up a real `SecretsManagerClient`.
+ */
+export type SecretsSend = Pick<SecretsManagerClient, "send">;
 
 export interface AwsSecretsConfig {
   /** AWS region; defaults to the SDK's own resolution (env/instance profile). */
   region?: string;
   /** Injectable client — for tests or custom credential/endpoint config. */
-  client?: SecretsClientLike;
+  client?: SecretsSend;
 }
 
 export function createAwsSecrets(config: AwsSecretsConfig = {}): SecretsProvider {
-  const client: SecretsClientLike =
-    config.client ??
-    (new SecretsManagerClient(
-      config.region ? { region: config.region } : {}
-    ) as unknown as SecretsClientLike);
+  const client: SecretsSend =
+    config.client ?? new SecretsManagerClient(config.region ? { region: config.region } : {});
 
   return {
     async get(ref) {

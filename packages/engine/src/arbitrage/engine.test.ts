@@ -71,8 +71,9 @@ function createMockClients() {
                   amountDebt: 50000000n,
                   amountInterest: 0n,
                   amountFee: 0n,
+                  amountWbtcEquivalent: 100000000n,
                   amountWbtcToAcquire: 50000000n,
-                  isProfitable: true,
+                  amountProfitEst: 50000000n,
                 }))
               );
             }
@@ -168,8 +169,9 @@ describe("ArbitrageEngine", () => {
                 amountDebt: 100000n,
                 amountInterest: 1000n,
                 amountFee: 10n,
+                amountWbtcEquivalent: 100000n,
                 amountWbtcToAcquire: 100010n,
-                isProfitable: false,
+                amountProfitEst: 0n,
               }))
             );
           }
@@ -227,8 +229,9 @@ describe("ArbitrageEngine", () => {
                 amountDebt: 50000000n,
                 amountInterest: 0n,
                 amountFee: 0n,
+                amountWbtcEquivalent: 100000000n,
                 amountWbtcToAcquire: 50000000n,
-                isProfitable: true,
+                amountProfitEst: 50000000n,
               }))
             );
           }
@@ -260,8 +263,9 @@ describe("ArbitrageEngine", () => {
                 amountDebt: 50000000n,
                 amountInterest: 0n,
                 amountFee: 0n,
+                amountWbtcEquivalent: 100000000n,
                 amountWbtcToAcquire: 50000000n,
-                isProfitable: true,
+                amountProfitEst: 50000000n,
               }))
             );
           }

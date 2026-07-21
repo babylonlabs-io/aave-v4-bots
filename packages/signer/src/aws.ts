@@ -34,18 +34,16 @@ import type { Signer } from "./types";
 //   2. **recovery id:** KMS returns a bare `(r, s)` with no `v`; we recover the address
 //      for each candidate parity and keep the one that matches the key's address.
 
-/** Minimal structural view of the AWS `KMSClient` — only the `send` we use. */
-export interface KmsClientLike {
-  send(command: GetPublicKeyCommand | SignCommand): Promise<{
-    // `GetPublicKey` fields
-    PublicKey?: Uint8Array;
-    KeySpec?: string;
-    KeyUsage?: string;
-    SigningAlgorithms?: string[];
-    // `Sign` field
-    Signature?: Uint8Array;
-  }>;
-}
+/**
+ * The slice of the AWS `KMSClient` this adapter uses — just `send`.
+ *
+ * `send` is the single dispatch method of every AWS SDK v3 client: you hand it a
+ * `Command` object (here `GetPublicKeyCommand` / `SignCommand`) and it performs the HTTP
+ * call and resolves to that command's typed output. Since it's the only thing we call,
+ * picking it is enough to type the injected client — and to fake it in tests without
+ * standing up a real `KMSClient`.
+ */
+export type KmsSend = Pick<KMSClient, "send">;
 
 export interface AwsSignerConfig {
   /** Key id / ARN / alias of an `ECC_SECG_P256K1`, `SIGN_VERIFY` KMS key. */
@@ -58,7 +56,7 @@ export interface AwsSignerConfig {
   /** AWS region; defaults to the SDK's own resolution (env/instance profile). */
   region?: string;
   /** Injectable client — for tests or custom credential/endpoint config. */
-  client?: KmsClientLike;
+  client?: KmsSend;
 }
 
 /**
@@ -66,9 +64,8 @@ export interface AwsSignerConfig {
  * public key (a `GetPublicKey` call) at construction time.
  */
 export async function createAwsSigner(config: AwsSignerConfig): Promise<Signer> {
-  const client: KmsClientLike =
-    config.client ??
-    (new KMSClient(config.region ? { region: config.region } : {}) as unknown as KmsClientLike);
+  const client: KmsSend =
+    config.client ?? new KMSClient(config.region ? { region: config.region } : {});
 
   const address = await deriveAddress(client, config.keyId);
   if (config.address && !isAddressEqual(config.address, address)) {
@@ -133,7 +130,7 @@ export async function createAwsSigner(config: AwsSignerConfig): Promise<Signer> 
 }
 
 /** Derive the Ethereum address from a KMS secp256k1 public key (DER `SubjectPublicKeyInfo`). */
-async function deriveAddress(client: KmsClientLike, keyId: string): Promise<Address> {
+async function deriveAddress(client: KmsSend, keyId: string): Promise<Address> {
   const out = await client.send(new GetPublicKeyCommand({ KeyId: keyId }));
   if (!out.PublicKey) {
     throw new Error(`KMS GetPublicKey returned no key for ${keyId}`);
