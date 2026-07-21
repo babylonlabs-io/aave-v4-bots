@@ -8,7 +8,7 @@ import {
   recoverTypedDataAddress,
 } from "viem";
 import { describe, expect, it } from "vitest";
-import { type KmsClientLike, createAwsSigner } from "./aws";
+import { type KmsSend, createAwsSigner } from "./aws";
 import { createLocalSigner } from "./index";
 
 // Anvil account[0]. The mock KMS client below signs with this real key, so every
@@ -30,7 +30,7 @@ const VALID_KEY_META = {
 };
 
 /** A fake `KMSClient` that answers `GetPublicKey`/`Sign` using the real Anvil key. */
-function mockKms(options: { forceHighS?: boolean } = {}): KmsClientLike {
+function mockKms(options: { forceHighS?: boolean } = {}): KmsSend {
   return {
     async send(command) {
       if (command instanceof GetPublicKeyCommand) {
@@ -69,7 +69,7 @@ describe("@repo/signer ./aws", () => {
   });
 
   it("throws when KMS returns no public key", async () => {
-    const client: KmsClientLike = {
+    const client: KmsSend = {
       async send() {
         return {};
       },
@@ -78,7 +78,7 @@ describe("@repo/signer ./aws", () => {
   });
 
   it("rejects a key on the wrong curve (KeySpec guard)", async () => {
-    const client: KmsClientLike = {
+    const client: KmsSend = {
       async send(command) {
         if (command instanceof GetPublicKeyCommand) {
           return { PublicKey: spkiDer, KeySpec: "ECC_NIST_P256", KeyUsage: "SIGN_VERIFY" };
@@ -92,7 +92,7 @@ describe("@repo/signer ./aws", () => {
   });
 
   it("rejects an encrypt-only key (KeyUsage guard)", async () => {
-    const client: KmsClientLike = {
+    const client: KmsSend = {
       async send(command) {
         if (command instanceof GetPublicKeyCommand) {
           return { PublicKey: spkiDer, KeySpec: "ECC_SECG_P256K1", KeyUsage: "ENCRYPT_DECRYPT" };
