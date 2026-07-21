@@ -24,7 +24,8 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [Environment Files](#51-environment-files)
    - [Ponder Indexer Configuration](#52-ponder-indexer-configuration)
    - [Liquidation Client Configuration](#53-liquidation-client-configuration)
-   - [Contract Addresses](#54-contract-addresses)
+   - [Execution Modes](#54-execution-modes)
+   - [Contract Addresses](#55-contract-addresses)
 6. [Wallet Setup](#6-wallet-setup)
    - [Funding Requirements](#61-funding-requirements)
 7. [Starting the Service](#7-starting-the-service)
@@ -68,7 +69,7 @@ The service consists of two components:
 | Service | Purpose | Default Endpoint |
 |---------|---------|------------------|
 | Ethereum RPC | Event indexing, transaction execution | Configurable |
-| PostgreSQL | Ponder indexer data storage | `localhost:5432` |
+| PostgreSQL | Ponder indexer data storage and optional bot StateStore | `localhost:5432` |
 
 ### 2.3. Network Requirements
 
@@ -78,6 +79,7 @@ The service consists of two components:
 |------|----------|---------|
 | 42069 | HTTP | Ponder indexer API |
 | 9090 | HTTP | Metrics, health, and readiness endpoints |
+| 9095 | HTTP | Optional risk-control kill switch, loopback by default |
 | 5432 | TCP | PostgreSQL database |
 
 ## 3. Architecture Overview
@@ -101,6 +103,9 @@ The service consists of two components:
 │  - Polls indexer at configured interval │
 │  - Estimates inputs via Lens contract   │
 │  - Simulates liquidations               │
+│  - AUTO: signs and broadcasts           │
+│  - MANUAL: persists proposals for       │
+│    operator-cli                         │
 │  - Calls liquidate() or                 │
 │    liquidateWithLLP() on AaveAdapter    │
 │  - Exposes /metrics, /health, /ready    │
@@ -151,11 +156,10 @@ pnpm install
 ```
 aave-v4-bots/
 ├── services/
-│   └── liquidator/
-│       ├── client/          # Liquidation bot
-│       └── ponder/          # Blockchain indexer
-├── packages/
-│   └── shared/              # Shared utilities
+│   ├── liquidator/          # Liquidation bot composition root
+│   ├── operator-cli/        # MANUAL-mode operator workflow
+│   └── ponder/              # Unified blockchain indexer
+├── packages/                # @repo/* packages by concern
 ├── .env.liquidator          # Client configuration
 └── docker-compose.yml       # Docker orchestration
 ```
@@ -217,23 +221,23 @@ CHAIN_ID=1
 START_BLOCK=20000000
 
 # Blockchain polling interval (milliseconds)
-PONDER_POLLING_INTERVAL=1000
+PONDER_POLLING_INTERVAL=4000
 
 # PostgreSQL connection
 DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder
 DATABASE_SCHEMA=public
 ```
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Required |
-| `SPOKE_ADDRESS` | Babylon's Aave Core Spoke contract | Required |
-| `ADAPTER_ADDRESS` | AaveAdapter contract | Required |
-| `CHAIN_ID` | Network chain ID | `1` |
-| `START_BLOCK` | Block to begin indexing | `0` |
-| `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | `1000` |
-| `DATABASE_URL` | PostgreSQL connection string | Required |
-| `DATABASE_SCHEMA` | PostgreSQL schema | `public` |
+| Parameter | Description | Required? | Default |
+|-----------|-------------|-----------|---------|
+| `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Yes | — |
+| `SPOKE_ADDRESS` | Babylon's Aave Core Spoke contract | Yes | — |
+| `ADAPTER_ADDRESS` | AaveAdapter contract | Yes | — |
+| `CHAIN_ID` | Network chain ID | No | `1` |
+| `START_BLOCK` | Block to begin indexing | No | `0` |
+| `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | No | `4000` |
+| `DATABASE_URL` | PostgreSQL connection string | Yes | — |
+| `DATABASE_SCHEMA` | PostgreSQL schema | No | `public` |
 
 ### 5.3. Liquidation Client Configuration
 
@@ -241,9 +245,6 @@ Configure the client in `.env.liquidator`:
 
 ```bash
 # ====== Required ======
-
-# Private key of liquidator wallet
-LIQUIDATOR_PRIVATE_KEY=0x...
 
 # Ponder indexer API URL
 PONDER_URL=http://localhost:42069
@@ -276,8 +277,44 @@ WBTC_ADDRESS=0x...
 # Must be non-zero in LLP mode.
 # LLP_ADDRESS=0x...
 
-# Position check frequency (default: 10000 ms)
-POLLING_INTERVAL_MS=10000
+# Execution mode (default: AUTO). MANUAL is keyless and writes proposals.
+EXECUTION_MODE=AUTO
+# MANUAL_EXECUTOR_ADDRESS=0x...
+# MANUAL_EXECUTOR_KIND=eoa
+# MANUAL_INTENT_TTL_MS=10800000
+# MANUAL_INTENT_STUCK_MS=3600000
+
+# Signer and secrets (defaults: env-backed local key from LIQUIDATOR_PRIVATE_KEY)
+SECRETS_PROVIDER=env
+SIGNER_SOURCE=local
+LIQUIDATOR_PRIVATE_KEY=0x...
+# SIGNER_KEY_REF=LIQUIDATOR_PRIVATE_KEY
+# KMS_KEY_ID=arn:aws:kms:...
+# SIGNER_ADDRESS=0x...
+# AWS_REGION=us-east-1
+
+# Persistence / crash-safety. Required in MANUAL; optional in AUTO.
+DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder
+# PERSISTENCE_SCHEMA=bot
+
+# Notifications (default: log-only)
+NOTIFIER=none
+# SLACK_WEBHOOK_REF=SLACK_WEBHOOK_URL
+
+# Risk gate (unset variables disable their guard)
+# RISK_MAX_CONSECUTIVE_FAILURES=5
+# RISK_MIN_PROFIT=0
+# RISK_MAX_IN_FLIGHT=3
+# RISK_MAX_DATA_STALENESS_MS=60000
+# RISK_START_HALTED=false
+# RISK_EXPECTED_CODE_HASHES=0xAdapter...=0xhash...,0xLens...=0xhash...
+# RISK_CODE_CHECK_INTERVAL_MS=300000
+# RISK_CONTROL_TOKEN_REF=BOT_CONTROL_TOKEN
+# RISK_CONTROL_PORT=9095
+# RISK_CONTROL_HOST=127.0.0.1
+
+# Position check frequency (default: 12000 ms)
+POLLING_INTERVAL_MS=12000
 
 # Receipt wait timeout (default: 120000 ms)
 TX_RECEIPT_TIMEOUT_MS=120000
@@ -286,23 +323,70 @@ TX_RECEIPT_TIMEOUT_MS=120000
 METRICS_PORT=9090
 ```
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `LIQUIDATOR_PRIVATE_KEY` | Private key for signing transactions | Required |
-| `PONDER_URL` | Indexer API endpoint | Required |
-| `CLIENT_RPC_URL` | RPC for transaction execution | Required |
-| `ADAPTER_ADDRESS` | AaveAdapter address | Required |
-| `LENS_ADDRESS` | AaveAdapterLens address | Required |
-| `WBTC_ADDRESS` | WBTC token address | Required |
-| `DEBT_TOKEN_ADDRESSES` | Override auto-discovery (comma-separated) | Auto-discovered |
-| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | `false` |
-| `BTC_REDEEM_KEY` | BTC key vaults are redeemed to in direct mode | `bytes32(0)` |
-| `LLP_ADDRESS` | LLP (BTCVaultSwap) address used in LLP mode | `address(0)` |
-| `POLLING_INTERVAL_MS` | How often to check positions | `10000` |
-| `TX_RECEIPT_TIMEOUT_MS` | How long to wait for each tx receipt | `120000` |
-| `METRICS_PORT` | HTTP server port for metrics/health | `9090` |
+| Parameter | Description | Required? | Default |
+|-----------|-------------|-----------|---------|
+| `LIQUIDATOR_PRIVATE_KEY` | Default local signer key ref target; not used with KMS or MANUAL | AUTO + local | — |
+| `PONDER_URL` | Indexer API endpoint | Yes | — |
+| `CLIENT_RPC_URL` | RPC for transaction execution | Yes | — |
+| `ADAPTER_ADDRESS` | AaveAdapter address | Yes | — |
+| `LENS_ADDRESS` | AaveAdapterLens address | Yes | — |
+| `WBTC_ADDRESS` | WBTC token address | Yes | — |
+| `DEBT_TOKEN_ADDRESSES` | Override auto-discovery (comma-separated) | No | — |
+| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | No | `false` |
+| `BTC_REDEEM_KEY` | BTC key vaults are redeemed to in direct mode | direct mode | `bytes32(0)` |
+| `LLP_ADDRESS` | LLP (BTCVaultSwap) address used in LLP mode | LLP mode | `address(0)` |
+| `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
+| `MANUAL_EXECUTOR_ADDRESS` | Address the operator signs/broadcasts from; Safe address in `safe` custody | MANUAL only | — |
+| `MANUAL_EXECUTOR_KIND` | Operator custody model: `eoa` or `safe` | MANUAL only | — |
+| `MANUAL_INTENT_TTL_MS` | Expire un-actioned MANUAL proposals after this many ms; `0` disables expiry | No | `10800000` |
+| `MANUAL_INTENT_STUCK_MS` | Alert on `claimed`/`submitted` MANUAL intents older than this; `0` disables | No | `3600000` |
+| `SECRETS_PROVIDER` | Secret reference backend: `env` or `aws` Secrets Manager | No | `env` |
+| `SIGNER_SOURCE` | AUTO signer backend: `local` or `aws` KMS | No | `local` |
+| `SIGNER_KEY_REF` | Local signer secret reference; defaults to the service private-key env var | No | `LIQUIDATOR_PRIVATE_KEY` |
+| `KMS_KEY_ID` | AWS KMS key id/ARN/alias for `SIGNER_SOURCE=aws` | KMS only | — |
+| `SIGNER_ADDRESS` | Expected KMS signer address; boot fails on mismatch | No | — |
+| `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
+| `DATABASE_URL` | Enables Postgres StateStore for intent idempotency and reconcile-on-boot | MANUAL only | — |
+| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables, separate from Ponder | No | `bot` |
+| `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
+| `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
+| `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats; liquidation currently has no expected-profit input | No | — |
+| `RISK_MAX_IN_FLIGHT` | Maximum in-flight actions reserved through the risk gate | No | — |
+| `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old or missing | No | — |
+| `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
+| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` | No | — |
+| `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
+| `RISK_CONTROL_TOKEN_REF` | Secret reference enabling authenticated `/halt`, `/resume`, `/status` | if `RISK_START_HALTED=true` | — |
+| `RISK_CONTROL_PORT` | Kill-switch server port, separate from `METRICS_PORT` | No | `9095` |
+| `RISK_CONTROL_HOST` | Kill-switch bind host; loopback by default | No | `127.0.0.1` |
+| `POLLING_INTERVAL_MS` | How often to check positions | No | `12000` |
+| `TX_RECEIPT_TIMEOUT_MS` | How long to wait for each tx receipt | No | `120000` |
+| `METRICS_PORT` | HTTP server port for metrics/health | No | `9090` |
 
-### 5.4. Contract Addresses
+### 5.4. Execution Modes
+
+`EXECUTION_MODE=AUTO` is the default keeper mode: the process resolves a signer
+from `SIGNER_SOURCE`, signs approvals and liquidation transactions, broadcasts
+them, and waits for receipts.
+
+`EXECUTION_MODE=MANUAL` is keyless. The bot must have `DATABASE_URL`,
+`MANUAL_EXECUTOR_ADDRESS`, and `MANUAL_EXECUTOR_KIND`; it must not have a signer
+configured or the effective private-key env var present. Instead of broadcasting,
+it writes a content-hashed proposal to the StateStore and sends a notification.
+The operator uses `operator-cli` against the same `DATABASE_URL` and
+`PERSISTENCE_SCHEMA`:
+
+```bash
+pnpm --filter @services/operator-cli operator-cli list
+pnpm --filter @services/operator-cli operator-cli show <id>
+pnpm --filter @services/operator-cli operator-cli claim <id>
+pnpm --filter @services/operator-cli operator-cli broadcast <id>
+# or, after signing externally:
+pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
+```
+
+### 5.5. Contract Addresses
 
 Testnet contract addresses are provided as part of the onboarding requirements.
 
@@ -330,6 +414,7 @@ The liquidator wallet requires:
 **Recommended monitoring:**
 - Set up alerts for low ETH balance
 - Monitor debt token balances via `liquidator_token_balance` metric
+- In MANUAL mode, monitor proposals with `operator-cli list` and Slack/log notifications
 
 ## 7. Starting the Service
 
@@ -429,10 +514,14 @@ Returns HTTP 200 if ready, HTTP 503 if dependencies unreachable.
 
 Available at `GET http://localhost:9090/metrics`
 
+The risk-control kill switch, when enabled, is not served from this port. It
+listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
+
 **Key metrics:**
 
 | Metric | Type | Description |
 |--------|------|-------------|
+| `eth_rpc_calls_total` | Counter | Outbound JSON-RPC calls by `method` |
 | `liquidator_positions_checked` | Gauge | Positions checked in last poll |
 | `liquidator_positions_liquidatable` | Gauge | Liquidatable positions found |
 | `liquidator_liquidations_total` | Counter | Successful liquidations |
@@ -466,6 +555,35 @@ Available at `GET http://localhost:9090/metrics`
 
 ### 8.3. Manual Commands
 
+**MANUAL proposals:**
+
+```bash
+# Proposals awaiting an operator
+pnpm --filter @services/operator-cli operator-cli list --action liquidation
+
+# Inspect and claim a proposal before signing
+pnpm --filter @services/operator-cli operator-cli show <id>
+pnpm --filter @services/operator-cli operator-cli claim <id>
+
+# Broadcast with configured operator keys, or record an externally signed tx
+pnpm --filter @services/operator-cli operator-cli broadcast <id>
+pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
+```
+
+The CLI uses `CLIENT_RPC_URL`, `DATABASE_URL`, `PERSISTENCE_SCHEMA`,
+`MANUAL_EXECUTOR_ADDRESS`, and `MANUAL_EXECUTOR_KIND`. `broadcast` additionally
+needs `OPERATOR_KEY_REF` for EOA custody or `SAFE_OWNER_KEY_REFS` for Safe
+custody; `claim` and `confirm` can remain keyless.
+
+**Risk-control kill switch:**
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9095/status
+curl -XPOST -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:9095/halt?reason=incident"
+curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9095/resume
+```
+
 **Query indexer endpoints:**
 
 ```bash
@@ -488,6 +606,9 @@ curl http://localhost:42069/liquidatable-positions
 | "Transaction reverted" | Insufficient balance or position already liquidated | Check wallet balance, verify position still liquidatable |
 | "Simulation failed" | Position state changed | Normal - competition from other liquidators |
 | "Missing required environment variable" | Configuration error | Check `.env.liquidator` for missing values |
+| "EXECUTION_MODE=MANUAL requires DATABASE_URL" | MANUAL proposals need durable storage | Set `DATABASE_URL` and matching `PERSISTENCE_SCHEMA` |
+| "EXECUTION_MODE=MANUAL is keyless" | A signer or private key is present in MANUAL | Unset signer env and the effective private-key env var |
+| "halted (...)" | Risk gate is HALTED | Inspect logs or `GET /status`; use `POST /resume` if appropriate |
 
 ### 9.2. Error Types
 
@@ -496,6 +617,8 @@ curl http://localhost:42069/liquidatable-positions
 | `poll_error` | Exception escaped the poll cycle | Check logs for stack trace |
 | `ponder_fetch_error` | Failed to fetch from indexer | Verify Ponder is running |
 | `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate | Usually transient; position state changed |
+| `risk_blocked` | Risk gate blocked an otherwise executable candidate | Check risk config and kill-switch state |
+| `intent_in_flight` | Existing live intent/proposal already owns this subject | Let reconcile/operator workflow finish, or inspect the StateStore |
 | `tx_send_error` | Failed to broadcast the liquidation transaction | Check RPC connectivity, wallet balance |
 | `tx_reverted` | Transaction reverted on-chain | Position may already be liquidated |
 | `receipt_fetch_error` | Failed to fetch transaction receipt | Check RPC connectivity |

@@ -3,6 +3,14 @@
 Polls the Ponder indexer for unhealthy positions and executes liquidations
 against the AaveAdapter contract.
 
+> **Execution modes.** Step 6 below ("Liquidate") goes through the process's one
+> `Executor`. In **AUTO** mode (default) it signs + broadcasts. In **MANUAL** mode
+> (`EXECUTION_MODE=MANUAL`) the bot is keyless: it persists a signed-tx proposal to the
+> crash-safety store and notifies an operator, who broadcasts it with
+> [`operator-cli`](../operator-cli/README.md). The risk gate, kill switch, and Postgres
+> crash-safety store (`DATABASE_URL`) are opt-in — see the root
+> [README](../../README.md#execution-modes) and `env.liquidator.example`.
+
 ## How It Works
 
 1. **Discover debt tokens** — at boot, either reads `DEBT_TOKEN_ADDRESSES` or

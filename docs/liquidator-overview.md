@@ -139,17 +139,21 @@ The bot automates monitoring and execution.
   `LiquidationCall`) and the Adapter event (`UserProxyCreated`).
   Tracks active positions and the proxy → borrower mapping.
 - **Liquidation Client** — polls the indexer's
-  `/liquidatable-positions` endpoint and executes liquidations.
+  `/liquidatable-positions` endpoint and either executes liquidations
+  directly or persists proposals for an operator, depending on
+  `EXECUTION_MODE`.
 
 ### Bot Operation
 
 1. **Discover debt tokens** — at boot, either reads
    `DEBT_TOKEN_ADDRESSES` or enumerates Spoke reserves and selects
    those flagged borrowable.
-2. **Approve** — once at boot, sets `MAX_UINT256` allowance on every
+2. **Approve** — ensures `MAX_UINT256` allowance on every
    debt token and on WBTC for the AaveAdapter. WBTC approval is
    required because the adapter pulls the fairness payment and, in
-   direct mode, the redemption fee directly from `msg.sender`.
+   direct mode, the redemption fee directly from `msg.sender`. In
+   `AUTO` mode the bot signs the approval; in `MANUAL` mode it
+   proposes the approval for the operator to sign.
 3. **Poll** — fetches `/liquidatable-positions` from Ponder every
    `POLLING_INTERVAL_MS`.
 4. **Estimate** — calls
@@ -158,25 +162,53 @@ The bot automates monitoring and execution.
 5. **Simulate** — simulates every candidate against the Adapter; drops
    reverts.
 6. **Liquidate** — calls `liquidate` or `liquidateWithLLP` based on
-   `IS_DIRECT_REDEMPTION`, with sequential nonces.
+   `IS_DIRECT_REDEMPTION`. In `AUTO` mode the bot signs and
+   broadcasts with the configured signer. In `MANUAL` mode it writes a
+   content-hashed proposal to the Postgres StateStore and notifies an
+   operator, who reviews and broadcasts it with `operator-cli`.
 
 ### Configuration
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `LIQUIDATOR_PRIVATE_KEY` | Private key of liquidator wallet | Required |
-| `CLIENT_RPC_URL` | Ethereum RPC endpoint | Required |
-| `PONDER_URL` | Ponder indexer API URL | Required |
-| `ADAPTER_ADDRESS` | AaveAdapter address | Required |
-| `LENS_ADDRESS` | AaveAdapterLens address | Required |
-| `WBTC_ADDRESS` | WBTC token address | Required |
-| `DEBT_TOKEN_ADDRESSES` | Comma-separated; auto-discovered if unset | Auto-discovered |
-| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | `false` |
-| `BTC_REDEEM_KEY` | BTC key for direct mode (must be non-zero) | `bytes32(0)` |
-| `LLP_ADDRESS` | LLP (BTCVaultSwap) address for LLP mode (must be non-zero) | `address(0)` |
-| `POLLING_INTERVAL_MS` | Position check frequency | `10000` |
-| `TX_RECEIPT_TIMEOUT_MS` | Receipt wait timeout | `120000` |
-| `METRICS_PORT` | Prometheus metrics port | `9090` |
+| Variable | Description | Required? | Default |
+|----------|-------------|-----------|---------|
+| `CLIENT_RPC_URL` | Ethereum RPC endpoint | Yes | — |
+| `PONDER_URL` | Ponder indexer API URL | Yes | — |
+| `ADAPTER_ADDRESS` | AaveAdapter address | Yes | — |
+| `LENS_ADDRESS` | AaveAdapterLens address | Yes | — |
+| `WBTC_ADDRESS` | WBTC token address | Yes | — |
+| `DEBT_TOKEN_ADDRESSES` | Comma-separated; auto-discovered if unset | No | — |
+| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | No | `false` |
+| `BTC_REDEEM_KEY` | BTC key for direct mode (must be non-zero) | direct mode | `bytes32(0)` |
+| `LLP_ADDRESS` | LLP (BTCVaultSwap) address for LLP mode (must be non-zero) | LLP mode | `address(0)` |
+| `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
+| `LIQUIDATOR_PRIVATE_KEY` | Default local signer key ref target; not used with KMS or MANUAL | AUTO + local | — |
+| `SECRETS_PROVIDER` | Secret reference backend: `env` or `aws` | No | `env` |
+| `SIGNER_SOURCE` | AUTO signer backend: `local` or `aws` KMS | No | `local` |
+| `SIGNER_KEY_REF` | Local signer secret reference | No | `LIQUIDATOR_PRIVATE_KEY` |
+| `KMS_KEY_ID` | AWS KMS key id/ARN/alias for `SIGNER_SOURCE=aws` | KMS only | — |
+| `SIGNER_ADDRESS` | Expected KMS signer address | No | — |
+| `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
+| `DATABASE_URL` | Enables Postgres StateStore; required for MANUAL proposals | MANUAL only | — |
+| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables | No | `bot` |
+| `MANUAL_EXECUTOR_ADDRESS` | Address the operator signs/broadcasts from | MANUAL only | — |
+| `MANUAL_EXECUTOR_KIND` | Operator custody model: `eoa` or `safe` | MANUAL only | — |
+| `MANUAL_INTENT_TTL_MS` | Expire un-actioned MANUAL proposals after this many ms; `0` disables | No | `10800000` |
+| `MANUAL_INTENT_STUCK_MS` | Alert on stuck MANUAL intents after this many ms; `0` disables | No | `3600000` |
+| `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
+| `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
+| `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after consecutive failed actions | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats; liquidation currently has no expected-profit input | No | — |
+| `RISK_MAX_IN_FLIGHT` | Maximum in-flight actions | No | — |
+| `RISK_MAX_DATA_STALENESS_MS` | Maximum source data age | No | — |
+| `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
+| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=hash,...` | No | — |
+| `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
+| `RISK_CONTROL_TOKEN_REF` | Secret reference enabling authenticated kill switch | if `RISK_START_HALTED=true` | — |
+| `RISK_CONTROL_PORT` | Kill-switch server port, separate from metrics | No | `9095` |
+| `RISK_CONTROL_HOST` | Kill-switch bind host | No | `127.0.0.1` |
+| `POLLING_INTERVAL_MS` | Position check frequency | No | `12000` |
+| `TX_RECEIPT_TIMEOUT_MS` | Receipt wait timeout | No | `120000` |
+| `METRICS_PORT` | Prometheus metrics port | No | `9090` |
 
 ### Requirements
 
