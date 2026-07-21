@@ -1,31 +1,60 @@
 # Aave V4 Bots Monorepo
 
-A monorepo containing bots for Babylon's Aave V4 integration:
+A monorepo of keeper bots for Babylon's Aave V4 integration:
 
-- **Liquidator** - Monitors positions and liquidates unhealthy ones
-- **Arbitrageur** - Monitors escrowed vaults and acquires them using WBTC
+- **Liquidator** — monitors positions and liquidates unhealthy ones.
+- **Arbitrageur** — a single bot running **both engines** off one signer: it always
+  acquires escrowed vaults from the VaultSwap (arbitrage), and — when configured with
+  `ADAPTER_ADDRESS` + `LENS_ADDRESS` — also runs the same `LiquidationEngine` the
+  standalone liquidator uses. (That bot-side opt-in is distinct from the indexer's mode
+  gating below.)
 
 ## Architecture
 
+The repo is a **package-per-concern monorepo**. Each `@repo/*` package owns exactly one
+concern; the **services are thin composition roots** that wire those packages together,
+own their env/metrics, and run a poll loop. The pipeline logic lives in `@repo/engine`,
+and the *decisions* it makes are delegated to `@repo/domain`, which is pure (no IO) and
+unit-tested in isolation. IO concerns (signing, secrets, nonces, approvals, RPC) are each
+isolated behind their own package + seam, so e.g. swapping a local key for AWS KMS is a
+config change with no engine edit.
+
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              MONOREPO STRUCTURE                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  packages/                                                                  │
-│  └── shared/           Shared utilities (health, metrics server, retry)    │
-│                                                                             │
-│  services/                                                                  │
-│  ├── liquidator/                                                            │
-│  │   ├── client/       Liquidation bot (polls indexer, executes txs)       │
-│  │   └── ponder/       Indexer (tracks Supply/Withdraw/Liquidation/Proxy)  │
-│  │                                                                          │
-│  └── arbitrageur/                                                           │
-│      ├── client/       Arbitrageur bot (polls indexer, acquires vaults)    │
-│      └── ponder/       Indexer (tracks VaultSwap events)                   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+services/  ── thin composition roots: wire packages, own env + metrics, run the poll loop
+  ├── arbitrageur   one bot, BOTH engines (arbitrage always; liquidation opt-in), one signer
+  ├── liquidator    standalone liquidation bot (LiquidationEngine only)
+  └── ponder        unified indexer — index mode gated by which contract addresses are set
+        │                (SPOKE + ADAPTER ⇒ liquidation; VAULT_SWAP ⇒ arbitrage; set either/both)
+        ▼
+packages/  ── @repo/*, one concern each
+  engine          the pipelines: LiquidationEngine + ArbitrageEngine (orchestration/IO)
+  domain          pure math — amount buffering, slippage caps, priority ordering, reserve checks (no IO)
+  ── chain IO ─────────────────────────────────────────────────────────────────────────
+  abis            hand-maintained contract ABIs (spoke, adapter, lens, vaultSwap, erc20)
+  capital         allowances / approvals / balances + cached token metadata
+  chain           retry-with-backoff + instrumented HTTP transport
+  execution       transaction execution — nonce authority, receipt waiting
+  signer          a viem Account backed by a local key OR AWS KMS (drop-in either way)
+  secrets         resolve a secret ref (an env var today, AWS Secrets Manager later)
+  ── cross-cutting ────────────────────────────────────────────────────────────────────
+  config          shared validated env-var schemas (zod) + fail-fast parser
+  risk            pre-execution risk gate checked before each action
+  logger          structured, tagged logger
+  metrics         Prometheus registry + per-engine metric sets
+  observability   HTTP server exposing /health, /ready, /metrics
 ```
+
+**Composition happens at the edges.** A *service* is the composition root: it wires the
+engine together with a `signer`, `secrets`, `config`, `metrics`, and `observability`, and
+injects the built wallet client into the engine. `@repo/engine` itself depends only on
+`domain` (pure) plus the chain-IO packages (`abis`, `capital`, `chain`, `execution`) and
+`risk`/`logger` — **not** on `signer`/`secrets`, and never on a service. `domain` imports
+nothing with IO, which keeps it pure and fast to test.
+
+Smart contracts live in the `contracts/` git submodule (Babylon's `vault-contracts-aave-v4`),
+but the bots don't build it or read from it at runtime: deployment addresses come from each
+service's env config, and ABIs are hand-maintained in `@repo/abis`. The submodule is the
+contract *source* — used to compile and deploy the protocol during the e2e suite.
 
 ## Quick Start
 
@@ -148,16 +177,16 @@ pnpm format         # Format code
 ### Type Checking
 
 ```bash
-pnpm typecheck              # All packages
-pnpm typecheck:shared       # Shared package only
-pnpm typecheck:liquidator   # Liquidator client only
-pnpm typecheck:arbitrageur  # Arbitrageur client only
+pnpm typecheck              # Everything (all packages + services)
+pnpm typecheck:packages     # @repo/* packages only
+pnpm typecheck:liquidator   # Liquidator service only
+pnpm typecheck:arbitrageur  # Arbitrageur service only
 ```
 
 ### Testing
 
 ```bash
-pnpm test                   # All packages
+pnpm test                   # All workspaces (packages + services)
 pnpm test:liquidator        # Liquidator tests
 pnpm test:arbitrageur       # Arbitrageur tests
 pnpm test:coverage          # With coverage
@@ -166,46 +195,42 @@ pnpm test:coverage          # With coverage
 ## Project Structure
 
 ```
-├── packages/
-│   └── shared/                 # @repo/shared - Shared utilities
-│       └── src/
-│           ├── health.ts       # Health check utilities
-│           ├── server.ts       # Metrics/health HTTP server
-│           ├── retry.ts        # Retry with exponential backoff
-│           └── index.ts        # Package exports
+├── packages/                       # @repo/* — one concern per package
+│   ├── engine/                     #   LiquidationEngine + ArbitrageEngine (the pipelines)
+│   ├── domain/                     #   pure math: amount buffering, slippage, ordering, reserve checks
+│   ├── abis/                       #   hand-maintained contract ABIs
+│   ├── capital/                    #   allowances / approvals / balances / token metadata
+│   ├── chain/                      #   retry + instrumented HTTP transport
+│   ├── execution/                  #   nonce authority + receipt waiting
+│   ├── signer/                     #   viem Account from a local key OR AWS KMS
+│   ├── secrets/                    #   resolve a secret ref (env OR AWS Secrets Manager)
+│   ├── config/                     #   shared env-var schemas (zod) + fail-fast parser
+│   ├── risk/                       #   pre-execution risk gate
+│   ├── logger/                     #   structured tagged logger
+│   ├── metrics/                    #   Prometheus registry + metric sets
+│   └── observability/              #   /health, /ready, /metrics HTTP server
 │
 ├── services/
-│   ├── liquidator/             # @services/liquidator
-│   │   └── src/
-│   │       ├── bot.ts          # LiquidationBot wrapper (wires engine + metrics)
-│   │       ├── config.ts       # Configuration
-│   │       └── metrics.ts      # Prometheus metrics
-│   │
-│   ├── arbitrageur/            # @services/arbitrageur
-│   │   └── src/
-│   │       ├── bot.ts          # ArbitrageurBot wrapper (wires engine + metrics)
-│   │       ├── config.ts       # Configuration (with Zod)
-│   │       └── metrics.ts      # Prometheus metrics
-│   │
-│   └── ponder/                 # @services/ponder — unified indexer (both modes)
-│       ├── ponder.config.ts    #   conditional contracts by mode
-│       ├── ponder.schema.ts    #   union schema
-│       └── src/                #   flags.ts + guarded handlers + merged api
+│   ├── liquidator/                 # @services/liquidator — standalone liquidation bot
+│   │   └── src/                    #   index.ts (boot) · config.ts · bot.ts · metrics.ts
+│   ├── arbitrageur/                # @services/arbitrageur — one bot, both engines
+│   │   └── src/                    #   index.ts (boot + opt-in liq engine) · config.ts · bot.ts · metrics.ts
+│   └── ponder/                     # @services/ponder — unified indexer (mode-gated)
+│       ├── ponder.config.ts        #   contracts included per active mode
+│       ├── ponder.schema.ts        #   union schema
+│       └── src/                    #   flags.ts + mode-guarded handlers + merged api
 │
-├── docker/
-│   ├── liquidator.Dockerfile
-│   ├── arbitrageur.Dockerfile
-│   └── ponder.Dockerfile       # unified indexer image (both modes)
+├── contracts/                      # git submodule — vault-contracts-aave-v4 (source + deployed addrs)
+├── test/e2e/                       # forge scripts driving the bots against a live Anvil + Bitcoin regtest
 │
-├── .github/workflows/
-│   ├── ci.yml                  # Lint, typecheck, test
-│   └── publish.yml             # Docker image publishing
-│
-├── docker-compose.yml          # All services orchestration
-├── package.json                # Root workspace scripts
-├── pnpm-workspace.yaml         # Workspace configuration
-├── biome.json                  # Linting/formatting config
-└── tsconfig.json               # Root TypeScript config
+├── docker/                         # liquidator / arbitrageur / ponder Dockerfiles
+├── docker-compose.yml              # all services orchestration
+├── env.liquidator.example          # env templates (copy to .env.liquidator / .env.arbitrageur)
+├── env.arbitrageur.example
+├── package.json                    # root workspace scripts
+├── pnpm-workspace.yaml             # workspace globs (packages/*, services/*)
+├── biome.json                      # lint/format config
+└── tsconfig.json                   # root TypeScript config
 ```
 
 ## Requirements

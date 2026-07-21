@@ -1,12 +1,12 @@
 // `@repo/secrets` public surface: the `SecretsProvider` port (`./types`), the `./env` adapter
 // + selector below, and the `./aws` adapter. See `./types` for the seam's rationale.
 
-import { type AwsSecretsConfig, type SecretsClientLike, createAwsSecrets } from "./aws";
+import { type AwsSecretsConfig, type SecretsSend, createAwsSecrets } from "./aws";
 import type { SecretsProvider } from "./types";
 
 export type { SecretsProvider } from "./types";
 // `./aws` adapter — resolves refs from AWS Secrets Manager (implemented in `./aws.ts`).
-export { type AwsSecretsConfig, type SecretsClientLike, createAwsSecrets };
+export { type AwsSecretsConfig, type SecretsSend, createAwsSecrets };
 
 /**
  * `./env` adapter — the ref is an environment variable name. Empty strings count as

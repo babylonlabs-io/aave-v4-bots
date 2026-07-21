@@ -50,6 +50,16 @@ const envSchema = z.object({
   VAULT_SWAP_ADDRESS: addressSchema,
   WBTC_ADDRESS: addressSchema,
 
+  // Signer + secrets source selection (all optional; defaults preserve current behavior:
+  // a local signer whose key is read from the ARBITRAGEUR_PRIVATE_KEY env var). Both
+  // engines the arbitrageur may run share this one signer.
+  SECRETS_PROVIDER: z.enum(["env", "aws"]).optional().default("env"),
+  SIGNER_SOURCE: z.enum(["local", "aws"]).optional().default("local"),
+  SIGNER_KEY_REF: z.string().min(1).optional(),
+  KMS_KEY_ID: z.string().min(1).optional(),
+  SIGNER_ADDRESS: addressSchema.optional(),
+  AWS_REGION: z.string().min(1).optional(),
+
   // Optional with defaults (validated as positive/non-negative integers)
   POLLING_INTERVAL_MS: positiveIntSchema.optional().default("30000"),
   VAULT_PROCESSING_DELAY_MS: nonNegativeIntSchema.optional().default("5000"),
