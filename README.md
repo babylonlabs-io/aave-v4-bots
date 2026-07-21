@@ -20,8 +20,8 @@ behaves exactly like a simple keeper.
 The repo is a **package-per-concern monorepo**. Each `@repo/*` package owns exactly one
 concern; the **services are thin composition roots** that wire those packages together,
 own their env/metrics, and run a poll loop. The pipeline logic lives in `@repo/engine`,
-and the *decisions* it makes are delegated to `@repo/domain`, which is pure (no IO) and
-unit-tested in isolation. IO concerns (signing, secrets, nonces, approvals, RPC) are each
+whose *decision* logic is kept in pure, no-IO modules unit-tested in isolation. IO
+concerns (signing, secrets, nonces, approvals, RPC) are each
 isolated behind their own package + seam, so e.g. swapping a local key for AWS KMS is a
 config change with no engine edit.
 
@@ -35,12 +35,12 @@ services/  ── thin composition roots: wire packages, own env + metrics, run 
         ▼
 packages/  ── @repo/*, one concern each
   ── pipelines ────────────────────────────────────────────────────────────────────────
-  engine          the pipelines: LiquidationEngine + ArbitrageEngine, and the Executor seam
-  domain          pure math — amount buffering, slippage caps, priority ordering, reserve checks (no IO)
+  engine          the pipelines: LiquidationEngine + ArbitrageEngine, the Executor seam, and the
+                  pure decision math (amount buffering, slippage caps, priority ordering, reserve checks)
   ── chain IO ─────────────────────────────────────────────────────────────────────────
   abis            hand-maintained contract ABIs (spoke, adapter, lens, vaultSwap, safe, erc20)
-  capital         allowances / approvals / balances + cached token metadata
-  chain           retry-with-backoff, instrumented HTTP transport, generic chain reads
+  chain           retry-with-backoff, instrumented HTTP transport, generic chain reads, and ERC-20
+                  balances / allowances / approvals + cached token metadata
   execution       nonce authority (shared allocator + lease), receipt waiting, tx signing
   ── identity & durability ────────────────────────────────────────────────────────────
   signer          a viem Account backed by a local key OR AWS KMS (drop-in either way)
@@ -62,10 +62,10 @@ packages/  ── @repo/*, one concern each
 and **one** risk gate; the service then constructs the engine(s) around them and runs the
 poll loop. `@repo/engine` holds that `Executor`, **never a raw signer** — so the same
 pipeline runs whether the process is keyed (AUTO) or keyless (MANUAL) — and it depends on
-`domain` (pure), the chain-IO packages, and the durability/safety packages (`persistence`,
-`risk`, `notifications`), but **not** on `signer`/`secrets`: the runtime resolves those and
-hands the engine a finished `Executor`. `domain` imports nothing with IO, which keeps it
-pure and fast to test.
+the chain-IO packages and the durability/safety packages (`persistence`, `risk`,
+`notifications`), but **not** on `signer`/`secrets`: the runtime resolves those and hands the
+engine a finished `Executor`. The engine's decision math is pure (no IO), which keeps it fast
+to test.
 
 **Everything risky is opt-in.** A local key + public-mempool sends, no persisted state, no
 risk guards is the default; AWS KMS, a Postgres crash-safety store, the code-hash guard, and
@@ -257,11 +257,9 @@ pnpm test:coverage          # With coverage
 
 ```
 ├── packages/                       # @repo/* — one concern per package
-│   ├── engine/                     #   LiquidationEngine + ArbitrageEngine + the Executor seam
-│   ├── domain/                     #   pure math: amount buffering, slippage, ordering, reserve checks
+│   ├── engine/                     #   LiquidationEngine + ArbitrageEngine + Executor seam + pure decision math
 │   ├── abis/                       #   hand-maintained contract ABIs (spoke/adapter/lens/vaultSwap/safe/erc20)
-│   ├── capital/                    #   allowances / approvals / balances / token metadata
-│   ├── chain/                      #   retry + instrumented HTTP transport + generic chain reads
+│   ├── chain/                      #   retry + instrumented HTTP transport + chain reads + ERC-20 balances/approvals/metadata
 │   ├── execution/                  #   shared nonce authority (allocator + lease) + receipt waiting + signing
 │   ├── signer/                     #   viem Account from a local key OR AWS KMS
 │   ├── secrets/                    #   resolve a secret ref (env OR AWS Secrets Manager)

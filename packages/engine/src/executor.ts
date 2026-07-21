@@ -1,5 +1,5 @@
 import { erc20Abi } from "@repo/abis";
-import { approveMax, readAllowance } from "@repo/capital";
+import { approveMax, readAllowance } from "@repo/chain";
 import {
   type ContractCall,
   type ExecutionIdentity,

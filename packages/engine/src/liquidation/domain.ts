@@ -1,4 +1,4 @@
-// Pure liquidation-domain logic (no IO). Extracted from the liquidator bot.
+// Pure liquidation-domain logic (no IO).
 
 /**
  * Inflate each reserve's Lens-estimated repay amount by `bufferBps` (default 1%).

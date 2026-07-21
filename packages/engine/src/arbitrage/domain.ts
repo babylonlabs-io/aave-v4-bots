@@ -1,4 +1,4 @@
-// Pure arbitrage-domain logic (no IO). Extracted from the arbitrageur bot.
+// Pure arbitrage-domain logic (no IO).
 
 /**
  * Max WBTC the arbitrageur will pay for a vault: the current Hub debt plus a

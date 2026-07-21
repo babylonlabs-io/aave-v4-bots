@@ -38,25 +38,6 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
 
-  packages/capital:
-    dependencies:
-      '@repo/abis':
-        specifier: workspace:*
-        version: link:../abis
-      viem:
-        specifier: ^2.37.0
-        version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
-    devDependencies:
-      '@types/node':
-        specifier: ^22.13.14
-        version: 22.19.2
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-      vitest:
-        specifier: ^2.1.0
-        version: 2.1.9(@types/node@22.19.2)
-
   packages/chain:
     dependencies:
       '@repo/abis':
@@ -110,29 +91,14 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.19.2)
 
-  packages/domain:
-    devDependencies:
-      '@types/node':
-        specifier: ^22.13.14
-        version: 22.19.2
-      typescript:
-        specifier: ^5.7.3
-        version: 5.9.3
-
   packages/engine:
     dependencies:
       '@repo/abis':
         specifier: workspace:*
         version: link:../abis
-      '@repo/capital':
-        specifier: workspace:*
-        version: link:../capital
       '@repo/chain':
         specifier: workspace:*
         version: link:../chain
-      '@repo/domain':
-        specifier: workspace:*
-        version: link:../domain
       '@repo/execution':
         specifier: workspace:*
         version: link:../execution
@@ -382,18 +348,12 @@ importers:
       '@repo/abis':
         specifier: workspace:*
         version: link:../../packages/abis
-      '@repo/capital':
-        specifier: workspace:*
-        version: link:../../packages/capital
       '@repo/chain':
         specifier: workspace:*
         version: link:../../packages/chain
       '@repo/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@repo/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
       '@repo/engine':
         specifier: workspace:*
         version: link:../../packages/engine
@@ -455,18 +415,12 @@ importers:
       '@repo/abis':
         specifier: workspace:*
         version: link:../../packages/abis
-      '@repo/capital':
-        specifier: workspace:*
-        version: link:../../packages/capital
       '@repo/chain':
         specifier: workspace:*
         version: link:../../packages/chain
       '@repo/config':
         specifier: workspace:*
         version: link:../../packages/config
-      '@repo/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
       '@repo/engine':
         specifier: workspace:*
         version: link:../../packages/engine
