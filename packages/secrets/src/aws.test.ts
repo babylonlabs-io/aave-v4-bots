@@ -1,6 +1,6 @@
 import { GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { describe, expect, it, vi } from "vitest";
-import { type SecretsClientLike, createAwsSecrets } from "./aws";
+import { type SecretsSend, createAwsSecrets } from "./aws";
 
 describe("createAwsSecrets", () => {
   it("resolves a SecretString for a ref", async () => {
@@ -32,7 +32,7 @@ describe("createAwsSecrets", () => {
   });
 
   it("throws when the secret has neither string nor binary value", async () => {
-    const send: SecretsClientLike["send"] = vi.fn(async () => ({}));
+    const send: SecretsSend["send"] = vi.fn(async () => ({}));
     const secrets = createAwsSecrets({ client: { send } });
     await expect(secrets.get("empty/ref")).rejects.toThrow(/has no value/);
   });

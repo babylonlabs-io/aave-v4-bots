@@ -1,6 +1,6 @@
 import type { Address, Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { type AwsSignerConfig, type KmsClientLike, createAwsSigner } from "./aws";
+import { type AwsSignerConfig, type KmsSend, createAwsSigner } from "./aws";
 import type { Signer } from "./types";
 
 // `@repo/signer` public surface: the `Signer` port (`./types`), the `./local` adapter +
@@ -33,7 +33,7 @@ export function createLocalSigner(privateKey: string): Signer {
 }
 
 // `./aws` — an AWS KMS-backed signer (the key never leaves KMS; implemented in `./aws.ts`).
-export { type KmsClientLike, type AwsSignerConfig, createAwsSigner };
+export { type KmsSend, type AwsSignerConfig, createAwsSigner };
 
 // ── Composition-root selector ───────────────────────────────────────────────────────
 

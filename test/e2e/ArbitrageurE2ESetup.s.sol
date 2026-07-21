@@ -27,15 +27,23 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
         console.log("\n=== E2E Arbitrageur Setup (one bot, both engines) ===");
         console.log("Arbitrageur signer address:", arbAddr);
 
-        // Fund the arbitrageur with ETH (gas), WBTC (LLP float + acquisitions),
-        // and USDC (debt repayment for the liquidation leg it now runs itself).
+        // Gas: set the arbitrageur's ETH balance immediately (not via broadcast).
+        // arbAddr is APP_OPERATOR_0 (or the KMS-derived signer via E2E_ARB_ADDRESS) —
+        // a registered vault keeper, so not a genesis-funded Anvil account. The bot is
+        // spawned mid-run() below, before forge broadcasts any funding tx, so a broadcast
+        // transfer would land too late and the bot's first approval would fail on gas;
+        // anvil_setBalance is instant.
+        _provisionGas(arbAddr, 10 ether);
+
+        // WBTC (LLP float + acquisitions) and USDC (debt repayment for the
+        // liquidation leg) are only needed once the bot acts on a position, well
+        // after these broadcasts land, so a normal mint is fine.
         console.log("\n--- Fund Arbitrageur ---");
         vm.startBroadcast(adminPrivateKey);
-        payable(arbAddr).transfer(10 ether);
         wbtc.mint(arbAddr, 10 * uint256(ONE_BTC));
         usdc.mint(arbAddr, 10_000 * ONE_USDC);
         vm.stopBroadcast();
-        console.log("Arbitrageur funded with 10 ETH, 10 WBTC, 10,000 USDC");
+        console.log("Arbitrageur funded with 10 ETH (gas), 10 WBTC, 10,000 USDC");
 
         AaveAdapterLens lens = _deployLens();
         string memory startBlock = _getCurrentBlockNumber();
@@ -68,10 +76,9 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
     function _signerEnvLines() internal view returns (string memory) {
         bool useKms = keccak256(bytes(vm.envOr("E2E_SIGNER_SOURCE", string("local")))) == keccak256(bytes("aws"));
         if (!useKms) {
-            return
-                string.concat(
-                    "ARBITRAGEUR_PRIVATE_KEY=", vm.toString(bytes32(E2EConstants.ARBITRAGEUR_PRIVATE_KEY)), "\n"
-                );
+            return string.concat(
+                "ARBITRAGEUR_PRIVATE_KEY=", vm.toString(bytes32(E2EConstants.ARBITRAGEUR_PRIVATE_KEY)), "\n"
+            );
         }
         return string.concat(
             "SIGNER_SOURCE=aws\n",
@@ -162,58 +169,4 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "\n",
             "# Risk gate (ONE gate shared by BOTH engines this process runs)\n",
             _riskEnv(lensAddress),
-            "EOF"
-        );
-        vm.ffi(inputs);
-    }
-
-    /// @notice Risk-gate env for the arbitrageur, which runs the arbitrage AND liquidation engines
-    ///         off one signer and therefore one shared `RiskGate`.
-    /// @dev Pins the **real deployed bytecode** of every contract the process calls:
-    ///      `address.codehash` is `keccak256(runtime code)`, exactly what the bot's `readCodeHash`
-    ///      computes from `eth_getCode`. Disagreement boots the bot HALTED, so it never acquires a
-    ///      vault and the verify script times out — this suite is the only place the code-hash
-    ///      guard runs against a real chain.
-    ///
-    ///      `RISK_MIN_PROFIT` and `RISK_MAX_DATA_STALENESS_MS` are deliberately unset: both are
-    ///      covered by engine unit tests, and both would couple this suite to Anvil's block
-    ///      cadence and to e2e-specific pricing.
-    function _riskEnv(address lensAddress) internal view returns (string memory) {
-        string memory hashes = string.concat(
-            "RISK_EXPECTED_CODE_HASHES=",
-            vm.toString(address(vaultSwap)),
-            "=",
-            vm.toString(address(vaultSwap).codehash),
-            ",",
-            vm.toString(address(aaveAdapter)),
-            "=",
-            vm.toString(address(aaveAdapter).codehash),
-            ",",
-            vm.toString(lensAddress),
-            "=",
-            vm.toString(lensAddress.codehash),
-            "\n"
-        );
-
-        return string.concat(
-            // Generous on purpose. These two exist here to prove the env parses and the gate is
-            // wired into the engines, not to be exercised: a genuinely broken bot fails this suite
-            // by never trading. Tight thresholds would only add CI flake.
-            "RISK_MAX_CONSECUTIVE_FAILURES=10\n",
-            "RISK_MAX_IN_FLIGHT=5\n",
-            hashes,
-            "RISK_CODE_CHECK_INTERVAL_MS=5000\n",
-            "RISK_CONTROL_TOKEN_REF=",
-            E2EConstants.CONTROL_TOKEN_REF,
-            "\n",
-            E2EConstants.CONTROL_TOKEN_REF,
-            "=",
-            E2EConstants.CONTROL_TOKEN,
-            "\n",
-            "RISK_CONTROL_PORT=",
-            vm.toString(E2EConstants.ARBITRAGEUR_CONTROL_PORT),
-            "\n",
-            "RISK_CONTROL_HOST=127.0.0.1\n"
-        );
-    }
 }
