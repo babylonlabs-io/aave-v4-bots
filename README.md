@@ -53,8 +53,8 @@ packages/  ── @repo/*, one concern each
   ── cross-cutting ────────────────────────────────────────────────────────────────────
   config          shared validated env-var schemas (zod) + fail-fast parser
   logger          structured, tagged logger
-  metrics         Prometheus registry + per-engine metric sets
-  observability   HTTP server exposing /health, /ready, /metrics
+  observability   Prometheus registry + per-engine metric sets, and the HTTP server that
+                  exposes them alongside /health and /ready
 ```
 
 **Composition happens at the edges.** A *service* is the composition root. It hands its
@@ -200,8 +200,8 @@ pnpm arbitrageur:run
 docker compose up -d
 
 # Or start specific services
-docker compose up -d liquidator-postgres liquidator-ponder liquidator-client
-docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-client
+docker compose up -d liquidator-postgres liquidator-ponder liquidator-bot
+docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-bot
 ```
 
 ### Service Ports
@@ -210,10 +210,10 @@ docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-client
 | -------------------- | ----- | -------------------------- |
 | liquidator-postgres  | 5432  | Liquidator PostgreSQL      |
 | liquidator-ponder    | 42069 | Liquidator Indexer API     |
-| liquidator-client    | 9090  | Liquidator Metrics/Health  |
+| liquidator-bot    | 9090  | Liquidator Metrics/Health  |
 | arbitrageur-postgres | 5433  | Arbitrageur PostgreSQL     |
 | arbitrageur-ponder   | 42070 | Arbitrageur Indexer API    |
-| arbitrageur-client   | 9091  | Arbitrageur Metrics/Health |
+| arbitrageur-bot   | 9091  | Arbitrageur Metrics/Health |
 
 ### Stop Services
 
@@ -269,8 +269,7 @@ pnpm test:coverage          # With coverage
 │   ├── notifications/              #   outbound alerts (Slack) — risk halts + MANUAL proposals
 │   ├── config/                     #   shared env-var schemas (zod) + fail-fast parser
 │   ├── logger/                     #   structured tagged logger
-│   ├── metrics/                    #   Prometheus registry + metric sets
-│   └── observability/              #   /health, /ready, /metrics HTTP server
+│   └── observability/              #   Prometheus registry + metric sets + the /health, /ready, /metrics server
 │
 ├── services/
 │   ├── liquidator/                 # @services/liquidator — standalone liquidation bot

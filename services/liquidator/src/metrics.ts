@@ -1,4 +1,4 @@
-import { createLiquidationMetrics, createMetricsRegistry } from "@repo/metrics";
+import { createLiquidationMetrics, createMetricsRegistry } from "@repo/observability";
 
 // One registry per service; the liquidation engine's metric set registers into
 // it alongside the shared transport/default metrics. A future service running

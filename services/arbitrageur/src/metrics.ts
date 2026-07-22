@@ -2,7 +2,7 @@ import {
   createArbitrageMetrics,
   createLiquidationMetrics,
   createMetricsRegistry,
-} from "@repo/metrics";
+} from "@repo/observability";
 
 // One registry per service; each engine's metric set registers into it alongside
 // the shared transport/default metrics, so all of them surface on one `/metrics`.

@@ -3,7 +3,7 @@ import { createArbitrageMetrics } from "./arbitrage";
 import { createLiquidationMetrics } from "./liquidation";
 import { createMetricsRegistry } from "./registry";
 
-describe("@repo/metrics", () => {
+describe("metrics", () => {
   it("exposes the liquidation metric set through the registry", async () => {
     const { registry } = createMetricsRegistry();
     const metrics = createLiquidationMetrics(registry);

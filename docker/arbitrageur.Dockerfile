@@ -15,15 +15,18 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.json ./
 
 # Copy package.json files for all required workspace packages
 COPY packages/abis/package.json ./packages/abis/
-COPY packages/capital/package.json ./packages/capital/
 COPY packages/chain/package.json ./packages/chain/
 COPY packages/config/package.json ./packages/config/
-COPY packages/domain/package.json ./packages/domain/
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/execution/package.json ./packages/execution/
 COPY packages/logger/package.json ./packages/logger/
-COPY packages/metrics/package.json ./packages/metrics/
+COPY packages/notifications/package.json ./packages/notifications/
 COPY packages/observability/package.json ./packages/observability/
+COPY packages/persistence/package.json ./packages/persistence/
+COPY packages/risk/package.json ./packages/risk/
+COPY packages/runtime/package.json ./packages/runtime/
+COPY packages/secrets/package.json ./packages/secrets/
+COPY packages/signer/package.json ./packages/signer/
 COPY services/arbitrageur/package.json ./services/arbitrageur/
 
 # Install dependencies (workspace-aware)
@@ -31,15 +34,18 @@ RUN pnpm install --frozen-lockfile --filter @services/arbitrageur...
 
 # Copy source code
 COPY packages/abis/ ./packages/abis/
-COPY packages/capital/ ./packages/capital/
 COPY packages/chain/ ./packages/chain/
 COPY packages/config/ ./packages/config/
-COPY packages/domain/ ./packages/domain/
 COPY packages/engine/ ./packages/engine/
 COPY packages/execution/ ./packages/execution/
 COPY packages/logger/ ./packages/logger/
-COPY packages/metrics/ ./packages/metrics/
+COPY packages/notifications/ ./packages/notifications/
 COPY packages/observability/ ./packages/observability/
+COPY packages/persistence/ ./packages/persistence/
+COPY packages/risk/ ./packages/risk/
+COPY packages/runtime/ ./packages/runtime/
+COPY packages/secrets/ ./packages/secrets/
+COPY packages/signer/ ./packages/signer/
 COPY services/arbitrageur/ ./services/arbitrageur/
 
 # ============================================

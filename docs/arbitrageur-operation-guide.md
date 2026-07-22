@@ -164,12 +164,12 @@ Pre-built images are available from Docker Hub:
 | Image | Description |
 |-------|-------------|
 | `babylonlabs/arbitrageur-aave-indexer` | Ponder indexer |
-| `babylonlabs/arbitrageur-aave-client` | Arbitrageur client |
+| `babylonlabs/arbitrageur-aave-bot` | Arbitrageur client |
 
 Docker Compose will automatically pull these images. To build locally instead:
 
 ```bash
-docker compose build arbitrageur-ponder arbitrageur-client
+docker compose build arbitrageur-ponder arbitrageur-bot
 ```
 
 ## 5. Configuration
@@ -450,22 +450,22 @@ curl http://localhost:42070/escrowed-vaults
 **Start all arbitrageur services:**
 
 ```bash
-docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-client
+docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-bot
 ```
 
 **View logs:**
 
 ```bash
 # All arbitrageur services
-docker compose logs -f arbitrageur-ponder arbitrageur-client
+docker compose logs -f arbitrageur-ponder arbitrageur-bot
 
 # Specific service
-docker compose logs -f arbitrageur-client
+docker compose logs -f arbitrageur-bot
 ```
 
 **Service dependencies:**
 - `arbitrageur-postgres` must be healthy before `arbitrageur-ponder` starts
-- `arbitrageur-ponder` must be healthy before `arbitrageur-client` starts
+- `arbitrageur-ponder` must be healthy before `arbitrageur-bot` starts
 
 **Health checks are automatic** - Docker will restart unhealthy containers.
 
@@ -668,5 +668,5 @@ and `isProfitable`. Slippage is applied to `currentDebt`:
 # Logs output to stdout
 
 # Docker
-docker compose logs -f arbitrageur-client --tail 100
+docker compose logs -f arbitrageur-bot --tail 100
 ```

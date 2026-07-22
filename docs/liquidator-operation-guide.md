@@ -170,13 +170,13 @@ Pre-built images are available from Docker Hub:
 
 | Image | Description |
 |-------|-------------|
-| `babylonlabs/liquidator-aave-indexer` | Ponder indexer |
-| `babylonlabs/liquidator-aave-client` | Liquidation client |
+| `babylonlabs/liquidation-aave-indexer` | Ponder indexer |
+| `babylonlabs/liquidation-aave-bot` | Liquidation client |
 
 Docker Compose will automatically pull these images. To build locally instead:
 
 ```bash
-docker compose build liquidator-ponder liquidator-client
+docker compose build liquidator-ponder liquidator-bot
 ```
 
 ## 5. Configuration
@@ -455,22 +455,22 @@ curl http://localhost:42069/positions
 **Start all liquidator services:**
 
 ```bash
-docker compose up -d liquidator-postgres liquidator-ponder liquidator-client
+docker compose up -d liquidator-postgres liquidator-ponder liquidator-bot
 ```
 
 **View logs:**
 
 ```bash
 # All liquidator services
-docker compose logs -f liquidator-ponder liquidator-client
+docker compose logs -f liquidator-ponder liquidator-bot
 
 # Specific service
-docker compose logs -f liquidator-client
+docker compose logs -f liquidator-bot
 ```
 
 **Service dependencies:**
 - `liquidator-postgres` must be healthy before `liquidator-ponder` starts
-- `liquidator-ponder` must be healthy before `liquidator-client` starts
+- `liquidator-ponder` must be healthy before `liquidator-bot` starts
 
 **Health checks are automatic** - Docker will restart unhealthy containers.
 
@@ -630,5 +630,5 @@ curl http://localhost:42069/liquidatable-positions
 # Logs output to stdout
 
 # Docker
-docker compose logs -f liquidator-client --tail 100
+docker compose logs -f liquidator-bot --tail 100
 ```

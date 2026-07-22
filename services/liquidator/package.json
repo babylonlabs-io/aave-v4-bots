@@ -19,7 +19,6 @@
     "@repo/execution": "workspace:*",
     "@repo/logger": "workspace:*",
     "@repo/notifications": "workspace:*",
-    "@repo/metrics": "workspace:*",
     "@repo/observability": "workspace:*",
     "@repo/persistence": "workspace:*",
     "@repo/risk": "workspace:*",
