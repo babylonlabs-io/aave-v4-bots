@@ -60,5 +60,5 @@ pnpm --filter @services/operator-cli operator-cli show <id>
 pnpm --filter @services/operator-cli operator-cli broadcast <id>
 ```
 
-The e2e suites `manual-liquidator` and `manual-safe-liquidator` drive this CLI end to end (see
+The e2e suites `manual-arbitrageur` and `manual-safe-arbitrageur` drive this CLI end to end (see
 `scripts/e2e-local.sh` and `test/e2e/scripts/operator-confirm.sh`).

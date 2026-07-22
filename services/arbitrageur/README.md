@@ -84,6 +84,12 @@ WBTC_ADDRESS=0x...
 
 # Optional ---------------------------------------------------------------
 
+# Registered vault keeper the acquired vault is redeemed to. Set it when the
+# executor is NOT itself a keeper (e.g. a Safe in MANUAL custody): the bot pays
+# and this keeper receives, via swapWbtcForVaultOnBehalf. Unset, the executor
+# must be a keeper and pays for itself, via swapWbtcForVault.
+# VAULT_KEEPER_ADDRESS=0x...
+
 # Poll interval (default: 30000 ms)
 # POLLING_INTERVAL_MS=30000
 

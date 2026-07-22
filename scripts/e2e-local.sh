@@ -5,6 +5,11 @@
 # Usage:
 #   scripts/e2e-local.sh                  # full run from cold state (SUITE=liquidator)
 #   SUITE=arbitrageur scripts/e2e-local.sh # run the arbitrageur suite (one bot, both engines)
+#
+# MANUAL (keyless) suites — the arb bot proposes, an operator drives the proposals through
+# operator-cli. Both engines are on, so each run confirms a liquidation AND an acquisition:
+#   SUITE=manual-arbitrageur scripts/e2e-local.sh      # executor = ARBITRAGEUR (a vault keeper)
+#   SUITE=manual-safe-arbitrageur scripts/e2e-local.sh # executor = a Safe, paying on behalf of it
 #   KEEP_DEPS=1 scripts/e2e-local.sh      # reuse already-running postgres / btc / anvil
 #   SKIP_VERIFY=1 scripts/e2e-local.sh    # stop after setup (debug mid-flow)
 #   E2E_RPC_URL=http://...:8545 ...       # override anvil RPC URL
@@ -154,7 +159,12 @@ SERVICE_PATTERNS=(
   'arbitrageur:run'
   'services/liquidator/src/index.ts'
   'services/arbitrageur/src/index.ts'
-  'ponder dev'
+  # The `*:indexer` patterns above only match the pnpm wrapper. The indexer itself is that
+  # wrapper's grandchild and outlives it, running as `node .../ponder.js dev --port <p>` — note
+  # `ponder.js dev`, so a 'ponder dev' pattern never matches it. Left alive it keeps holding
+  # 42069/42070, and the NEXT run's indexer quietly binds a different port ("Port 42070 was in
+  # use, trying port 42071") while the bot still polls the original one and sees nothing.
+  'ponder.js dev'
 )
 
 cleanup() {
@@ -218,14 +228,31 @@ if [[ -z "${KEEP_DEPS:-}" ]] || ! docker ps --format '{{.Names}}' | grep -q "^${
   done
 fi
 
-log "Creating ponder databases (idempotent)"
-for db in ponder_liquidator ponder_arbitrageur; do
-  docker exec -e PGPASSWORD=ponder "$PG_CONTAINER" \
-    psql -U ponder -d ponder -tAc "SELECT 1 FROM pg_database WHERE datname='$db'" 2>/dev/null \
-    | grep -q 1 \
-    || docker exec -e PGPASSWORD=ponder "$PG_CONTAINER" \
-        psql -U ponder -d ponder -c "CREATE DATABASE $db;" >/dev/null
-done
+# Recreate from scratch, for the same reason the bitcoin volumes are reset below: Ponder persists
+# indexed state keyed to the PREVIOUS run's block hashes, and every fresh anvil restarts at block 0
+# with different ones. Reusing that database makes Ponder see the new chain as an "unrecoverable
+# reorg beyond finalized block N" — it then retries forever, never serves /liquidatable-positions,
+# and the bot sits at "No liquidatable positions found" until the suite times out. That failure
+# looks exactly like a broken bot, so it is worth the two seconds to avoid. `WITH (FORCE)` evicts
+# a previous run's lingering connections. KEEP_DEPS opts out (you asked to reuse the deps).
+if [[ -z "${KEEP_DEPS:-}" ]]; then
+  log "Recreating ponder databases (dropping stale chain state)"
+  for db in ponder_liquidator ponder_arbitrageur; do
+    docker exec -e PGPASSWORD=ponder "$PG_CONTAINER" \
+      psql -U ponder -d ponder -c "DROP DATABASE IF EXISTS $db WITH (FORCE);" >/dev/null
+    docker exec -e PGPASSWORD=ponder "$PG_CONTAINER" \
+      psql -U ponder -d ponder -c "CREATE DATABASE $db;" >/dev/null
+  done
+else
+  log "Creating ponder databases (idempotent; KEEP_DEPS keeps existing state)"
+  for db in ponder_liquidator ponder_arbitrageur; do
+    docker exec -e PGPASSWORD=ponder "$PG_CONTAINER" \
+      psql -U ponder -d ponder -tAc "SELECT 1 FROM pg_database WHERE datname='$db'" 2>/dev/null \
+      | grep -q 1 \
+      || docker exec -e PGPASSWORD=ponder "$PG_CONTAINER" \
+          psql -U ponder -d ponder -c "CREATE DATABASE $db;" >/dev/null
+  done
+fi
 
 # ── Bitcoin regtest ──────────────────────────────────────────────────────────
 # Always reset volumes when starting fresh — stale chain state across runs has
@@ -343,13 +370,13 @@ DRIVE=""
 case "$SUITE" in
   arbitrageur) SETUP="ArbitrageurE2ESetup"; VERIFY="ArbitrageurE2EVerify" ;;
   liquidator)  SETUP="LiquidationE2ESetup"; VERIFY="LiquidationE2EVerify" ;;
-  manual-liquidator)
-    SETUP="ManualLiquidationE2ESetup"; VERIFY="LiquidationE2EVerify"
+  manual-arbitrageur)
+    SETUP="ManualArbitrageurE2ESetup"; VERIFY="ArbitrageurE2EVerify"
     DRIVE="test/e2e/scripts/operator-confirm.sh"; DRIVE_KIND="eoa" ;;
-  manual-safe-liquidator)
-    SETUP="ManualSafeLiquidationE2ESetup"; VERIFY="ManualSafeLiquidationE2EVerify"
+  manual-safe-arbitrageur)
+    SETUP="ManualSafeArbitrageurE2ESetup"; VERIFY="ManualSafeArbitrageurE2EVerify"
     DRIVE="test/e2e/scripts/operator-confirm.sh"; DRIVE_KIND="safe" ;;
-  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | liquidator | manual-liquidator | manual-safe-liquidator)"; exit 1 ;;
+  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | liquidator | manual-arbitrageur | manual-safe-arbitrageur)"; exit 1 ;;
 esac
 
 if [[ "${E2E_SIGNER_SOURCE:-local}" == "aws" ]]; then

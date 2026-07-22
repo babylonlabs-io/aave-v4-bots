@@ -72,6 +72,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
     executor,
     vaultSwapAddress: config.vaultSwapAddress,
     wbtcAddress: config.wbtcAddress,
+    vaultKeeperAddress: config.vaultKeeperAddress,
     ponderUrl: config.ponderUrl,
     maxSlippageBps: config.maxSlippageBps,
     vaultProcessingDelayMs: config.vaultProcessingDelayMs,

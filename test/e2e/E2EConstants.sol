@@ -21,6 +21,15 @@ library E2EConstants {
     uint256 internal constant ARBITRAGEUR_PRIVATE_KEY =
         0x0000000000000000000000000000000000000000000000000000000000000001;
 
+    // Safe owner for the MANUAL `safe` suite (Anvil account[2]) — the human operator who signs
+    // SafeTxs and submits `execTransaction`. Deliberately NOT the vault keeper: the Safe pays and
+    // the keeper receives, so keeping custody and the redemption beneficiary on separate accounts
+    // is what proves the payer/beneficiary split is real rather than an alias for one identity.
+    // Genesis-funded by Anvil, so it has ETH for gas without being provisioned.
+    address internal constant SAFE_OWNER = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
+    uint256 internal constant SAFE_OWNER_PRIVATE_KEY =
+        0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a;
+
     // Borrower (Anvil account[11])
     uint256 internal constant BORROWER_PRIVATE_KEY = 12;
 

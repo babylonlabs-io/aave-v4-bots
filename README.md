@@ -285,7 +285,7 @@ pnpm test:coverage          # With coverage
 │
 ├── contracts/                      # git submodule — vault-contracts-aave-v4 (source + deployed addrs)
 ├── test/e2e/                       # forge scripts driving the bots against a live Anvil + Bitcoin regtest
-│                                   #   (incl. MANUAL suites: manual-liquidator, manual-safe-liquidator)
+│                                   #   (incl. MANUAL suites: manual-arbitrageur, manual-safe-arbitrageur)
 ├── docker/                         # liquidator / arbitrageur / ponder Dockerfiles
 ├── docker-compose.yml              # all services orchestration
 ├── env.liquidator.example          # env templates (copy to .env.liquidator / .env.arbitrageur)

@@ -3,10 +3,8 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {BTCVaultTypes} from "vault-contracts/lib/BTCVaultTypes.sol";
 import {BaseBot} from "./abstract/BaseBot.sol";
 import {E2EConstants} from "./E2EConstants.sol";
-import {ArrayHelper} from "./lib/ArrayHelper.sol";
 
 /// @title ArbitrageurE2EVerify
 /// @notice E2E script to verify the arbitrageur bot acquired vaults from VaultSwap
@@ -36,22 +34,20 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         // WBTC delta (payout up, acquisition down) is entangled — the definitive
         // proof the liquidation ran is the cleared position.
         console.log("\n--- Leg 1: liquidation (position cleared) ---");
-        bool positionLiquidated = _waitForLiquidation(borrower);
-        require(positionLiquidated, "Position was not liquidated by the arb bot's LiquidationEngine");
+        require(
+            _waitForLiquidation(borrower, 240), "Position was not liquidated by the arb bot's LiquidationEngine"
+        );
         console.log("[PASS] Borrower position cleared (col == 0 && debt == 0)");
 
         // ── Leg 2: vault acquisition (the bot's ArbitrageEngine) ──────────
         console.log("\n--- Leg 2: vault acquisition ---");
         console.log("Vault ID:", vm.toString(vaultId));
-        (bool vaultRedeemed, bool vaultAcquirable) = _waitForAcquisition(vaultId);
+        bool acquired = _waitForAcquisition(vaultId, 120);
 
         uint256 arbWbtcNow = _getWbtcBalance(vm.envOr("E2E_ARB_ADDRESS", E2EConstants.ARBITRAGEUR));
         console.log("Arbitrageur WBTC now (sats):  ", arbWbtcNow);
         console.log("Arbitrageur WBTC initial (sats):", arbInitialWbtc);
-        console.log("Is vault redeemed:", vaultRedeemed);
-        console.log("Is vault still acquirable (escrowed):", vaultAcquirable);
 
-        bool acquired = vaultRedeemed || !vaultAcquirable;
         require(acquired, "Vault was not acquired by the arb bot's ArbitrageEngine");
         console.log("[PASS] Vault acquired (redeemed / left escrow)");
 
@@ -66,83 +62,5 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         console.log("[PASS] Kill switch: auth, method + traversal guards, halt/resume, loopback-only");
 
         console.log("\n=== E2E Arbitrageur Test PASSED (both engines) ===\n");
-    }
-
-    /// @dev Poll the live position until it is cleared, returning whether it was.
-    function _waitForLiquidation(address borrower) internal returns (bool) {
-        (uint256 col, uint256 debt,) = _getPositionInfo(borrower);
-        if (col == 0 && debt == 0) return true;
-
-        console.log("Polling every 5 seconds for up to 240 seconds...");
-        uint256 elapsed = 0;
-        while (elapsed < 240) {
-            vm.sleep(5000);
-            elapsed += 5;
-            (col, debt,) = _getPositionInfo(borrower);
-            if (col == 0 && debt == 0) {
-                console.log("Liquidation detected after", elapsed, "seconds");
-                return true;
-            }
-            console.log("Still waiting for liquidation...", elapsed, "/ 240");
-        }
-        return false;
-    }
-
-    /// @dev Poll the vault until redeemed or no longer acquirable (i.e. acquired).
-    function _waitForAcquisition(bytes32 vaultId) internal returns (bool vaultRedeemed, bool vaultAcquirable) {
-        (BTCVaultTypes.BTCVaultStatus status,) = _getVaultStatusAndAmount(vaultId);
-        vaultRedeemed = status == BTCVaultTypes.BTCVaultStatus.Redeemed;
-        vaultAcquirable = _isVaultAcquirable(vaultId);
-        if (vaultRedeemed || !vaultAcquirable) return (vaultRedeemed, vaultAcquirable);
-
-        console.log("Polling every 5 seconds for up to 120 seconds...");
-        uint256 elapsed = 0;
-        while (elapsed < 120) {
-            vm.sleep(5000);
-            elapsed += 5;
-            (status,) = _getVaultStatusAndAmount(vaultId);
-            vaultRedeemed = status == BTCVaultTypes.BTCVaultStatus.Redeemed;
-            vaultAcquirable = _isVaultAcquirable(vaultId);
-            if (vaultRedeemed || !vaultAcquirable) {
-                console.log("Acquisition detected after", elapsed, "seconds");
-                return (vaultRedeemed, vaultAcquirable);
-            }
-            console.log("Still waiting for acquisition...", elapsed, "/ 120");
-        }
-    }
-
-    /// @dev Read vault ID from temporary file created by LiquidationE2ESetup
-    /// @return The vault ID, or bytes32(0) if file doesn't exist
-    function _readVaultIdFromFile() internal view returns (bytes32) {
-        try vm.readFile(".e2e-vault-id") returns (string memory content) {
-            return vm.parseBytes32(content);
-        } catch {
-            return bytes32(0);
-        }
-    }
-
-    /// @dev A vault is "acquirable" while it sits escrowed in the VaultSwap awaiting
-    ///      a buyer (Active/AaveDeficit); once the arb bot acquires it the status flips
-    ///      to Redeemed and this returns false — our proxy for "no longer escrowed".
-    function _isVaultAcquirable(bytes32 vaultId) internal returns (bool) {
-        bytes memory result =
-            ffi_castCall(address(vaultSwap), "isVaultAcquirable(bytes32)", ArrayHelper.create(vm.toString(vaultId)));
-        return abi.decode(result, (bool));
-    }
-
-    /// @dev Read via FFI. `getBtcVaultBasicInfo(bytes32)` returns the full
-    ///      `BTCVaultBasicInfo { depositor, depositorBtcPubKey, amount, vaultProvider, status,
-    ///      applicationEntryPoint, createdAt }` struct — all static members, so it ABI-encodes
-    ///      as the same 7-element tuple, in field order. (The `btcVaultsBasicInfo` mapping itself
-    ///      is `internal`; external reads go through this getter.)
-    function _getVaultStatusAndAmount(bytes32 vaultId)
-        internal
-        returns (BTCVaultTypes.BTCVaultStatus status, uint256 amount)
-    {
-        bytes memory result = ffi_castCall(
-            address(btcVaultRegistry), "getBtcVaultBasicInfo(bytes32)", ArrayHelper.create(vm.toString(vaultId))
-        );
-        (,, amount,, status,,) =
-            abi.decode(result, (address, bytes32, uint256, address, BTCVaultTypes.BTCVaultStatus, address, uint256));
     }
 }

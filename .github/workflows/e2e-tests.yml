@@ -22,6 +22,24 @@ jobs:
           - suite: liquidator
             setup: LiquidationE2ESetup
             verify: LiquidationE2EVerify
+          # MANUAL suites run against the ARBITRAGEUR — the bot that carries inventory (WBTC to
+          # acquire vaults, USDC to repay debt), so the one worth making keyless. Both engines are
+          # on, so the operator drives a liquidation AND the acquisition of the vault it escrows.
+          # `drive_kind` selects the operator custody the drive step plays.
+          #
+          # EOA: the executor is ARBITRAGEUR, itself a registered vault keeper, so the acquisition
+          # uses the direct `swapWbtcForVault` and the AUTO verification assertions hold unchanged.
+          - suite: manual-arbitrageur
+            setup: ManualArbitrageurE2ESetup
+            verify: ArbitrageurE2EVerify
+            drive_kind: eoa
+          # Safe: the executor is a Safe{Wallet} multisig, which can never be a vault keeper (they
+          # are registered by BTC public key against a roster frozen at vault creation). It pays
+          # while the registered keeper receives, via `swapWbtcForVaultOnBehalf`.
+          - suite: manual-safe-arbitrageur
+            setup: ManualSafeArbitrageurE2ESetup
+            verify: ManualSafeArbitrageurE2EVerify
+            drive_kind: safe
     permissions:
       contents: read
       packages: read
@@ -186,6 +204,17 @@ jobs:
             --ffi \
             --skip-simulation \
             --slow
+
+      # MANUAL suites only. The keyless bot never broadcasts — it writes proposals and waits, so
+      # nothing reaches the chain until an operator drives them. This plays that operator:
+      # claim → sign in an external tool (never operator-cli) → confirm. Mirrors the DRIVE step in
+      # scripts/e2e-local.sh. Non-manual suites have no `drive_kind` and skip it.
+      - name: Drive operator flow (${{ matrix.suite }})
+        if: matrix.drive_kind != ''
+        env:
+          E2E_RPC_URL: http://127.0.0.1:8545
+          MANUAL_EXECUTOR_KIND: ${{ matrix.drive_kind }}
+        run: bash test/e2e/scripts/operator-confirm.sh
 
       - name: Run verification script (${{ matrix.suite }})
         run: |

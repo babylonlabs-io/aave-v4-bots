@@ -131,6 +131,7 @@ keeper-registered BTC key inside the same transaction.
 | `PONDER_URL` | Ponder indexer API URL | Yes | — |
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap contract address | Yes | — |
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
+| `VAULT_KEEPER_ADDRESS` | Keeper the vault is redeemed to when the executor isn't one itself (uses `swapWbtcForVaultOnBehalf`) | No | — |
 | `POLLING_INTERVAL_MS` | How often to check for escrowed vaults | No | `30000` |
 | `MAX_SLIPPAGE_BPS` | Slippage tolerance (basis points) over `currentDebt` | No | `100` |
 | `VAULT_PROCESSING_DELAY_MS` | Delay between processing successive vaults | No | `5000` |

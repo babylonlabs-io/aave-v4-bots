@@ -19,7 +19,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
     ///      key derives a different address, and that is what must hold the funds).
     address internal arbAddr;
 
-    function run() public {
+    function run() public virtual {
         init(vm);
         uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         arbAddr = vm.envOr("E2E_ARB_ADDRESS", E2EConstants.ARBITRAGEUR);
@@ -45,6 +45,10 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
         vm.stopBroadcast();
         console.log("Arbitrageur funded with 10 ETH (gas), 10 WBTC, 10,000 USDC");
 
+        // Hook for suites whose executor is not the signer above — the MANUAL `safe` suite deploys
+        // and funds the Safe here, before the env file names it. Default: nothing to do.
+        _setupExecutor(adminPrivateKey);
+
         AaveAdapterLens lens = _deployLens();
         string memory startBlock = _getCurrentBlockNumber();
 
@@ -62,20 +66,26 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
 
         (address borrower,) = _setupLiquidatablePosition(lens);
 
-        console.log("\n=== Setup Complete - run ArbitrageurE2EVerify.s.sol ===");
+        console.log("\n=== Setup Complete - run this suite's verify script ===");
         console.log("Borrower address:", borrower);
     }
 
-    function _saveInitialBalances() internal {
+    function _saveInitialBalances() internal virtual {
         vm.writeFile(".e2e-initial-arb-wbtc", vm.toString(wbtc.balanceOf(arbAddr)));
         vm.writeFile(".e2e-initial-arb-usdc", vm.toString(usdc.balanceOf(arbAddr)));
     }
 
-    /// @dev The signer lines for `.env.arbitrageur`. Default: the baked-in local private key
-    ///      (unchanged). With `E2E_SIGNER_SOURCE=aws`, the bot signs via AWS KMS instead —
-    ///      no key material in the env; `KMS_KEY_ID` + `AWS_REGION` come from the run env
-    ///      (credentials resolve from the ambient AWS profile the bot process inherits).
-    function _signerEnvLines() internal view returns (string memory) {
+    /// @dev Stand up an executor distinct from the funded signer. Only the MANUAL `safe` suite
+    ///      needs this (it deploys + funds the Safe that pays); every other suite executes as the
+    ///      signer itself, so the default is a no-op.
+    function _setupExecutor(uint256 adminPrivateKey) internal virtual {}
+
+    /// @dev How this bot executes, as `.env.arbitrageur` lines. Default (AUTO): the baked-in local
+    ///      private key. With `E2E_SIGNER_SOURCE=aws`, the bot signs via AWS KMS instead — no key
+    ///      material in the env; `KMS_KEY_ID` + `AWS_REGION` come from the run env (credentials
+    ///      resolve from the ambient AWS profile the bot process inherits). The MANUAL suites
+    ///      override this to emit `EXECUTION_MODE=MANUAL` + the executor, and no key at all.
+    function _executionEnvLines() internal view virtual returns (string memory) {
         bool useKms = keccak256(bytes(vm.envOr("E2E_SIGNER_SOURCE", string("local")))) == keccak256(bytes("aws"));
         if (!useKms) {
             return string.concat(
@@ -102,7 +112,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
     ///      addresses (SPOKE+ADAPTER ⇒ liquidation index, VAULT_SWAP ⇒ arbitrage
     ///      index), and the arb client enables its LiquidationEngine when
     ///      ADAPTER_ADDRESS + LENS_ADDRESS are present.
-    function _createArbitrageurEnvFile(address lensAddress, string memory startBlock) internal {
+    function _createArbitrageurEnvFile(address lensAddress, string memory startBlock) internal virtual {
         string[] memory inputs = new string[](3);
         inputs[0] = "bash";
         inputs[1] = "-c";
@@ -134,7 +144,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "DATABASE_SCHEMA=public\n",
             "\n",
             "# Arbitrageur Client (both engines)\n",
-            _signerEnvLines(),
+            _executionEnvLines(),
             "PONDER_URL=",
             E2EConstants.ARBITRAGEUR_PONDER_URL,
             "\n",

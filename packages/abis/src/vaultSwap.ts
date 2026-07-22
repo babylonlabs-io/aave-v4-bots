@@ -1,7 +1,8 @@
 // VaultSwap ABI - methods used by arbitrageur bot
 
 export const vaultSwapAbi = [
-  // Acquire vault (redemption happens atomically inside)
+  // Acquire vault (redemption happens atomically inside). `msg.sender` must be a
+  // registered vault keeper — the vault is redeemed to its registered BTC key.
   {
     type: "function",
     name: "swapWbtcForVault",
@@ -10,6 +11,21 @@ export const vaultSwapAbi = [
       { name: "maxWbtcIn", type: "uint256" },
     ],
     outputs: [{ name: "amountWbtcIn", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  // Same acquisition, but the payer and the beneficiary are separate: `msg.sender` pays the
+  // WBTC while the vault is redeemed to `onBehalfOf`'s BTC key. Only `onBehalfOf` must be a
+  // registered vault keeper, which is what lets a non-keeper payer (a treasury multisig, or a
+  // Safe in MANUAL custody) fund acquisitions for a permissioned keeper.
+  {
+    type: "function",
+    name: "swapWbtcForVaultOnBehalf",
+    inputs: [
+      { name: "vaultId", type: "bytes32" },
+      { name: "maxWbtcIn", type: "uint256" },
+      { name: "onBehalfOf", type: "address" },
+    ],
+    outputs: [{ name: "wbtcPaid", type: "uint256" }],
     stateMutability: "nonpayable",
   },
   // Repay interest on an escrowed vault

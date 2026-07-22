@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { RESERVE_FLAG, bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "./domain";
+import {
+  RESERVE_FLAG,
+  bufferAmounts,
+  isBorrowableReserve,
+  sequentialPriorityOrder,
+} from "./domain";
 
 describe("bufferAmounts", () => {
   it("applies a 1% buffer by default", () => {

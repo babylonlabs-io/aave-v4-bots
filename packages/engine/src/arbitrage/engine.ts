@@ -15,7 +15,11 @@ import {
   readTokenMeta,
   withRetry,
 } from "@repo/chain";
-import { type ExecutionIdentity, waitForReceiptWithTimeout } from "@repo/execution";
+import {
+  type ContractCall,
+  type ExecutionIdentity,
+  waitForReceiptWithTimeout,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
 import type { AllowanceResult, Executor } from "../executor";
@@ -50,6 +54,17 @@ export interface ArbitrageEngineParams {
   maxSlippageBps: number;
   vaultProcessingDelayMs: number;
   txReceiptTimeoutMs: number;
+  /**
+   * Registered vault keeper the acquired vault is redeemed to, splitting the payer from the
+   * beneficiary: this process pays the WBTC, that keeper's BTC key receives the vault
+   * (`swapWbtcForVaultOnBehalf`). Set it when whoever signs is **not** itself a keeper — a
+   * treasury multisig, or a Safe in MANUAL custody, which can never be one because keepers are
+   * registered by BTC public key against a roster frozen at vault creation.
+   *
+   * Unset (the default) the executor must be a registered keeper and pays for itself
+   * (`swapWbtcForVault`).
+   */
+  vaultKeeperAddress?: Address;
 }
 
 export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
@@ -81,6 +96,7 @@ export class ArbitrageEngine {
   private publicClient: PublicClient;
   private vaultSwapAddress: Address;
   private wbtcAddress: Address;
+  private vaultKeeperAddress?: Address;
   private ponderUrl: string;
   private maxSlippageBps: number;
   private vaultProcessingDelayMs: number;
@@ -101,6 +117,7 @@ export class ArbitrageEngine {
     this.publicClient = config.publicClient;
     this.vaultSwapAddress = config.vaultSwapAddress;
     this.wbtcAddress = config.wbtcAddress;
+    this.vaultKeeperAddress = config.vaultKeeperAddress;
     this.ponderUrl = config.ponderUrl;
     this.maxSlippageBps = config.maxSlippageBps;
     this.vaultProcessingDelayMs = config.vaultProcessingDelayMs;
@@ -204,6 +221,24 @@ export class ArbitrageEngine {
   }
 
   /**
+   * The acquisition call for one vault. With `vaultKeeperAddress` set, payer and beneficiary are
+   * different accounts — this process pays the WBTC, that keeper's BTC key receives the vault — so
+   * it goes through `swapWbtcForVaultOnBehalf`. Unset, the executor is itself the keeper and pays
+   * for itself. Either way `msg.sender` is the payer, so the balance and allowance checks around
+   * this are unaffected by the choice.
+   */
+  private acquireCall(vaultId: Hex, maxWbtcIn: bigint): ContractCall {
+    const target = { address: this.vaultSwapAddress, abi: vaultSwapAbi };
+    return this.vaultKeeperAddress
+      ? {
+          ...target,
+          functionName: "swapWbtcForVaultOnBehalf",
+          args: [vaultId, maxWbtcIn, this.vaultKeeperAddress],
+        }
+      : { ...target, functionName: "swapWbtcForVault", args: [vaultId, maxWbtcIn] };
+  }
+
+  /**
    * Acquire a vault by swapping WBTC for it (redemption is atomic). Returns an outcome so the
    * poll loop knows whether to continue (`skipped`/`acquired`) or stop the cycle (`send-error`).
    */
@@ -255,6 +290,14 @@ export class ArbitrageEngine {
       // preview and execution and the swap still succeeds anywhere up to `maxWbtcIn`. Both legs
       // are 8-dec sats (we receive the vault's BTC, we pay WBTC), so this is already the unit
       // `minProfit` expects. May be negative — bigint comparison handles that.
+      //
+      // This is profit for the PRINCIPAL, not for the signing account. Under `vaultKeeperAddress`
+      // the BTC lands on the keeper's key while the WBTC leaves this process's executor, so the
+      // acquisition looks like a pure outflow if you score it per-account. That is intended: the
+      // on-behalf split exists for one owner operating a funding account and a permissioned keeper
+      // (a treasury multisig paying for its own keeper), so both legs belong to the same balance
+      // sheet and netting them is the correct frame. Pointing `vaultKeeperAddress` at a keeper you
+      // do NOT own would make this number — and therefore `RISK_MIN_PROFIT` — meaningless.
       const expectedProfit = preview.amountVault - maxWbtcIn;
       slot = this.risk.openSlot({
         kind: "vault-acquisition",
@@ -283,15 +326,16 @@ export class ArbitrageEngine {
         `Max WBTC willing to pay: ${formatUnits(maxWbtcIn, 8)} (${this.maxSlippageBps / 100}% slippage)`
       );
 
+      // ONE call description, used for both the estimate below and the commit further down — an
+      // estimate of a different call would validate something we never broadcast.
+      const call = this.acquireCall(vaultId as Hex, maxWbtcIn);
+
       // Estimate gas first to catch potential failures early
       try {
         await this.publicClient.estimateContractGas({
-          address: this.vaultSwapAddress,
-          abi: vaultSwapAbi,
-          functionName: "swapWbtcForVault",
-          args: [vaultId as Hex, maxWbtcIn],
+          ...call,
           account: this.identity.from,
-        });
+        } as Parameters<typeof this.publicClient.estimateContractGas>[0]);
       } catch (gasError) {
         const errorMsg = gasError instanceof Error ? gasError.message : String(gasError);
         this.logger.error(`Gas estimation failed for vault ${vaultId}, skipping`);
@@ -304,15 +348,11 @@ export class ArbitrageEngine {
 
       // Commit the swap through the mode seam. AUTO signs + broadcasts under the shared nonce lock
       // (claim → send → markPending → submitted, all inside `commit`); MANUAL proposes + notifies.
-      const out = await this.executor.commit(
-        {
-          address: this.vaultSwapAddress,
-          abi: vaultSwapAbi,
-          functionName: "swapWbtcForVault",
-          args: [vaultId as Hex, maxWbtcIn],
-        },
-        { target: this.vaultSwapAddress, action: "vault-acquisition", subject: vaultId }
-      );
+      const out = await this.executor.commit(call, {
+        target: this.vaultSwapAddress,
+        action: "vault-acquisition",
+        subject: vaultId,
+      });
 
       if (out.kind !== "broadcast") {
         switch (out.kind) {

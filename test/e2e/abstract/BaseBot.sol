@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
+import {console} from "forge-std/console.sol";
+import {BTCVaultTypes} from "vault-contracts/lib/BTCVaultTypes.sol";
 import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
 import {ArrayHelper} from "../lib/ArrayHelper.sol";
 
@@ -97,5 +99,72 @@ abstract contract BaseBot is BaseE2E {
         uint256 parsed = _vm.parseUint(_vm.readFile(filename));
         require(parsed > 0, "Missing initial balance from setup");
         return parsed;
+    }
+
+    /// @notice The vault ID a setup script recorded, or `bytes32(0)` when the file is absent.
+    function _readVaultIdFromFile() internal view returns (bytes32) {
+        try _vm.readFile(".e2e-vault-id") returns (string memory content) {
+            return _vm.parseBytes32(content);
+        } catch {
+            return bytes32(0);
+        }
+    }
+
+    /// @notice Whether a vault still sits escrowed in the VaultSwap awaiting a buyer. Once acquired
+    ///         its status flips to Redeemed and this returns false — the proxy for "left escrow".
+    function _isVaultAcquirable(bytes32 vaultId) internal returns (bool) {
+        bytes memory result =
+            ffi_castCall(address(vaultSwap), "isVaultAcquirable(bytes32)", ArrayHelper.create(_vm.toString(vaultId)));
+        return abi.decode(result, (bool));
+    }
+
+    /// @notice A vault's status + amount. `getBtcVaultBasicInfo(bytes32)` returns the full
+    ///         `BTCVaultBasicInfo { depositor, depositorBtcPubKey, amount, vaultProvider, status,
+    ///         applicationEntryPoint, createdAt }` struct — all static members, so it ABI-encodes as
+    ///         the same 7-element tuple, in field order. (The `btcVaultsBasicInfo` mapping is
+    ///         `internal`; external reads go through this getter.)
+    function _getVaultStatusAndAmount(bytes32 vaultId)
+        internal
+        returns (BTCVaultTypes.BTCVaultStatus status, uint256 amount)
+    {
+        bytes memory result = ffi_castCall(
+            address(btcVaultRegistry), "getBtcVaultBasicInfo(bytes32)", ArrayHelper.create(_vm.toString(vaultId))
+        );
+        (,, amount,, status,,) =
+            abi.decode(result, (address, bytes32, uint256, address, BTCVaultTypes.BTCVaultStatus, address, uint256));
+    }
+
+    /// @notice Poll `borrower`'s position until it is cleared, up to `timeoutSeconds`.
+    function _waitForLiquidation(address borrower, uint256 timeoutSeconds) internal returns (bool liquidated) {
+        for (uint256 elapsed = 0;; elapsed += 5) {
+            (uint256 col, uint256 debt,) = _getPositionInfo(borrower);
+            if (col == 0 && debt == 0) {
+                console.log("Liquidation detected after", elapsed, "seconds");
+                return true;
+            }
+            if (elapsed >= timeoutSeconds) return false;
+            _vm.sleep(5000);
+            console.log("Still waiting for liquidation...", elapsed + 5, "/", timeoutSeconds);
+        }
+    }
+
+    /// @notice Poll until the vault is acquired, up to `timeoutSeconds`. Redeemed **or** no longer
+    ///         acquirable both count: `swapWbtcForVault*` redeems atomically, so a vault that left
+    ///         escrow was bought even if a status read races the redemption.
+    function _waitForAcquisition(bytes32 vaultId, uint256 timeoutSeconds) internal returns (bool acquired) {
+        for (uint256 elapsed = 0;; elapsed += 5) {
+            (BTCVaultTypes.BTCVaultStatus status,) = _getVaultStatusAndAmount(vaultId);
+            bool redeemed = status == BTCVaultTypes.BTCVaultStatus.Redeemed;
+            bool acquirable = _isVaultAcquirable(vaultId);
+            if (redeemed || !acquirable) {
+                console.log("Acquisition detected after", elapsed, "seconds");
+                console.log("  vault redeemed:", redeemed);
+                console.log("  still acquirable (escrowed):", acquirable);
+                return true;
+            }
+            if (elapsed >= timeoutSeconds) return false;
+            _vm.sleep(5000);
+            console.log("Still waiting for acquisition...", elapsed + 5, "/", timeoutSeconds);
+        }
     }
 }

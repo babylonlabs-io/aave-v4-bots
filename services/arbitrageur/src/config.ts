@@ -50,6 +50,11 @@ const envSchema = z.object({
   VAULT_SWAP_ADDRESS: addressSchema,
   WBTC_ADDRESS: addressSchema,
 
+  // Registered vault keeper the acquired vault is redeemed to (optional). Set it when whoever
+  // signs is not itself a keeper — the bot pays the WBTC and that keeper receives the vault via
+  // `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself.
+  VAULT_KEEPER_ADDRESS: addressSchema.optional(),
+
   // Signer + secrets source selection (all optional; defaults preserve current behavior:
   // a local signer whose key is read from the ARBITRAGEUR_PRIVATE_KEY env var). Both
   // engines the arbitrageur may run share this one signer.
@@ -175,6 +180,7 @@ export function loadConfig(): Config {
     rpcUrl: env.CLIENT_RPC_URL,
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,
     wbtcAddress,
+    vaultKeeperAddress: env.VAULT_KEEPER_ADDRESS as Address | undefined,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     vaultProcessingDelayMs: Number.parseInt(env.VAULT_PROCESSING_DELAY_MS, 10),
     maxSlippageBps: Number.parseInt(env.MAX_SLIPPAGE_BPS, 10),

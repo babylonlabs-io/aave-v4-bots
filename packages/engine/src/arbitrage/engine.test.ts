@@ -340,6 +340,60 @@ describe("ArbitrageEngine", () => {
     });
   });
 
+  describe("acquiring on behalf of a vault keeper", () => {
+    const KEEPER = "0xkeeper" as const;
+    // 0.5 WBTC debt + 1% slippage — the same ceiling the direct-path tests assert.
+    const MAX_WBTC_IN = 50500000n;
+
+    it("uses swapWbtcForVault when no keeper is configured (the payer IS the keeper)", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+
+      await bot.acquireVault(mockVault);
+
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionName: "swapWbtcForVault",
+          args: [mockVault.vaultId, MAX_WBTC_IN],
+        }),
+        expect.any(Function)
+      );
+    });
+
+    it("uses swapWbtcForVaultOnBehalf when a keeper is configured", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients, { vaultKeeperAddress: KEEPER });
+
+      const result = await bot.acquireVault(mockVault);
+
+      expect(result).toBe("acquired");
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionName: "swapWbtcForVaultOnBehalf",
+          args: [mockVault.vaultId, MAX_WBTC_IN, KEEPER],
+        }),
+        expect.any(Function)
+      );
+    });
+
+    it("estimates gas for the same call it broadcasts", async () => {
+      // The estimate is the pre-flight check for the tx that follows it. If it validated the
+      // direct call while the on-behalf call went out, a bad keeper would slip past the estimate
+      // and surface as an on-chain revert instead of a cheap skip.
+      const clients = createMockClients();
+      const bot = createBot(clients, { vaultKeeperAddress: KEEPER });
+
+      await bot.acquireVault(mockVault);
+
+      expect(clients.publicClient.estimateContractGas).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionName: "swapWbtcForVaultOnBehalf",
+          args: [mockVault.vaultId, MAX_WBTC_IN, KEEPER],
+        })
+      );
+    });
+  });
+
   describe("ponder API handling", () => {
     it("processes vaults when API returns valid data", async () => {
       const clients = createMockClients();

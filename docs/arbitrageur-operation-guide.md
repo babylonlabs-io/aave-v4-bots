@@ -322,6 +322,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `CLIENT_RPC_URL` | RPC for transaction execution | Yes | — |
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap contract address | Yes | — |
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
+| `VAULT_KEEPER_ADDRESS` | Registered vault keeper the acquired vault is redeemed to. Set it when the executor is **not** itself a keeper (e.g. a Safe): the bot pays and this keeper receives, via `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself. Only point this at a keeper you control — the BTC lands there while the WBTC leaves the bot, so the legs only net out (and `RISK_MIN_PROFIT` only means anything) under one owner | No | — |
 | `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | No | `100` |
 | `POLLING_INTERVAL_MS` | How often to check for vaults | No | `30000` |
 | `VAULT_PROCESSING_DELAY_MS` | Delay between vault acquisitions | No | `5000` |
