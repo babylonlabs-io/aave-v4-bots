@@ -95,7 +95,7 @@ describe("config validation", () => {
       const config = loadConfig();
 
       expect(config.pollingIntervalMs).toBe(30000);
-      expect(config.vaultProcessingDelayMs).toBe(5000);
+      expect(config.vaultProcessingDelayMs).toBe(0);
       expect(config.maxSlippageBps).toBe(100);
       expect(config.metricsPort).toBe(9091);
       expect(config.retryMaxAttempts).toBe(3);

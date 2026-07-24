@@ -324,8 +324,18 @@ if cast chain-id --rpc-url "$RPC_URL" --rpc-timeout 5 >/dev/null 2>&1; then
   log "Anvil already running at $RPC_URL"
 else
   ANVIL_LOG="$(mktemp -t anvil-e2e.XXXXXX.log)"
+  # Default (unset) is anvil's automine: every tx is mined instantly in its own block, so nothing is
+  # ever pending. `E2E_ANVIL_BLOCK_TIME=<seconds>` switches to interval mining, which is what lets a
+  # backlog of pending txs build up from one signer — the only condition under which the nonce
+  # allocator's resync/in-flight fence is actually exercised. Opt-in, so the existing suites keep
+  # their current timing.
+  ANVIL_MINING_ARGS=()
+  if [[ -n "${E2E_ANVIL_BLOCK_TIME:-}" ]]; then
+    ANVIL_MINING_ARGS=(--block-time "$E2E_ANVIL_BLOCK_TIME")
+    log_warn "interval mining: --block-time ${E2E_ANVIL_BLOCK_TIME}s (txs will queue; setup is slower)"
+  fi
   log "Starting anvil (log: $ANVIL_LOG)"
-  anvil --silent --host 127.0.0.1 --port 8545 >"$ANVIL_LOG" 2>&1 &
+  anvil --silent --host 127.0.0.1 --port 8545 "${ANVIL_MINING_ARGS[@]}" >"$ANVIL_LOG" 2>&1 &
   ANVIL_PID=$!
   sleep 2
   if ! kill -0 "$ANVIL_PID" 2>/dev/null; then
@@ -376,7 +386,13 @@ case "$SUITE" in
   manual-safe-arbitrageur)
     SETUP="ManualSafeArbitrageurE2ESetup"; VERIFY="ManualSafeArbitrageurE2EVerify"
     DRIVE="test/e2e/scripts/operator-confirm.sh"; DRIVE_KIND="safe" ;;
-  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | liquidator | manual-arbitrageur | manual-safe-arbitrageur)"; exit 1 ;;
+  # Nonce stress. Its verification lives in bash, not forge: the strongest evidence is the bot's
+  # StateStore (nonce + tx_hash per intent), which SQL reads directly and a forge script cannot.
+  stress-arbitrageur)
+    SETUP="StressArbitrageurE2ESetup"; VERIFY=""
+    DRIVE="test/e2e/scripts/stress-drive.sh"
+    BASH_VERIFY="test/e2e/scripts/stress-verify.sh" ;;
+  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | liquidator | manual-arbitrageur | manual-safe-arbitrageur | stress-arbitrageur)"; exit 1 ;;
 esac
 
 if [[ "${E2E_SIGNER_SOURCE:-local}" == "aws" ]]; then
@@ -386,10 +402,10 @@ fi
 log "Setup ($SUITE) + start bots/ponders"
 forge script "test/e2e/${SETUP}.s.sol:${SETUP}" --ffi "${COMMON_FLAGS[@]}"
 
-# MANUAL suites: the bot is keyless and only proposes — play the operator and broadcast the proposals
-# before verification asserts the on-chain effect.
+# Between setup and verify. The MANUAL suites use this to play the operator; the stress suite uses
+# it to own every phase transition (mining mode, the two price drops, the crash, the tx eviction).
 if [[ -n "$DRIVE" ]]; then
-  log "Drive ($SUITE): operator-cli broadcast"
+  log "Drive ($SUITE)"
   E2E_RPC_URL="$RPC_URL" MANUAL_EXECUTOR_KIND="${DRIVE_KIND:-eoa}" bash "$DRIVE"
 fi
 
@@ -400,6 +416,9 @@ if [[ -n "${SKIP_VERIFY:-}" ]]; then
 fi
 
 log "Verify ($SUITE)"
-forge script "test/e2e/${VERIFY}.s.sol:${VERIFY}" --ffi "${COMMON_FLAGS[@]}"
-
+if [[ -n "${BASH_VERIFY:-}" ]]; then
+  E2E_RPC_URL="$RPC_URL" bash "$BASH_VERIFY"
+else
+  forge script "test/e2e/${VERIFY}.s.sol:${VERIFY}" --ffi "${COMMON_FLAGS[@]}"
+fi
 log_ok "PASS ($SUITE)"

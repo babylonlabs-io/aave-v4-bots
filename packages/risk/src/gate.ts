@@ -19,6 +19,18 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   let consecutiveFailures = 0;
   let inFlight = 0;
 
+  // Token ledger. Spendable capacity for a token is `available - spentSinceRefresh - reserved`:
+  //   available          last balance the gate was told, from a chain read (authoritative)
+  //   spentSinceRefresh   outflows counted against it since then, not yet visible in that figure
+  //   reserved            declared spend of actions currently in flight
+  // Addresses are case-normalised so the same token spelled two ways is one entry.
+  const available = new Map<string, bigint>();
+  const spentSinceRefresh = new Map<string, bigint>();
+  const reserved = new Map<string, bigint>();
+  const key = (token: string) => token.toLowerCase();
+  const get = (m: Map<string, bigint>, k: string) => m.get(k) ?? 0n;
+  const capacity = (k: string) => get(available, k) - get(spentSinceRefresh, k) - get(reserved, k);
+
   /**
    * Alerting is advisory: a throwing sink must never be able to stop the kill-switch from halting,
    * so its failures die here. The sink's contract is `void`, but a caller could hand us an `async`
@@ -61,6 +73,20 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       return `exposure cap reached (${inFlight}/${config.maxInFlight} in flight)`;
     }
 
+    // Inventory — can the signer still afford what this action authorises? Checked here and
+    // reserved in `openSlot` with no `await` between, which is what makes it safe for two engines
+    // sharing one signer: without that atomicity both could pass against the same balance and
+    // collectively overdraw it. Every token is validated before any is reserved.
+    for (const { token, amount } of action.spend ?? []) {
+      const k = key(token);
+      // Fail closed. A token the gate was never told about has unknown capacity, and treating
+      // unknown as unlimited is exactly the overdraw this guard exists to prevent.
+      if (!available.has(k)) return `no known balance for ${token}`;
+      if (amount > capacity(k)) {
+        return `insufficient ${token}: needs ${amount}, ${capacity(k)} spendable`;
+      }
+    }
+
     // Profit floor. A missing `expectedProfit` **skips** the guard rather than blocking:
     // liquidation profit is not derivable off-chain today, so fail-closing here would silently
     // disable every liquidation the moment an operator sets a floor. The arbitrage engine
@@ -92,8 +118,12 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   const release = (outcome: ActionOutcome) => {
     inFlight--;
 
-    // Abandoned pre-broadcast: the slot is released, but this says nothing about the chain.
-    if (outcome.abandoned) return;
+    // Neither of these is evidence the chain is rejecting *us*, so all three release the slot
+    // without touching the breaker (and, deliberately, without resetting the streak — a lost race
+    // must not mask a run of genuine failures). `abandoned`: no tx went out. `contended`: a tx
+    // reverted, but because a competitor already took the subject. `unresolved`: a tx went out and
+    // we never learned its fate.
+    if (outcome.abandoned || outcome.contended || outcome.unresolved) return;
 
     if (outcome.ok) {
       consecutiveFailures = 0;
@@ -124,12 +154,31 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       // `RiskSlot` and its `finally` backstop — so the count drains on its own and cannot leak.
     },
 
+    setAvailable(token, amount) {
+      const k = key(token);
+      available.set(k, amount);
+      // The fresh read already reflects everything that has landed, so what we had been counting
+      // separately is now double-counting. Reservations survive: those are still in flight and are
+      // by definition not yet in that balance.
+      spentSinceRefresh.set(k, 0n);
+    },
+
+    reserved: (token) => get(reserved, key(token)),
+
     openSlot(action) {
       const blocked = evaluate(action);
       if (blocked) return blockedSlot(blocked);
 
       // Allowed — reserve the exposure slot. The returned slot is the only way to release it.
       inFlight++;
+      // Reserve every declared spend. `evaluate` validated all of them above and nothing has
+      // awaited since, so this cannot partially apply.
+      const spend = action.spend ?? [];
+      for (const { token, amount } of spend) {
+        const k = key(token);
+        reserved.set(k, get(reserved, k) + amount);
+      }
+
       let settled = false;
       return {
         allowed: true,
@@ -137,6 +186,19 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
         settle(outcome: ActionOutcome) {
           if (settled) return; // idempotent: the precise exit path wins over the `finally`
           settled = true;
+
+          // Release the reservation, and decide whether the tokens actually left. A confirmed tx
+          // spent them. An `unresolved` one may still: counting it as spent under-reports capacity
+          // until the next refresh, which merely skips affordable work — the opposite error
+          // overdraws the signer and reverts. Anything else (pre-broadcast, or a revert, which
+          // transfers nothing) released the tokens untouched.
+          const spent = outcome.ok || outcome.unresolved === true;
+          for (const { token, amount } of spend) {
+            const k = key(token);
+            reserved.set(k, get(reserved, k) - amount);
+            if (spent) spentSinceRefresh.set(k, get(spentSinceRefresh, k) + amount);
+          }
+
           release(outcome);
         },
       };

@@ -28,6 +28,16 @@ export const vaultSwapAbi = [
     outputs: [{ name: "wbtcPaid", type: "uint256" }],
     stateMutability: "nonpayable",
   },
+  // Whether a vault is still in escrow and available to acquire. Goes false once acquired — the
+  // arbitrage engine reads it after a reverted swap to tell a lost race (another arbitrageur got
+  // there first) from a genuine failure.
+  {
+    type: "function",
+    name: "isVaultAcquirable",
+    inputs: [{ name: "vaultId", type: "bytes32" }],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
   // Repay interest on an escrowed vault
   {
     type: "function",

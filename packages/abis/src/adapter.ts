@@ -61,4 +61,24 @@ export const adapterAbi = [
     ],
     anonymous: false,
   },
+  // A borrower's position. `totalCollateralBTC` goes to 0 once the position is fully liquidated —
+  // the liquidation engine reads it after a reverted `liquidate` to tell a lost race (a competitor
+  // already cleared the position) from a genuine failure.
+  {
+    type: "function",
+    name: "getPosition",
+    inputs: [{ name: "user", type: "address" }],
+    outputs: [
+      {
+        name: "position",
+        type: "tuple",
+        components: [
+          { name: "vaultIds", type: "bytes32[]" },
+          { name: "totalCollateralBTC", type: "uint256" },
+          { name: "proxyContract", type: "address" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
 ] as const;

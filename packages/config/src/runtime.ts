@@ -120,7 +120,7 @@ export type ExecutionSettings =
       manualExecutorAddress: Hex40;
       /** The operator's custody model. Drives the operator-cli's signer and, critically, how the bot's
        *  reconcile confirms an intent — `safe` resolves by the Safe's `Execution{Success,Failure}`
-       *  event, `eoa` by the tx receipt status. See `docs/design-020-operator-cli-v1.md`. */
+       *  event, `eoa` by the tx receipt status. */
       executorKind: "eoa" | "safe";
       /** Sweep an un-actioned proposal to `expired` after this many ms (`0` disables). */
       intentTtlMs: number;

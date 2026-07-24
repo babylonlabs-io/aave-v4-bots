@@ -131,3 +131,38 @@ export function buildRiskConfig(env: RiskEnv): RiskSettings {
     controlHost: env.RISK_CONTROL_HOST,
   };
 }
+
+/**
+ * Reject a profit floor this process cannot actually enforce.
+ *
+ * `minProfit` only bites where an engine hands the gate an `expectedProfit`. The arbitrage engine
+ * does (exactly, from `previewEscrowedVaults`); the **liquidation** engine cannot — liquidation
+ * profit is not derivable off-chain today, because the Lens returns per-reserve debt in debt-token
+ * units and the adapter returns only vault ids, so neither the estimate nor the simulation yields a
+ * WBTC-denominated figure.
+ *
+ * This guard is **interim by design**. Closing the gap properly needs a contracts change — either a
+ * Lens view that returns a WBTC-denominated profit, or the on-chain profit revert that comes with a
+ * liquidation router — so it is deferred to the contracts work. When either lands, the liquidation
+ * engine can pass a real `expectedProfit` to `openSlot` and this function goes away.
+ *
+ * Left alone that is a *silent* hole: an operator sets `RISK_MIN_PROFIT`, boot succeeds, and every
+ * liquidation goes out ungated while the floor looks enabled. Refusing the combination turns it
+ * into an explicit choice at boot. Deliberately an error rather than a warning — a log line about
+ * a risk control that isn't actually running is precisely what scrolls past unread.
+ *
+ * @param hasLiquidationEngine whether this process runs the liquidation engine — always true for
+ *   the liquidator; for the arbitrageur only when `ADAPTER_ADDRESS` + `LENS_ADDRESS` opt it in.
+ */
+export function assertProfitFloorEnforceable(
+  settings: RiskSettings,
+  hasLiquidationEngine: boolean
+): void {
+  if (settings.risk.minProfit === undefined || !hasLiquidationEngine) return;
+  throw new Error(
+    "RISK_MIN_PROFIT is set but this process runs the liquidation engine, which cannot supply an " +
+      "expected profit — the floor would apply to arbitrage only and leave every liquidation " +
+      "ungated. Unset RISK_MIN_PROFIT, or run without the liquidation engine (arbitrageur: unset " +
+      "ADAPTER_ADDRESS + LENS_ADDRESS)."
+  );
+}

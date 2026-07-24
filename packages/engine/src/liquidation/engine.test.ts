@@ -88,6 +88,15 @@ function createMockClients() {
           // adapter pulls from msg.sender for fairness + redemption fee.
           return Promise.resolve([mockAmounts, 0n, ["0xvault1"]]);
         }
+        // Default: the position still holds collateral, so a reverted liquidation reads as a genuine
+        // failure (a lost-race test overrides this with totalCollateralBTC 0n).
+        if (functionName === "getPosition") {
+          return Promise.resolve({
+            vaultIds: ["0xvault1"],
+            totalCollateralBTC: 1000n,
+            proxyContract: "0xproxy",
+          });
+        }
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
@@ -273,6 +282,51 @@ describe("LiquidationEngine", () => {
       clients.publicClient.simulateContract.mockClear();
       await bot.run(); // now HALTED → short-circuits before simulate
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+    });
+
+    it("does NOT trip the breaker when the revert is a lost race (position already cleared)", async () => {
+      const clients = createMockClients();
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 1n,
+        logs: [],
+      });
+      // The liquidation reverted because another liquidator already cleared the position: no
+      // collateral left. The engine reads getPosition and sees totalCollateralBTC 0n → lost race.
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName }: { functionName: string }) => {
+          if (functionName === "estimateLiquidation")
+            return Promise.resolve([mockAmounts, 0n, ["0xvault1"]]);
+          if (functionName === "getPosition")
+            return Promise.resolve({
+              vaultIds: [],
+              totalCollateralBTC: 0n,
+              proxyContract: "0xproxy",
+            });
+          return Promise.resolve(BigInt("1000000000000000000"));
+        }
+      );
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run(); // reverts, but lost race → contended → breaker untouched
+      expect(risk.state()).toBe("RUNNING");
+    });
+
+    it("does NOT trip the breaker when the receipt never arrives (outcome unknown)", async () => {
+      const clients = createMockClients();
+      // Timing out or failing to fetch tells us nothing about what the chain did — the tx may
+      // still be in the mempool, and behind a nonce gap it certainly is. Receipts are awaited as a
+      // batch, so one shared cause fails them all at once; counting those would halt a healthy bot.
+      clients.publicClient.waitForTransactionReceipt.mockRejectedValue(new Error("timeout"));
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run();
+
+      expect(risk.state()).toBe("RUNNING");
     });
 
     // The breaker exists to stop us when THE CHAIN is rejecting our txs. A failure to prepare,

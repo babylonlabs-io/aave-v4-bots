@@ -15,7 +15,7 @@ import type { ProposalPayload } from "./index";
 // compute the EIP-712 `safeTxHash` the owners sign, and encode/decode `execTransaction`. The
 // operator-cli composes these with chain reads (the Safe's nonce/threshold) and signing; the bot's
 // reconcile only reads back the `Execution*` event. Hand-rolled on viem's `hashTypedData` + ABI
-// codecs (see `docs/design-020-operator-cli-v1.md`) — the Safe-specific knowledge is just the
+// codecs — the Safe-specific knowledge is just the
 // `SafeTx` type layout, the domain, and the signature-concatenation rule.
 //
 // **Supported Safe versions: v1.3.0+** — their EIP-712 domain is `{chainId, verifyingContract}`.

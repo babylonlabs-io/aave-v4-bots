@@ -109,7 +109,10 @@ Two orthogonal seams, both defaulting to local/dev:
 ## Risk gate & kill switch
 
 One `RiskGate` per process, injected into every engine it runs, gates each action before it
-executes (all `RISK_*`, all opt-in): a consecutive-failure **circuit breaker**, a **profit
+executes. Always on: an **inventory guard** that reserves each action's worst-case token
+outflow against the signer's balance until the action settles — so two engines sharing one
+signer cannot each judge the same balance sufficient and together overdraw it. The rest are
+`RISK_*` and opt-in: a consecutive-failure **circuit breaker**, a **profit
 floor**, an **in-flight cap**, a **data-staleness** guard, and a **code-hash guard** that
 pins the deployed bytecode of the contracts the bot calls (a mismatch boots it HALTED,
 fail-closed). A **remote kill switch** (`RISK_CONTROL_TOKEN_REF`) serves authenticated
@@ -252,6 +255,39 @@ pnpm test:liquidator        # Liquidator tests
 pnpm test:arbitrageur       # Arbitrageur tests
 pnpm test:coverage          # With coverage
 ```
+
+### E2E suites
+
+Each suite runs the real bot processes against a live Anvil + Bitcoin regtest, driven by the forge
+scripts in `test/e2e/`. Pick one with `SUITE` (default `liquidator`):
+
+```bash
+SUITE=arbitrageur ./scripts/e2e-local.sh          # both engines in one process
+SUITE=manual-arbitrageur ./scripts/e2e-local.sh   # MANUAL mode + operator-cli
+```
+
+### Stress suite
+
+`stress-arbitrageur` drives the dual-engine bot through a mass-liquidation cascade: two price-drop
+waves make two cohorts liquidatable in turn, with nonce chaos (mempool eviction via
+`anvil_dropTransaction`, then `kill -9` + restart) fired only once a real backlog exists. It asserts
+nonce integrity, that every position is liquidated and every escrowed vault acquired, and that a
+batch stranded behind a nonce gap recovers without halting.
+
+```bash
+SUITE=stress-arbitrageur ./scripts/e2e-local.sh                                        # 4 + 3 positions
+SUITE=stress-arbitrageur STRESS_COHORT_A=24 STRESS_COHORT_B=16 ./scripts/e2e-local.sh  # mass event
+SUITE=stress-arbitrageur STRESS_RACING=1 ./scripts/e2e-local.sh                        # + a rival bot
+```
+
+| Variable | Effect |
+|----------|--------|
+| `STRESS_COHORT_A` / `STRESS_COHORT_B` | Positions per wave (default `4` / `3`); setup costs ~11 s each |
+| `STRESS_RACING` | Runs a competing standalone liquidator; skips the nonce-chaos phases, which need a backlog the competitor would starve |
+| `E2E_STRESS_BLOCK_TIME` | Interval-mining block time in seconds (default `8`) — wide blocks are what let a backlog form |
+
+Assertions and timings are written to `.e2e-stress-report.json`; bot logs land in `/tmp/arb-bot.log`
+(and `/tmp/liq-bot.log` when racing).
 
 ## Project Structure
 

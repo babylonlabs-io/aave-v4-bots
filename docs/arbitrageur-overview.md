@@ -115,7 +115,15 @@ liquidation engine with the same executor and risk gate.
    - Ensures WBTC approval for BTCVaultSwap.
    - Calls `swapWbtcForVault(vaultId, maxWbtcIn)` where
      `maxWbtcIn = currentDebt + currentDebt * MAX_SLIPPAGE_BPS / 10000`.
-   - Waits for receipt up to `TX_RECEIPT_TIMEOUT_MS`.
+4. **Batch** — every affordable vault is broadcast first, then all receipts are awaited
+   together (each up to `TX_RECEIPT_TIMEOUT_MS`), the same shape the liquidation engine uses.
+   Two bounds apply while sending:
+   - **Exposure** — each send reserves a risk-gate slot, so `RISK_MAX_IN_FLIGHT` caps how many
+     acquisitions are in flight at once.
+   - **Inventory** — the risk gate reserves each vault's `maxWbtcIn` against the signer's WBTC
+     until the acquisition settles, and blocks one the balance cannot cover. The reservation is
+     shared with the liquidation engine, which spends the same WBTC (`wbtcPayment`) — so neither
+     engine can commit balance the other has already claimed.
 
 In `AUTO` mode the bot signs and broadcasts with the configured signer.
 In `MANUAL` mode it writes a content-hashed proposal to the Postgres
@@ -134,7 +142,7 @@ keeper-registered BTC key inside the same transaction.
 | `VAULT_KEEPER_ADDRESS` | Keeper the vault is redeemed to when the executor isn't one itself (uses `swapWbtcForVaultOnBehalf`) | No | — |
 | `POLLING_INTERVAL_MS` | How often to check for escrowed vaults | No | `30000` |
 | `MAX_SLIPPAGE_BPS` | Slippage tolerance (basis points) over `currentDebt` | No | `100` |
-| `VAULT_PROCESSING_DELAY_MS` | Delay between processing successive vaults | No | `5000` |
+| `VAULT_PROCESSING_DELAY_MS` | Throttle between acquisition broadcasts. Acquisitions are batched, so not a per-acquisition pause. `0` disables | No | `0` |
 | `TX_RECEIPT_TIMEOUT_MS` | Receipt wait timeout | No | `120000` |
 | `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
 | `ARBITRAGEUR_PRIVATE_KEY` | Default local signer key ref target; not used with KMS or MANUAL | AUTO + local | — |
@@ -156,8 +164,8 @@ keeper-registered BTC key inside the same transaction.
 | `LENS_ADDRESS` | Lens address for optional liquidation mode | Liquidation only | — |
 | `LIQUIDATION_POLLING_INTERVAL_MS` | Poll interval for the optional liquidation engine | No | `12000` |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats | No | — |
-| `RISK_MAX_IN_FLIGHT` | Maximum in-flight actions across both engines | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. Arbitrage-only: rejected at boot if the liquidation engine is enabled (#27) | No | — |
+| `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Maximum source data age | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
 | `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=hash,...` | No | — |

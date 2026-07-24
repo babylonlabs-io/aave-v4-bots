@@ -14,7 +14,12 @@ export {
   urlSchema,
 } from "./schemas";
 
-export { type RiskSettings, buildRiskConfig, riskEnvFields } from "./risk";
+export {
+  type RiskSettings,
+  assertProfitFloorEnforceable,
+  buildRiskConfig,
+  riskEnvFields,
+} from "./risk";
 
 export {
   type ExecutionSettings,

@@ -118,6 +118,28 @@ export class LiquidationEngine {
   }
 
   /**
+   * Whether the position has been fully liquidated — i.e. another liquidator got there first. Used
+   * only to classify a reverted liquidation. `getPosition` returns a value, so a genuine RPC failure
+   * throws and is caught as `false` (position still there ⇒ treat the revert as a real failure).
+   * Failing toward "not a lost race" is deliberate: a blip must never exempt a real failure from the
+   * breaker. Only a *full* clear (collateral 0) counts as taken; a partial competitor liquidation
+   * leaves collateral and is treated conservatively as our failure.
+   */
+  private async wasPositionTaken(borrower: Address): Promise<boolean> {
+    try {
+      const position = await this.publicClient.readContract({
+        address: this.adapterAddress,
+        abi: adapterAbi,
+        functionName: "getPosition",
+        args: [borrower],
+      });
+      return position.totalCollateralBTC === 0n;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Discover debt tokens from the Spoke contract's borrowable reserves.
    * Reads Spoke address from the AaveAdapter, then enumerates reserves.
    */
@@ -187,20 +209,26 @@ export class LiquidationEngine {
     const slots: RiskSlot[] = [];
 
     try {
-      // 0. Risk gate — a HALTED gate (kill-switch or tripped breaker) skips the cycle.
+      // Risk gate — a HALTED gate (kill-switch or tripped breaker) skips the cycle.
       if (this.risk.state() === "HALTED") {
         this.logger.warn("Risk gate is HALTED — skipping liquidation run");
         return;
       }
 
-      // 0.5. Crash-/ambiguous-send-safety: resolve in-flight intents against the chain (no-op
+      // Crash-/ambiguous-send-safety: resolve in-flight intents against the chain (no-op
       // without a store), then re-seed the shared nonce lease from the chain (reclaiming any
       // reserved-but-not-broadcast nonce). Done before fetching so a position stuck as a live
       // intent is resolved even in a cycle that would otherwise skip it.
       await this.reconcile();
       await this.executor.resyncNonces();
 
-      // 1. Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
+      // Publish spendable balances to the gate before judging any candidate. The gate reserves each
+      // action's declared spend against these, which is what stops this engine and the arbitrage
+      // engine — same signer, same WBTC — from both committing the same balance. A read failure
+      // propagates to the cycle's catch: unable to price our own inventory, we do not trade.
+      await this.refreshInventory();
+
+      // Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
       const { positions, dataTimestampMs } = await this.fetchLiquidatablePositions();
 
       this.metrics.recordPositionsLiquidatable(positions.length);
@@ -212,7 +240,7 @@ export class LiquidationEngine {
 
       this.logger.info(`Found ${positions.length} liquidatable position(s)`);
 
-      // 2. Estimate liquidation inputs via Lens for each position
+      // Estimate liquidation inputs via Lens for each position
       const estimateResults = await Promise.allSettled(
         positions.map((p) =>
           this.publicClient.readContract({
@@ -224,10 +252,11 @@ export class LiquidationEngine {
         )
       );
 
-      // 3. Build position + amounts pairs, filter failed estimates
+      // Build position + amounts pairs, filter failed estimates
       const candidates: Array<{
         position: LiquidatablePosition;
         amounts: readonly bigint[];
+        wbtcPayment: bigint;
       }> = [];
 
       for (let i = 0; i < estimateResults.length; i++) {
@@ -235,12 +264,14 @@ export class LiquidationEngine {
         const pos = positions[i];
 
         if (result.status === "fulfilled") {
-          const [amounts] = result.value;
-          // Buffer each amount (default 1%) to cover interest accrual between the Lens
-          // read and execution. The Lens also returns a separate `wbtcPayment` (fairness
-          // + redemption fee) the adapter pulls from msg.sender, so the bot only needs
-          // WBTC approved + balance — no need to thread the amount through.
-          candidates.push({ position: pos, amounts: bufferAmounts(amounts) });
+          const [amounts, wbtcPayment] = result.value;
+          // Buffer each amount (default 1%) to cover interest accrual between the Lens read and
+          // execution. `wbtcPayment` (fairness top-up +, in direct mode, the redemption fee) is
+          // pulled from msg.sender by the adapter, so it is a real outflow even though it is not
+          // threaded into the call — it is carried here to be declared to the risk gate, which
+          // reserves it against the WBTC the arbitrage engine is spending from the same signer.
+          // Already mode-correct: the Lens was asked with `isDirectRedemption`.
+          candidates.push({ position: pos, amounts: bufferAmounts(amounts), wbtcPayment });
         } else {
           this.metrics.recordError("lens_estimate_error");
           const reason = result.reason;
@@ -254,7 +285,7 @@ export class LiquidationEngine {
         return;
       }
 
-      // 4. Simulate all liquidations in parallel
+      // Simulate all liquidations in parallel
       const simulationResults = await Promise.allSettled(
         candidates.map(({ position, amounts }) => {
           // Default sequential priority order per candidate (each may have different reserve count)
@@ -310,15 +341,20 @@ export class LiquidationEngine {
 
       this.logger.info(`${validCandidates.length}/${positions.length} positions passed simulation`);
 
-      // 5. Send. Every tx routes through the shared nonce allocator (`withNonce`), the single nonce
+      // Send. Every tx routes through the shared nonce allocator (`withNonce`), the single nonce
       // owner across both engines. A send error is treated as AMBIGUOUS (the tx may have
       // propagated): the intent is kept LIVE (never terminal) and the cycle stops — the next
       // cycle's reconcile resolves it by nonce vs. chain.
       // Each sent tx is paired with its intent id (so the receipt phase records its outcome) and its
       // risk slot (so the receipt phase settles the exposure it reserved).
-      const sent: Array<{ hash: Hex; intentId?: string; slot: RiskSlot }> = [];
+      const sent: Array<{
+        hash: Hex;
+        intentId?: string;
+        slot: RiskSlot;
+        position: LiquidatablePosition;
+      }> = [];
       sendLoop: for (let i = 0; i < validCandidates.length; i++) {
-        const { position, amounts } = validCandidates[i];
+        const { position, amounts, wbtcPayment } = validCandidates[i];
 
         // Risk gate — per-candidate check just before submit. An allowed check reserves an
         // exposure slot that MUST be settled on every path below (see `RiskSlot`).
@@ -333,6 +369,16 @@ export class LiquidationEngine {
           kind: "liquidation",
           subject: position.proxyAddress,
           dataTimestampMs,
+          // Everything this tx can pull from the signer: the buffered repay amounts (one per debt
+          // reserve, in that reserve's token) plus the adapter's WBTC payment. Declared so the
+          // arbitrage engine sharing this signer cannot commit the same balance to a vault.
+          spend: [
+            ...amounts.map((amount, idx) => ({
+              token: this.debtTokenAddresses[idx] ?? this.wbtcAddress,
+              amount,
+            })),
+            { token: this.wbtcAddress, amount: wbtcPayment },
+          ],
         });
         if (!slot.allowed) {
           this.metrics.recordError("risk_blocked");
@@ -396,7 +442,7 @@ export class LiquidationEngine {
           case "broadcast":
             // The intent is already `submitted` (recorded inside `commit`).
             this.logger.info(`Sent liquidation for ${position.borrower}: ${out.hash}`);
-            sent.push({ hash: out.hash, intentId: out.intentId, slot });
+            sent.push({ hash: out.hash, intentId: out.intentId, slot, position });
             continue;
 
           default:
@@ -409,7 +455,7 @@ export class LiquidationEngine {
         return;
       }
 
-      // 6. Batch-wait for all receipts
+      // Batch-wait for all receipts
       this.logger.info(`Waiting for ${sent.length} liquidation receipt(s)...`);
       const receipts = await Promise.allSettled(
         sent.map(({ hash }) =>
@@ -419,7 +465,7 @@ export class LiquidationEngine {
 
       for (let i = 0; i < receipts.length; i++) {
         const result = receipts[i];
-        const { hash, intentId, slot } = sent[i];
+        const { hash, intentId, slot, position } = sent[i];
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
@@ -429,23 +475,39 @@ export class LiquidationEngine {
             if (intentId)
               await this.executor.recordOutcome(intentId, { kind: "confirmed", txHash: hash });
           } else {
-            slot.settle({ ok: false });
-            this.metrics.recordLiquidationFailed();
-            this.metrics.recordError("tx_reverted");
-            this.logger.error(`Liquidation reverted: ${hash}`);
+            // A reverted liquidation is only *our* failure if the position is still there to take.
+            // If it has been cleared, another liquidator got there first — a lost race, normal
+            // competition, which must not feed the breaker (settle `contended`).
+            const lostRace = await this.wasPositionTaken(position.borrower);
+            if (lostRace) {
+              slot.settle({ ok: false, contended: true });
+              this.metrics.recordError("race_lost");
+              this.logger.info(
+                `Position ${position.borrower} already liquidated by another bot — not a failure`
+              );
+            } else {
+              slot.settle({ ok: false });
+              this.metrics.recordLiquidationFailed();
+              this.metrics.recordError("tx_reverted");
+              this.logger.error(`Liquidation reverted: ${hash}`);
+            }
             if (intentId)
               await this.executor.recordOutcome(intentId, {
                 kind: "failed",
                 txHash: hash,
-                error: "reverted",
+                error: lostRace ? "lost race" : "reverted",
               });
           }
         } else {
-          slot.settle({ ok: false });
-          this.metrics.recordLiquidationFailed();
+          // The receipt never arrived (timeout) or could not be fetched. Either way the tx's fate
+          // is UNKNOWN, not failed — it may still be in the mempool, and behind a nonce gap it
+          // certainly is. `unresolved` keeps it off the breaker (these arrive in batches, so one
+          // shared cause would otherwise land N failures at once and halt a healthy bot) while
+          // still counting its declared spend, since the tx may yet land.
+          // The intent stays 'submitted' — boot reconcile resolves it against the chain.
+          slot.settle({ ok: false, unresolved: true });
           this.metrics.recordError("receipt_fetch_error");
           this.logger.error(`Failed to get receipt for ${hash}: ${result.reason}`);
-          // Leave the intent 'submitted' — boot reconcile resolves it against the chain.
         }
       }
     } catch (error) {
@@ -515,6 +577,24 @@ export class LiquidationEngine {
         this.logger.info(`Approval for ${symbol} ${result.kind} — awaiting operator signature`);
       }
     }
+  }
+
+  /**
+   * Tell the risk gate what this signer can currently spend, for every token an action may pull:
+   * each debt reserve plus WBTC. Called once per cycle from `run()`.
+   *
+   * Deliberately not folded into `logBalances`, which is best-effort observability the services
+   * call around the cycle and which swallows read errors. This one must not swallow: the gate
+   * fails closed on a token it has no figure for, so a silent failure here would present as
+   * "everything is unaffordable" rather than "we could not read".
+   */
+  private async refreshInventory(): Promise<void> {
+    const owner = this.identity.from;
+    const tokens = Array.from(new Set<Address>([...this.debtTokenAddresses, this.wbtcAddress]));
+    const balances = await Promise.all(
+      tokens.map((token) => readBalance(this.publicClient, token, owner))
+    );
+    tokens.forEach((token, i) => this.risk.setAvailable(token, balances[i]));
   }
 
   /**

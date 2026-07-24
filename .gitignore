@@ -41,10 +41,6 @@ out/
 /broadcast/**/dry-run/
 broadcast
 
-
-# Claude Code instruction file (keep local only)
-CLAUDE.md
-
 tmp/
 contracts/deployments/local.json
 

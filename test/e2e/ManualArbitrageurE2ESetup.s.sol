@@ -23,7 +23,7 @@ import {E2EConstants} from "./E2EConstants.sol";
 ///      Verify with ArbitrageurE2EVerify: the funded account and the executor are the same address
 ///      here, so the AUTO assertions (position cleared, vault acquired) hold unchanged.
 contract ManualArbitrageurE2ESetup is ArbitrageurE2ESetup {
-    function _executionEnvLines() internal view override returns (string memory) {
+    function _executionEnvLines() internal pure override returns (string memory) {
         return string.concat(
             "EXECUTION_MODE=MANUAL\n",
             "MANUAL_EXECUTOR_KIND=eoa\n",

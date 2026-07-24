@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { buildRiskConfig, codeHashMapSchema, riskEnvFields } from "./risk";
+import {
+  assertProfitFloorEnforceable,
+  buildRiskConfig,
+  codeHashMapSchema,
+  riskEnvFields,
+} from "./risk";
 
 const ADAPTER = "0x1111111111111111111111111111111111111111";
 const HASH = `0x${"ab".repeat(32)}`;
@@ -102,6 +107,37 @@ describe("@repo/config risk env", () => {
 
     it("rejects a hash that is not 32 bytes", () => {
       expect(() => codeHashMapSchema.parse(`${ADAPTER}=0xabc`)).toThrow();
+    });
+  });
+
+  describe("assertProfitFloorEnforceable", () => {
+    const withFloor = (minProfit?: bigint) =>
+      ({
+        risk: { minProfit },
+        codeCheckIntervalMs: 0,
+        controlPort: 0,
+        controlHost: "",
+      }) as Parameters<typeof assertProfitFloorEnforceable>[0];
+
+    it("rejects a profit floor when the liquidation engine runs", () => {
+      // The floor cannot bite on liquidations, so allowing this would leave every liquidation
+      // ungated while RISK_MIN_PROFIT looked enabled.
+      expect(() => assertProfitFloorEnforceable(withFloor(1000n), true)).toThrow(/RISK_MIN_PROFIT/);
+    });
+
+    it("allows a profit floor when only the arbitrage engine runs", () => {
+      // Arbitrage supplies an exact expectedProfit, so the floor is fully enforceable here — this
+      // is the case the guard must NOT break.
+      expect(() => assertProfitFloorEnforceable(withFloor(1000n), false)).not.toThrow();
+    });
+
+    it("allows the liquidation engine when no floor is configured", () => {
+      expect(() => assertProfitFloorEnforceable(withFloor(undefined), true)).not.toThrow();
+    });
+
+    it("treats a zero floor as configured, not absent", () => {
+      // 0n is a real floor ("never take a loss"), and `undefined` is the only "unset".
+      expect(() => assertProfitFloorEnforceable(withFloor(0n), true)).toThrow(/RISK_MIN_PROFIT/);
     });
   });
 });

@@ -4,6 +4,7 @@ import {
   type RiskSettings,
   addressListSchema,
   addressSchema,
+  assertProfitFloorEnforceable,
   buildExecutionConfig,
   buildNotifierConfig,
   buildPersistenceConfig,
@@ -67,7 +68,9 @@ const envSchema = z.object({
 
   // Optional with defaults (validated as positive/non-negative integers)
   POLLING_INTERVAL_MS: positiveIntSchema.optional().default("30000"),
-  VAULT_PROCESSING_DELAY_MS: nonNegativeIntSchema.optional().default("5000"),
+  // 0 = off. Acquisitions are batched (send-all, then batch-wait), so this is now an opt-in
+  // throttle between broadcasts for rate-limited RPCs — not a per-acquisition pause.
+  VAULT_PROCESSING_DELAY_MS: nonNegativeIntSchema.optional().default("0"),
   MAX_SLIPPAGE_BPS: nonNegativeIntSchema.optional().default("100"),
   METRICS_PORT: positiveIntSchema.optional().default("9091"),
 
@@ -174,8 +177,13 @@ export function loadConfig(): Config {
         }
       : undefined;
 
+  // Arbitrage-only, a profit floor is fully enforceable; the opt-in liquidation engine is what
+  // makes it unenforceable, so this rejects only that combination.
+  const risk = buildRiskConfig(env);
+  assertProfitFloorEnforceable(risk, liquidation !== undefined);
+
   return {
-    ...buildRiskConfig(env),
+    ...risk,
     ponderUrl,
     rpcUrl: env.CLIENT_RPC_URL,
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,

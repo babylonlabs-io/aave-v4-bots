@@ -197,8 +197,8 @@ The bot automates monitoring and execution.
 | `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
 | `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats; liquidation currently has no expected-profit input | No | — |
-| `RISK_MAX_IN_FLIGHT` | Maximum in-flight actions | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. **Not usable here** — no expected-profit source for liquidations, so it is rejected at boot (#27) | must be unset | — |
+| `RISK_MAX_IN_FLIGHT` | Max in-flight actions. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Maximum source data age | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
 | `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=hash,...` | No | — |

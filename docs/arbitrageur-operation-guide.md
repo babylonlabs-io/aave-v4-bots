@@ -253,8 +253,8 @@ MAX_SLIPPAGE_BPS=100
 # Vault check frequency (default: 30000ms = 30 seconds)
 POLLING_INTERVAL_MS=30000
 
-# Delay between processing multiple vaults (default: 5000ms)
-VAULT_PROCESSING_DELAY_MS=5000
+# Optional throttle between acquisition broadcasts (default: 0 = off; acquisitions are batched)
+# VAULT_PROCESSING_DELAY_MS=0
 
 # Metrics server port (default: 9091)
 METRICS_PORT=9091
@@ -291,7 +291,9 @@ NOTIFIER=none
 # Risk gate (unset variables disable their guard)
 # RISK_MAX_CONSECUTIVE_FAILURES=5
 # RISK_MIN_PROFIT=0
-# RISK_MAX_IN_FLIGHT=3
+# Unset means NO cap. Bounds one poll cycle's burst; the breaker settles on receipts and so cannot
+# stop the cycle already in flight. Size above the largest cascade you want to compete in.
+# RISK_MAX_IN_FLIGHT=25
 # RISK_MAX_DATA_STALENESS_MS=60000
 # RISK_START_HALTED=false
 # RISK_EXPECTED_CODE_HASHES=0xVaultSwap...=0xhash...
@@ -325,7 +327,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `VAULT_KEEPER_ADDRESS` | Registered vault keeper the acquired vault is redeemed to. Set it when the executor is **not** itself a keeper (e.g. a Safe): the bot pays and this keeper receives, via `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself. Only point this at a keeper you control — the BTC lands there while the WBTC leaves the bot, so the legs only net out (and `RISK_MIN_PROFIT` only means anything) under one owner | No | — |
 | `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | No | `100` |
 | `POLLING_INTERVAL_MS` | How often to check for vaults | No | `30000` |
-| `VAULT_PROCESSING_DELAY_MS` | Delay between vault acquisitions | No | `5000` |
+| `VAULT_PROCESSING_DELAY_MS` | Throttle between acquisition broadcasts. Acquisitions are batched, so not a per-acquisition pause. `0` disables | No | `0` |
 | `METRICS_PORT` | HTTP server port for metrics/health | No | `9091` |
 | `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
 | `MANUAL_EXECUTOR_ADDRESS` | Address the operator signs/broadcasts from; Safe address in `safe` custody | MANUAL only | — |
@@ -346,8 +348,8 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `LENS_ADDRESS` | AaveAdapterLens for optional liquidation mode; requires `ADAPTER_ADDRESS` | Liquidation only | — |
 | `LIQUIDATION_POLLING_INTERVAL_MS` | Poll interval for the optional liquidation engine | No | `12000` |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit | No | — |
-| `RISK_MAX_IN_FLIGHT` | Maximum in-flight actions across both engines | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit. Rejected at boot when the optional liquidation engine is enabled, since that engine supplies no expected profit and the floor would cover only half the actions | No | — |
+| `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old or missing | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
 | `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` | No | — |

@@ -61,12 +61,29 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
         vm.sleep(10000); // Wait 10s for the unified Ponder to initialize
         // The bot waits for the Lens (this script's last-broadcast deploy) before booting, so its
         // risk-gate code-hash check never races the forge broadcast phase. See `_startBotProcess`.
-        _startBotProcess(".env.arbitrageur", "arbitrageur:run", "/tmp/arb-bot.log", address(lens));
+        _startBot(address(lens));
         _saveInitialBalances();
 
-        (address borrower,) = _setupLiquidatablePosition(lens);
+        _createPositions(lens);
 
         console.log("\n=== Setup Complete - run this suite's verify script ===");
+    }
+
+    /// @dev Launch the bot. It waits for the pinned Lens bytecode before booting, because the
+    ///      code-hash guard boots HALTED if the contract is not there yet — and forge only flushes
+    ///      its broadcasts once the script body returns, so the deploy lands late. That wait is
+    ///      bounded (60s), which is ample for a one-position setup but not for suites whose script
+    ///      body runs for minutes; those override this and start the bot afterwards instead.
+    function _startBot(address lensAddress) internal virtual {
+        _startBotProcess(".env.arbitrageur", "arbitrageur:run", "/tmp/arb-bot.log", lensAddress);
+    }
+
+    /// @dev The position(s) this suite drives the bot against. Default: the single borrower the AUTO
+    ///      and MANUAL suites use, made liquidatable before we return. The stress suite overrides
+    ///      this to build two cohorts and leave them **healthy** — there, the price drops that start
+    ///      each wave are fired by the drive script, after the bot is already running.
+    function _createPositions(AaveAdapterLens lens) internal virtual {
+        (address borrower,) = _setupLiquidatablePosition(lens);
         console.log("Borrower address:", borrower);
     }
 
@@ -156,7 +173,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "\n",
             "MAX_SLIPPAGE_BPS=100\n",
             "POLLING_INTERVAL_MS=1000\n",
-            "VAULT_PROCESSING_DELAY_MS=1000\n",
+            "VAULT_PROCESSING_DELAY_MS=0\n",  // batch acquisitions; throttle off
             "METRICS_PORT=",
             vm.toString(E2EConstants.ARBITRAGEUR_METRICS_PORT),
             "\n",
@@ -197,6 +214,13 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
     ///      `RISK_MIN_PROFIT` and `RISK_MAX_DATA_STALENESS_MS` are deliberately unset: both are
     ///      covered by engine unit tests, and both would couple this suite to Anvil's block
     ///      cadence and to e2e-specific pricing.
+    /// @dev Exposure cap (`RISK_MAX_IN_FLIGHT`) for the bot under test. Suites that liquidate more
+    ///      positions than this at once must raise it, or the cap — not the behaviour under test —
+    ///      becomes the binding constraint and the bot sits out most of the event.
+    function _maxInFlight() internal view virtual returns (uint256) {
+        return 5;
+    }
+
     function _riskEnv(address lensAddress) internal view returns (string memory) {
         string memory hashes = string.concat(
             "RISK_EXPECTED_CODE_HASHES=",
@@ -219,7 +243,9 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             // wired into the engines, not to be exercised: a genuinely broken bot fails this suite
             // by never trading. Tight thresholds would only add CI flake.
             "RISK_MAX_CONSECUTIVE_FAILURES=10\n",
-            "RISK_MAX_IN_FLIGHT=5\n",
+            "RISK_MAX_IN_FLIGHT=",
+            vm.toString(_maxInFlight()),
+            "\n",
             hashes,
             "RISK_CODE_CHECK_INTERVAL_MS=5000\n",
             "RISK_CONTROL_TOKEN_REF=",

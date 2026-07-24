@@ -166,8 +166,10 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
     {
         address depositor = vm.addr(depositorPrivateKey);
 
-        // Generate unique secret and hashlock for atomic swap
-        bytes32 secret = keccak256(abi.encodePacked("e2e_liq_secret", block.number));
+        // Generate unique secret and hashlock for atomic swap. Keyed by depositor as well as block
+        // height: a suite that pegs in for several borrowers can land two peg-ins in one block, and
+        // a shared secret would silently collide.
+        bytes32 secret = keccak256(abi.encodePacked("e2e_liq_secret", block.number, depositor));
         bytes32 hashlock = sha256(abi.encodePacked(secret));
 
         bytes32 vaultProviderBtcKey = btcVaultRegistry.getVaultProviderBTCKey(vp);

@@ -4,6 +4,7 @@ import {
   type RiskSettings,
   addressListSchema,
   addressSchema,
+  assertProfitFloorEnforceable,
   buildExecutionConfig,
   buildNotifierConfig,
   buildPersistenceConfig,
@@ -111,8 +112,12 @@ export function loadConfig(): Config {
       ? (env.DEBT_TOKEN_ADDRESSES as Address[])
       : undefined;
 
+  // This service is nothing but the liquidation engine, so a profit floor could never bite here.
+  const risk = buildRiskConfig(env);
+  assertProfitFloorEnforceable(risk, true);
+
   return {
-    ...buildRiskConfig(env),
+    ...risk,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     ponderUrl: env.PONDER_URL,
     rpcUrl: env.CLIENT_RPC_URL,

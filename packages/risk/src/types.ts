@@ -18,6 +18,16 @@ export interface RiskAction {
   expectedProfit?: bigint;
   /** When the source data was produced (ms epoch) — checked against `maxDataStalenessMs`. */
   dataTimestampMs?: number;
+  /**
+   * Token outflows this action authorizes. Reserved against the signer's spendable balance for as
+   * long as the action is in flight, so that concurrent engines sharing one signer cannot each pass
+   * an affordability check against the same balance and collectively overdraw it. Omit when the
+   * action moves no tokens.
+   *
+   * Fails CLOSED: naming a token whose balance the gate has never been told (`setAvailable`) blocks
+   * the action rather than treating it as unlimited.
+   */
+  spend?: readonly TokenSpend[];
 }
 
 /** The result of an action, reported through the `RiskSlot` that authorized it. */
@@ -29,6 +39,33 @@ export interface ActionOutcome {
    * consecutive-failure breaker: it is not evidence the chain is rejecting us.
    */
   abandoned?: boolean;
+  /**
+   * A broadcast tx **reverted, but because a competitor already handled the subject** — the
+   * position was liquidated, or the vault acquired, by another bot. Like `abandoned`, it releases
+   * the slot without feeding the breaker: losing a race is normal competition, not our malfunction.
+   * Distinct from `abandoned` (which means no tx went out at all) so the two stay countable apart.
+   */
+  contended?: boolean;
+  /**
+   * A tx **was broadcast but its fate is unknown** — the receipt never arrived, or could not be
+   * fetched. Breaker-exempt for the same reason as the two above: not knowing is not evidence the
+   * chain rejected us, and behind a nonce gap the tx is provably still in the mempool.
+   *
+   * Kept distinct from `abandoned` because the two differ for **token accounting**. `abandoned`
+   * means no tx exists, so its declared `spend` can never happen and is released outright. Here
+   * the tx may still mine, so the spend is counted as if it did: under-reporting spendable balance
+   * for a cycle only costs us work we could have afforded, while over-reporting overdraws the
+   * signer and reverts — which is a genuine failure that *does* feed the breaker. The next balance
+   * refresh corrects whichever way it went.
+   */
+  unresolved?: boolean;
+}
+
+/** One token outflow an action authorizes, reserved against the signer's balance while in flight. */
+export interface TokenSpend {
+  token: string;
+  /** WORST CASE the tx may transfer — the slippage ceiling, or the buffered repay amount. */
+  amount: bigint;
 }
 
 /**
@@ -81,6 +118,15 @@ export interface RiskGate {
   openSlot(action: RiskAction): RiskSlot;
   /** Actions currently in flight (allowed slots not yet settled). */
   inFlight(): number;
+  /**
+   * Tell the gate the signer's spendable balance of `token`, from a fresh chain read. Authoritative:
+   * it replaces the previous figure and clears what the gate had counted as spent since the last
+   * one, so drift from inflows (liquidation payouts, redemptions, transfers in) self-corrects every
+   * time it is called. Engines call it once per cycle for each token they spend.
+   */
+  setAvailable(token: string, amount: bigint): void;
+  /** Declared spend currently reserved by in-flight actions, per token — for logs and metrics. */
+  reserved(token: string): bigint;
   /**
    * Verify the configured contract bytecode hashes and **halt on mismatch** (an upgraded or
    * self-destructed target is treated as compromised). No-op when unconfigured. Kept out of the

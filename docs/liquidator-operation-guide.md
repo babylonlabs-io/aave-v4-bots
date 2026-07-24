@@ -303,8 +303,11 @@ NOTIFIER=none
 
 # Risk gate (unset variables disable their guard)
 # RISK_MAX_CONSECUTIVE_FAILURES=5
-# RISK_MIN_PROFIT=0
-# RISK_MAX_IN_FLIGHT=3
+# RISK_MIN_PROFIT is not listed: this service is only the liquidation engine, which supplies no
+# expected profit, so setting it is rejected at boot.
+# Unset means NO cap. Bounds one poll cycle's burst; the breaker settles on receipts and so cannot
+# stop the cycle already in flight. Size above the largest cascade you want to compete in.
+# RISK_MAX_IN_FLIGHT=25
 # RISK_MAX_DATA_STALENESS_MS=60000
 # RISK_START_HALTED=false
 # RISK_EXPECTED_CODE_HASHES=0xAdapter...=0xhash...,0xLens...=0xhash...
@@ -351,8 +354,8 @@ METRICS_PORT=9090
 | `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
 | `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats; liquidation currently has no expected-profit input | No | — |
-| `RISK_MAX_IN_FLIGHT` | Maximum in-flight actions reserved through the risk gate | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. **Not usable in this service** — the liquidation engine cannot supply an expected profit, so setting it is rejected at boot rather than silently ignored | must be unset | — |
+| `RISK_MAX_IN_FLIGHT` | Max in-flight actions reserved through the risk gate. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old or missing | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
 | `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` | No | — |

@@ -27,8 +27,11 @@ WBTC to BTCVaultSwap. Vault redemption happens atomically in the same tx.
    redeems the vault to the arbitrageur in the same tx — there is no
    separate redemption step.
 
-Vaults are processed sequentially, with `VAULT_PROCESSING_DELAY_MS`
-between each acquire.
+Vaults are acquired in a batch: every affordable vault is broadcast, then all receipts are
+awaited together (the same shape the liquidation engine uses). Concurrency is bounded by the risk
+gate's `RISK_MAX_IN_FLIGHT`, and spend is bounded by the WBTC actually held — a vault the balance
+cannot cover is skipped before any slot is reserved. `VAULT_PROCESSING_DELAY_MS` is an optional
+throttle between broadcasts, off by default.
 
 ## Acquisition Flow
 
@@ -93,8 +96,8 @@ WBTC_ADDRESS=0x...
 # Poll interval (default: 30000 ms)
 # POLLING_INTERVAL_MS=30000
 
-# Delay between processing vaults within a single poll (default: 5000 ms)
-# VAULT_PROCESSING_DELAY_MS=5000
+# Optional throttle between acquisition broadcasts (default: 0 = off)
+# VAULT_PROCESSING_DELAY_MS=0
 
 # Max slippage in basis points (default: 100 = 1%)
 # MAX_SLIPPAGE_BPS=100

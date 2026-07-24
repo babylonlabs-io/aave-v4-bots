@@ -156,7 +156,11 @@ async function runPollingMode(config: Config): Promise<void> {
   await bot.logBalance();
 
   logger.info(`Polling every ${config.pollingIntervalMs / 1000}s...`);
-  logger.info(`Delay between vaults: ${config.vaultProcessingDelayMs / 1000}s`);
+  logger.info(
+    config.vaultProcessingDelayMs > 0
+      ? `Send throttle: ${config.vaultProcessingDelayMs / 1000}s between acquisitions`
+      : "Send throttle: off (acquisitions are batched)"
+  );
   logger.info("---");
 
   // Polling loop using recursive setTimeout to prevent overlapping cycles

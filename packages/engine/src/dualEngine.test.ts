@@ -46,7 +46,10 @@ const vault = (vaultId: `0x${string}`): EscrowedVault => ({
  * production composition. `receiptStatus` lets a test make the chain reject the txs.
  */
 function setup(
-  opts: { risk?: RiskConfig | RiskGate; receiptStatus?: "success" | "reverted" } = {}
+  opts: {
+    risk?: RiskConfig | RiskGate;
+    receiptStatus?: "success" | "reverted";
+  } = {}
 ) {
   // Shared mock chain: `pending` count advances only when a broadcast completes (under the
   // lock), so a resync can never rewind below a just-broadcast nonce.
@@ -96,6 +99,8 @@ function setup(
             isProfitable: true,
           }));
         }
+        // Both engines declare token spend to the gate, which reserves it against this figure.
+        if (functionName === "balanceOf") return 10n ** 18n;
         if (functionName === "allowance") return 10n ** 30n; // skip approvals
         return 0n;
       }
@@ -256,5 +261,29 @@ describe("dual-engine shared risk gate", () => {
 
     expect(broadcast).toHaveBeenCalledTimes(1);
     expect(risk.inFlight()).toBe(0); // every allowed check settled — no leak
+  });
+
+  it("both engines declare their token spend to the one shared gate", async () => {
+    // The wiring half of the cross-engine budget: the arithmetic (a reservation from one engine
+    // being invisible to the other, so together they overdraw the signer) is asserted directly
+    // against the gate in risk.test.ts, where a balance can actually be made to move. What can
+    // only be checked here is that BOTH engines route their spend through the same gate — if
+    // either stopped declaring, the ledger would silently under-count and the guard would be
+    // worthless. The liquidation engine in particular dropped `wbtcPayment` on the floor until now.
+    const risk = createRiskGate();
+    const openSlot = vi.spyOn(risk, "openSlot");
+    const { liq, arb } = setup({ risk });
+
+    await liq.run();
+    await arb.run();
+
+    const declared = openSlot.mock.calls.map(([action]) => action);
+    const liquidation = declared.find((a) => a.kind === "liquidation");
+    const acquisition = declared.find((a) => a.kind === "vault-acquisition");
+
+    // Every debt repayment plus the adapter's WBTC pull.
+    expect(liquidation?.spend?.length).toBeGreaterThan(0);
+    // The worst case the swap may charge, not the preview cost.
+    expect(acquisition?.spend).toEqual([{ token: "0xwbtc", amount: 50_500_000n }]);
   });
 });

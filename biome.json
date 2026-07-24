@@ -46,6 +46,7 @@
       "contracts/**",
       "external",
       ".venv-e2e/**",
+      ".e2e-*",
       "broadcast/**",
       "cache/**",
       "out/**"

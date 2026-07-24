@@ -2,6 +2,7 @@ import { type NonceAllocator, createNonceAllocator, createNonceLease } from "@re
 import type { Logger } from "@repo/logger";
 import { type MemoryStateStore, type StateStore, createMemoryStateStore } from "@repo/persistence";
 import { createRiskGate } from "@repo/risk";
+import { TransactionReceiptNotFoundError } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAutoExecutorFromWallet } from "../executor";
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "./engine";
@@ -67,6 +68,9 @@ function createMockClients() {
         .fn()
         .mockImplementation(
           ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+            // The batch path budgets acquisitions against real WBTC inventory, so a
+            // zero balance now (correctly) blocks every send. Fund the fixture.
+            if (functionName === "balanceOf") return Promise.resolve(10n ** 18n);
             if (functionName === "previewEscrowedVaults") {
               const vaultIds = args[0] as readonly `0x${string}`[];
               return Promise.resolve(
@@ -84,6 +88,11 @@ function createMockClients() {
             }
             if (functionName === "allowance") {
               return Promise.resolve(BigInt("1000000000000")); // High allowance
+            }
+            // Default: the vault is still acquirable, so a reverted swap reads as a genuine failure
+            // (a lost-race test overrides this to false).
+            if (functionName === "isVaultAcquirable") {
+              return Promise.resolve(true);
             }
             return Promise.resolve(0n);
           }
@@ -121,6 +130,12 @@ function createBot(
   } = {}
 ): ArbitrageEngine {
   const { store, nonces, executor, ...engineOverrides } = overrides;
+  // `run()` publishes the signer's WBTC balance to the gate each cycle; tests that drive
+  // `acquireVault` directly skip that, and the gate fails closed on a token it has no balance for.
+  // Seed it here so those tests exercise the acquisition path rather than the inventory guard —
+  // the inventory tests set their own figure explicitly.
+  const risk = engineOverrides.risk ?? createRiskGate();
+  risk.setAvailable("0xwbtc", 10n ** 24n);
   return new ArbitrageEngine({
     publicClient: clients.publicClient as unknown as ArbitrageEngineConfig["publicClient"],
     vaultSwapAddress: "0xvaultswap",
@@ -132,7 +147,6 @@ function createBot(
     txReceiptTimeoutMs: 1000,
     metrics,
     logger: silentLogger,
-    risk: createRiskGate(), // permissive by default
     executor:
       executor ??
       createAutoExecutorFromWallet({
@@ -145,6 +159,7 @@ function createBot(
         logger: silentLogger,
       }),
     ...engineOverrides,
+    risk,
   });
 }
 
@@ -195,6 +210,9 @@ describe("ArbitrageEngine", () => {
       const clients = createMockClients();
       clients.publicClient.readContract.mockImplementation(
         ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+          // The batch path budgets acquisitions against real WBTC inventory, so a
+          // zero balance now (correctly) blocks every send. Fund the fixture.
+          if (functionName === "balanceOf") return Promise.resolve(10n ** 18n);
           if (functionName === "previewEscrowedVaults") {
             const vaultIds = args[0] as readonly `0x${string}`[];
             return Promise.resolve(
@@ -255,6 +273,9 @@ describe("ArbitrageEngine", () => {
       const clients = createMockClients();
       clients.publicClient.readContract.mockImplementation(
         ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+          // The batch path budgets acquisitions against real WBTC inventory, so a
+          // zero balance now (correctly) blocks every send. Fund the fixture.
+          if (functionName === "balanceOf") return Promise.resolve(10n ** 18n);
           if (functionName === "previewEscrowedVaults") {
             const vaultIds = args[0] as readonly `0x${string}`[];
             return Promise.resolve(
@@ -289,6 +310,9 @@ describe("ArbitrageEngine", () => {
       const clients = createMockClients();
       clients.publicClient.readContract.mockImplementation(
         ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+          // The batch path budgets acquisitions against real WBTC inventory, so a
+          // zero balance now (correctly) blocks every send. Fund the fixture.
+          if (functionName === "balanceOf") return Promise.resolve(10n ** 18n);
           if (functionName === "previewEscrowedVaults") {
             const vaultIds = args[0] as readonly `0x${string}`[];
             return Promise.resolve(
@@ -321,20 +345,58 @@ describe("ArbitrageEngine", () => {
 
     it("uses debt as maxWbtcIn when slippage floor division rounds to zero", async () => {
       const clients = createMockClients();
-      const tinyVault: EscrowedVault = {
-        ...mockVault,
-        currentDebt: "1",
-      };
+      // The ceiling is priced off the FRESH preview, not the indexer's `currentDebt`, so the tiny
+      // cost has to come from the preview for this rounding case to be exercised at all.
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+          if (functionName === "balanceOf") return Promise.resolve(10n ** 18n);
+          if (functionName === "allowance") return Promise.resolve(BigInt("1000000000000"));
+          if (functionName === "isVaultAcquirable") return Promise.resolve(true);
+          if (functionName === "previewEscrowedVaults") {
+            const vaultIds = args[0] as readonly `0x${string}`[];
+            return Promise.resolve(
+              vaultIds.map((vaultId) => ({
+                vaultId,
+                amountVault: 100000000n,
+                amountDebt: 1n,
+                amountInterest: 0n,
+                amountFee: 0n,
+                amountWbtcEquivalent: 100000000n,
+                amountWbtcToAcquire: 1n,
+                amountProfitEst: 50000000n,
+              }))
+            );
+          }
+          return Promise.resolve(0n);
+        }
+      );
       const bot = createBot(clients, { maxSlippageBps: 1 }); // 0.01%
 
-      const result = await bot.acquireVault(tinyVault);
+      const result = await bot.acquireVault(mockVault);
 
       expect(result).toBe("acquired");
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           functionName: "swapWbtcForVault",
-          args: [tinyVault.vaultId, 1n],
+          args: [mockVault.vaultId, 1n],
         }),
+        expect.any(Function)
+      );
+    });
+
+    it("prices the ceiling off the fresh preview, not the indexer's stale debt", async () => {
+      const clients = createMockClients();
+      // Escrow debt only accrues, so a lagging indexer reports it LOW. Pricing off it would set the
+      // ceiling under the real cost — the swap reverts, and a revert with the vault still in escrow
+      // is not a lost race, so it would feed the breaker.
+      const staleVault: EscrowedVault = { ...mockVault, currentDebt: "1000" };
+      const bot = createBot(clients);
+
+      await bot.acquireVault(staleVault);
+
+      // Fixture preview cost is 50_000_000 (+1% = 50_500_000); the stale 1000 must not be used.
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({ args: [staleVault.vaultId, 50500000n] }),
         expect.any(Function)
       );
     });
@@ -449,6 +511,135 @@ describe("ArbitrageEngine", () => {
     });
   });
 
+  describe("batched acquisition + inventory", () => {
+    /** Balance covering exactly two acquisitions at the fixture's `maxWbtcIn`. */
+    const balanceFor = (n: bigint) => {
+      // fixture debt 50000000n, +1% slippage => 50500000n authorised per swap
+      return 50500000n * n;
+    };
+
+    /** `run()` reads balanceOf and publishes it to the gate, which is what bounds the batch. */
+    const fundedWith = (clients: ReturnType<typeof createMockClients>, balance: bigint) => {
+      const inner = clients.publicClient.readContract.getMockImplementation();
+      clients.publicClient.readContract.mockImplementation((arg: { functionName: string }) => {
+        if (arg.functionName === "balanceOf") return Promise.resolve(balance);
+        return inner?.(arg);
+      });
+    };
+
+    it("sends every acquisition before awaiting any receipt (batched, not serialized)", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      const order: string[] = [];
+
+      clients.sender.send.mockImplementation(
+        async (
+          call: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          order.push("send");
+          await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+          return "0xtxhash" as `0x${string}`;
+        }
+      );
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(() => {
+        order.push("receipt");
+        return Promise.resolve({ status: "success", blockNumber: 123n });
+      });
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            vaults: [
+              mockVault,
+              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
+              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
+            ],
+            total: 3,
+          }),
+      });
+
+      await bot.run();
+
+      // The point of the batch: no receipt is awaited until every send has gone out. A serialized
+      // loop would interleave send,receipt,send,receipt...
+      expect(order.filter((o) => o === "send")).toHaveLength(3);
+      expect(order.slice(0, 3)).toEqual(["send", "send", "send"]);
+    });
+
+    it("stops sending when WBTC inventory is exhausted", async () => {
+      const clients = createMockClients();
+      // Enough for two of the three vaults on offer.
+      fundedWith(clients, balanceFor(2n));
+      const bot = createBot(clients);
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            vaults: [
+              mockVault,
+              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
+              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
+            ],
+            total: 3,
+          }),
+      });
+
+      await bot.run();
+
+      // Without budgeting, all three would be broadcast against the same starting balance and the
+      // third would revert on-chain for insufficient funds — a self-inflicted breaker failure.
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
+    });
+
+    it("an unaffordable vault consumes neither exposure nor reservation", async () => {
+      const clients = createMockClients();
+      fundedWith(clients, 0n);
+      const risk = createRiskGate();
+      const bot = createBot(clients, { risk });
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+      });
+
+      await bot.run();
+
+      expect(clients.sender.send).not.toHaveBeenCalled();
+      // The gate blocks it, and a blocked slot reserves nothing — so an unaffordable vault leaves
+      // no trace in either the exposure count or the token ledger.
+      expect(risk.inFlight()).toBe(0);
+      expect(risk.reserved("0xwbtc")).toBe(0n);
+    });
+
+    it("frees the reservation for a competitor-won vault so the next one can use it", async () => {
+      const clients = createMockClients();
+      fundedWith(clients, balanceFor(1n)); // room for exactly one acquisition at a time
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 1n,
+      });
+      const risk = createRiskGate();
+      const bot = createBot(clients, { risk });
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+      });
+
+      await bot.run();
+
+      // A revert transfers nothing, so holding its WBTC would strand capacity the signer still has.
+      expect(risk.reserved("0xwbtc")).toBe(0n);
+    });
+  });
+
   describe("bot state machine", () => {
     it("processes multiple vaults sequentially", async () => {
       const clients = createMockClients();
@@ -514,6 +705,98 @@ describe("ArbitrageEngine", () => {
 
       await bot.acquireVault(mockVault); // reverts → slot settles !ok → breaker trips
       expect(risk.state()).toBe("HALTED");
+    });
+
+    it("does NOT trip the breaker when the revert is a lost race (vault no longer acquirable)", async () => {
+      const clients = createMockClients();
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 1n,
+      });
+      // The swap reverted because another arbitrageur already acquired the vault: it has left escrow.
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
+          // The batch path budgets acquisitions against real WBTC inventory, so a
+          // zero balance now (correctly) blocks every send. Fund the fixture.
+          if (functionName === "balanceOf") return Promise.resolve(10n ** 18n);
+          if (functionName === "isVaultAcquirable") return Promise.resolve(false); // taken
+          if (functionName === "previewEscrowedVaults") {
+            const vaultIds = args[0] as readonly `0x${string}`[];
+            return Promise.resolve(
+              vaultIds.map((vaultId) => ({
+                vaultId,
+                amountVault: 100000000n,
+                amountDebt: 50000000n,
+                amountInterest: 0n,
+                amountFee: 0n,
+                amountWbtcEquivalent: 100000000n,
+                amountWbtcToAcquire: 50000000n,
+                amountProfitEst: 50000000n,
+              }))
+            );
+          }
+          if (functionName === "allowance") return Promise.resolve(BigInt("1000000000000"));
+          return Promise.resolve(0n);
+        }
+      );
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+
+      await bot.acquireVault(mockVault); // reverts, but lost race → contended → breaker untouched
+      expect(risk.state()).toBe("RUNNING");
+    });
+
+    it("does NOT trip the breaker when the receipt never arrives (outcome unknown)", async () => {
+      const clients = createMockClients();
+      // The tx may still be in the mempool — behind a nonce gap it certainly is — so this is an
+      // unknown outcome, not evidence the chain rejected us.
+      clients.publicClient.waitForTransactionReceipt.mockRejectedValue(new Error("boom"));
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+
+      await bot.acquireVault(mockVault);
+
+      expect(risk.state()).toBe("RUNNING");
+    });
+
+    it("releases the exposure slot when the receipt lookup throws (no leak)", async () => {
+      const clients = createMockClients();
+      clients.publicClient.waitForTransactionReceipt.mockRejectedValue(new Error("boom"));
+      // One slot total: if the failed acquisition leaked it, the next openSlot is refused and the
+      // engine would wedge at zero capacity forever.
+      const risk = createRiskGate({ maxInFlight: 1 });
+      const bot = createBot(clients, { risk });
+
+      await bot.acquireVault(mockVault);
+
+      expect(risk.openSlot({ kind: "vault-acquisition", subject: "0xnext" }).allowed).toBe(true);
+    });
+
+    it("does NOT trip the breaker when a whole batch times out", async () => {
+      const clients = createMockClients();
+      clients.publicClient.waitForTransactionReceipt.mockRejectedValue(new Error("timeout"));
+      // A shared cause (one burned nonce strands everything behind it) times out the entire batch
+      // at once. Counting those as failures is what halted a healthy bot in the N=40 stress run.
+      const risk = createRiskGate({ maxConsecutiveFailures: 3 });
+      const bot = createBot(clients, { risk });
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            vaults: [
+              mockVault,
+              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
+              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
+              { ...mockVault, vaultId: "0xfeedface" as `0x${string}` },
+            ],
+            total: 4,
+          }),
+      });
+
+      await bot.run();
+
+      expect(risk.state()).toBe("RUNNING");
     });
 
     // The floor bounds the WORST case the tx authorizes, not the optimistic preview:
@@ -675,6 +958,57 @@ describe("ArbitrageEngine", () => {
       await bot.run();
 
       expect(clients.sender.send).toHaveBeenCalledTimes(1);
+    });
+
+    // The wedge this guards against, seen for real in the N=40 stress run: the liquidation engine
+    // (sharing this nonce allocator) burned a nonce, so every acquisition broadcast behind it sat
+    // in the mempool `queued` and no receipt ever came. Counting those as failures halted the gate,
+    // and `run()` returns early when HALTED — BEFORE reconcile + resync — so the very machinery that
+    // reclaims the gap could never run again. The batch was stuck permanently.
+    it("is not wedged when a whole batch's receipts go unresolved (next cycle still recovers)", async () => {
+      const store = createMemoryStateStore();
+      const clients = createMockClients();
+      (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
+      (clients.publicClient as { getTransactionCount?: unknown }).getTransactionCount = vi
+        .fn()
+        .mockResolvedValue(5);
+      // Every acquisition is stranded behind a nonce gap: broadcast, but no receipt, ever.
+      clients.publicClient.waitForTransactionReceipt.mockRejectedValue(new Error("stranded"));
+      // How a stranded tx actually looks to the node, and what reconcile reads: KNOWN (it is sitting
+      // in the mempool) but NOT MINED. `getReceiptStatus` maps only TransactionReceiptNotFoundError
+      // to "not mined"; any other error propagates by design, so the type matters here.
+      (clients.publicClient as Record<string, unknown>).getTransactionReceipt = vi
+        .fn()
+        .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: "0xtxhash" }));
+      (clients.publicClient as Record<string, unknown>).getTransaction = vi
+        .fn()
+        .mockResolvedValue({ hash: "0xtxhash", nonce: 5 });
+      const nonces = createNonceAllocator(createNonceLease(), "0xarbitrageur");
+      const resyncSpy = vi.spyOn(nonces, "resync");
+      // Low enough that treating the stranded batch as failures would trip it.
+      const risk = createRiskGate({ maxConsecutiveFailures: 2 });
+      const bot = createBot(clients, { store, nonces, risk });
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            vaults: [
+              mockVault,
+              { ...mockVault, vaultId: `0x${"c".repeat(64)}` },
+              { ...mockVault, vaultId: `0x${"d".repeat(64)}` },
+            ],
+          }),
+      }) as unknown as typeof fetch;
+
+      await bot.run();
+      expect(risk.state()).toBe("RUNNING");
+
+      const resyncsAfterFirstCycle = resyncSpy.mock.calls.length;
+      await bot.run();
+
+      // Reaching resync again is what makes recovery possible: it re-seeds the lease from the chain,
+      // so the next send fills the gap and everything queued behind it becomes executable.
+      expect(resyncSpy.mock.calls.length).toBeGreaterThan(resyncsAfterFirstCycle);
     });
   });
 });

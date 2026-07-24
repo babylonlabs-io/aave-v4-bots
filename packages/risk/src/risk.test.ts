@@ -223,6 +223,29 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.state()).toBe("RUNNING"); // breaker untouched
     });
 
+    // A contended action (a broadcast tx that reverted because a competitor took the subject) is a
+    // lost race, not our malfunction — it must free the slot without feeding the breaker.
+    it("contended outcomes free the slot without feeding the breaker", () => {
+      const gate = createRiskGate({ maxInFlight: 1, maxConsecutiveFailures: 2 });
+
+      for (let i = 0; i < 5; i++) act(gate, { ok: false, contended: true });
+
+      expect(gate.inFlight()).toBe(0);
+      expect(gate.state()).toBe("RUNNING"); // breaker untouched
+    });
+
+    // Losing a race between two genuine failures must not reset the failure streak — otherwise a
+    // steady drip of lost races would mask a bot that is actually malfunctioning.
+    it("contended does not reset the consecutive-failure streak", () => {
+      const gate = createRiskGate({ maxConsecutiveFailures: 2 });
+
+      act(gate, { ok: false }); // failure 1
+      act(gate, { ok: false, contended: true }); // lost race — neutral, streak stays at 1
+      expect(gate.state()).toBe("RUNNING");
+      act(gate, { ok: false }); // failure 2 → trips
+      expect(gate.state()).toBe("HALTED");
+    });
+
     // Halting does not land the txs already in the mempool. If resume() zeroed the counter, an
     // operator could halt+resume mid-flight and let the gate authorize beyond the cap.
     it("resume() does NOT clear live exposure", () => {
@@ -245,6 +268,128 @@ describe("@repo/risk createRiskGate", () => {
       gate.resume();
       act(gate, { ok: false }); // would be the 2nd in a row without the reset
       expect(gate.state()).toBe("RUNNING");
+    });
+  });
+
+  describe("token inventory", () => {
+    const WBTC = "0xWBTC";
+    const spending = (amount: bigint, token = WBTC) => ({
+      kind: "vault-acquisition",
+      subject: "0xvault",
+      spend: [{ token, amount }],
+    });
+
+    it("blocks an action the signer cannot afford, and frees the reservation on settle", () => {
+      const gate = createRiskGate();
+      gate.setAvailable(WBTC, 100n);
+
+      const first = gate.openSlot(spending(60n));
+      expect(first.allowed).toBe(true);
+      expect(gate.reserved(WBTC)).toBe(60n);
+
+      // 60 reserved leaves 40 spendable, so this does not fit.
+      const blocked = gate.openSlot(spending(60n));
+      expect(blocked.allowed).toBe(false);
+      expect(blocked.reason).toContain("insufficient");
+
+      // A revert transfers nothing, so the full balance is spendable again.
+      first.settle({ ok: false });
+      expect(gate.reserved(WBTC)).toBe(0n);
+      expect(gate.openSlot(spending(100n)).allowed).toBe(true);
+    });
+
+    it("stops two concurrent engines from spending the same balance twice", () => {
+      // The whole point of reserving inside `openSlot`: both engines see the same balance, and
+      // without the reservation both would pass and collectively overdraw the shared signer.
+      const gate = createRiskGate();
+      gate.setAvailable(WBTC, 100n);
+
+      const arbitrage = gate.openSlot(spending(80n));
+      const liquidation = gate.openSlot({ ...spending(80n), kind: "liquidation" });
+
+      expect(arbitrage.allowed).toBe(true);
+      expect(liquidation.allowed).toBe(false);
+    });
+
+    it("keeps a confirmed spend counted until the balance is refreshed", () => {
+      const gate = createRiskGate();
+      gate.setAvailable(WBTC, 100n);
+
+      const slot = gate.openSlot(spending(60n));
+      slot.settle({ ok: true }); // the tokens really left
+
+      // Releasing the reservation must not hand the same 60 back out: the chain balance is now 40,
+      // but `available` still says 100 until someone reads it again.
+      expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+      expect(gate.openSlot(spending(40n)).allowed).toBe(true);
+
+      // A fresh read is authoritative and clears what we had been tracking separately.
+      gate.setAvailable(WBTC, 40n);
+      expect(gate.reserved(WBTC)).toBe(40n); // the 40n slot above is still in flight
+    });
+
+    it("counts an unresolved broadcast as spent (the tx may still land)", () => {
+      const gate = createRiskGate();
+      gate.setAvailable(WBTC, 100n);
+
+      const slot = gate.openSlot(spending(60n));
+      slot.settle({ ok: false, unresolved: true });
+
+      // Under-reporting here only skips work we could afford; assuming it never lands would
+      // overdraw the signer if it does.
+      expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+    });
+
+    it("releases the reservation when nothing was broadcast", () => {
+      const gate = createRiskGate();
+      gate.setAvailable(WBTC, 100n);
+
+      gate.openSlot(spending(60n)).settle({ ok: false, abandoned: true });
+
+      expect(gate.reserved(WBTC)).toBe(0n);
+      expect(gate.openSlot(spending(100n)).allowed).toBe(true);
+    });
+
+    it("fails closed on a token it has never been given a balance for", () => {
+      const gate = createRiskGate();
+
+      const blocked = gate.openSlot(spending(1n, "0xUNKNOWN"));
+
+      expect(blocked.allowed).toBe(false);
+      expect(blocked.reason).toContain("no known balance");
+    });
+
+    it("reserves nothing when any token in a multi-token spend does not fit", () => {
+      const gate = createRiskGate();
+      gate.setAvailable(WBTC, 100n);
+      gate.setAvailable("0xUSDC", 10n);
+
+      const blocked = gate.openSlot({
+        kind: "liquidation",
+        subject: "0xborrower",
+        spend: [
+          { token: WBTC, amount: 50n },
+          { token: "0xUSDC", amount: 50n }, // does not fit
+        ],
+      });
+
+      expect(blocked.allowed).toBe(false);
+      // All-or-nothing: the WBTC leg must not have been reserved on the way to failing.
+      expect(gate.reserved(WBTC)).toBe(0n);
+    });
+
+    it("treats the same token spelled differently as one balance", () => {
+      const gate = createRiskGate();
+      gate.setAvailable("0xAbCd", 100n);
+
+      expect(gate.openSlot(spending(80n, "0xabcd")).allowed).toBe(true);
+      expect(gate.openSlot(spending(80n, "0xABCD")).allowed).toBe(false);
+    });
+
+    it("ignores inventory for actions that declare no spend", () => {
+      const gate = createRiskGate();
+
+      expect(gate.openSlot({ kind: "liquidation", subject: "0xb" }).allowed).toBe(true);
     });
   });
 
