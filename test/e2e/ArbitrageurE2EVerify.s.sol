@@ -163,21 +163,24 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         return abi.decode(result, (uint256));
     }
 
+    /// @dev A vault is "escrowed" for our purposes while it is still held by VaultSwap awaiting the
+    ///      arbitrageur. `isVaultAcquirable` returns true exactly in the Active/AaveDeficit states and
+    ///      false once the vault is Redeemed, which is the transition this verification polls for.
     function _isVaultEscrowed(bytes32 vaultId) internal returns (bool) {
         bytes memory result =
-            ffi_castCall(address(vaultSwap), "isVaultEscrowed(bytes32)", ArrayHelper.create(vm.toString(vaultId)));
+            ffi_castCall(address(vaultSwap), "isVaultAcquirable(bytes32)", ArrayHelper.create(vm.toString(vaultId)));
         return abi.decode(result, (bool));
     }
 
-    /// @dev Read via FFI. The public mapping getter `btcVaultsBasicInfo(bytes32)` flattens
+    /// @dev Read via FFI. `getBtcVaultBasicInfo(bytes32)` returns the full
     ///      `BTCVaultBasicInfo { depositor, depositorBtcPubKey, amount, vaultProvider, status,
-    ///      applicationEntryPoint, createdAt }` into a 7-element ABI tuple in field order.
+    ///      applicationEntryPoint, createdAt }` struct, which ABI-encodes as a 7-element tuple in field order.
     function _getVaultStatusAndAmount(bytes32 vaultId)
         internal
         returns (BTCVaultTypes.BTCVaultStatus status, uint256 amount)
     {
         bytes memory result = ffi_castCall(
-            address(btcVaultRegistry), "btcVaultsBasicInfo(bytes32)", ArrayHelper.create(vm.toString(vaultId))
+            address(btcVaultRegistry), "getBtcVaultBasicInfo(bytes32)", ArrayHelper.create(vm.toString(vaultId))
         );
         (,, amount,, status,,) =
             abi.decode(result, (address, bytes32, uint256, address, BTCVaultTypes.BTCVaultStatus, address, uint256));
