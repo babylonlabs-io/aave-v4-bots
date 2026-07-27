@@ -252,13 +252,14 @@ app.get("/escrowed-vaults", async (c) => {
     amountDebt: bigint;
     amountInterest: bigint;
     amountFee: bigint;
+    amountWbtcEquivalent: bigint;
     amountWbtcToAcquire: bigint;
-    isProfitable: boolean;
+    amountProfitEst: bigint;
   }) => ({
     vaultId: info.vaultId,
     btcAmount: info.amountVault.toString(),
     currentDebt: info.amountWbtcToAcquire.toString(),
-    isProfitable: info.isProfitable,
+    isProfitable: info.amountProfitEst > 0n,
     createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
   });
 
