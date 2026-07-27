@@ -133,7 +133,7 @@ jobs:
         env:
           USE_DOCKER: "true"
         run: |
-          cd contracts
+          cd lib/contracts
           ./test/e2e/scripts/btc-helper.sh wallet test_wallet
           ./test/e2e/scripts/btc-helper.sh mine 2020
           ./test/e2e/scripts/btc-helper.sh info
@@ -148,7 +148,7 @@ jobs:
 
       - name: Deploy CreateX factory and initialise Anvil
         run: |
-          cd contracts
+          cd lib/contracts
           forge script script/deployment/AnvilSetUp.s.sol:AnvilSetUp \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
@@ -156,7 +156,7 @@ jobs:
 
       - name: Deploy and setup E2E environment
         run: |
-          cd contracts
+          cd lib/contracts
           forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
