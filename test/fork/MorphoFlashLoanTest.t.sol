@@ -2,7 +2,7 @@
 
 pragma solidity 0.8.28;
 
-import {Types} from "./base/types.sol";
+import {Types} from "./base/Types.sol";
 import {IBTCVaultSwap} from "../../lib/contracts/src/applications/aave/interfaces/IBTCVaultSwap.sol";
 import {AaveAdapter} from "../../lib/contracts/src/applications/aave/AaveAdapter.sol";
 import {IAaveOracle} from "../../lib/contracts/lib/aave-v4/src/spoke/interfaces/IAaveOracle.sol";

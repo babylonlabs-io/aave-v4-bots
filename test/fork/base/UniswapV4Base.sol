@@ -2,7 +2,7 @@
 
 pragma solidity 0.8.28;
 
-import {TestSuits} from "./TestSuits.sol";
+import {TestSuites} from "./TestSuites.sol";
 import {
     PoolKey,
     Currency,
@@ -42,7 +42,7 @@ struct ExactOutputSingleParams {
     bytes hookData;
 }
 
-abstract contract UniswapV4Base is Test, TestSuits {
+abstract contract UniswapV4Base is Test, TestSuites {
     PoolKey[] private _poolKeys;
     address private POOL_OWNER = vm.addr(uint256(keccak256("POOL_OWNER")));
 

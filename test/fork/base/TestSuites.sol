@@ -2,9 +2,9 @@
 
 pragma solidity 0.8.28;
 
-import {Types} from "./types.sol";
+import {Types} from "./Types.sol";
 
-abstract contract TestSuits {
+abstract contract TestSuites {
     address internal constant UNISWAP_V4_POOL_MANAGER = address(0xE03A1074c86CFeDd5C142C4F04F1a1536e203543);
     address internal constant UNISWAP_V4_ROUTER = address(0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b);
     address internal constant UNISWAP_V4_PERMIT2 = address(0x000000000022D473030F116dDEE9F6B43aC78BA3);

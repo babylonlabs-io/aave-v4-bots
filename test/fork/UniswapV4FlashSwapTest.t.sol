@@ -2,7 +2,7 @@
 
 pragma solidity ^0.8.0;
 
-import {Types} from "./base/types.sol";
+import {Types} from "./base/Types.sol";
 import {UniswapV4Base} from "./base/UniswapV4Base.sol";
 import {Test} from "forge-std/Test.sol";
 import {
