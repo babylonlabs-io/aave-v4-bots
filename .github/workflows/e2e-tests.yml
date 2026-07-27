@@ -100,10 +100,10 @@ jobs:
           pip3 install --user base58 coincurve
 
       - name: Install contracts test utils (Node.js deps for PoP signature generation)
-        run: npm ci --prefix contracts/test/utils
+        run: npm ci --prefix lib/contracts/test/utils
 
       - name: Create symlink for FFI scripts (PopHelpers uses relative path test/utils/)
-        run: ln -s ../contracts/test/utils test/utils
+        run: ln -s ../lib/contracts/test/utils test/utils
 
       - name: Create separate Ponder databases
         run: |
@@ -111,19 +111,19 @@ jobs:
           PGPASSWORD=ponder psql -h localhost -U ponder -d ponder -c "CREATE DATABASE ponder_arbitrageur;"
 
       - name: Start Bitcoin regtest
-        run: docker compose -f contracts/docker-compose.e2e.yml up -d bitcoin-regtest
+        run: docker compose -f lib/contracts/docker-compose.e2e.yml up -d bitcoin-regtest
 
       - name: Wait for Bitcoin node
         run: |
-          chmod +x contracts/test/e2e/scripts/btc-helper.sh
+          chmod +x lib/contracts/test/e2e/scripts/btc-helper.sh
           for i in {1..30}; do
-            if USE_DOCKER=true contracts/test/e2e/scripts/btc-helper.sh wait; then
+            if USE_DOCKER=true lib/contracts/test/e2e/scripts/btc-helper.sh wait; then
               echo "✓ Bitcoin node is ready"
               break
             fi
             if [ $i -eq 30 ]; then
               echo "✗ Bitcoin node failed to start"
-              docker compose -f contracts/docker-compose.e2e.yml logs bitcoin-regtest
+              docker compose -f lib/contracts/docker-compose.e2e.yml logs bitcoin-regtest
               exit 1
             fi
             sleep 2
