@@ -258,7 +258,7 @@ if [[ -z "${KEEP_DEPS:-}" && "$current_blocks" -gt 10 ]]; then
 fi
 
 log "Initialising bitcoin wallet and mining 2020 blocks"
-( cd contracts && \
+( cd lib/contracts && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh wallet test_wallet && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh mine 2020 && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh info ) >/dev/null
@@ -311,12 +311,12 @@ COMMON_FLAGS=(--rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_
 # the script funds its own ephemeral deployer via anvil_setBalance and broadcasts
 # the canonical CreateX deploy tx via `cast publish`.
 log "Deploy CreateX factory + initialise anvil"
-( cd contracts && \
+( cd lib/contracts && \
   forge script script/deployment/AnvilSetUp.s.sol:AnvilSetUp \
     --rpc-url "$RPC_URL" --broadcast --skip-simulation )
 
 log "Deploy + setup environment"
-( cd contracts && \
+( cd lib/contracts && \
   forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment "${COMMON_FLAGS[@]}" )
 
 log "Setup unhealthy position + start bots/ponders"

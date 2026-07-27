@@ -2,7 +2,7 @@
 
 pragma solidity 0.8.28;
 
-import {IAllowanceTransfer} from "../../../lib/v4-periphery/lib/permit2/src/interfaces/IAllowanceTransfer.sol";
+import {IAllowanceTransfer} from "../../lib/v4-periphery/lib/permit2/src/interfaces/IAllowanceTransfer.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {console} from "forge-std/console.sol";
 

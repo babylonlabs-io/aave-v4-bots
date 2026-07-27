@@ -1,1 +1,1 @@
-../../../contracts/test/e2e/scripts/btc-helper.sh
+../../../lib/contracts/test/e2e/scripts/btc-helper.sh
