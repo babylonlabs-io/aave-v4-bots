@@ -43,7 +43,7 @@
       "services/ponder/.ponder",
       "services/*/client/src/abis/**",
       "services/ponder/abis/**",
-      "contracts/**",
+      "lib/contracts/**",
       "external",
       ".venv-e2e/**",
       "broadcast/**",

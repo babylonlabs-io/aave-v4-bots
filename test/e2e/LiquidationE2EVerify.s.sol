@@ -70,11 +70,7 @@ contract LiquidationE2EVerify is Script, BaseBot {
         console.log("\n--- Liquidator USDC ---");
         console.log("Initial:", initialUsdc / ONE_USDC, "USDC");
         console.log("Now:    ", nowUsdc / ONE_USDC, "USDC");
-        console.log(
-            "Spent:  ",
-            initialUsdc > nowUsdc ? (initialUsdc - nowUsdc) / ONE_USDC : 0,
-            "USDC"
-        );
+        console.log("Spent:  ", initialUsdc > nowUsdc ? (initialUsdc - nowUsdc) / ONE_USDC : 0, "USDC");
 
         console.log("\n--- Liquidator WBTC ---");
         console.log("Initial (sats):", initialWbtc);
@@ -123,14 +119,12 @@ contract LiquidationE2EVerify is Script, BaseBot {
     }
 
     function _getUsdcBalance(address user) internal returns (uint256) {
-        bytes memory result =
-            ffi_castCall(address(usdc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
+        bytes memory result = ffi_castCall(address(usdc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
         return abi.decode(result, (uint256));
     }
 
     function _getWbtcBalance(address user) internal returns (uint256) {
-        bytes memory result =
-            ffi_castCall(address(wbtc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
+        bytes memory result = ffi_castCall(address(wbtc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
         return abi.decode(result, (uint256));
     }
 
