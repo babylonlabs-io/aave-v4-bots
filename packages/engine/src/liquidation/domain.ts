@@ -19,7 +19,7 @@ export function sequentialPriorityOrder(length: number): bigint[] {
 
 /**
  * Aave Spoke `ReserveFlags` bitmap.
- * See contracts/lib/aave-v4/src/spoke/libraries/ReserveFlagsMap.sol.
+ * See lib/contracts/lib/aave-v4/src/spoke/libraries/ReserveFlagsMap.sol.
  */
 export const RESERVE_FLAG = {
   PAUSED: 0x01,

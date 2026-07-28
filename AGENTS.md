@@ -37,7 +37,7 @@ pnpm liquidator:run
 ### E2E
 
 `scripts/e2e-local.sh` boots docker (postgres, bitcoin regtest), anvil, deploys the protocol from
-the `contracts/` submodule, starts the real bot processes, and tears everything down on exit. It
+the `lib/contracts/` submodule, starts the real bot processes, and tears everything down on exit. It
 needs `foundry` and docker. Suites are selected with `SUITE` (default `liquidator`):
 
 ```bash

@@ -95,8 +95,9 @@ function setup(
             amountDebt: 50000000n,
             amountInterest: 0n,
             amountFee: 0n,
+            amountWbtcEquivalent: 100000000n,
             amountWbtcToAcquire: 50000000n,
-            isProfitable: true,
+            amountProfitEst: 50000000n,
           }));
         }
         // Both engines declare token spend to the gate, which reserves it against this figure.

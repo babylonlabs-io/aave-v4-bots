@@ -314,6 +314,7 @@ app.get("/escrowed-vaults", async (c) => {
     amountDebt: bigint;
     amountInterest: bigint;
     amountFee: bigint;
+    amountWbtcEquivalent: bigint;
     amountWbtcToAcquire: bigint;
     amountProfitEst: bigint;
   }) => ({

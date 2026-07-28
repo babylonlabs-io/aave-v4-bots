@@ -25,7 +25,7 @@
 # .venv-e2e/. Run once-per-clone:
 #     git submodule update --init --recursive
 #     pnpm install
-#     npm ci --prefix contracts/test/utils
+#     npm ci --prefix lib/contracts/test/utils
 #
 # On failure, /tmp/{liq,arb}-{ponder,bot}.log are copied to
 # /tmp/e2e-fail-<timestamp>/ before cleanup, so you can inspect what each
@@ -198,7 +198,7 @@ cleanup() {
   fi
 
   if [[ -z "${KEEP_DEPS:-}" ]]; then
-    docker compose -f contracts/docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
+    docker compose -f lib/contracts/docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
     docker rm -f "$PG_CONTAINER" 2>/dev/null || true
   else
     log_warn "KEEP_DEPS=1 set; leaving postgres + bitcoin running"
@@ -259,20 +259,20 @@ fi
 # silently produced wrong block counts and broken peg-ins.
 if [[ -z "${KEEP_DEPS:-}" ]]; then
   log "Resetting bitcoin-regtest volumes"
-  docker compose -f contracts/docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
+  docker compose -f lib/contracts/docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
 fi
 
 log "Starting bitcoin-regtest"
-docker compose -f contracts/docker-compose.e2e.yml up -d bitcoin-regtest >/dev/null
+docker compose -f lib/contracts/docker-compose.e2e.yml up -d bitcoin-regtest >/dev/null
 
 log "Waiting for bitcoin-regtest node RPC"
-chmod +x contracts/test/e2e/scripts/btc-helper.sh
+chmod +x lib/contracts/test/e2e/scripts/btc-helper.sh
 for i in {1..30}; do
-  if USE_DOCKER=true contracts/test/e2e/scripts/btc-helper.sh wait >/dev/null 2>&1; then
+  if USE_DOCKER=true lib/contracts/test/e2e/scripts/btc-helper.sh wait >/dev/null 2>&1; then
     break
   fi
   if [[ $i -eq 30 ]]; then
-    docker compose -f contracts/docker-compose.e2e.yml logs bitcoin-regtest
+    docker compose -f lib/contracts/docker-compose.e2e.yml logs bitcoin-regtest
     log_err "bitcoin-regtest node RPC failed to start"
     exit 1
   fi
@@ -302,7 +302,7 @@ if [[ -z "${KEEP_DEPS:-}" && "$current_blocks" -gt 10 ]]; then
 fi
 
 log "Initialising bitcoin wallet and mining 2020 blocks"
-( cd contracts && \
+( cd lib/contracts && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh wallet test_wallet && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh mine 2020 && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh info ) >/dev/null
@@ -310,7 +310,7 @@ log "Initialising bitcoin wallet and mining 2020 blocks"
 # ── test/utils symlink (PopHelpers FFI scripts expect this path) ─────────────
 if [[ ! -e test/utils ]]; then
   log "Creating test/utils symlink"
-  ln -s ../contracts/test/utils test/utils
+  ln -s ../lib/contracts/test/utils test/utils
 fi
 
 # ── Anvil ────────────────────────────────────────────────────────────────────
@@ -365,12 +365,12 @@ COMMON_FLAGS=(--rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_
 # the script funds its own ephemeral deployer via anvil_setBalance and broadcasts
 # the canonical CreateX deploy tx via `cast publish`.
 log "Deploy CreateX factory + initialise anvil"
-( cd contracts && \
+( cd lib/contracts && \
   forge script script/deployment/AnvilSetUp.s.sol:AnvilSetUp \
     --rpc-url "$RPC_URL" --broadcast --skip-simulation )
 
 log "Deploy + setup environment"
-( cd contracts && \
+( cd lib/contracts && \
   forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment "${COMMON_FLAGS[@]}" )
 
 # Which suite to run (matches the CI matrix). Default: liquidator.
