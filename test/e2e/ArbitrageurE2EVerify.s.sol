@@ -34,9 +34,7 @@ contract ArbitrageurE2EVerify is Script, BaseBot {
         // WBTC delta (payout up, acquisition down) is entangled — the definitive
         // proof the liquidation ran is the cleared position.
         console.log("\n--- Leg 1: liquidation (position cleared) ---");
-        require(
-            _waitForLiquidation(borrower, 240), "Position was not liquidated by the arb bot's LiquidationEngine"
-        );
+        require(_waitForLiquidation(borrower, 240), "Position was not liquidated by the arb bot's LiquidationEngine");
         console.log("[PASS] Borrower position cleared (col == 0 && debt == 0)");
 
         // ── Leg 2: vault acquisition (the bot's ArbitrageEngine) ──────────

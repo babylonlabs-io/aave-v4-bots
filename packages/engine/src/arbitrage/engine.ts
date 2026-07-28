@@ -488,9 +488,19 @@ export class ArbitrageEngine {
         } as Parameters<typeof this.publicClient.estimateContractGas>[0]);
       } catch (gasError) {
         const errorMsg = gasError instanceof Error ? gasError.message : String(gasError);
-        this.logger.error(`Gas estimation failed for vault ${vaultId}, skipping`);
-        this.logger.error(`   Error: ${errorMsg}`);
-        this.metrics.recordError("gas_estimation_failed");
+        // Same classification the post-broadcast path applies: an estimate reverts with
+        // `VaultNotAcquirable` whenever the vault left escrow between the indexer read and now,
+        // which is ordinary competition, not a fault. Reported as `gas_estimation_failed` it
+        // inflates the error metric with routine races and buries genuine estimate failures.
+        const lostRace = await this.wasVaultTaken(vaultId as Hex);
+        if (lostRace) {
+          this.logger.info(`Vault ${vaultId} taken before acquisition — skipping, not a failure`);
+          this.metrics.recordError("race_lost");
+        } else {
+          this.logger.error(`Gas estimation failed for vault ${vaultId}, skipping`);
+          this.logger.error(`   Error: ${errorMsg}`);
+          this.metrics.recordError("gas_estimation_failed");
+        }
         // Nothing broadcast — free the exposure slot without blaming the chain.
         slot.settle({ ok: false, abandoned: true });
         return { kind: "skipped" };

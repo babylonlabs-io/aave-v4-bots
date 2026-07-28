@@ -1,6 +1,6 @@
 import { db, publicClients } from "ponder:api";
 import schema from "ponder:schema";
-import { lensAbi, vaultSwapAbi } from "@repo/abis";
+import { VAULT_GONE_ERRORS, lensAbi, vaultSwapAbi } from "@repo/abis";
 import { createLogger } from "@repo/logger";
 import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
@@ -21,6 +21,23 @@ function isExpectedContractRevert(error: unknown): boolean {
     return error.walk((e) => e instanceof ContractFunctionRevertedError) !== null;
   }
   return false;
+}
+
+// `previewEscrowedVaults` validates every vault it is given and reverts the whole call if any one
+// of them has left escrow. The indexer lags the chain, so it routinely still lists vaults that were
+// just acquired — those are gone, not broken, and must not be reported as fetch failures. Decoding
+// this relies on the error entries in `vaultSwapAbi`; without them viem yields no `errorName` and
+// every acquired vault would look like an infrastructure fault again.
+const vaultGoneErrors: ReadonlySet<string> = new Set(VAULT_GONE_ERRORS);
+
+function isVaultGoneRevert(error: unknown): boolean {
+  if (!(error instanceof BaseError)) return false;
+  const revert = error.walk((e) => e instanceof ContractFunctionRevertedError);
+  return (
+    revert instanceof ContractFunctionRevertedError &&
+    revert.data?.errorName !== undefined &&
+    vaultGoneErrors.has(revert.data.errorName)
+  );
 }
 
 // Multicall3 is canonically deployed at this address on most public chains, but
@@ -346,8 +363,10 @@ app.get("/escrowed-vaults", async (c) => {
       })
     );
   } catch (error) {
-    logger.error("Batch previewEscrowedVaults failed, falling back to per-vault fetch:", error);
-
+    // Deliberately not logged yet. The overwhelmingly common cause is a vault acquired between the
+    // index read and this call, which reverts the whole batch — routine, and the per-vault pass
+    // below is what can tell that apart from a real fault. Logging here would put an error line on
+    // every poll of a draining escrow, which is the noise this endpoint is meant to stop emitting.
     const settled = await Promise.allSettled(
       vaultIds.map((vaultId) =>
         publicClient.readContract({
@@ -362,12 +381,17 @@ app.get("/escrowed-vaults", async (c) => {
 
     const enrichedVaults = [];
     let failed = 0;
+    let gone = 0;
 
     for (let i = 0; i < settled.length; i++) {
       const result = settled[i];
       const vaultId = vaultIds[i];
       if (result.status === "fulfilled" && result.value.length > 0) {
         enrichedVaults.push(toApiVault(result.value[0]));
+      } else if (result.status === "rejected" && isVaultGoneRevert(result.reason)) {
+        // Already acquired between the index read and now. Omit it and say nothing: this is the
+        // steady state while the escrow drains, not a fault to report or retry.
+        gone += 1;
       } else {
         failed += 1;
         logger.error(
@@ -377,6 +401,19 @@ app.get("/escrowed-vaults", async (c) => {
       }
     }
 
+    // Now the batch failure can be reported at its true severity: an error only if some vault
+    // failed for a reason other than having been acquired.
+    if (failed > 0) {
+      logger.error("Batch previewEscrowedVaults failed, fell back to per-vault fetch:", error);
+    } else if (gone > 0) {
+      logger.info(
+        `Batch previewEscrowedVaults skipped: ${gone} vault(s) acquired since the last index update`
+      );
+    }
+
+    // 500 only when something genuinely broke. An empty list because every vault was acquired is a
+    // valid, complete answer — previously it returned 500 and drove the bot through its full fetch
+    // retry/backoff on every poll once the escrow was drained.
     return c.json(
       replaceBigInts({
         vaults: enrichedVaults,
@@ -384,7 +421,7 @@ app.get("/escrowed-vaults", async (c) => {
         failedVaultsCount: failed,
         dataTimestampMs,
       }),
-      enrichedVaults.length > 0 ? 200 : 500
+      enrichedVaults.length > 0 || failed === 0 ? 200 : 500
     );
   }
 });

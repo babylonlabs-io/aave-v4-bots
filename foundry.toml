@@ -5,6 +5,15 @@ libs = ["lib"]
 test = "test"
 auto_detect_solc = true
 
+# `test/utils` is a symlink to lib/contracts/test/utils that the e2e runner and CI create at
+# runtime, because PopHelpers' FFI *node* scripts resolve the relative path `test/utils/`. Solidity
+# never reaches those files that way — its imports go through the `test-utils/` remapping below —
+# but forge still compiles whatever it finds under `test`, and their relative
+# `../../src/protocol/...` imports then resolve against this repo's root, which has no
+# `src/protocol`. Without this skip, `forge build` and `forge test` fail after any e2e run until the
+# symlink is deleted.
+skip = ["test/utils/**"]
+
 # Compiler optimizations to match contracts repo
 optimizer = true
 optimizer_runs = 200

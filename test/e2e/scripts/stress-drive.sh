@@ -57,6 +57,18 @@ remaining_escrow()       { jlen "escrowed-vaults" "vaults"; }
 confirmed_acquisitions() { sql "SELECT COUNT(*) FROM bot.tx_intents WHERE action='vault-acquisition' AND status='confirmed';"; }
 now_s() { date +%s; }
 
+# How many vaults the cascade actually put into escrow, counted from BTCVaultSwap's own AddedVault
+# events. This is the only honest target for the drain: the liquidation count is not, because not
+# every liquidation escrows a vault (the competitor liquidator's own target is liquidated and
+# counted, but produces no AddedVault). `AddedVault` is cumulative history, so acquisitions removing
+# vaults from escrow do not shrink it.
+VAULT_SWAP="$(jq -r '.addresses.BTCVaultSwap // empty' deployments/local.json 2>/dev/null || true)"
+escrowed_vaults() {
+  [[ -z "$VAULT_SWAP" ]] && { echo ""; return; }
+  cast logs --rpc-url "$RPC" --from-block 0 --address "$VAULT_SWAP" "AddedVault(bytes32)" 2>/dev/null \
+    | grep -c 'transactionHash:' || true
+}
+
 # Cohort sizes, from the files setup wrote. Needed by the drains below, not just the report.
 COHORT_A_N="$(tr ',' '\n' < .e2e-stress-cohort-a 2>/dev/null | grep -c . || true)"; COHORT_A_N="${COHORT_A_N:-0}"
 COHORT_B_N="$(tr ',' '\n' < .e2e-stress-cohort-b 2>/dev/null | grep -c . || true)"; COHORT_B_N="${COHORT_B_N:-0}"
@@ -402,13 +414,16 @@ if [[ -z "${STRESS_RACING:-}" ]]; then
 fi
 
 # ── 6b. drain the escrow ─────────────────────────────────────────────────────
-# Every liquidation either bot wins escrows a vault in BTCVaultSwap (both run `liquidateWithLLP`;
-# the liquidator is paid WBTC at a sell discount and keeps no vault). Until now the run tore down
-# ~10s after the last liquidation — less than escrow -> index -> poll -> acquire — so the arbitrage
-# engine never got to buy any of it and A4 could only be skipped. Hold the run open until the escrow
-# is actually consumed.
+# Until now the run tore down ~10s after the last liquidation — less than escrow -> index -> poll ->
+# acquire — so the arbitrage engine never got to buy any of it and A4 could only be skipped. Hold
+# the run open until the escrow is actually consumed.
 log "Draining escrow (waiting for the arbitrage engine to buy every vault the cascade produced)"
-ESCROW_TARGET="$(liquidations_done)"   # one vault escrowed per liquidation, either bot's
+# Count the vaults escrowed, not the liquidations. These differ: `liquidations_done` also counts the
+# competitor liquidator's own target, whose liquidation escrows nothing, so a liquidation-derived
+# target is one too high and the drain below can never reach it — it burns the full timeout and
+# then fails A11 for a vault that never existed.
+ESCROW_TARGET="$(escrowed_vaults)"
+ESCROW_TARGET="${ESCROW_TARGET:-0}"
 read -r ACQ_TOTAL ESCROW_SECS <<< "$(wait_for_count "acquisitions" confirmed_acquisitions "$ESCROW_TARGET" 420)"
 ESCROW_LEFT="$(remaining_escrow)"
 for _ in $(seq 1 30); do [[ "$(live_intents || echo 0)" == "0" ]] && break; sleep 1; done

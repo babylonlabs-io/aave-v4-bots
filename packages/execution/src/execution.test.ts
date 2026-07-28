@@ -1,4 +1,4 @@
-import { type Hex, keccak256, parseAbi } from "viem";
+import { type Hex, RpcRequestError, TransactionRejectedRpcError, keccak256, parseAbi } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ContractCall,
@@ -360,6 +360,61 @@ describe("@repo/execution", () => {
         const error = await sender.send(CALL, async () => {}).catch((e) => e);
         expect(error).not.toBeInstanceOf(PreBroadcastError);
         expect(error.message).toBe("rpc timeout");
+      });
+
+      // A node that refuses the broadcast for insufficient funds queued nothing, so unlike the
+      // ambiguous case above this IS a clean abort. It has to be: an empty gas tank is an ops
+      // problem, and settling it as a real failure would march the consecutive-failure breaker
+      // toward halting a bot whose trades the chain never objected to. Only strict nodes catch
+      // this while preparing; on a lenient one it arrives here, so both paths must agree.
+      it.each([
+        ["Insufficient funds for gas * price + value", "anvil, capitalised"],
+        ["insufficient funds for transfer", "geth, lower case"],
+        ["exceeds transaction sender account balance", "the other upstream wording"],
+      ])("types a broadcast refused with %j as PreBroadcastError (%s)", async (details) => {
+        const { walletClient, publicClient } = txClients({
+          sendRawTransaction: () =>
+            Promise.reject(
+              new TransactionRejectedRpcError(
+                new RpcRequestError({
+                  body: {},
+                  error: { code: -32003, message: details },
+                  url: "http://node",
+                })
+              )
+            ),
+        });
+        const sender = createTxSender(
+          publicClient as unknown as PublicClientArg,
+          walletClient as unknown as WalletClientArg
+        );
+
+        await expect(sender.send(CALL, async () => {})).rejects.toBeInstanceOf(PreBroadcastError);
+      });
+
+      it("still does NOT abandon a nonce-too-low rejection", async () => {
+        // Same error class, opposite meaning: a tx with that nonce is already on chain, so this is
+        // emphatically not a clean abort and must stay ambiguous.
+        const { walletClient, publicClient } = txClients({
+          sendRawTransaction: () =>
+            Promise.reject(
+              new TransactionRejectedRpcError(
+                new RpcRequestError({
+                  body: {},
+                  error: { code: -32003, message: "nonce too low" },
+                  url: "http://node",
+                })
+              )
+            ),
+        });
+        const sender = createTxSender(
+          publicClient as unknown as PublicClientArg,
+          walletClient as unknown as WalletClientArg
+        );
+
+        await expect(sender.send(CALL, async () => {})).rejects.not.toBeInstanceOf(
+          PreBroadcastError
+        );
       });
     });
 

@@ -17,6 +17,9 @@
       "style": {
         "noNonNullAssertion": "off",
         "useConst": "error"
+      },
+      "correctness": {
+        "noUndeclaredVariables": "error"
       }
     }
   },

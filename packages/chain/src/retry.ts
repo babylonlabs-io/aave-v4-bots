@@ -14,13 +14,23 @@ export interface RetryConfig {
   maxDelayMs: number;
   /** Multiplier for exponential backoff */
   backoffMultiplier: number;
+  /**
+   * Per-attempt request timeout for `fetchWithRetry`, in ms. Retry only reacts to a request that
+   * *fails*: a peer that accepts the connection and then never answers produces no error at all,
+   * so a poll loop awaiting it simply stops — no retry, no metric, no log, and a bot that looks
+   * alive while doing nothing. Bounding each attempt turns that silence into a normal retryable
+   * failure. Optional only so existing full `RetryConfig` values keep type-checking; the default
+   * below applies when unset.
+   */
+  timeoutMs?: number;
 }
 
-const DEFAULT_RETRY_CONFIG: RetryConfig = {
+const DEFAULT_RETRY_CONFIG: Required<RetryConfig> = {
   maxAttempts: 3,
   initialDelayMs: 1000,
   maxDelayMs: 30000,
   backoffMultiplier: 2,
+  timeoutMs: 10000,
 };
 
 /**
@@ -82,16 +92,23 @@ export async function fetchWithRetry(
   options?: RequestInit,
   retryConfig?: Partial<RetryConfig>
 ): Promise<Response> {
+  const config = { ...DEFAULT_RETRY_CONFIG, ...retryConfig };
   return withRetry(
     async () => {
-      const response = await fetch(url, options);
+      // Built per attempt, not hoisted: an AbortSignal is single-use, so one shared signal would
+      // leave every retry after the first starting out already aborted. A caller-supplied signal
+      // wins — it owns the request's lifetime and may be cancelling for its own reasons.
+      const response = await fetch(url, {
+        ...options,
+        signal: options?.signal ?? AbortSignal.timeout(config.timeoutMs),
+      });
       if (!response.ok && response.status >= 500) {
         // Retry on 5xx errors
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       return response;
     },
-    retryConfig,
+    config,
     `fetch ${url}`
   );
 }

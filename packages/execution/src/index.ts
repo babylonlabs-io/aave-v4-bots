@@ -3,8 +3,10 @@ import {
   type Abi,
   type Account,
   type Address,
+  BaseError,
   type Chain,
   type Hex,
+  InsufficientFundsError,
   type PublicClient,
   type Transport,
   type WalletClient,
@@ -294,6 +296,20 @@ export class PreBroadcastError extends Error {
   }
 }
 
+// viem maintains this pattern across client implementations, but it is case-sensitive and anvil
+// capitalises its message ("Insufficient funds for gas * price + value"), so testing the upstream
+// regex literally would miss it. Reuse the source, drop the case sensitivity.
+const INSUFFICIENT_FUNDS_MESSAGE = new RegExp(InsufficientFundsError.nodeMessage.source, "i");
+
+/** Whether a node refused a broadcast because the sender cannot pay for it. */
+function isInsufficientFunds(error: unknown): boolean {
+  if (!(error instanceof BaseError)) return false;
+  return (
+    INSUFFICIENT_FUNDS_MESSAGE.test(error.details ?? "") ||
+    INSUFFICIENT_FUNDS_MESSAGE.test(error.message)
+  );
+}
+
 /**
  * The default `TxSender`: local signing + public-mempool broadcast. `submit` overrides where
  * the signed tx goes (e.g. a private relay — `@repo/signer`'s `Submitter.send` fits as-is).
@@ -320,8 +336,21 @@ export function createTxSender(
         // Nothing was broadcast — say so, rather than letting the caller assume the worst.
         throw new PreBroadcastError(error);
       }
-      // From here on the tx may be on the wire: a throw is ambiguous, not a clean abort.
-      await broadcast(signed.serialized);
+      // From here on the tx may be on the wire: a throw is ambiguous, not a clean abort — with one
+      // exception. A node that refuses the tx outright for insufficient funds never queued it and
+      // never will, so nothing is in flight; and the cause is an unfunded key, an ops problem,
+      // not the chain rejecting our trade. Which side of `broadcast` that surfaces on is purely a
+      // property of the node: strict gas estimation (geth) rejects it in `prepare` above, lenient
+      // estimation (anvil) prices it happily and only the broadcast refuses. Without this, whether
+      // an empty gas tank trips the consecutive-failure breaker and halts a healthy bot would
+      // depend on the RPC provider. `nonce too low` is deliberately NOT folded in here: there a tx
+      // with that nonce really is on chain, so the caller must not treat it as a clean abort.
+      try {
+        await broadcast(signed.serialized);
+      } catch (error) {
+        if (isInsufficientFunds(error)) throw new PreBroadcastError(error);
+        throw error;
+      }
       // Prefer the locally-derived hash: it is what `onSigned` persisted, and it is what the
       // node returns anyway (same signed bytes).
       return signed.hash;

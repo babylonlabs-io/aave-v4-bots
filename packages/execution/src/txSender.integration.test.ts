@@ -166,10 +166,15 @@ describe.runIf(!!RPC_URL)("createTxSender (integration — real node)", () => {
   it(
     "an unfunded signer fails BEFORE broadcasting, as a PreBroadcastError",
     async () => {
-      // A real node refuses to even price this tx, so it dies in `prepare` — nothing is signed and
-      // nothing reaches the wire. The engines must settle it `abandoned`: it says nothing about the
-      // chain rejecting our trades, and feeding it to the consecutive-failure breaker would let an
-      // ops problem (an unfunded key, a flaky RPC) halt a healthy bot.
+      // The engines must settle this `abandoned`: it says nothing about the chain rejecting our
+      // trades, and feeding it to the consecutive-failure breaker would let an ops problem (an
+      // unfunded key, a flaky RPC) halt a healthy bot.
+      //
+      // Which stage it dies at is the node's choice, so this asserts the classification and NOT the
+      // stage. A strict node (geth) refuses to price the tx and it dies in `prepare`; a lenient one
+      // (anvil >= 1.7) estimates it happily and only the broadcast refuses, with `insufficient
+      // funds`. Both must surface as PreBroadcastError — the breaker's behaviour cannot be allowed
+      // to depend on which RPC provider the bot is pointed at.
       const { account, publicClient, walletClient } = clients(UNFUNDED_KEY);
       expect(await publicClient.getBalance({ address: account.address })).toBe(0n);
 
@@ -178,10 +183,11 @@ describe.runIf(!!RPC_URL)("createTxSender (integration — real node)", () => {
 
       await expect(sender.send(call(), onSigned)).rejects.toBeInstanceOf(PreBroadcastError);
 
-      expect(onSigned).not.toHaveBeenCalled(); // never got far enough to record anything
+      // Nothing was accepted, so the nonce slot is untouched either way. `onSigned` is not asserted
+      // here: on a lenient node the tx really is signed and recorded before the node refuses it.
       expect(
         await publicClient.getTransactionCount({ address: account.address, blockTag: "pending" })
-      ).toBe(0); // and the nonce slot is untouched
+      ).toBe(0);
     },
     TIMEOUT
   );

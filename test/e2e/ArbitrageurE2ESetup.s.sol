@@ -105,9 +105,10 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
     function _executionEnvLines() internal view virtual returns (string memory) {
         bool useKms = keccak256(bytes(vm.envOr("E2E_SIGNER_SOURCE", string("local")))) == keccak256(bytes("aws"));
         if (!useKms) {
-            return string.concat(
-                "ARBITRAGEUR_PRIVATE_KEY=", vm.toString(bytes32(E2EConstants.ARBITRAGEUR_PRIVATE_KEY)), "\n"
-            );
+            return
+                string.concat(
+                    "ARBITRAGEUR_PRIVATE_KEY=", vm.toString(bytes32(E2EConstants.ARBITRAGEUR_PRIVATE_KEY)), "\n"
+                );
         }
         return string.concat(
             "SIGNER_SOURCE=aws\n",
@@ -173,7 +174,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             "\n",
             "MAX_SLIPPAGE_BPS=100\n",
             "POLLING_INTERVAL_MS=1000\n",
-            "VAULT_PROCESSING_DELAY_MS=0\n",  // batch acquisitions; throttle off
+            "VAULT_PROCESSING_DELAY_MS=0\n", // batch acquisitions; throttle off
             "METRICS_PORT=",
             vm.toString(E2EConstants.ARBITRAGEUR_METRICS_PORT),
             "\n",

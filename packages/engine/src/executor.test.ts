@@ -1,4 +1,9 @@
-import type { ContractCall, NonceAllocator, TxSender } from "@repo/execution";
+import {
+  type ContractCall,
+  type NonceAllocator,
+  PreBroadcastError,
+  type TxSender,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { NotificationEvent, Notifier } from "@repo/notifications";
 import {
@@ -130,6 +135,39 @@ describe("createAutoExecutor", () => {
     expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: true });
     // The intent stays live (submitted), never terminal — reconcile decides later.
     expect(store.get(idempotencyKey(claim("p")))?.status).toBe("submitted");
+  });
+
+  it("a PreBroadcastError raised AFTER the durable record still leaves the intent live", async () => {
+    // The insufficient-funds case: a lenient node prices the tx, so it is signed and `onSigned`
+    // persists nonce + hash, and only then does the broadcast get refused. Two things must hold at
+    // once, and they pull in opposite directions:
+    //
+    //   `broadcastAttempted: false` — the node queued nothing, so the risk gate abandons the slot
+    //   and an empty gas tank cannot march the consecutive-failure breaker toward a halt.
+    //
+    //   status `submitted` — NOT terminal. The recorded hash outlives this call, so reconcile,
+    //   not the sender, decides the intent's fate; the nonce stays fenced until it does. Settling
+    //   it here would be faster but would have to be right about a tx it can no longer observe.
+    //
+    // The cost is that a refused send holds its nonce for the unknown-tx grace window. That is
+    // deliberate, and this test exists to make changing it a conscious act.
+    const store = createMemoryStateStore();
+    const { exec } = autoExecutor(
+      autoSender({
+        send: vi.fn(async (call, onSigned) => {
+          await onSigned?.({ hash: "0xhash" as Hex, nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new PreBroadcastError(new Error("insufficient funds for gas * price + value"));
+        }),
+      }),
+      store
+    );
+
+    const out = await exec.commit(CALL, claim("p"));
+
+    expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: false });
+    const row = store.get(idempotencyKey(claim("p")));
+    expect(row?.status).toBe("submitted");
+    expect(row).toMatchObject({ txHash: "0xhash", nonce: 7 }); // the pre-broadcast record survived
   });
 
   it("signs against the nonce the allocator reserves", async () => {
