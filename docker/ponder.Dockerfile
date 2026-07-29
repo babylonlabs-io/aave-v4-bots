@@ -22,9 +22,10 @@ COPY packages/logger/package.json ./packages/logger/
 COPY packages/secrets/package.json ./packages/secrets/
 COPY services/ponder/package.json ./services/ponder/
 
-# Install only runtime dependencies; development tooling is not needed by the
-# production indexer.
-RUN pnpm install --frozen-lockfile --prod --filter @services/ponder
+# Install runtime dependencies for Ponder and every workspace package it
+# imports. Without the trailing ellipsis pnpm links @repo/* packages but omits
+# their external dependencies, so @repo/secrets cannot load the AWS SDK.
+RUN pnpm install --frozen-lockfile --prod --filter @services/ponder...
 
 # Copy ponder source code + config and its workspace deps
 COPY packages/abis/ ./packages/abis/
