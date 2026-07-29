@@ -33,7 +33,7 @@ jobs:
     with:
       publish: true
       dockerfile: ./docker/liquidator.Dockerfile
-      repoName: liquidation-aave-bot
+      repoName: liquidation-aave-client
       push_to_dockerhub: false
     permissions:
       contents: read
@@ -62,7 +62,7 @@ jobs:
     with:
       publish: true
       dockerfile: ./docker/arbitrageur.Dockerfile
-      repoName: arbitrageur-aave-bot
+      repoName: arbitrageur-aave-client
       push_to_dockerhub: false
     permissions:
       contents: read
