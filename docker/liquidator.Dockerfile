@@ -29,8 +29,10 @@ COPY packages/secrets/package.json ./packages/secrets/
 COPY packages/signer/package.json ./packages/signer/
 COPY services/liquidator/package.json ./services/liquidator/
 
-# Install dependencies (workspace-aware)
-RUN pnpm install --frozen-lockfile --filter @services/liquidator...
+# Install only runtime dependencies. The service executes TypeScript through
+# tsx, which is a production dependency; test runners and compilers must not
+# be copied into the custody-bearing runtime image.
+RUN pnpm install --frozen-lockfile --prod --filter @services/liquidator...
 
 # Copy source code
 COPY packages/abis/ ./packages/abis/
@@ -53,9 +55,16 @@ COPY services/liquidator/ ./services/liquidator/
 # ============================================
 FROM node:22-alpine AS runner
 
-# Install pnpm for running tsx and wget for healthchecks
-RUN apk add --no-cache wget=~1.25 && \
-    corepack enable && corepack prepare pnpm@9.13.2 --activate
+# Upgrade base packages for fixed OpenSSL builds and install wget for the
+# healthcheck. The runtime invokes Node directly, so remove npm/Corepack rather
+# than shipping their unused package-management attack surface.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache wget=~1.25 && \
+    rm -rf /usr/local/lib/node_modules/npm \
+      /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx \
+      /usr/local/bin/corepack /usr/local/bin/pnpm /usr/local/bin/pnpx \
+      /root/.cache/node/corepack
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
@@ -83,5 +92,5 @@ WORKDIR /app/services/liquidator
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:9090/health || exit 1
 
-# Default command: start polling mode
-CMD ["pnpm", "start"]
+# Default command: start polling mode without a runtime package manager.
+CMD ["node", "--import", "tsx", "src/index.ts"]

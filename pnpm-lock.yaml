@@ -374,6 +374,9 @@ importers:
       dotenv:
         specifier: ^16.5.0
         version: 16.6.1
+      tsx:
+        specifier: ^4.19.3
+        version: 4.21.0
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -384,9 +387,6 @@ importers:
       '@types/node':
         specifier: ^22.13.14
         version: 22.19.2
-      tsx:
-        specifier: ^4.19.3
-        version: 4.21.0
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -438,6 +438,9 @@ importers:
       dotenv:
         specifier: ^16.5.0
         version: 16.6.1
+      tsx:
+        specifier: ^4.19.3
+        version: 4.21.0
       viem:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
@@ -448,9 +451,6 @@ importers:
       '@types/node':
         specifier: ^22.13.14
         version: 22.19.2
-      tsx:
-        specifier: ^4.19.3
-        version: 4.21.0
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
