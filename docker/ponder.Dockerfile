@@ -22,8 +22,9 @@ COPY packages/logger/package.json ./packages/logger/
 COPY packages/secrets/package.json ./packages/secrets/
 COPY services/ponder/package.json ./services/ponder/
 
-# Install dependencies (workspace-aware)
-RUN pnpm install --frozen-lockfile --filter @services/ponder
+# Install only runtime dependencies; development tooling is not needed by the
+# production indexer.
+RUN pnpm install --frozen-lockfile --prod --filter @services/ponder
 
 # Copy ponder source code + config and its workspace deps
 COPY packages/abis/ ./packages/abis/
@@ -36,9 +37,16 @@ COPY services/ponder/ ./services/ponder/
 # ============================================
 FROM node:22-alpine AS runner
 
-# Install pnpm for running ponder and wget for healthchecks
-RUN apk add --no-cache wget=~1.25 && \
-    corepack enable && corepack prepare pnpm@9.13.2 --activate
+# Upgrade base packages for fixed OpenSSL builds and install wget for the
+# healthcheck. Ponder's installed executable is invoked directly, so remove
+# npm/Corepack and their unused package-management dependencies.
+RUN apk upgrade --no-cache && \
+    apk add --no-cache wget=~1.25 && \
+    rm -rf /usr/local/lib/node_modules/npm \
+      /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx \
+      /usr/local/bin/corepack /usr/local/bin/pnpm /usr/local/bin/pnpx \
+      /root/.cache/node/corepack
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
@@ -70,5 +78,5 @@ EXPOSE 42069
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider "http://localhost:${PONDER_PORT:-42069}/" || exit 1
 
-# Default command: start production mode
-CMD ["pnpm", "start"]
+# Default command: start production mode without a runtime package manager.
+CMD ["sh", "-c", "exec ./node_modules/.bin/ponder start --port \"${PONDER_PORT:-42069}\""]
