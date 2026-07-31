@@ -216,5 +216,75 @@ describe("config validation", () => {
       const { loadConfig } = await import("./config");
       expect(() => loadConfig()).toThrow(/BOTH ADAPTER_ADDRESS and LENS_ADDRESS/);
     });
+
+    describe("funding", () => {
+      const wbtc = validEnv.WBTC_ADDRESS;
+      const usdc = "0x4444444444444444444444444444444444444444";
+      const liqEnv = { ADAPTER_ADDRESS: adapter, LENS_ADDRESS: lens };
+      const flashEnv = {
+        LIQUIDATION_FUNDING: "flash",
+        LIQUIDATION_ROUTER_ADDRESS: "0x5555555555555555555555555555555555555555",
+        FLASH_SWAP_VENUE_ADDRESS: "0x6666666666666666666666666666666666666666",
+        FLASH_SWAP_POOLS: `${usdc}:${wbtc}:${usdc}:3000:60`,
+        WBTC_FLASH_LOAN_ADDRESS: "0x7777777777777777777777777777777777777777",
+      };
+
+      it("defaults the liquidation engine to inventory funding", async () => {
+        process.env = { ...validEnv, ...liqEnv };
+        const { loadConfig } = await import("./config");
+        expect(loadConfig().liquidation?.funding).toEqual({ mode: "inventory" });
+      });
+
+      it("threads flash funding into the liquidation engine", async () => {
+        process.env = { ...validEnv, ...liqEnv, ...flashEnv };
+        const { loadConfig } = await import("./config");
+        expect(loadConfig().liquidation?.funding).toMatchObject({
+          mode: "flash",
+          routerAddress: flashEnv.LIQUIDATION_ROUTER_ADDRESS,
+        });
+      });
+
+      it("refuses a complete flash setup with the mode flag left off", async () => {
+        process.env = {
+          ...validEnv,
+          ...liqEnv,
+          ...flashEnv,
+          LIQUIDATION_FUNDING: undefined,
+        } as NodeJS.ProcessEnv;
+        const { loadConfig } = await import("./config");
+        expect(() => loadConfig()).toThrow(/would be ignored/);
+      });
+
+      it("requires a WBTC flash-loan venue", async () => {
+        process.env = {
+          ...validEnv,
+          ...liqEnv,
+          ...flashEnv,
+          WBTC_FLASH_LOAN_ADDRESS: undefined,
+        } as NodeJS.ProcessEnv;
+        const { loadConfig } = await import("./config");
+        expect(() => loadConfig()).toThrow(/WBTC_FLASH_LOAN_ADDRESS/);
+      });
+
+      it("rejects flash funding without the liquidation engine", async () => {
+        // The vars would otherwise parse cleanly and do nothing at all.
+        process.env = { ...validEnv, ...flashEnv };
+        const { loadConfig } = await import("./config");
+        expect(() => loadConfig()).toThrow(/has no effect without the liquidation engine/);
+      });
+
+      it("allows RISK_MIN_PROFIT when the liquidation engine is flash-funded", async () => {
+        // Both engines can price themselves in this combination, so the floor gates everything.
+        process.env = { ...validEnv, ...liqEnv, ...flashEnv, RISK_MIN_PROFIT: "1000" };
+        const { loadConfig } = await import("./config");
+        expect(() => loadConfig()).not.toThrow();
+      });
+
+      it("still rejects RISK_MIN_PROFIT when the liquidation engine is inventory-funded", async () => {
+        process.env = { ...validEnv, ...liqEnv, RISK_MIN_PROFIT: "1000" };
+        const { loadConfig } = await import("./config");
+        expect(() => loadConfig()).toThrow(/RISK_MIN_PROFIT/);
+      });
+    });
   });
 });

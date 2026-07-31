@@ -287,6 +287,15 @@ NOTIFIER=none
 # ADAPTER_ADDRESS=0x...
 # LENS_ADDRESS=0x...
 # LIQUIDATION_POLLING_INTERVAL_MS=12000
+# Its funding mode — inventory (default) or flash, exactly as on the liquidator. Setting flash
+# without ADAPTER_ADDRESS + LENS_ADDRESS is rejected: there would be no engine to configure.
+# LIQUIDATION_FUNDING=inventory
+# LIQUIDATION_ROUTER_ADDRESS=0x...
+# FLASH_SWAP_VENUE_ADDRESS=0x...
+# FLASH_SWAP_POOLS=0xUSDC:0xWBTC:0xUSDC:3000:60
+# WBTC_FLASH_LOAN_ADDRESS=0x...
+# WBTC_FLASH_LOAN_VENUE=morpho
+# FLASH_MAX_SLIPPAGE_BPS=2000
 
 # Risk gate (unset variables disable their guard)
 # RISK_MAX_CONSECUTIVE_FAILURES=5
@@ -347,8 +356,12 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `ADAPTER_ADDRESS` | Enables the optional liquidation engine when set with `LENS_ADDRESS` | Liquidation only | — |
 | `LENS_ADDRESS` | AaveAdapterLens for optional liquidation mode; requires `ADAPTER_ADDRESS` | Liquidation only | — |
 | `LIQUIDATION_POLLING_INTERVAL_MS` | Poll interval for the optional liquidation engine | No | `12000` |
+| `LIQUIDATION_FUNDING` | Funding mode for the optional liquidation engine: `inventory` or `flash`. `flash` requires the engine to be enabled | No | `inventory` |
+| `LIQUIDATION_ROUTER_ADDRESS`, `FLASH_SWAP_VENUE_ADDRESS`, `FLASH_SWAP_POOLS`, `WBTC_FLASH_LOAN_ADDRESS` | Required together under `LIQUIDATION_FUNDING=flash`; see the [liquidator guide](./liquidator-operation-guide.md#53-liquidation-client-configuration) | flash | — |
+| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
+| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the chain reverts; derives the on-chain `minWbtcProfit`. Distinct from `RISK_MIN_PROFIT`, which is absolute and checked off-chain | No | `2000` |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit. Rejected at boot when the optional liquidation engine is enabled, since that engine supplies no expected profit and the floor would cover only half the actions | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit. Rejected at boot when the optional liquidation engine is enabled **and inventory-funded**, since that path supplies no expected profit and the floor would cover only half the actions. Allowed when the engine is off or flash-funded | No | — |
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old or missing | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |

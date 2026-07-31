@@ -25,6 +25,18 @@ filtered. A working filter reports the non-matching tests as *skipped*.
 `pnpm lint` exists but only runs the linter — CI runs `pnpm check`, which also enforces
 formatting and import order. Use `check`.
 
+Solidity lives here too (`contracts/`, `test/`), so the Foundry gates are part of CI as well:
+
+```bash
+forge build
+forge fmt --check                                    # CI gate; `forge fmt` to fix
+SEPOLIA_RPC=<url> forge test --match-path 'test/fork/**'   # fork tests, pinned blocks
+```
+
+The fork tests pin their blocks (`test/fork/base/TestSuites.sol`), so after the first run foundry
+serves them from `~/.foundry/cache/rpc` and the RPC is not called again — which is what makes them
+cheap enough to gate on.
+
 Running a bot locally needs its database and indexer first:
 
 ```bash
@@ -37,15 +49,23 @@ pnpm liquidator:run
 ### E2E
 
 `scripts/e2e-local.sh` boots docker (postgres, bitcoin regtest), anvil, deploys the protocol from
-the `lib/contracts/` submodule, starts the real bot processes, and tears everything down on exit. It
+the `lib/tbv-contracts/` submodule, starts the real bot processes, and tears everything down on exit. It
 needs `foundry` and docker. Suites are selected with `SUITE` (default `liquidator`):
 
 ```bash
+E2E_FORK_URL=https://sepolia.drpc.org ./scripts/e2e-local.sh  # liquidator (default) — needs a fork
 SUITE=arbitrageur ./scripts/e2e-local.sh              # one bot, both engines
 SUITE=manual-arbitrageur ./scripts/e2e-local.sh       # keyless MANUAL mode + operator-cli
 SUITE=stress-arbitrageur ./scripts/e2e-local.sh       # mass-liquidation + nonce chaos
 KEEP_DEPS=1 ./scripts/e2e-local.sh                    # reuse running postgres/btc/anvil
 ```
+
+The **liquidator** suite is the only one that needs `E2E_FORK_URL`, and the script refuses to start
+without it. It runs flash-funded against the *real* UniswapV4 and Morpho deployments rather than
+mocks, which exist only on a fork; the protocol itself is still deployed fresh, so the suite keeps
+admin over the price feed and tokens. The fork block is pinned, so foundry serves it from
+`~/.foundry/cache/rpc` after the first run. Every other suite is inventory-funded on a bare chain —
+between them the two funding modes are both covered.
 
 Forge scripts here need `FOUNDRY_PROFILE=e2e` (it enables `ffi`, which the suite uses to manage
 bot processes). The stress suite's knobs and assertions are documented in the README.
@@ -115,8 +135,13 @@ an engine declaring `spend` must publish balances via `setAvailable` each cycle.
 - Comments describe the code as it is — never what changed, was removed, or used to be there.
 - `docs/` holds design docs, RFCs, and test plans, some of which are uncommitted work in progress.
   Do not cite `docs/*.md` filenames or section numbers from code, tests, or scripts.
-- `contracts/` is a git submodule (Babylon's `vault-contracts-aave-v4`), excluded from biome and
-  not ours to edit. ABIs are hand-maintained in `@repo/abis`; deployment addresses come from env.
+- Two contract trees, and they are not the same thing. `contracts/` is **ours** — `LiquidationRouter`
+  and its swap venues, which back flash funding; edit and build it here. `lib/tbv-contracts/` is the
+  protocol submodule (Babylon's `vault-contracts-aave-v4`), excluded from biome and not ours to
+  edit; the e2e compiles and deploys it. ABIs for both are hand-maintained in `@repo/abis`, and
+  `packages/abis/src/artifacts.test.ts` pins every one of them to `forge build` output, so a
+  submodule bump that changes a signature fails that test rather than a bot at runtime. Deployment
+  addresses come from env.
 - Everything risky is opt-in and off by default (KMS, Postgres persistence, code-hash guard, kill
   switch, every `RISK_*` guard), so a minimal deployment behaves like a plain keeper. Preserve
   that: a new guard should be inert until its env var is set.

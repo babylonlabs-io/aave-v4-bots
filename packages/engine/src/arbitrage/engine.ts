@@ -10,7 +10,7 @@ import { vaultSwapAbi } from "@repo/abis";
 import {
   type RetryConfig,
   type TokenMeta,
-  fetchWithRetry,
+  fetchJsonWithRetry,
   readBalance,
   readTokenMeta,
   withRetry,
@@ -273,17 +273,10 @@ export class ArbitrageEngine {
     dataTimestampMs?: number;
   }> {
     try {
-      const response = await fetchWithRetry(
+      const data = await fetchJsonWithRetry<PonderResponse>(
         `${this.ponderUrl}/escrowed-vaults`,
-        undefined,
         this.retryConfig
       );
-
-      if (!response.ok) {
-        throw new Error(`Ponder API error: ${response.status}`);
-      }
-
-      const data: PonderResponse = await response.json();
       if (!Array.isArray(data.vaults)) {
         throw new Error("Invalid Ponder response: vaults must be an array");
       }

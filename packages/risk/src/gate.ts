@@ -138,6 +138,7 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   return {
     state: () => state,
     inFlight: () => inFlight,
+    minProfit: () => config.minProfit,
 
     halt,
 

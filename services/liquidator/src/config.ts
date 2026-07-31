@@ -17,7 +17,7 @@ import {
   runtimeEnvFields,
   urlSchema,
 } from "@repo/config";
-import type { LiquidationEngineParams } from "@repo/engine";
+import { type LiquidationEngineParams, buildFundingParams } from "@repo/engine";
 import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { type SignerConfig, buildSignerConfig } from "@repo/signer";
@@ -101,6 +101,33 @@ const envSchema = z.object({
   POLLING_INTERVAL_MS: positiveIntSchema.optional().default("12000"),
   METRICS_PORT: positiveIntSchema.optional().default("9090"),
   TX_RECEIPT_TIMEOUT_MS: positiveIntSchema.optional().default("120000"),
+
+  // ── Flash funding ──────────────────────────────────────────────────────────────────────
+  // `inventory` (default) repays from this signer's own inventory. `flash` routes through
+  // LiquidationRouter, which borrows each debt token from a venue and repays itself out of the
+  // seized collateral — the signer then needs no debt-token inventory at all, only gas.
+  LIQUIDATION_FUNDING: z.enum(["inventory", "flash"]).optional().default("inventory"),
+  /** LiquidationRouter deployment. Its immutable `owner` must be this bot's signer. */
+  LIQUIDATION_ROUTER_ADDRESS: addressSchema.optional(),
+  /** The `UniswapV4SwapVenue` bound to that router. */
+  FLASH_SWAP_VENUE_ADDRESS: addressSchema.optional(),
+  /**
+   * One `token:currency0:currency1:fee:tickSpacing[:hooks]` per debt token, comma-separated.
+   * Each pool must be WBTC/<token> — the venue repays in the pool's *other* side, so anything else
+   * leaves a debt we cannot settle.
+   */
+  FLASH_SWAP_POOLS: z.string().optional(),
+  /** Where WBTC is flash-*loaned* for the fairness payment: repaid in WBTC, which we hold. */
+  WBTC_FLASH_LOAN_ADDRESS: addressSchema.optional(),
+  WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional().default("morpho"),
+  /**
+   * How far the realised profit may fall below the probe's quote before the chain reverts, in bps.
+   * With flash-swap funding this is the only slippage bound there is — the venue fills at whatever
+   * price the pool gives. Distinct from `RISK_MIN_PROFIT`, which is an absolute floor checked
+   * off-chain before sending; this one is relative and enforced on-chain at execution. When both
+   * are set the on-chain floor is whichever binds harder.
+   */
+  FLASH_MAX_SLIPPAGE_BPS: positiveIntSchema.optional().default("2000"),
 });
 
 export function loadConfig(): Config {
@@ -112,12 +139,17 @@ export function loadConfig(): Config {
       ? (env.DEBT_TOKEN_ADDRESSES as Address[])
       : undefined;
 
-  // This service is nothing but the liquidation engine, so a profit floor could never bite here.
+  const funding = buildFundingParams(env);
+
+  // A profit floor is enforceable here only under flash funding, which probes the router and hands
+  // the gate a real WBTC figure. Inventory funding cannot price its own actions, so the floor would
+  // silently gate nothing.
   const risk = buildRiskConfig(env);
-  assertProfitFloorEnforceable(risk, true);
+  assertProfitFloorEnforceable(risk, funding.mode === "inventory");
 
   return {
     ...risk,
+    funding,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     ponderUrl: env.PONDER_URL,
     rpcUrl: env.CLIENT_RPC_URL,

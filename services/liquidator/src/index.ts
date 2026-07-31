@@ -43,6 +43,7 @@ async function createBot(config: Config): Promise<LiquidationBot> {
     llpAddress: config.llpAddress,
     ponderUrl: config.ponderUrl,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
+    funding: config.funding,
   });
 }
 
@@ -59,11 +60,11 @@ async function main() {
       logger.info(
         `Using ${config.debtTokenAddresses.length} debt token(s) from DEBT_TOKEN_ADDRESSES env var`
       );
-    } else {
-      await bot.discoverDebtTokens();
     }
 
-    await bot.ensureApproval();
+    // Discovery, plus whatever the funding mode needs before it can trade: inventory funding
+    // approves the adapter here, flash funding approves nothing.
+    await bot.prepare();
     await bot.logBalances();
 
     // Crash-safety: resolve any in-flight intents from a previous run against the chain

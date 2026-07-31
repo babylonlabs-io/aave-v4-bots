@@ -2,7 +2,11 @@
 
 A monorepo of keeper bots for Babylon's Aave V4 integration:
 
-- **Liquidator** — monitors positions and liquidates unhealthy ones.
+- **Liquidator** — monitors positions and liquidates unhealthy ones. Repayment is funded
+  either from the bot's own token balances or, with `LIQUIDATION_FUNDING=flash`, by
+  borrowing each debt token through `LiquidationRouter` and repaying it out of the seized
+  collateral in the same transaction — which needs no trading inventory, only gas. See
+  [Funding modes](./docs/liquidator-overview.md#funding-modes).
 - **Arbitrageur** — a single bot running **both engines** off one signer: it always
   acquires escrowed vaults from the VaultSwap (arbitrage), and — when configured with
   `ADAPTER_ADDRESS` + `LENS_ADDRESS` — also runs the same `LiquidationEngine` the
@@ -72,10 +76,13 @@ risk guards is the default; AWS KMS, a Postgres crash-safety store, the code-has
 the remote kill switch each switch on only when their env is set — so a minimal deployment
 behaves exactly as it did before these seams existed.
 
-Smart contracts live in the `contracts/` git submodule (Babylon's `vault-contracts-aave-v4`),
-but the bots don't build it or read from it at runtime: deployment addresses come from each
-service's env config, and ABIs are hand-maintained in `@repo/abis`. The submodule is the
-contract *source* — used to compile and deploy the protocol during the e2e suite.
+The protocol's smart contracts live in the `lib/tbv-contracts/` git submodule (Babylon's
+`vault-contracts-aave-v4`), but the bots don't build it or read from it at runtime: deployment
+addresses come from each service's env config, and ABIs are hand-maintained in `@repo/abis`. The
+submodule is the contract *source* — used to compile and deploy the protocol during the e2e suite.
+
+The bots' *own* on-chain code is separate and does live in this repo, under `contracts/`:
+`LiquidationRouter` plus its swap venues, which back flash-funded liquidations.
 
 ## Execution modes
 
@@ -262,9 +269,25 @@ Each suite runs the real bot processes against a live Anvil + Bitcoin regtest, d
 scripts in `test/e2e/`. Pick one with `SUITE` (default `liquidator`):
 
 ```bash
+E2E_FORK_URL=https://sepolia.drpc.org ./scripts/e2e-local.sh  # liquidator — flash-funded, forked
 SUITE=arbitrageur ./scripts/e2e-local.sh          # both engines in one process
 SUITE=manual-arbitrageur ./scripts/e2e-local.sh   # MANUAL mode + operator-cli
 ```
+
+The two suites split the funding modes between them, so both paths stay covered:
+
+| Suite | Funding | Chain |
+|-------|---------|-------|
+| `liquidator` | `flash` — borrows every debt token, repays from the seized collateral | **fork** (`E2E_FORK_URL`) |
+| `arbitrageur` and the MANUAL/stress suites | `inventory` — repays from the bot's own balances | bare anvil |
+
+The liquidator suite needs a fork because it flash-borrows from the **real** UniswapV4 and Morpho
+deployments instead of mocks — the pools are seeded, and Morpho funded, with the suite's own tokens.
+It refuses to start without `E2E_FORK_URL` rather than failing later inside a pool call. The
+protocol itself is still deployed fresh, so the suite keeps admin over the price feed and tokens;
+its position is tuned to leave excess after the debt clears, which produces a real LLP fairness
+payment and so exercises the WBTC flash-loan leg too. The fork block is pinned, so foundry serves it
+from `~/.foundry/cache/rpc` after the first run and the RPC is not called again.
 
 ### Stress suite
 
@@ -319,7 +342,8 @@ Assertions and timings are written to `.e2e-stress-report.json`; bot logs land i
 │       ├── ponder.schema.ts        #   union schema
 │       └── src/                    #   flags.ts + mode-guarded handlers + merged api
 │
-├── contracts/                      # git submodule — vault-contracts-aave-v4 (source + deployed addrs)
+├── contracts/                      # the bots' own contracts — LiquidationRouter + swap venues (flash funding)
+├── lib/tbv-contracts/              # git submodule — vault-contracts-aave-v4 (protocol source + deployed addrs)
 ├── test/e2e/                       # forge scripts driving the bots against a live Anvil + Bitcoin regtest
 │                                   #   (incl. MANUAL suites: manual-arbitrageur, manual-safe-arbitrageur)
 ├── docker/                         # liquidator / arbitrageur / ponder Dockerfiles

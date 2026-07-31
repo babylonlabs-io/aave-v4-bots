@@ -112,3 +112,24 @@ export async function fetchWithRetry(
     `fetch ${url}`
   );
 }
+
+/**
+ * `fetchWithRetry` + status check + JSON decode — the three lines every indexer read repeats.
+ *
+ * Deliberately does **not** absorb the caller's error handling. Each engine degrades differently
+ * when its indexer read fails (which metric, which empty shape, what else it validates), and those
+ * differences are the interesting part; folding them in here would need a parameter per caller and
+ * would hide exactly what a reader needs to see.
+ *
+ * @throws on a non-2xx response, or whatever `fetchWithRetry` throws once retries are exhausted.
+ */
+export async function fetchJsonWithRetry<T>(
+  url: string,
+  retryConfig?: Partial<RetryConfig>
+): Promise<T> {
+  const response = await fetchWithRetry(url, undefined, retryConfig);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText} from ${url}`);
+  }
+  return (await response.json()) as T;
+}

@@ -1,19 +1,20 @@
-import {
-  type Address,
-  ContractFunctionRevertedError,
-  type Hex,
-  type PublicClient,
-  formatUnits,
-  maxUint256,
-} from "viem";
+import { type Address, type Hex, type PublicClient, formatUnits } from "viem";
 
 import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
-import { type RetryConfig, TokenMetaCache, fetchWithRetry, readBalance } from "@repo/chain";
+import { type RetryConfig, TokenMetaCache, fetchJsonWithRetry, readBalance } from "@repo/chain";
 import type { ContractCall, ExecutionIdentity } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
 import type { Executor } from "../executor";
-import { bufferAmounts, isBorrowableReserve, sequentialPriorityOrder } from "./domain";
+import { bufferAmounts } from "./domain";
+import {
+  type FundedCandidate,
+  type FundingParams,
+  type LiquidationCandidate,
+  type LiquidationFunding,
+  createLiquidationFunding,
+} from "./funding";
+import { discoverBorrowableReserves } from "./reserves";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 const DEFAULT_FETCH_RETRY: RetryConfig = {
@@ -55,6 +56,15 @@ export interface LiquidationEngineParams {
   llpAddress: Address;
   ponderUrl: string;
   txReceiptTimeoutMs: number;
+  /**
+   * How repayment is funded.
+   *
+   * `inventory` (default) pays out of the signer's own inventory, which is why every candidate
+   * declares a `spend` vector to the risk gate. `flash` routes through `LiquidationRouter`, which
+   * borrows each debt token from a venue and repays itself out of the seized collateral — the
+   * signer spends only gas, and needs no debt-token inventory at all.
+   */
+  funding?: FundingParams;
 }
 
 export interface LiquidationEngineConfig extends LiquidationEngineParams {
@@ -88,6 +98,8 @@ export class LiquidationEngine {
   private llpAddress: Address;
   private ponderUrl: string;
   private txReceiptTimeoutMs: number;
+  /** How repayment is funded — the seam that decides the call, the risk declaration and the setup. */
+  private funding: LiquidationFunding;
   private tokenMetaCache = new TokenMetaCache();
 
   /** Who these txs come from — the executor's identity (the signer in AUTO, the operator in MANUAL). */
@@ -110,6 +122,26 @@ export class LiquidationEngine {
     this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
     this.executor = config.executor;
+    // The config already carries every collaborator a strategy needs, so it is spread in rather
+    // than re-listed field by field. Only these two cannot come from it: the debt-token list is
+    // discovered later (during `prepare()`), and the token cache is shared with this engine so a
+    // symbol is read once per process.
+    this.funding = createLiquidationFunding(config.funding ?? { mode: "inventory" }, {
+      ...config,
+      debtTokens: () => this.debtTokenAddresses,
+      tokenMeta: this.tokenMetaCache,
+    });
+  }
+
+  /**
+   * Boot-time setup: discover the debt tokens, then let the funding mode prepare itself.
+   *
+   * One call so a service never has to know which setup its funding mode needs: inventory funding
+   * approves the adapter, flash funding approves nothing.
+   */
+  async prepare(): Promise<void> {
+    if (this.debtTokenAddresses.length === 0) await this.discoverDebtTokens();
+    await this.funding.prepare();
   }
 
   /** Resolve a token's symbol/decimals via the shared, cached reader. */
@@ -144,48 +176,12 @@ export class LiquidationEngine {
    * Reads Spoke address from the AaveAdapter, then enumerates reserves.
    */
   async discoverDebtTokens(): Promise<void> {
-    this.logger.info("Discovering debt tokens from Spoke...");
-
-    const spokeAddress = await this.publicClient.readContract({
-      address: this.adapterAddress,
-      abi: adapterAbi,
-      functionName: "BTC_VAULT_CORE_SPOKE",
+    this.debtTokenAddresses = await discoverBorrowableReserves({
+      publicClient: this.publicClient,
+      adapterAddress: this.adapterAddress,
+      logger: this.logger,
+      tokenSymbol: async (token) => (await this.getTokenMeta(token)).symbol,
     });
-
-    this.logger.info(`Spoke address: ${spokeAddress}`);
-
-    const reserveCount = await this.publicClient.readContract({
-      address: spokeAddress,
-      abi: spokeAbi,
-      functionName: "getReserveCount",
-    });
-
-    this.logger.info(`Found ${reserveCount} reserve(s)`);
-
-    const discovered: Address[] = [];
-
-    for (let i = 0n; i < reserveCount; i++) {
-      const reserve = await this.publicClient.readContract({
-        address: spokeAddress,
-        abi: spokeAbi,
-        functionName: "getReserve",
-        args: [i],
-      });
-
-      if (isBorrowableReserve(reserve.flags)) {
-        discovered.push(reserve.underlying);
-
-        const { symbol } = await this.getTokenMeta(reserve.underlying);
-
-        this.logger.info(`  Reserve ${i}: ${symbol} (${reserve.underlying}) - borrowable`);
-      }
-    }
-
-    if (discovered.length === 0) {
-      this.logger.warn("No borrowable reserves found on Spoke");
-    }
-
-    this.debtTokenAddresses = discovered;
   }
 
   /**
@@ -226,7 +222,7 @@ export class LiquidationEngine {
       // action's declared spend against these, which is what stops this engine and the arbitrage
       // engine — same signer, same WBTC — from both committing the same balance. A read failure
       // propagates to the cycle's catch: unable to price our own inventory, we do not trade.
-      await this.refreshInventory();
+      await this.funding.refreshInventory();
 
       // Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
       const { positions, dataTimestampMs } = await this.fetchLiquidatablePositions();
@@ -253,11 +249,7 @@ export class LiquidationEngine {
       );
 
       // Build position + amounts pairs, filter failed estimates
-      const candidates: Array<{
-        position: LiquidatablePosition;
-        amounts: readonly bigint[];
-        wbtcPayment: bigint;
-      }> = [];
+      const candidates: LiquidationCandidate[] = [];
 
       for (let i = 0; i < estimateResults.length; i++) {
         const result = estimateResults[i];
@@ -266,7 +258,7 @@ export class LiquidationEngine {
         if (result.status === "fulfilled") {
           const [amounts, wbtcPayment] = result.value;
           // Buffer each amount (default 1%) to cover interest accrual between the Lens read and
-          // execution. `wbtcPayment` (fairness top-up +, in direct mode, the redemption fee) is
+          // execution. `wbtcPayment` (fairness top-up +, in direct-redemption mode, the redemption fee) is
           // pulled from msg.sender by the adapter, so it is a real outflow even though it is not
           // threaded into the call — it is carried here to be declared to the risk gate, which
           // reserves it against the WBTC the arbitrage engine is spending from the same signer.
@@ -285,54 +277,8 @@ export class LiquidationEngine {
         return;
       }
 
-      // Simulate all liquidations in parallel
-      const simulationResults = await Promise.allSettled(
-        candidates.map(({ position, amounts }) => {
-          // Default sequential priority order per candidate (each may have different reserve count)
-          const priorityOrder = sequentialPriorityOrder(amounts.length);
-          return this.isDirectRedemption
-            ? this.publicClient.simulateContract({
-                address: this.adapterAddress,
-                abi: adapterAbi,
-                functionName: "liquidate",
-                args: [
-                  position.borrower,
-                  this.btcRedeemKey,
-                  [...amounts],
-                  [...priorityOrder],
-                  0n,
-                  maxUint256,
-                ],
-                account: this.identity.from,
-              })
-            : this.publicClient.simulateContract({
-                address: this.adapterAddress,
-                abi: adapterAbi,
-                functionName: "liquidateWithLLP",
-                args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
-                account: this.identity.from,
-              });
-        })
-      );
-
-      const validCandidates: typeof candidates = [];
-      for (let i = 0; i < simulationResults.length; i++) {
-        const result = simulationResults[i];
-        const candidate = candidates[i];
-        if (result.status === "fulfilled") {
-          validCandidates.push(candidate);
-        } else {
-          this.metrics.recordSimulationFailed();
-          const reason = result.reason;
-          let errorMsg = "Unknown error";
-          if (reason instanceof ContractFunctionRevertedError) {
-            errorMsg = reason.data?.errorName || reason.message;
-          } else if (reason instanceof Error) {
-            errorMsg = reason.message;
-          }
-          this.logger.warn(`Simulation failed for ${candidate.position.proxyAddress}: ${errorMsg}`);
-        }
-      }
+      // Vet + price. Each mode decides viability its own way and hands back the call to send.
+      const validCandidates = await this.funding.vet(candidates);
 
       if (validCandidates.length === 0) {
         this.logger.info("No positions passed simulation");
@@ -340,7 +286,29 @@ export class LiquidationEngine {
       }
 
       this.logger.info(`${validCandidates.length}/${positions.length} positions passed simulation`);
+      return await this.sendAll(validCandidates, dataTimestampMs, slots);
+    } catch (error) {
+      this.metrics.recordError("run_error");
+      this.logger.error("Liquidation run failed:", error);
+    } finally {
+      settleUnfinished(slots);
+      this.metrics.recordPollDuration(Date.now() - startTime);
+    }
+  }
 
+  /**
+   * Commit every vetted candidate, then await the receipts.
+   *
+   * `flash` candidates arrive carrying the plan their probe produced; `inventory` ones are priced from
+   * the signer's own balances here. The difference is confined to `slot`/`call` below — everything
+   * about nonce ownership, intent lifecycle and receipt settlement is shared.
+   */
+  private async sendAll(
+    validCandidates: readonly FundedCandidate[],
+    dataTimestampMs: number | undefined,
+    slots: RiskSlot[]
+  ): Promise<void> {
+    try {
       // Send. Every tx routes through the shared nonce allocator (`withNonce`), the single nonce
       // owner across both engines. A send error is treated as AMBIGUOUS (the tx may have
       // propagated): the intent is kept LIVE (never terminal) and the cycle stops — the next
@@ -354,31 +322,20 @@ export class LiquidationEngine {
         position: LiquidatablePosition;
       }> = [];
       sendLoop: for (let i = 0; i < validCandidates.length; i++) {
-        const { position, amounts, wbtcPayment } = validCandidates[i];
+        const { position, call, risk } = validCandidates[i];
 
         // Risk gate — per-candidate check just before submit. An allowed check reserves an
         // exposure slot that MUST be settled on every path below (see `RiskSlot`).
         //
-        // `expectedProfit` is intentionally **not** passed: liquidation profit is not derivable
-        // off-chain today. The Lens `estimateLiquidation` returns debt amounts (in debt-token
-        // units) + `wbtcPayment` + vault *ids*, and `liquidate`/`liquidateWithLLP` return only
-        // `vaultIds` — so neither the estimate nor a simulation yields a WBTC-denominated
-        // profit. Pricing it needs an oracle, a new Lens view, or an on-chain WBTC-delta
-        // profit guard. The gate skips the profit floor when this is undefined.
+        // What gets declared comes from the funding mode, the only thing that can know it: `inventory`
+        // names the tokens the tx will pull from the signer and cannot price itself, `flash` prices
+        // the action from its probe and moves none of the signer's tokens. The engine stays out of
+        // that judgement and owns only the slot's lifecycle.
         const slot = this.risk.openSlot({
           kind: "liquidation",
           subject: position.proxyAddress,
           dataTimestampMs,
-          // Everything this tx can pull from the signer: the buffered repay amounts (one per debt
-          // reserve, in that reserve's token) plus the adapter's WBTC payment. Declared so the
-          // arbitrage engine sharing this signer cannot commit the same balance to a vault.
-          spend: [
-            ...amounts.map((amount, idx) => ({
-              token: this.debtTokenAddresses[idx] ?? this.wbtcAddress,
-              amount,
-            })),
-            { token: this.wbtcAddress, amount: wbtcPayment },
-          ],
+          ...risk,
         });
         if (!slot.allowed) {
           this.metrics.recordError("risk_blocked");
@@ -387,33 +344,11 @@ export class LiquidationEngine {
         }
         slots.push(slot);
 
-        const priorityOrder = sequentialPriorityOrder(amounts.length);
-        const call: ContractCall = this.isDirectRedemption
-          ? {
-              address: this.adapterAddress,
-              abi: adapterAbi,
-              functionName: "liquidate",
-              args: [
-                position.borrower,
-                this.btcRedeemKey,
-                [...amounts],
-                [...priorityOrder],
-                0n,
-                maxUint256,
-              ],
-            }
-          : {
-              address: this.adapterAddress,
-              abi: adapterAbi,
-              functionName: "liquidateWithLLP",
-              args: [position.borrower, this.llpAddress, [...amounts], [...priorityOrder], []],
-            };
-
         // Commit the action through the mode seam. AUTO signs + broadcasts under the shared nonce
         // lock (claim → send → markPending → submitted, all inside `commit`); MANUAL proposes +
         // notifies.
         const out = await this.executor.commit(call, {
-          target: this.adapterAddress,
+          target: call.address,
           action: "liquidation",
           subject: position.proxyAddress,
         });
@@ -515,7 +450,6 @@ export class LiquidationEngine {
       this.logger.error("Error in bot run:", error);
     } finally {
       settleUnfinished(slots);
-      this.metrics.recordPollDuration(Date.now() - startTime);
     }
   }
 
@@ -529,17 +463,10 @@ export class LiquidationEngine {
     dataTimestampMs?: number;
   }> {
     try {
-      const response = await fetchWithRetry(
+      const data = await fetchJsonWithRetry<PonderResponse>(
         `${this.ponderUrl}/liquidatable-positions`,
-        undefined,
         DEFAULT_FETCH_RETRY
       );
-
-      if (!response.ok) {
-        throw new Error(`Ponder API error: ${response.status}`);
-      }
-
-      const data: PonderResponse = await response.json();
       this.metrics.recordPositionsChecked(data.checked);
       return { positions: data.liquidatable, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
@@ -547,54 +474,6 @@ export class LiquidationEngine {
       this.logger.error("Failed to fetch liquidatable positions:", error);
       return { positions: [] };
     }
-  }
-
-  /**
-   * Ensure liquidator has approved AaveAdapter to spend all debt tokens and WBTC.
-   * WBTC is approved unconditionally so the adapter can pull the fairness payment
-   * and direct-redemption fee (`wbtcPayment` from the Lens) during liquidation.
-   */
-  async ensureApproval(): Promise<void> {
-    const tokensToApprove = Array.from(
-      new Set<Address>([...this.debtTokenAddresses, this.wbtcAddress])
-    );
-
-    for (const tokenAddress of tokensToApprove) {
-      const { symbol } = await this.getTokenMeta(tokenAddress);
-      // The executor owns the mode-correct approval: AUTO broadcasts + waits (the key lives inside
-      // it), MANUAL proposes the approval for the operator to sign. A proposed/duplicate result
-      // means the allowance is not ready yet — the run loop's simulation gates dependent actions.
-      const result = await this.executor.ensureAllowance({
-        token: tokenAddress,
-        spender: this.adapterAddress,
-        required: maxUint256 / 2n,
-        label: symbol,
-      });
-      // MANUAL: a `proposed` (fresh) or `duplicate` (already awaiting) result means the allowance is
-      // not ready — the operator must sign it. AUTO only ever returns `satisfied` (it throws on a
-      // reverted approve). The run loop's simulation gates dependent actions until it clears.
-      if (result.kind !== "satisfied") {
-        this.logger.info(`Approval for ${symbol} ${result.kind} — awaiting operator signature`);
-      }
-    }
-  }
-
-  /**
-   * Tell the risk gate what this signer can currently spend, for every token an action may pull:
-   * each debt reserve plus WBTC. Called once per cycle from `run()`.
-   *
-   * Deliberately not folded into `logBalances`, which is best-effort observability the services
-   * call around the cycle and which swallows read errors. This one must not swallow: the gate
-   * fails closed on a token it has no figure for, so a silent failure here would present as
-   * "everything is unaffordable" rather than "we could not read".
-   */
-  private async refreshInventory(): Promise<void> {
-    const owner = this.identity.from;
-    const tokens = Array.from(new Set<Address>([...this.debtTokenAddresses, this.wbtcAddress]));
-    const balances = await Promise.all(
-      tokens.map((token) => readBalance(this.publicClient, token, owner))
-    );
-    tokens.forEach((token, i) => this.risk.setAvailable(token, balances[i]));
   }
 
   /**

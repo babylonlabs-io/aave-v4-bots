@@ -20,10 +20,28 @@ when `RISK_CONTROL_TOKEN_REF` is set; it is not mounted on the metrics port.
 | `liquidator_liquidations_total` | Counter | - | Total successful liquidations |
 | `liquidator_liquidations_failed_total` | Counter | - | Total failed liquidation attempts (revert or receipt-fetch failure) |
 | `liquidator_simulations_failed_total` | Counter | - | Total simulations that reverted before broadcast |
-| `liquidator_token_balance` | Gauge | `token`, `address` | Liquidator wallet balance per token (debt tokens + WBTC) |
+| `liquidator_token_balance` | Gauge | `token`, `address` | Liquidator wallet balance per token (debt tokens + WBTC). Under `LIQUIDATION_FUNDING=flash` these are **not** funding capacity — see below |
 | `liquidator_errors_total` | Counter | `type` | Errors by type (see below) |
 | `liquidator_poll_duration_seconds` | Histogram | - | Poll cycle duration. Buckets: 0.1, 0.5, 1, 2, 5, 10, 30, 60 |
 | `liquidator_last_poll_timestamp` | Gauge | - | Last poll unix timestamp (seconds) |
+
+### Alerting on `liquidator_token_balance`
+
+The bot reports these balances in both funding modes, but they mean different
+things:
+
+- **`LIQUIDATION_FUNDING=inventory`** — they are working capital. A debt-token
+  balance falling toward zero means the bot will start skipping positions it
+  cannot afford, so alert on it.
+- **`LIQUIDATION_FUNDING=flash`** — they are not. `LiquidationRouter` borrows
+  every debt token and repays it within the same transaction, so a zero
+  debt-token balance is the expected steady state, not an incident. Alerting on
+  it here produces a permanently firing alert. Watch WBTC *rising* (profit is
+  swept to the signer) and alert on `liquidator_liquidations_failed_total`
+  instead.
+
+ETH is worth alerting on in both modes — it is the one balance the bot always
+spends.
 
 ## Error Types
 

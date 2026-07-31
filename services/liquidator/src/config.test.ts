@@ -276,3 +276,120 @@ describe("config validation", () => {
     });
   });
 });
+
+describe("flash funding config", () => {
+  // No process.exit spy here: the suite above already installs one for the whole module, and
+  // re-spying would detach the reference its assertions check.
+  const originalEnv = process.env;
+
+  const WBTC = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599";
+  const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+
+  const base = {
+    PONDER_URL: "http://localhost:42069",
+    CLIENT_RPC_URL: "http://localhost:8545",
+    ADAPTER_ADDRESS: "0x1234567890123456789012345678901234567890",
+    LENS_ADDRESS: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    WBTC_ADDRESS: WBTC,
+  };
+
+  const flashEnv = {
+    ...base,
+    LIQUIDATION_FUNDING: "flash",
+    LIQUIDATION_ROUTER_ADDRESS: "0x9999999999999999999999999999999999999999",
+    FLASH_SWAP_VENUE_ADDRESS: "0x1111111111111111111111111111111111111111",
+    FLASH_SWAP_POOLS: `${USDC}:${WBTC}:${USDC}:3000:60`,
+    WBTC_FLASH_LOAN_ADDRESS: "0x2222222222222222222222222222222222222222",
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...originalEnv };
+  });
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it("defaults to inventory funding", async () => {
+    process.env = { ...originalEnv, ...base };
+    const { loadConfig } = await import("./config");
+    expect(loadConfig().funding).toEqual({ mode: "inventory" });
+  });
+
+  it("builds a venue registry from FLASH_SWAP_POOLS", async () => {
+    process.env = { ...originalEnv, ...flashEnv };
+    const { loadConfig } = await import("./config");
+    const funding = loadConfig().funding;
+
+    expect(funding).toMatchObject({ mode: "flash", maxSlippageBps: 2000 });
+    if (funding?.mode !== "flash") throw new Error("expected flash");
+    expect(funding.venues.flashSwaps[0].poolKey).toMatchObject({
+      currency0: WBTC,
+      currency1: USDC,
+      fee: 3000,
+      tickSpacing: 60,
+    });
+  });
+
+  it("refuses a half-configured flash setup instead of falling back to inventory", async () => {
+    // Silently falling back would use inventory the operator may never have funded.
+    process.env = { ...originalEnv, ...flashEnv, FLASH_SWAP_POOLS: undefined } as NodeJS.ProcessEnv;
+    const { loadConfig } = await import("./config");
+    expect(() => loadConfig()).toThrow(/FLASH_SWAP_POOLS/);
+  });
+
+  it("rejects a pool that is not WBTC/<token> at boot", async () => {
+    // Would otherwise surface as an unrepayable debt deep inside a venue callback (I3).
+    process.env = {
+      ...originalEnv,
+      ...flashEnv,
+      FLASH_SWAP_POOLS: `${USDC}:${USDC}:0x3333333333333333333333333333333333333333:3000:60`,
+    };
+    const { loadConfig } = await import("./config");
+    expect(() => loadConfig()).toThrow(/^I3/);
+  });
+
+  it("allows RISK_MIN_PROFIT under flash funding", async () => {
+    // Inventory funding cannot price its actions so the floor is rejected; flash mode probes and can,
+    // which is exactly the case the old guard would have wrongly refused.
+    process.env = { ...originalEnv, ...flashEnv, RISK_MIN_PROFIT: "1000" };
+    const { loadConfig } = await import("./config");
+    expect(() => loadConfig()).not.toThrow();
+  });
+
+  it("refuses a complete flash setup with the mode flag left off", async () => {
+    // The dangerous direction: every address is right, so nothing looks wrong, but the mode flag is
+    // what selects flash and the bot would quietly repay from its own inventory instead.
+    process.env = {
+      ...originalEnv,
+      ...flashEnv,
+      LIQUIDATION_FUNDING: undefined,
+    } as NodeJS.ProcessEnv;
+    const { loadConfig } = await import("./config");
+    expect(() => loadConfig()).toThrow(/would be ignored/);
+  });
+
+  it("still accepts a plain inventory setup with no flash variables", async () => {
+    process.env = { ...originalEnv, ...base };
+    const { loadConfig } = await import("./config");
+    expect(loadConfig().funding).toEqual({ mode: "inventory" });
+  });
+
+  it("requires a WBTC flash-loan venue", async () => {
+    // Most liquidations seize a vault worth more than the debt and owe the remainder back as the
+    // WBTC fairness payment, so a flash setup without this venue would decline most of its work.
+    process.env = {
+      ...originalEnv,
+      ...flashEnv,
+      WBTC_FLASH_LOAN_ADDRESS: undefined,
+    } as NodeJS.ProcessEnv;
+    const { loadConfig } = await import("./config");
+    expect(() => loadConfig()).toThrow(/WBTC_FLASH_LOAN_ADDRESS/);
+  });
+
+  it("still rejects RISK_MIN_PROFIT under inventory funding", async () => {
+    process.env = { ...originalEnv, ...base, RISK_MIN_PROFIT: "1000" };
+    const { loadConfig } = await import("./config");
+    expect(() => loadConfig()).toThrow(/RISK_MIN_PROFIT/);
+  });
+});

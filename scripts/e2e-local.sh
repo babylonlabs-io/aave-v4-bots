@@ -3,8 +3,13 @@
 # Boots dependencies, runs the three forge scripts, tears everything down on exit.
 #
 # Usage:
-#   scripts/e2e-local.sh                  # full run from cold state (SUITE=liquidator)
+#   E2E_FORK_URL=https://sepolia.drpc.org scripts/e2e-local.sh   # SUITE=liquidator (needs a fork)
 #   SUITE=arbitrageur scripts/e2e-local.sh # run the arbitrageur suite (one bot, both engines)
+#
+# The liquidator suite is flash-funded and borrows from the REAL UniswapV4 and Morpho deployments,
+# so it only runs against a fork — hence `E2E_FORK_URL`. Every other suite is inventory-funded and
+# runs on a bare chain. The fork block is pinned, so after the first run foundry serves it from
+# ~/.foundry/cache/rpc and the RPC is not called again.
 #
 # MANUAL (keyless) suites — the arb bot proposes, an operator drives the proposals through
 # operator-cli. Both engines are on, so each run confirms a liquidation AND an acquisition:
@@ -12,6 +17,11 @@
 #   SUITE=manual-safe-arbitrageur scripts/e2e-local.sh # executor = a Safe, paying on behalf of it
 #   KEEP_DEPS=1 scripts/e2e-local.sh      # reuse already-running postgres / btc / anvil
 #   SKIP_VERIFY=1 scripts/e2e-local.sh    # stop after setup (debug mid-flow)
+#   E2E_PRICE_DROP_PCT=30 ...             # liquidator suite: how far the BTC price falls. Sets the
+#                                         # debt-to-collateral ratio at liquidation, and so whether
+#                                         # the seized vault leaves excess -> an LLP fairness
+#                                         # payment. Too deep and there is none, and the WBTC
+#                                         # flash-loan leg goes untested.
 #   E2E_RPC_URL=http://...:8545 ...       # override anvil RPC URL
 #
 # Sign the arbitrageur bot's txs with AWS KMS instead of a local key (SUITE=arbitrageur):
@@ -25,7 +35,7 @@
 # .venv-e2e/. Run once-per-clone:
 #     git submodule update --init --recursive
 #     pnpm install
-#     npm ci --prefix lib/contracts/test/utils
+#     npm ci --prefix lib/tbv-contracts/test/utils
 #
 # On failure, /tmp/{liq,arb}-{ponder,bot}.log are copied to
 # /tmp/e2e-fail-<timestamp>/ before cleanup, so you can inspect what each
@@ -56,6 +66,21 @@ for tool in "${REQUIRED[@]}"; do
 done
 if [[ ${#missing[@]} -gt 0 ]]; then
   log_err "missing required tools: ${missing[*]}"
+  exit 1
+fi
+
+# Which suite to run (matches the CI matrix). Resolved here, with the rest of the preflight, so a
+# bad combination fails before docker, anvil and the protocol deploy have cost a minute of setup.
+SUITE="${SUITE:-liquidator}"
+
+# The liquidator suite is flash-funded, and its venues are the *real* UniswapV4 and Morpho
+# deployments rather than mocks. On a bare chain those addresses hold no code, so the setup fails
+# somewhere inside a pool call with nothing pointing back at the cause. Say it here instead.
+if [[ "$SUITE" == "liquidator" && -z "${E2E_FORK_URL:-}" ]]; then
+  log_err "SUITE=liquidator needs E2E_FORK_URL: it flash-funds through the real UniswapV4 and"
+  log_err "Morpho deployments, which exist only on a fork. For example:"
+  log_err "  E2E_FORK_URL=https://sepolia.drpc.org SUITE=liquidator scripts/e2e-local.sh"
+  log_err "The inventory-funded path is covered by SUITE=arbitrageur, which needs no fork."
   exit 1
 fi
 
@@ -198,7 +223,7 @@ cleanup() {
   fi
 
   if [[ -z "${KEEP_DEPS:-}" ]]; then
-    docker compose -f lib/contracts/docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
+    docker compose -f lib/tbv-contracts/docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
     docker rm -f "$PG_CONTAINER" 2>/dev/null || true
   else
     log_warn "KEEP_DEPS=1 set; leaving postgres + bitcoin running"
@@ -259,20 +284,20 @@ fi
 # silently produced wrong block counts and broken peg-ins.
 if [[ -z "${KEEP_DEPS:-}" ]]; then
   log "Resetting bitcoin-regtest volumes"
-  docker compose -f lib/contracts/docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
+  docker compose -f lib/tbv-contracts/docker-compose.e2e.yml down -v --remove-orphans 2>/dev/null || true
 fi
 
 log "Starting bitcoin-regtest"
-docker compose -f lib/contracts/docker-compose.e2e.yml up -d bitcoin-regtest >/dev/null
+docker compose -f lib/tbv-contracts/docker-compose.e2e.yml up -d bitcoin-regtest >/dev/null
 
 log "Waiting for bitcoin-regtest node RPC"
-chmod +x lib/contracts/test/e2e/scripts/btc-helper.sh
+chmod +x lib/tbv-contracts/test/e2e/scripts/btc-helper.sh
 for i in {1..30}; do
-  if USE_DOCKER=true lib/contracts/test/e2e/scripts/btc-helper.sh wait >/dev/null 2>&1; then
+  if USE_DOCKER=true lib/tbv-contracts/test/e2e/scripts/btc-helper.sh wait >/dev/null 2>&1; then
     break
   fi
   if [[ $i -eq 30 ]]; then
-    docker compose -f lib/contracts/docker-compose.e2e.yml logs bitcoin-regtest
+    docker compose -f lib/tbv-contracts/docker-compose.e2e.yml logs bitcoin-regtest
     log_err "bitcoin-regtest node RPC failed to start"
     exit 1
   fi
@@ -302,7 +327,7 @@ if [[ -z "${KEEP_DEPS:-}" && "$current_blocks" -gt 10 ]]; then
 fi
 
 log "Initialising bitcoin wallet and mining 2020 blocks"
-( cd lib/contracts && \
+( cd lib/tbv-contracts && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh wallet test_wallet && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh mine 2020 && \
   USE_DOCKER=true ./test/e2e/scripts/btc-helper.sh info ) >/dev/null
@@ -310,7 +335,7 @@ log "Initialising bitcoin wallet and mining 2020 blocks"
 # ── test/utils symlink (PopHelpers FFI scripts expect this path) ─────────────
 if [[ ! -e test/utils ]]; then
   log "Creating test/utils symlink"
-  ln -s ../lib/contracts/test/utils test/utils
+  ln -s ../lib/tbv-contracts/test/utils test/utils
 fi
 
 # ── Anvil ────────────────────────────────────────────────────────────────────
@@ -334,8 +359,33 @@ else
     ANVIL_MINING_ARGS=(--block-time "$E2E_ANVIL_BLOCK_TIME")
     log_warn "interval mining: --block-time ${E2E_ANVIL_BLOCK_TIME}s (txs will queue; setup is slower)"
   fi
+
+  # `E2E_FORK_URL` runs the suite on a fork instead of a bare chain, which is how the flash-funded
+  # suite gets *real* venues — UniswapV4's PoolManager/PositionManager, Permit2, Morpho — without
+  # deploying any of them. Everything else is unchanged: the protocol is still deployed fresh (so we
+  # keep admin over the price feed, vault providers and the mintable tokens), and Ponder still starts
+  # at the current block, so there is no history to replay.
+  #
+  # The fork keeps chain id 31337 rather than the forked chain's. That looks wrong and is not: the
+  # protocol's proof-of-possession messages bind `block.chainid`
+  # (`BTCProofOfPossession.buildMessage`), and the test-side signer that produces them hardcodes
+  # 31337 (`lib/tbv-contracts/test/utils/PopHelpers.sol`). Run on any other id and every peg-in fails
+  # with `InvalidBIP322Signature`. Fixing that belongs in the contracts repo; until then the id has
+  # to stay put, which also keeps every other 31337 assumption in the suite honest.
+  ANVIL_FORK_ARGS=()
+  if [[ -n "${E2E_FORK_URL:-}" ]]; then
+    # The block is pinned, and that is not incidental. Foundry caches forked state per block under
+    # ~/.foundry/cache/rpc, so a pinned block is served from disk on every run after the first —
+    # measured at 45s cold vs 1.6s warm on the fork suite. An unpinned fork resolves to `latest`,
+    # which differs every run, so the cache never hits and CI pays the full fetch each time.
+    # Shared with the fork tests (test/fork/base/TestSuites.sol) so both warm the same cache entry.
+    : "${E2E_FORK_BLOCK:=11141103}"
+    ANVIL_FORK_ARGS=(--fork-url "$E2E_FORK_URL" --chain-id 31337 --fork-block-number "$E2E_FORK_BLOCK")
+    log_warn "fork mode: $E2E_FORK_URL @ $E2E_FORK_BLOCK (chain id pinned to 31337)"
+  fi
+
   log "Starting anvil (log: $ANVIL_LOG)"
-  anvil --silent --host 127.0.0.1 --port 8545 "${ANVIL_MINING_ARGS[@]}" >"$ANVIL_LOG" 2>&1 &
+  anvil --silent --host 127.0.0.1 --port 8545 "${ANVIL_MINING_ARGS[@]}" "${ANVIL_FORK_ARGS[@]}" >"$ANVIL_LOG" 2>&1 &
   ANVIL_PID=$!
   sleep 2
   if ! kill -0 "$ANVIL_PID" 2>/dev/null; then
@@ -364,18 +414,23 @@ COMMON_FLAGS=(--rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_
 # Required by the new CreateX-based deployment scripts. No private key needed —
 # the script funds its own ephemeral deployer via anvil_setBalance and broadcasts
 # the canonical CreateX deploy tx via `cast publish`.
-log "Deploy CreateX factory + initialise anvil"
-( cd lib/contracts && \
-  forge script script/deployment/AnvilSetUp.s.sol:AnvilSetUp \
-    --rpc-url "$RPC_URL" --broadcast --skip-simulation )
+# On a fork the CreateX deploy in `AnvilSetUp.s.sol` cannot be replayed, so that script is skipped
+# and its other effects are applied by the shared init the CI workflow also calls.
+if [[ -n "${E2E_FORK_URL:-}" ]]; then
+  log "Initialise fork (CreateX inherited; applying the rest of AnvilSetUp)"
+  RPC_URL="$RPC_URL" ./test/e2e/scripts/fork-init.sh "$DEPLOYER_ADDRESS" "$VAULT_PROVIDER_ADDRESS"
+else
+  log "Deploy CreateX factory + initialise anvil"
+  ( cd lib/tbv-contracts && \
+    forge script script/deployment/AnvilSetUp.s.sol:AnvilSetUp \
+      --rpc-url "$RPC_URL" --broadcast --skip-simulation )
+fi
 
 log "Deploy + setup environment"
-( cd lib/contracts && \
+( cd lib/tbv-contracts && \
   forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment "${COMMON_FLAGS[@]}" )
 
-# Which suite to run (matches the CI matrix). Default: liquidator.
 # `DRIVE` (optional) runs between setup and verify — the MANUAL suites use it to play the operator.
-SUITE="${SUITE:-liquidator}"
 DRIVE=""
 case "$SUITE" in
   arbitrageur) SETUP="ArbitrageurE2ESetup"; VERIFY="ArbitrageurE2EVerify" ;;

@@ -76,10 +76,24 @@ contract LiquidationE2EVerify is Script, BaseBot {
         console.log("Now (sats):    ", nowWbtc);
         console.log("Gained (sats): ", nowWbtc > initialWbtc ? nowWbtc - initialWbtc : 0);
 
+        // The LLP fairness payment is the ONLY thing that exercises the WBTC flash-loan leg, and it
+        // lands here: the adapter pulls it from the liquidator (the router) and forwards it to the
+        // borrower. The borrower holds no WBTC otherwise — they pegged in BTC and borrowed USDC — so
+        // any balance at all is the payment, and in flash mode the router held none of its own.
+        uint256 borrowerWbtc = _getWbtcBalance(borrower);
+        console.log("\n--- Borrower WBTC (LLP fairness payment) ---");
+        console.log("Received (sats):", borrowerWbtc);
+
         // ── Pass / fail ───────────────────────────────────────────────────
         bool positionLiquidated = (col == 0 && debt == 0);
-        bool liquidatorSpentUsdc = nowUsdc < initialUsdc;
+        // The signature of flash funding, and the reason it is asserted rather than merely logged:
+        // the router borrows the USDC and repays itself from the seized collateral, so the bot's own
+        // USDC must be untouched. An inventory-funded liquidation spends it — so this is what
+        // catches the bot silently falling back to the other mode, which a "position was
+        // liquidated" check alone cannot.
+        bool liquidatorUsdcUntouched = nowUsdc == initialUsdc;
         bool liquidatorReceivedWbtc = nowWbtc > initialWbtc;
+        bool fairnessPaymentFlashFunded = borrowerWbtc > 0;
 
         console.log("\n--- Verification Results ---");
 
@@ -88,18 +102,23 @@ contract LiquidationE2EVerify is Script, BaseBot {
         } else {
             console.log("[FAIL] Borrower position NOT liquidated (collateral or debt > 0)");
         }
-        if (liquidatorSpentUsdc) {
-            console.log("[PASS] Liquidator spent USDC repaying debt");
+        if (liquidatorUsdcUntouched) {
+            console.log("[PASS] Liquidator spent no USDC (repayment was flash-funded)");
         } else {
-            console.log("[FAIL] Liquidator USDC balance unchanged from initial");
+            console.log("[FAIL] Liquidator USDC fell - the liquidation was funded from inventory");
         }
         if (liquidatorReceivedWbtc) {
-            console.log("[PASS] Liquidator received WBTC from LLP (sell-discount payout)");
+            console.log("[PASS] Liquidator received WBTC (profit swept from the router)");
         } else {
             console.log("[FAIL] Liquidator WBTC balance unchanged from initial");
         }
+        if (fairnessPaymentFlashFunded) {
+            console.log("[PASS] Fairness payment reached the borrower (WBTC flash-loan leg ran)");
+        } else {
+            console.log("[FAIL] Borrower received no WBTC - the WBTC flash-loan leg never ran");
+        }
 
-        if (positionLiquidated && liquidatorSpentUsdc && liquidatorReceivedWbtc) {
+        if (positionLiquidated && liquidatorUsdcUntouched && liquidatorReceivedWbtc && fairnessPaymentFlashFunded) {
             // The bot traded, which already proves the code-hash guard accepted the real deployed
             // bytecode (a mismatch would have booted it HALTED). Now exercise the control plane on
             // the live process, last so a kill-switch failure can never mask a trading failure.

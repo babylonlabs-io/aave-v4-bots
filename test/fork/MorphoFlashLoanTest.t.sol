@@ -3,10 +3,10 @@
 pragma solidity 0.8.28;
 
 import {Types} from "./base/Types.sol";
-import {IBTCVaultSwap} from "../../lib/contracts/src/applications/aave/interfaces/IBTCVaultSwap.sol";
-import {AaveAdapter} from "../../lib/contracts/src/applications/aave/AaveAdapter.sol";
-import {IAaveOracle} from "../../lib/contracts/lib/aave-v4/src/spoke/interfaces/IAaveOracle.sol";
-import {LiquidationRouter, Types as LiquidationTypes} from "../../src/LiquidationRouter.sol";
+import {IBTCVaultSwap} from "../../lib/tbv-contracts/src/applications/aave/interfaces/IBTCVaultSwap.sol";
+import {AaveAdapter} from "../../lib/tbv-contracts/src/applications/aave/AaveAdapter.sol";
+import {IAaveOracle} from "../../lib/tbv-contracts/lib/aave-v4/src/spoke/interfaces/IAaveOracle.sol";
+import {LiquidationRouter, Types as LiquidationTypes} from "../../contracts/LiquidationRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {UniswapV4Base} from "./base/UniswapV4Base.sol";
 import {console} from "forge-std/console.sol";
@@ -17,7 +17,7 @@ import {
     IPoolManager
 } from "../../lib/v4-periphery/lib/v4-core/src/interfaces/IPoolManager.sol";
 import {TBVHelper} from "./base/TBVHelper.sol";
-import {LiquidationRouter, Types as LiquidationTypes} from "../../src/LiquidationRouter.sol";
+import {LiquidationRouter, Types as LiquidationTypes} from "../../contracts/LiquidationRouter.sol";
 
 contract MorphoFlashLoanTest is UniswapV4Base, TBVHelper {
     address internal ADMIN = vm.addr(69420);

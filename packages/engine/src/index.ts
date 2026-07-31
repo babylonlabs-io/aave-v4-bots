@@ -30,3 +30,18 @@ export {
   createAutoExecutorFromWallet,
   createManualExecutor,
 } from "./executor";
+// The funding seam's *configuration* surface — what a composition root supplies to pick a mode and
+// describe its venues. The strategies themselves, the factory that chooses between them, and the
+// per-candidate plumbing stay inside the package: the engine owns which strategy it runs, and
+// exporting them would let a caller build one and hand it in behind the engine's back.
+export {
+  type FlashFundingParams,
+  type FlashSwapVenue,
+  type FundingParams,
+  type VenueRegistry,
+  type WbtcFlashLoanVenue,
+  VenueSelectionError,
+  assertRegistryValid,
+  buildFundingParams,
+} from "./liquidation/funding";
+export { VenueType } from "@repo/abis";

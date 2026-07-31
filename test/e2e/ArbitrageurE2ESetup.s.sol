@@ -150,7 +150,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
             vm.toString(address(vaultSwap)),
             "\n",
             "CHAIN_ID=",
-            vm.toString(E2EConstants.CHAIN_ID),
+            vm.toString(block.chainid),
             "\n",
             "START_BLOCK=",
             startBlock,

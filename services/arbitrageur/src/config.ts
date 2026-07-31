@@ -18,7 +18,11 @@ import {
   runtimeEnvFields,
   urlSchema,
 } from "@repo/config";
-import type { ArbitrageEngineParams, LiquidationEngineParams } from "@repo/engine";
+import {
+  type ArbitrageEngineParams,
+  type LiquidationEngineParams,
+  buildFundingParams,
+} from "@repo/engine";
 import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { type SignerConfig, buildSignerConfig } from "@repo/signer";
@@ -92,6 +96,17 @@ const envSchema = z.object({
   LLP_ADDRESS: addressSchema.optional().default(ZERO_ADDRESS),
   DEBT_TOKEN_ADDRESSES: addressListSchema.optional(),
   LIQUIDATION_POLLING_INTERVAL_MS: positiveIntSchema.optional().default("12000"),
+
+  // ── Flash funding (liquidation mode only) ──────────────────────────────────────────────
+  // Identical to the liquidator's — the same `LiquidationEngine` runs here, so it is configured
+  // the same way. See services/liquidator/src/config.ts for what each one means.
+  LIQUIDATION_FUNDING: z.enum(["inventory", "flash"]).optional().default("inventory"),
+  LIQUIDATION_ROUTER_ADDRESS: addressSchema.optional(),
+  FLASH_SWAP_VENUE_ADDRESS: addressSchema.optional(),
+  FLASH_SWAP_POOLS: z.string().optional(),
+  WBTC_FLASH_LOAN_ADDRESS: addressSchema.optional(),
+  WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional().default("morpho"),
+  FLASH_MAX_SLIPPAGE_BPS: positiveIntSchema.optional().default("2000"),
 });
 
 /** The liquidation engine's params plus its own poll interval — present iff enabled. */
@@ -161,6 +176,17 @@ export function loadConfig(): Config {
       ? (env.DEBT_TOKEN_ADDRESSES as Address[])
       : undefined;
 
+  // Funding is a property of the liquidation engine, so a flash setup without that engine is
+  // configuration that can never take effect. Rejecting it matches how a half-set ADAPTER/LENS pair
+  // is treated above: the operator asked for something this process will not do.
+  const funding = buildFundingParams(env);
+  if (funding.mode === "flash" && !env.ADAPTER_ADDRESS) {
+    throw new Error(
+      "LIQUIDATION_FUNDING=flash has no effect without the liquidation engine — set ADAPTER_ADDRESS " +
+        "+ LENS_ADDRESS to enable it, or drop the flash configuration."
+    );
+  }
+
   const liquidation: LiquidationRunConfig | undefined =
     env.ADAPTER_ADDRESS && env.LENS_ADDRESS
       ? {
@@ -171,16 +197,18 @@ export function loadConfig(): Config {
           btcRedeemKey: env.BTC_REDEEM_KEY as Hex,
           isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
           llpAddress: env.LLP_ADDRESS as Address,
+          funding,
           ponderUrl,
           txReceiptTimeoutMs,
           pollingIntervalMs: Number.parseInt(env.LIQUIDATION_POLLING_INTERVAL_MS, 10),
         }
       : undefined;
 
-  // Arbitrage-only, a profit floor is fully enforceable; the opt-in liquidation engine is what
-  // makes it unenforceable, so this rejects only that combination.
+  // Arbitrage prices its own actions, so the floor is always enforceable for it. What can make it
+  // unenforceable is an *inventory-funded* liquidation engine, which cannot. A flash-funded one
+  // probes the router and declares a real expected profit, so it does not.
   const risk = buildRiskConfig(env);
-  assertProfitFloorEnforceable(risk, liquidation !== undefined);
+  assertProfitFloorEnforceable(risk, liquidation !== undefined && funding.mode === "inventory");
 
   return {
     ...risk,

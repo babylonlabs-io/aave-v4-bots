@@ -35,6 +35,19 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
     ///         liquidatable — the identical setup both suites run once the
     ///         bot(s) are already polling. Persists the vault id for verify.
     function _setupLiquidatablePosition(AaveAdapterLens lens) internal returns (address borrower, bytes32 vaultId) {
+        return _setupLiquidatablePosition(lens, 40);
+    }
+
+    /// @notice As above, but with the price drop chosen by the caller.
+    /// @dev The drop decides more than "is it liquidatable". It also fixes the debt-to-collateral
+    ///      ratio at liquidation time, and that is what determines whether seizing the borrower's
+    ///      whole (indivisible) vault leaves any value over once the debt is cleared. Excess is what
+    ///      becomes the LLP fairness payment, so a suite that wants to exercise the fairness path
+    ///      needs a drop that lands just inside the liquidatable band rather than far past it.
+    function _setupLiquidatablePosition(AaveAdapterLens lens, uint256 dropPercent)
+        internal
+        returns (address borrower, bytes32 vaultId)
+    {
         uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
 
         // Create borrower and fund with ETH
@@ -67,13 +80,22 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         require(!_isLiquidatable(lens, borrowerProxy), "Position should be healthy initially");
         console.log("Position is healthy");
 
-        // Simulate 40% price drop → liquidatable
         console.log("\n--- Price Drop ---");
+        console.log("Dropping BTC price by (%):", dropPercent);
         vm.startBroadcast(adminPrivateKey);
-        btcPriceFeed.simulatePriceDrop(40);
+        btcPriceFeed.simulatePriceDrop(dropPercent);
         vm.stopBroadcast();
         require(_isLiquidatable(lens, borrowerProxy), "Position should be unhealthy after price drop");
         console.log("Position is unhealthy (liquidatable)");
+
+        // What the liquidation will actually cost, read before any bot can act on it. `wbtcPayment`
+        // is the LLP fairness payment — the value left over once the seized vault has cleared the
+        // debt — and it is the only thing that draws on the WBTC flash-loan venue.
+        (uint256[] memory amounts, uint256 wbtcPayment,) = lens.estimateLiquidation(borrowerProxy, false);
+        for (uint256 i = 0; i < amounts.length; i++) {
+            if (amounts[i] > 0) console.log("  reserve", i, "repay:", amounts[i]);
+        }
+        console.log("  fairness payment (sats):", wbtcPayment);
     }
 
     /// @notice Start a background bot/indexer process, sourcing `envFile`, and

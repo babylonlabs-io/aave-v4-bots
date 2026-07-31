@@ -156,13 +156,21 @@ export function buildRiskConfig(env: RiskEnv): RiskSettings {
  */
 export function assertProfitFloorEnforceable(
   settings: RiskSettings,
-  hasLiquidationEngine: boolean
+  /**
+   * Whether this process runs a liquidation engine that **cannot price its own actions**.
+   *
+   * Only `inventory` funding is unpriced. A flash-funded engine probes the router before sending and
+   * hands the gate a real WBTC `expectedProfit`, so the floor applies to every action and this
+   * guard must not fire — passing `true` for it would reject a config in which the floor works.
+   */
+  hasUnpricedLiquidationEngine: boolean
 ): void {
-  if (settings.risk.minProfit === undefined || !hasLiquidationEngine) return;
+  if (settings.risk.minProfit === undefined || !hasUnpricedLiquidationEngine) return;
   throw new Error(
-    "RISK_MIN_PROFIT is set but this process runs the liquidation engine, which cannot supply an " +
-      "expected profit — the floor would apply to arbitrage only and leave every liquidation " +
-      "ungated. Unset RISK_MIN_PROFIT, or run without the liquidation engine (arbitrageur: unset " +
+    "RISK_MIN_PROFIT is set but this process runs an inventory-funded liquidation engine, which " +
+      "cannot supply an expected profit — the floor would apply to arbitrage only and leave every " +
+      "liquidation ungated. Unset RISK_MIN_PROFIT, switch the liquidation engine to flash funding " +
+      "(LIQUIDATION_FUNDING=flash), or run without the liquidation engine (arbitrageur: unset " +
       "ADAPTER_ADDRESS + LENS_ADDRESS)."
   );
 }

@@ -257,6 +257,19 @@ ADAPTER_ADDRESS=0x...       # AaveAdapter
 LENS_ADDRESS=0x...          # AaveAdapterLens
 WBTC_ADDRESS=0x...
 
+# ====== Funding mode ======
+# inventory (default) repays from this signer's balances; flash repays through LiquidationRouter,
+# which borrows each debt token and repays out of the seized collateral in the same tx.
+# LIQUIDATION_FUNDING=inventory
+# The four below are required together when LIQUIDATION_FUNDING=flash. Enforced both ways: setting
+# them WITHOUT the flag is also a boot error, since the mode is never inferred from their presence.
+# LIQUIDATION_ROUTER_ADDRESS=0x...   # its immutable owner must be this bot's signer
+# FLASH_SWAP_VENUE_ADDRESS=0x...     # the UniswapV4SwapVenue bound to that router
+# FLASH_SWAP_POOLS=0xUSDC:0xWBTC:0xUSDC:3000:60   # one WBTC/<token> pool per debt token
+# WBTC_FLASH_LOAN_ADDRESS=0x...      # funds the LLP fairness payment
+# WBTC_FLASH_LOAN_VENUE=morpho       # morpho | aavev3
+# FLASH_MAX_SLIPPAGE_BPS=2000      # how far the result may decay from the quote before reverting
+
 # ====== Optional ======
 
 # Debt token addresses (comma-separated). If unset, auto-discovered from
@@ -303,8 +316,9 @@ NOTIFIER=none
 
 # Risk gate (unset variables disable their guard)
 # RISK_MAX_CONSECUTIVE_FAILURES=5
-# RISK_MIN_PROFIT is not listed: this service is only the liquidation engine, which supplies no
-# expected profit, so setting it is rejected at boot.
+# RISK_MIN_PROFIT is rejected at boot under LIQUIDATION_FUNDING=inventory (that path supplies no
+# expected profit) and allowed under flash, which probes the router for a real one.
+# RISK_MIN_PROFIT=1000
 # Unset means NO cap. Bounds one poll cycle's burst; the breaker settles on receipts and so cannot
 # stop the cycle already in flight. Size above the largest cascade you want to compete in.
 # RISK_MAX_IN_FLIGHT=25
@@ -335,6 +349,13 @@ METRICS_PORT=9090
 | `LENS_ADDRESS` | AaveAdapterLens address | Yes | — |
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
 | `DEBT_TOKEN_ADDRESSES` | Override auto-discovery (comma-separated) | No | — |
+| `LIQUIDATION_FUNDING` | `inventory` (repay from own balances) or `flash` (repay via LiquidationRouter) | No | `inventory` |
+| `LIQUIDATION_ROUTER_ADDRESS` | LiquidationRouter; its `owner` must be this bot's signer | flash | — |
+| `FLASH_SWAP_VENUE_ADDRESS` | UniswapV4SwapVenue bound to that router | flash | — |
+| `FLASH_SWAP_POOLS` | `token:currency0:currency1:fee:tickSpacing[:hooks]`, comma-separated. Each pool must be WBTC/`<token>` | flash | — |
+| `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | — |
+| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
+| `FLASH_MAX_SLIPPAGE_BPS` | How far the realised profit may fall below the probe's quote before the chain reverts. Derives the on-chain `minWbtcProfit`, and is the only slippage bound in flash mode. Distinct from `RISK_MIN_PROFIT` — see below | No | `2000` |
 | `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | No | `false` |
 | `BTC_REDEEM_KEY` | BTC key vaults are redeemed to in direct mode | direct mode | `bytes32(0)` |
 | `LLP_ADDRESS` | LLP (BTCVaultSwap) address used in LLP mode | LLP mode | `address(0)` |
@@ -371,7 +392,8 @@ METRICS_PORT=9090
 
 `EXECUTION_MODE=AUTO` is the default keeper mode: the process resolves a signer
 from `SIGNER_SOURCE`, signs approvals and liquidation transactions, broadcasts
-them, and waits for receipts.
+them, and waits for receipts. (Under `flash` funding there are no approvals to
+sign — the bot never moves its own tokens.)
 
 `EXECUTION_MODE=MANUAL` is keyless. The bot must have `DATABASE_URL`,
 `MANUAL_EXECUTOR_ADDRESS`, and `MANUAL_EXECUTOR_KIND`; it must not have a signer
@@ -404,19 +426,38 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 
 ### 6.1. Funding Requirements
 
-The liquidator wallet requires:
+What the wallet must hold depends on `LIQUIDATION_FUNDING`.
+
+**`inventory` (default)** — the bot repays from its own balances:
 
 | Asset | Purpose | Notes |
 |-------|---------|-------|
 | **ETH** | Transaction gas | Monitor balance for continuous operation |
-| **Debt Tokens** | Repay borrower debt during liquidation | USDC, USDT, etc. |
+| **Debt Tokens** | Repay borrower debt during liquidation | USDC, USDT, etc. A position larger than your balance is skipped |
+| **WBTC** | LLP fairness payment, and the redemption fee in direct mode | Pulled from `msg.sender` by the adapter |
 
-> **Note**: Flash loan support is planned for a future release, which will allow liquidators
-> to borrow debt tokens from liquidity venues without upfront capital requirements.
+**`flash`** — `LiquidationRouter` borrows each debt token from a venue and repays that venue out of
+the seized collateral within the same transaction, so the wallet holds no trading inventory at all:
+
+| Asset | Purpose | Notes |
+|-------|---------|-------|
+| **ETH** | Transaction gas | The only balance the bot needs |
+
+Two things to get right in `flash` mode instead of funding the wallet:
+
+- The router's immutable `owner` must be this bot's signer. The router accepts calls from nobody
+  else, and sweeps all profit to it — so profit accrues to the signer as WBTC, and the wallet's
+  WBTC balance grows rather than being spent.
+- Each entry in `FLASH_SWAP_POOLS` must be a WBTC/`<debtToken>` pool with enough depth that a
+  liquidation-sized swap does not move the price past `FLASH_MAX_SLIPPAGE_BPS`. The venue is a flash
+  *swap*: it repays in the pool's other side. A thin pool does not fail loudly — the bot correctly
+  declines the liquidation as unprofitable, which looks like the bot doing nothing.
 
 **Recommended monitoring:**
 - Set up alerts for low ETH balance
-- Monitor debt token balances via `liquidator_token_balance` metric
+- Under `inventory` funding, monitor debt token balances via `liquidator_token_balance`. Under
+  `flash` those balances are not funding capacity, so do not alert on them being low — alert on
+  liquidations failing instead
 - In MANUAL mode, monitor proposals with `operator-cli list` and Slack/log notifications
 
 ## 7. Starting the Service

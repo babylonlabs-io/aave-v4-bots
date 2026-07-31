@@ -115,10 +115,8 @@ async function startLiquidationEngine(
   });
 
   liqLogger.info(`Liquidation engine enabled (execution: ${executor.mode})`);
-  if (!params.debtTokenAddresses) {
-    await engine.discoverDebtTokens();
-  }
-  await engine.ensureApproval();
+  // Discovery + mode-appropriate setup; see the liquidator's equivalent.
+  await engine.prepare();
   await engine.logBalances();
 
   const poll = async () => {

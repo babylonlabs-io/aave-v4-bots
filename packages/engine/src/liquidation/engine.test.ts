@@ -118,7 +118,7 @@ function createMockClients() {
 
 /**
  * A pre-seeded pass-through allocator: hands out nonce 0 and treats `resync` as a no-op. For tests
- * that drive a send path directly (e.g. `ensureApproval`) without a `run()` to seed the lease from
+ * that drive a send path directly (e.g. `prepare`) without a `run()` to seed the lease from
  * the chain; `run()`-based tests keep the default real allocator, seeded from `getTransactionCount`.
  */
 const passthroughNonces = (): NonceAllocator => ({
@@ -696,7 +696,10 @@ describe("LiquidationEngine", () => {
     });
   });
 
-  describe("ensureApproval()", () => {
+  // Approving the adapter is inventory-funding behaviour: it exists because the signer's own tokens
+  // pay. It is reached through the engine's `prepare()`. These pass `debtTokenAddresses`, so
+  // `prepare()` skips discovery and goes straight to the approvals.
+  describe("prepare() approvals", () => {
     it("approves when allowance is below threshold", async () => {
       const clients = createMockClients();
       // Return low allowance
@@ -707,7 +710,7 @@ describe("LiquidationEngine", () => {
         nonces: passthroughNonces(),
       });
 
-      await bot.ensureApproval();
+      await bot.prepare();
 
       expect(clients.publicClient.readContract).toHaveBeenCalled();
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
@@ -726,7 +729,7 @@ describe("LiquidationEngine", () => {
         debtTokenAddresses: ["0xtoken1" as `0x${string}`],
       });
 
-      await bot.ensureApproval();
+      await bot.prepare();
 
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
@@ -748,7 +751,7 @@ describe("LiquidationEngine", () => {
       // WBTC approval is unconditional — the adapter pulls WBTC from msg.sender
       // for fairness + direct-redemption fee, independent of whether WBTC is a
       // borrowable debt token on the Spoke.
-      await bot.ensureApproval();
+      await bot.prepare();
 
       expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
       expect(clients.walletClient.writeContract).toHaveBeenCalledWith(

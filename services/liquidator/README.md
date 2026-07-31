@@ -15,10 +15,12 @@ against the AaveAdapter contract.
 
 1. **Discover debt tokens** — at boot, either reads `DEBT_TOKEN_ADDRESSES` or
    enumerates the Spoke's reserves and selects those flagged borrowable.
-2. **Approve** — once at boot, sets `MAX_UINT256` allowance on every debt
-   token and on WBTC for the AaveAdapter contract. WBTC approval is required
-   because the adapter pulls the fairness payment and direct-redemption fee
-   directly from `msg.sender` during liquidation.
+2. **Approve** — under `LIQUIDATION_FUNDING=inventory` (the default), once at
+   boot, sets `MAX_UINT256` allowance on every debt token and on WBTC for the
+   AaveAdapter contract. WBTC approval is required because the adapter pulls
+   the fairness payment and direct-redemption fee directly from `msg.sender`
+   during liquidation. Under `flash` funding this step is a no-op — the bot
+   moves none of its own tokens, so it grants no allowances.
 3. **Poll** — fetches `/liquidatable-positions` from the indexer every
    `POLLING_INTERVAL_MS`.
 4. **Estimate** — for each candidate, calls
@@ -27,8 +29,9 @@ against the AaveAdapter contract.
    are bumped by 1% to absorb interest accrued between estimate and
    broadcast. `wbtcPayment` is informational — the adapter pulls it from
    `msg.sender`, so the bot only needs sufficient WBTC balance and approval.
-5. **Simulate** — simulates every candidate against the adapter; drops any
-   that revert.
+5. **Vet** — under `inventory` funding, simulates every candidate against the
+   adapter and drops any that revert. Under `flash` funding this is a probe of
+   `LiquidationRouter` that also returns the WBTC profit the candidate yields.
 6. **Liquidate** — calls one of two adapter functions depending on
    `IS_DIRECT_REDEMPTION`:
    - `IS_DIRECT_REDEMPTION=true` →
@@ -44,6 +47,12 @@ against the AaveAdapter contract.
      does not request any LLP-side payout in this tx.
 
 `priorityOrder` is always `[0, 1, …, n-1]`.
+
+Under `LIQUIDATION_FUNDING=flash` step 6 targets `LiquidationRouter.liquidate`
+instead of the adapter. The router borrows each debt token, performs the same
+adapter call on the bot's behalf, repays the venues from the seized collateral
+and sweeps the remaining WBTC to its `owner` — which must be this bot's signer.
+The redemption mode still applies; it is what the router calls underneath.
 
 ## Liquidation Flow
 
@@ -82,7 +91,7 @@ the Hub draw.
 ```bash
 # Required ---------------------------------------------------------------
 
-# Private key of liquidator (needs debt tokens)
+# Private key of liquidator (needs debt tokens under inventory funding; gas only under flash)
 LIQUIDATOR_PRIVATE_KEY=0x...
 
 # Ponder API URL
@@ -101,6 +110,18 @@ LENS_ADDRESS=0x...
 WBTC_ADDRESS=0x...
 
 # Optional ---------------------------------------------------------------
+
+# Funding mode: inventory (default) repays from this signer's balances; flash
+# repays through LiquidationRouter and needs no debt-token inventory at all.
+# The four below are required together when LIQUIDATION_FUNDING=flash.
+# See env.liquidator.example for the full explanation of each.
+# LIQUIDATION_FUNDING=inventory
+# LIQUIDATION_ROUTER_ADDRESS=0x...
+# FLASH_SWAP_VENUE_ADDRESS=0x...
+# FLASH_SWAP_POOLS=0xUSDC:0xWBTC:0xUSDC:3000:60
+# WBTC_FLASH_LOAN_ADDRESS=0x...
+# WBTC_FLASH_LOAN_VENUE=morpho
+# FLASH_MAX_SLIPPAGE_BPS=2000
 
 # Comma-separated debt tokens. If unset, auto-discovered from the Spoke.
 # DEBT_TOKEN_ADDRESSES=0xUSDC...,0xUSDT...

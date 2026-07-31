@@ -119,6 +119,15 @@ export interface RiskGate {
   /** Actions currently in flight (allowed slots not yet settled). */
   inFlight(): number;
   /**
+   * The configured profit floor, or `undefined` when unset.
+   *
+   * Exposed because the gate's own check happens *before* the transaction is sent and stops
+   * constraining anything once it is in the mempool. An execution path that can carry a floor
+   * on-chain — flash funding writes one into `minWbtcProfit` — needs to read this to keep the
+   * operator's declared minimum true at execution rather than only at admission.
+   */
+  minProfit(): bigint | undefined;
+  /**
    * Tell the gate the signer's spendable balance of `token`, from a fresh chain read. Authoritative:
    * it replaces the previous figure and clears what the gate had counted as spent since the last
    * one, so drift from inflows (liquidation payouts, redemptions, transfers in) self-corrects every

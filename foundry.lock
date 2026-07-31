@@ -1,5 +1,5 @@
 {
-  "lib/contracts": {
+  "lib/tbv-contracts": {
     "rev": "fb282d740f478c4b1d0e6b0849356f387b0c1136"
   },
   "lib/universal-router": {
@@ -10,8 +10,5 @@
   },
   "lib/v4-periphery": {
     "rev": "363226d9e1e2180b67bf6857023dbaad751010c5"
-  },
-  "src/contracts": {
-    "rev": "04b4a2bdce1fd49ac270d91546b276f6c4fff9f3"
   }
 }

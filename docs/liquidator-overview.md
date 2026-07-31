@@ -129,6 +129,54 @@ Liquidator              Lens                AaveAdapter              Spoke / LLP
 > requires `LLP_ADDRESS` to be the BTCVaultSwap deployment; the Adapter
 > rejects `address(0)`.
 
+### Funding Modes
+
+Set by `LIQUIDATION_FUNDING`. This is a separate axis from the redemption
+mode above — funding decides where the repayment money comes from,
+redemption decides what the liquidator gets back. All four combinations
+are valid.
+
+| Mode | Contract called | Repayment source | Signer must hold |
+|------|-----------------|------------------|------------------|
+| `inventory` (default) | `AaveAdapter` | The signer's own token balances | Debt tokens + WBTC + gas |
+| `flash` | `LiquidationRouter` | Borrowed per debt token, repaid from the seized collateral in the same tx | Gas only |
+
+Under `flash`, the router borrows each debt token from the venue named in
+`FLASH_SWAP_POOLS`, liquidates, and repays that venue out of what it
+seized — all within one transaction, so nothing is owed after it lands.
+The WBTC fairness payment is covered by a separate flash *loan*
+(`WBTC_FLASH_LOAN_ADDRESS`), repaid in WBTC. Profit is swept to the
+router's `owner`, which must be the bot's signer.
+
+Two consequences worth knowing before switching:
+
+- **The profit floor becomes usable.** `flash` probes the router before
+  sending and gets back a real WBTC profit, so `RISK_MIN_PROFIT` gates
+  every liquidation. Under `inventory` it is rejected at boot, because
+  that path cannot price its own actions.
+- **`FLASH_MAX_SLIPPAGE_BPS` and `RISK_MIN_PROFIT` are different
+  floors, and you want both.** `RISK_MIN_PROFIT` is *absolute*, checked
+  *off-chain before sending* — "is this opportunity worth attempting?"
+  `FLASH_MAX_SLIPPAGE_BPS` is *relative to the probe's quote* and is
+  enforced *on-chain at execution* via `minWbtcProfit` — "how far may
+  the result decay before it must revert?" The off-chain check stops
+  constraining anything the moment the transaction is broadcast, and the
+  flash swap fills at whatever price the pool gives, so the on-chain
+  bound is the only protection against a thin or moved pool. Neither
+  substitutes for the other: an absolute floor is no slippage bound on a
+  large position (1,000 sats would let a 4,000,000-sat quote settle at
+  1,000), and a relative one never says a trade is too small to be worth
+  the gas. When both are set the on-chain floor is whichever binds
+  harder, so an action the gate admitted cannot settle below the
+  operator's declared minimum.
+- **The WBTC flash loan is not an edge case.** BTC vaults are
+  indivisible, so a liquidation seizes whole vaults; whatever the seized
+  vault is worth beyond the debt is owed back to the borrower as the LLP
+  fairness payment, which the adapter pulls from the router in WBTC.
+  Only a position deep enough underwater to consume its vault entirely
+  avoids one, which is why `WBTC_FLASH_LOAN_ADDRESS` is required rather
+  than situational.
+
 ## Liquidation Bot
 
 The bot automates monitoring and execution.
@@ -148,24 +196,31 @@ The bot automates monitoring and execution.
 1. **Discover debt tokens** — at boot, either reads
    `DEBT_TOKEN_ADDRESSES` or enumerates Spoke reserves and selects
    those flagged borrowable.
-2. **Approve** — ensures `MAX_UINT256` allowance on every
-   debt token and on WBTC for the AaveAdapter. WBTC approval is
-   required because the adapter pulls the fairness payment and, in
-   direct mode, the redemption fee directly from `msg.sender`. In
-   `AUTO` mode the bot signs the approval; in `MANUAL` mode it
-   proposes the approval for the operator to sign.
+2. **Approve** — under `inventory` funding, ensures `MAX_UINT256`
+   allowance on every debt token and on WBTC for the AaveAdapter. WBTC
+   approval is required because the adapter pulls the fairness payment
+   and, in direct-redemption mode, the redemption fee directly from
+   `msg.sender`. In `AUTO` mode the bot signs the approval; in `MANUAL`
+   mode it proposes the approval for the operator to sign.
+   Under `flash` funding this step does nothing: the bot never moves its
+   own tokens, so it grants no allowances.
 3. **Poll** — fetches `/liquidatable-positions` from Ponder every
    `POLLING_INTERVAL_MS`.
 4. **Estimate** — calls
    `AaveAdapterLens.estimateLiquidation(proxy, isDirectRedemption)` per
    candidate; bumps each amount by 1%.
-5. **Simulate** — simulates every candidate against the Adapter; drops
-   reverts.
-6. **Liquidate** — calls `liquidate` or `liquidateWithLLP` based on
-   `IS_DIRECT_REDEMPTION`. In `AUTO` mode the bot signs and
-   broadcasts with the configured signer. In `MANUAL` mode it writes a
-   content-hashed proposal to the Postgres StateStore and notifies an
-   operator, who reviews and broadcasts it with `operator-cli`.
+5. **Vet** — under `inventory` funding, simulates every candidate
+   against the Adapter and drops reverts. Under `flash` funding this is
+   a *probe* of `LiquidationRouter` instead, which both proves the
+   candidate executable and returns the WBTC profit it would yield.
+6. **Liquidate** — under `inventory` funding, calls `liquidate` or
+   `liquidateWithLLP` on the Adapter based on `IS_DIRECT_REDEMPTION`.
+   Under `flash` funding, calls `LiquidationRouter.liquidate` instead,
+   which borrows, liquidates, repays and sweeps the profit in one
+   transaction. In `AUTO` mode the bot signs and broadcasts with the
+   configured signer. In `MANUAL` mode it writes a content-hashed
+   proposal to the Postgres StateStore and notifies an operator, who
+   reviews and broadcasts it with `operator-cli`.
 
 ### Configuration
 
@@ -177,6 +232,13 @@ The bot automates monitoring and execution.
 | `LENS_ADDRESS` | AaveAdapterLens address | Yes | — |
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
 | `DEBT_TOKEN_ADDRESSES` | Comma-separated; auto-discovered if unset | No | — |
+| `LIQUIDATION_FUNDING` | `inventory` (repay from own balances) or `flash` (repay via `LiquidationRouter`). The only thing that selects the mode — the flash variables below are never inferred from | No | `inventory` |
+| `LIQUIDATION_ROUTER_ADDRESS` | LiquidationRouter; its `owner` must be this bot's signer | flash | — |
+| `FLASH_SWAP_VENUE_ADDRESS` | UniswapV4SwapVenue bound to that router | flash | — |
+| `FLASH_SWAP_POOLS` | `token:currency0:currency1:fee:tickSpacing[:hooks]`; each must be WBTC/`<token>` | flash | — |
+| `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | — |
+| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
+| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the quote before the chain reverts; derives `minWbtcProfit` | No | `2000` |
 | `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | No | `false` |
 | `BTC_REDEEM_KEY` | BTC key for direct mode (must be non-zero) | direct mode | `bytes32(0)` |
 | `LLP_ADDRESS` | LLP (BTCVaultSwap) address for LLP mode (must be non-zero) | LLP mode | `address(0)` |
@@ -197,7 +259,7 @@ The bot automates monitoring and execution.
 | `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
 | `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. **Not usable here** — no expected-profit source for liquidations, so it is rejected at boot (#27) | must be unset | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. Rejected at boot under `LIQUIDATION_FUNDING=inventory` (no expected-profit source, #27); allowed under `flash`, which probes the router for one | inventory: must be unset | — |
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Maximum source data age | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
@@ -212,9 +274,13 @@ The bot automates monitoring and execution.
 
 ### Requirements
 
-- **Debt Tokens** — sufficient balance to repay positions (unless using
-  flash loans).
-- **ETH** — for transaction gas.
+- **Debt Tokens** — under `LIQUIDATION_FUNDING=inventory`, sufficient
+  balance to repay positions. Under `flash`, none: `LiquidationRouter`
+  borrows each debt token and repays it from the seized collateral in
+  the same transaction.
+- **WBTC** — under `inventory`, to cover the LLP fairness payment.
+  Under `flash` it is borrowed too.
+- **ETH** — for transaction gas. The only requirement in `flash` mode.
 - **Infrastructure** — reliable RPC access.
 
 ## Contract Interfaces
