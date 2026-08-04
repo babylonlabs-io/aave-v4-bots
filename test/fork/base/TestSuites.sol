@@ -13,6 +13,10 @@ abstract contract TestSuites {
 
     address internal constant MORPHO_BLUE = address(0xd011EE229E7459ba1ddd22631eF7bF528d424A14);
 
+    address internal constant WBTC = address(0x504579d0424B7B7cB4b17e16626f6A2f67bCa054);
+
+    address internal constant TESTNET_VK = address(0x9814d7f1B125bDB4fcEd6234439dD73fa14473a6);
+
     address[] internal DEBT_TOKENS_TESTNET = [
         address(0xB588C1bd8A6cd3F114A52a0AD916778B419ECf48), // USDC
         address(0xCFf21358114814258635524588f74521762A6c04) // USDT
@@ -25,8 +29,8 @@ abstract contract TestSuites {
         debtTokens: DEBT_TOKENS_TESTNET
     });
 
-    Types.TestParams[] internal LIQUIDATION_TESTS = [
-        Types.TestParams({
+    Types.LiquidationTestParams[] internal LIQUIDATION_TESTS = [
+        Types.LiquidationTestParams({
             tbvContracts: TBV_CONTRACTS_TESTNET,
             liquidation: Types.Liquidation({
                 network: "sepolia",
@@ -35,7 +39,7 @@ abstract contract TestSuites {
                 hasFairnessPayment: false
             })
         }),
-        Types.TestParams({
+        Types.LiquidationTestParams({
             tbvContracts: TBV_CONTRACTS_TESTNET,
             liquidation: Types.Liquidation({
                 network: "sepolia",
@@ -45,4 +49,27 @@ abstract contract TestSuites {
             })
         })
     ];
+
+    Types.ArbitrageTestParams[] internal ARBITRAGE_TESTS = [Types.ArbitrageTestParams({
+            tbvContracts: TBV_CONTRACTS_TESTNET,
+            arbitrage: Types.Arbitrage({
+                network: "sepolia",
+                blockNumber: 11130572,
+                vaultIds: _packBytes32(
+                    bytes32(0xa3294989d32183ed173cae7c4d3f8ead982133350a44160dc593d0640b6c64eb),
+                    bytes32(0x7ad0bd5d0344bd467f9d58f7107ab96fd079ac930f761a083f444ccd4099347a)
+                )
+            })
+        })];
+
+    function _packBytes32(bytes32 a) internal pure returns (bytes32[] memory arr) {
+        arr = new bytes32[](1);
+        arr[0] = a;
+    }
+
+    function _packBytes32(bytes32 a, bytes32 b) internal pure returns (bytes32[] memory arr) {
+        arr = new bytes32[](2);
+        arr[0] = a;
+        arr[1] = b;
+    }
 }
