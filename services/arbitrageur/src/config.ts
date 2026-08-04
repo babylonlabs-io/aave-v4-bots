@@ -1,16 +1,20 @@
+import type { RetryConfig } from "@repo/chain";
 import {
   type ExecutionSettings,
+  type IndexerSettings,
   type NotifierSettings,
   type RiskSettings,
   addressListSchema,
   addressSchema,
   assertProfitFloorEnforceable,
   buildExecutionConfig,
+  buildIndexerConfig,
   buildNotifierConfig,
   buildPersistenceConfig,
   buildRiskConfig,
   buildSecretsConfig,
   bytes32Schema,
+  indexerEnvFields,
   nonNegativeIntSchema,
   parseEnv,
   positiveIntSchema,
@@ -48,6 +52,9 @@ const envSchema = z.object({
   // Risk gate thresholds + kill-switch (all optional; unset ⇒ the guard is off, which is the
   // pre-existing permissive behavior). One gate is shared by BOTH engines this process runs.
   ...riskEnvFields,
+
+  // Indexer-liveness thresholds. Unset ⇒ the guard is off.
+  ...indexerEnvFields,
 
   // Required
   PONDER_URL: urlSchema,
@@ -118,7 +125,9 @@ export type LiquidationRunConfig = LiquidationEngineParams & { pollingIntervalMs
 // The engine's domain params (addresses, ponder URL, slippage, delays, tx
 // timeout) are declared in `@repo/engine` and inherited here; this interface
 // only adds the composition-root fields the service needs to wire the engine up.
-export interface Config extends ArbitrageEngineParams, RiskSettings {
+export interface Config extends ArbitrageEngineParams, RiskSettings, IndexerSettings {
+  /** Indexer base URL — the composition root builds the client, health probe and ready wait from it. */
+  ponderUrl: string;
   // RPC endpoint the bot's viem clients connect to
   rpcUrl: string;
 
@@ -132,6 +141,8 @@ export interface Config extends ArbitrageEngineParams, RiskSettings {
   retryMaxAttempts: number;
   retryInitialDelayMs: number;
   retryMaxDelayMs: number;
+  /** The three above, assembled — what both engines actually take. */
+  retryConfig: RetryConfig;
 
   // Where secrets are resolved from, and how the signer is obtained. Resolved into a
   // `SecretsProvider` + `Signer` at boot (index.ts); no key material lives in `Config`.
@@ -171,6 +182,15 @@ export function loadConfig(): Config {
   const ponderUrl = env.PONDER_URL;
   const txReceiptTimeoutMs = Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10);
 
+  // Assembled once: both the arbitrage engine and the opt-in liquidation engine read the same
+  // indexer, so they retry it the same way.
+  const retryConfig = {
+    maxAttempts: Number.parseInt(env.RETRY_MAX_ATTEMPTS, 10),
+    initialDelayMs: Number.parseInt(env.RETRY_INITIAL_DELAY_MS, 10),
+    maxDelayMs: Number.parseInt(env.RETRY_MAX_DELAY_MS, 10),
+    backoffMultiplier: 2,
+  };
+
   const debtTokenAddresses =
     env.DEBT_TOKEN_ADDRESSES && env.DEBT_TOKEN_ADDRESSES.length > 0
       ? (env.DEBT_TOKEN_ADDRESSES as Address[])
@@ -198,7 +218,6 @@ export function loadConfig(): Config {
           isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
           llpAddress: env.LLP_ADDRESS as Address,
           funding,
-          ponderUrl,
           txReceiptTimeoutMs,
           pollingIntervalMs: Number.parseInt(env.LIQUIDATION_POLLING_INTERVAL_MS, 10),
         }
@@ -212,6 +231,7 @@ export function loadConfig(): Config {
 
   return {
     ...risk,
+    ...buildIndexerConfig(env),
     ponderUrl,
     rpcUrl: env.CLIENT_RPC_URL,
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,
@@ -221,6 +241,7 @@ export function loadConfig(): Config {
     vaultProcessingDelayMs: Number.parseInt(env.VAULT_PROCESSING_DELAY_MS, 10),
     maxSlippageBps: Number.parseInt(env.MAX_SLIPPAGE_BPS, 10),
     metricsPort: Number.parseInt(env.METRICS_PORT, 10),
+    retryConfig,
     retryMaxAttempts: Number.parseInt(env.RETRY_MAX_ATTEMPTS, 10),
     retryInitialDelayMs: Number.parseInt(env.RETRY_INITIAL_DELAY_MS, 10),
     retryMaxDelayMs: Number.parseInt(env.RETRY_MAX_DELAY_MS, 10),

@@ -10,3 +10,4 @@
 export { type MetricsRegistry, createMetricsRegistry } from "./registry";
 export { createLiquidationMetrics } from "./liquidation";
 export { createArbitrageMetrics } from "./arbitrage";
+export { createIndexerMetrics } from "./indexer";

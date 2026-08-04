@@ -43,7 +43,7 @@ packages/  ── @repo/*, one concern each
                   pure decision math (amount buffering, slippage caps, priority ordering, reserve checks)
   ── chain IO ─────────────────────────────────────────────────────────────────────────
   abis            hand-maintained contract ABIs (spoke, adapter, lens, vaultSwap, safe, erc20)
-  chain           retry-with-backoff, instrumented HTTP transport, generic chain reads, and ERC-20
+  chain           retry-with-backoff, the instrumented HTTP transport that owns RPC retry, chain reads, and ERC-20
                   balances / allowances / approvals + cached token metadata
   execution       nonce authority (shared allocator + lease), receipt waiting, tx signing
   ── identity & durability ────────────────────────────────────────────────────────────

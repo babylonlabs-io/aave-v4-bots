@@ -1,4 +1,4 @@
-import { type PoolKey, VenueType, encodePoolKey, poolKeyAbiParameters } from "@repo/abis";
+import { type PoolKey, VenueType, encodePoolKey } from "@repo/abis";
 import type { Address } from "viem";
 import { decodeAbiParameters } from "viem";
 import { describe, expect, it } from "vitest";

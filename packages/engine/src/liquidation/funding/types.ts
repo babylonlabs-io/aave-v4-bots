@@ -3,7 +3,7 @@ import type { ContractCall } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { RiskAction, RiskGate } from "@repo/risk";
 import type { Address, Hex, PublicClient } from "viem";
-import type { Executor } from "../../executor";
+import type { Executor } from "../../shared/executor";
 import type { LiquidatablePosition } from "../types";
 import type { VenueRegistry } from "./venues";
 

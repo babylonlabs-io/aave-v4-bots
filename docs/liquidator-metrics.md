@@ -9,7 +9,7 @@ when `RISK_CONTROL_TOKEN_REF` is set; it is not mounted on the metrics port.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `eth_rpc_calls_total` | Counter | `method` | Outbound JSON-RPC calls, incremented by the instrumented HTTP transport |
+| `eth_rpc_calls_total` | Counter | `method` | Outbound JSON-RPC **attempts**, incremented by the instrumented HTTP transport. Counted per HTTP request, so a call the transport retries increments once per attempt — which is what the provider bills, and what makes a flapping endpoint visible |
 
 ## Liquidator Metrics
 
@@ -50,14 +50,21 @@ following label values:
 
 | Label Value | Trigger |
 |-------------|---------|
-| `poll_error` | Exception escaped the poll cycle |
+| `poll_error` | Exception escaped the poll cycle — candidate fetch, simulation or funding |
+| `batch_error` | Exception escaped the send batch: broadcasting, receipt waiting or outcome recording |
 | `ponder_fetch_error` | Failed to fetch `/liquidatable-positions` from Ponder |
 | `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate |
+| `flash_probe_error` | The flash-funding probe threw for a candidate (`LIQUIDATION_FUNDING=flash` only) — a malfunction, not a "not fundable" verdict |
 | `risk_blocked` | Risk gate denied the action before execution |
 | `intent_in_flight` | A live persisted intent/proposal already exists for the position |
 | `tx_send_error` | Failed to broadcast the liquidation transaction |
-| `tx_reverted` | Transaction reverted on-chain (also bumps `liquidations_failed_total`) |
+| `tx_reverted` | Transaction reverted on-chain and the position is still open (also bumps `liquidations_failed_total`) |
+| `race_lost` | Transaction reverted but the position was already gone — another liquidator won. Ordinary competition: does not feed the breaker or `liquidations_failed_total` |
 | `receipt_fetch_error` | Failed to fetch transaction receipt (also bumps `liquidations_failed_total`) |
+
+`poll_error` and `batch_error` split the cycle at the point of no return: before
+it nothing was broadcast, after it transactions may be in flight. A spike in the
+second is the one that can leave unresolved intents.
 
 ## Health Endpoints
 
@@ -69,5 +76,9 @@ following label values:
 
 `status` is `healthy` iff both Ponder and RPC are reachable, `degraded`
 if exactly one is, and `unhealthy` if neither is. The Ponder probe
-hits `${PONDER_URL}/positions`, which scans every row in the indexer's
-position table — a non-trivial cost on aggressive probe intervals.
+hits `${PONDER_URL}/ready`, Ponder's own readiness signal: 503 while historical
+indexing is still running, 200 once it completes. Note what that does *not*
+cover — the flag is one-way, so an indexer that finishes backfilling and later
+stops advancing still answers 200 here. Falling behind the chain is caught by
+the lag guard (`INDEXER_MAX_LAG_BLOCKS`), which halts the risk gate rather than
+failing this probe.

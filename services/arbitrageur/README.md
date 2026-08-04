@@ -108,7 +108,7 @@ WBTC_ADDRESS=0x...
 # Retry config for Ponder fetches and on-chain reads
 # RETRY_MAX_ATTEMPTS=3
 # RETRY_INITIAL_DELAY_MS=1000
-# RETRY_MAX_DELAY_MS=30000
+# RETRY_MAX_DELAY_MS=30000   # indexer reads only; viem's RPC backoff is uncapped
 
 # Receipt wait timeout (default: 120000 ms)
 # TX_RECEIPT_TIMEOUT_MS=120000
@@ -135,6 +135,9 @@ The client exposes an HTTP server on `METRICS_PORT` (default 9091):
   reachable; 503 otherwise.
 - `GET /metrics` — Prometheus exposition.
 
-The Ponder reachability probe hits `${PONDER_URL}/escrowed-vaults`, which
+The Ponder readiness probe hits `${PONDER_URL}/ready` — Ponder's own signal, 503 until historical
+indexing completes. It says nothing about an indexer that finished backfilling and later stopped
+advancing: that is the lag guard's job (`INDEXER_MAX_LAG_BLOCKS`). Probing a data route such as
+`${PONDER_URL}/escrowed-vaults` instead would answer 200 in both cases, and
 runs the full on-chain enrichment. Aggressive probe intervals will drive
 RPC traffic.

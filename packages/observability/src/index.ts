@@ -18,4 +18,5 @@ export {
   createMetricsRegistry,
   createLiquidationMetrics,
   createArbitrageMetrics,
+  createIndexerMetrics,
 } from "./metrics";

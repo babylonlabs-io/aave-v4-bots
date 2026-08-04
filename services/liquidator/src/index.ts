@@ -4,12 +4,12 @@ import { config as dotenvConfig } from "dotenv";
 // Load .env.liquidator from root directory
 dotenvConfig({ path: resolve(process.cwd(), ".env.liquidator") });
 
+import { createIndexer } from "@repo/engine";
 import { createLogger } from "@repo/logger";
-import { updateLastPollTime } from "@repo/observability";
 import { startRuntime } from "@repo/runtime";
 import { LiquidationBot } from "./bot";
 import { type Config, loadConfig } from "./config";
-import { getMetrics, getMetricsContentType, recordRpcCall } from "./metrics";
+import { getMetrics, getMetricsContentType, indexerMetrics, recordRpcCall } from "./metrics";
 
 const logger = createLogger({ prefix: "[Bot] " });
 
@@ -24,11 +24,45 @@ async function createBot(config: Config): Promise<LiquidationBot> {
     observability: {
       port: config.metricsPort,
       ponderUrl: config.ponderUrl,
-      ponderHealthEndpoint: "/positions",
+      // Ponder's own readiness, not a data route: a wedged indexer still answers `/positions`
+      // with a stale 200, which is exactly the state this probe must not call healthy.
+      ponderHealthEndpoint: "/ready",
       getMetrics,
       getMetricsContentType,
     },
   });
+
+  // ONE indexer for the process: the reads and the liveness verdict, built from the base URL and
+  // the process retry policy, so nothing can read it with a different policy — or unchecked.
+  const indexer = createIndexer({
+    baseUrl: config.ponderUrl,
+    retry: config.retryConfig,
+    chainId: executor.identity.chainId,
+    getRpcHead: () => publicClient.getBlockNumber(),
+    risk,
+    logger,
+    metrics: indexerMetrics,
+    config: config.indexer,
+  });
+
+  // Refuse to trade on a half-built worldview. During backfill the candidate list is arbitrarily
+  // incomplete and the lag guard cannot see it, because the checkpoint is legitimately old.
+  //
+  // Opt-in: unset ⇒ start immediately. Waiting is a constraint on *startup*, so a deployment whose
+  // backfill legitimately runs long chooses it rather than inheriting it from a default.
+  const readyTimeoutMs = config.indexer.readyTimeoutMs;
+  if (
+    readyTimeoutMs !== undefined &&
+    !(await indexer.waitUntilReady({
+      timeoutMs: readyTimeoutMs,
+      onWaiting: () =>
+        logger.info("Waiting for the indexer to finish backfilling before trading..."),
+    }))
+  ) {
+    throw new Error(
+      `Indexer at ${config.ponderUrl} was not ready within ${readyTimeoutMs}ms — refusing to trade on partially indexed history.`
+    );
+  }
 
   return new LiquidationBot({
     risk,
@@ -41,7 +75,7 @@ async function createBot(config: Config): Promise<LiquidationBot> {
     btcRedeemKey: config.btcRedeemKey,
     isDirectRedemption: config.isDirectRedemption,
     llpAddress: config.llpAddress,
-    ponderUrl: config.ponderUrl,
+    indexer,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
     funding: config.funding,
   });
@@ -89,7 +123,6 @@ async function main() {
       } catch (error) {
         logger.error("Unexpected error in poll cycle:", error);
       }
-      updateLastPollTime();
       logger.info("---");
       await new Promise((r) => setTimeout(r, config.pollingIntervalMs));
     }

@@ -9,7 +9,7 @@ when `RISK_CONTROL_TOKEN_REF` is set; it is not mounted on the metrics port.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `eth_rpc_calls_total` | Counter | `method` | Outbound JSON-RPC calls, incremented by the instrumented HTTP transport |
+| `eth_rpc_calls_total` | Counter | `method` | Outbound JSON-RPC **attempts**, incremented by the instrumented HTTP transport. Counted per HTTP request, so a call the transport retries increments once per attempt — which is what the provider bills, and what makes a flapping endpoint visible |
 
 ## Arbitrageur Metrics
 
@@ -41,13 +41,15 @@ following label values:
 |-------------|---------|
 | `poll_error` | Exception escaped the poll cycle |
 | `ponder_fetch_error` | Failed to fetch `/escrowed-vaults` from Ponder |
-| `vault_skipped` | Vault not in escrow at preview time, or `isProfitable=false` |
+| `vault_skipped` | Vault not in escrow at preview time, or its previewed profit was zero |
 | `risk_blocked` | Risk gate denied the action before execution |
 | `intent_in_flight` | A live persisted intent/proposal already exists for the vault |
 | `gas_estimation_failed` | `estimateContractGas` for the swap reverted |
 | `swap_send_error` | Executor failed or aborted while committing the swap |
 | `tx_timeout` | Receipt wait exceeded `TX_RECEIPT_TIMEOUT_MS` |
-| `swap_reverted` | Receipt status was `reverted` |
+| `swap_reverted` | Receipt status was `reverted` and the vault is still in escrow |
+| `race_lost` | The vault was gone before acquisition (gas estimation) or after a reverted swap — another arbitrageur won. Ordinary competition: does not feed the breaker |
+| `receipt_fetch_error` | Failed to fetch transaction receipt; the transaction's fate is unknown and the intent stays live for reconcile |
 | `contract_revert` | `writeContract` rejected with a `ContractFunctionRevertedError` |
 | `acquire_error` | Other unhandled exception during acquisition |
 
@@ -61,6 +63,10 @@ following label values:
 
 `status` is `healthy` iff both Ponder and RPC are reachable, `degraded`
 if exactly one is, and `unhealthy` if neither is. The Ponder probe
-hits `${PONDER_URL}/escrowed-vaults`, which runs the on-chain
-enrichment for every escrowed vault — aggressive probe intervals will
-drive RPC traffic.
+hits `${PONDER_URL}/ready`, Ponder's own readiness signal: 503 while historical
+indexing is still running, 200 once it completes. The flag is one-way, so an
+indexer that finishes backfilling and later stops advancing still answers 200
+here; falling behind the chain is caught by the lag guard
+(`INDEXER_MAX_LAG_BLOCKS`), which halts the risk gate. Probing a data route
+instead would additionally run the on-chain enrichment for every escrowed
+vault, so aggressive probe intervals would drive RPC traffic.

@@ -10,9 +10,20 @@ import { type MemoryStateStore, type StateStore, createMemoryStateStore } from "
 import { createRiskGate } from "@repo/risk";
 import { type PublicClient, TransactionReceiptNotFoundError, maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAutoExecutorFromWallet, createManualExecutor } from "../executor";
+import { createAutoExecutorFromWallet, createManualExecutor } from "../shared/executor";
+import { createIndexerClient } from "../shared/indexerClient";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
+
+/**
+ * The indexer as these tests drive it: a real client bound to a dummy base, so the existing
+ * `global.fetch` mocks (and the failure cases that reject) still exercise the same path.
+ */
+const INDEXER_STUB = {
+  ...createIndexerClient({ baseUrl: "http://indexer", retry: { maxAttempts: 1 } }),
+  // The guard is unconfigured in these tests, which is the state it reports as "go ahead".
+  ok: async () => true,
+};
 
 // Stub metrics port — the engine reports through it; tests assert on it directly.
 // Recreated per test so call counts don't leak between cases.
@@ -149,7 +160,7 @@ function createBot(
     btcRedeemKey: ZERO_BYTES32,
     isDirectRedemption: false,
     llpAddress: "0xllpaddress000000000000000000000000000000" as `0x${string}`,
-    ponderUrl: "http://localhost:42069",
+    indexer: INDEXER_STUB,
     txReceiptTimeoutMs: 60000,
     metrics,
     logger: silentLogger,
@@ -243,6 +254,25 @@ describe("LiquidationEngine", () => {
 
       await expect(bot.run()).resolves.not.toThrow();
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+    });
+
+    // A failed cycle is still a cycle: the stamp answers "is this bot alive", not "is it winning".
+    // If only successful cycles stamped it, a bot whose indexer is down would look wedged.
+    it("fires onPollComplete on both the happy and the failing path", async () => {
+      const clients = createMockClients();
+      const onPollComplete = vi.fn();
+      const bot = createBot(clients, { onPollComplete });
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: [], total: 0, checked: 0 }),
+      });
+      await bot.run();
+      expect(onPollComplete).toHaveBeenCalledOnce();
+
+      global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
+      await bot.run();
+      expect(onPollComplete).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -737,7 +767,7 @@ describe("LiquidationEngine", () => {
     it("still approves WBTC when no debt tokens configured", async () => {
       const clients = createMockClients();
       // 0n allowance forces approval path; symbol/decimals reads happen during
-      // logging via getTokenMeta. The single readContract spy covers all three.
+      // logging via tokenMeta. The single readContract spy covers all three.
       clients.publicClient.readContract.mockImplementation(
         ({ functionName }: { functionName: string }) => {
           if (functionName === "allowance") return Promise.resolve(0n);
@@ -787,7 +817,7 @@ describe("LiquidationEngine", () => {
       await bot.discoverDebtTokens();
 
       // BTC_VAULT_CORE_SPOKE + getReserveCount + 2× getReserve + symbol + decimals
-      // (decimals is read alongside symbol via getTokenMeta cache).
+      // (decimals is read alongside symbol via the tokenMeta cache).
       expect(clients.publicClient.readContract).toHaveBeenCalledTimes(6);
     });
 

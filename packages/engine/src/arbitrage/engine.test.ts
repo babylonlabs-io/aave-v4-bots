@@ -4,9 +4,20 @@ import { type MemoryStateStore, type StateStore, createMemoryStateStore } from "
 import { createRiskGate } from "@repo/risk";
 import { TransactionReceiptNotFoundError } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAutoExecutorFromWallet } from "../executor";
+import { createAutoExecutorFromWallet } from "../shared/executor";
+import { createIndexerClient } from "../shared/indexerClient";
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "./engine";
 import type { EscrowedVault } from "./types";
+
+/**
+ * The indexer as these tests drive it: a real client bound to a dummy base, so the existing
+ * `global.fetch` mocks (and the failure cases that reject) still exercise the same path.
+ */
+const INDEXER_STUB = {
+  ...createIndexerClient({ baseUrl: "http://indexer", retry: { maxAttempts: 1 } }),
+  // The guard is unconfigured in these tests, which is the state it reports as "go ahead".
+  ok: async () => true,
+};
 
 // Stub metrics port — the engine reports through it; tests assert on it directly.
 // Recreated per test so call counts don't leak between cases.
@@ -140,10 +151,9 @@ function createBot(
     publicClient: clients.publicClient as unknown as ArbitrageEngineConfig["publicClient"],
     vaultSwapAddress: "0xvaultswap",
     wbtcAddress: "0xwbtc",
-    ponderUrl: "http://localhost:42070",
+    indexer: INDEXER_STUB,
     maxSlippageBps: 100,
     vaultProcessingDelayMs: 0,
-    retryConfig: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, backoffMultiplier: 1 },
     txReceiptTimeoutMs: 1000,
     metrics,
     logger: silentLogger,

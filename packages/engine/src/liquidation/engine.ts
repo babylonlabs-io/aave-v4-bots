@@ -1,11 +1,8 @@
-import { type Address, type Hex, type PublicClient, formatUnits } from "viem";
+import { type Address, type Hex, formatUnits } from "viem";
 
-import { adapterAbi, lensAbi, spokeAbi } from "@repo/abis";
-import { type RetryConfig, TokenMetaCache, fetchJsonWithRetry, readBalance } from "@repo/chain";
-import type { ContractCall, ExecutionIdentity } from "@repo/execution";
-import type { Logger } from "@repo/logger";
-import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
-import type { Executor } from "../executor";
+import { adapterAbi, lensAbi } from "@repo/abis";
+import { type RiskSlot, settleUnfinished } from "@repo/risk";
+import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
 import { bufferAmounts } from "./domain";
 import {
   type FundedCandidate,
@@ -16,13 +13,6 @@ import {
 } from "./funding";
 import { discoverBorrowableReserves } from "./reserves";
 import type { LiquidatablePosition, PonderResponse } from "./types";
-
-const DEFAULT_FETCH_RETRY: RetryConfig = {
-  maxAttempts: 3,
-  initialDelayMs: 1000,
-  maxDelayMs: 5000,
-  backoffMultiplier: 2,
-};
 
 /** Observability port — the engine reports through it; the service supplies metrics. */
 export interface LiquidationMetrics {
@@ -54,7 +44,6 @@ export interface LiquidationEngineParams {
   isDirectRedemption: boolean;
   /** VaultSwap (LLP) address, used for non-direct redemption. */
   llpAddress: Address;
-  ponderUrl: string;
   txReceiptTimeoutMs: number;
   /**
    * How repayment is funded.
@@ -67,61 +56,28 @@ export interface LiquidationEngineParams {
   funding?: FundingParams;
 }
 
-export interface LiquidationEngineConfig extends LiquidationEngineParams {
-  publicClient: PublicClient;
-  metrics: LiquidationMetrics;
-  logger: Logger;
-  risk: RiskGate;
-  /**
-   * The execution-mode seam and the engine's sole execution collaborator: how each action is
-   * committed (AUTO sign+broadcast vs keyless MANUAL propose+notify), plus who the txs come from
-   * (`executor.identity`). The composition root (`@repo/runtime`) builds it — an `AutoExecutor`
-   * wrapping the wallet + shared nonce authority, or a keyless `ManualExecutor` — and injects it, so
-   * the engine holds no `WalletClient`, `TxSender`, or nonce state of its own.
-   */
-  executor: Executor;
-}
+export interface LiquidationEngineConfig
+  extends LiquidationEngineParams,
+    BaseEngineConfig<LiquidationMetrics> {}
 
-export class LiquidationEngine {
-  private metrics: LiquidationMetrics;
-  private logger: Logger;
-  private risk: RiskGate;
-  /** The engine's one execution collaborator (see `executor.ts`). The engine reaches nothing lower. */
-  private executor: Executor;
-  private publicClient: PublicClient;
+export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   private adapterAddress: Address;
   private lensAddress: Address;
   private debtTokenAddresses: Address[];
   private wbtcAddress: Address;
-  private btcRedeemKey: Hex;
   private isDirectRedemption: boolean;
-  private llpAddress: Address;
-  private ponderUrl: string;
   private txReceiptTimeoutMs: number;
   /** How repayment is funded — the seam that decides the call, the risk declaration and the setup. */
   private funding: LiquidationFunding;
-  private tokenMetaCache = new TokenMetaCache();
-
-  /** Who these txs come from — the executor's identity (the signer in AUTO, the operator in MANUAL). */
-  private get identity(): ExecutionIdentity {
-    return this.executor.identity;
-  }
 
   constructor(config: LiquidationEngineConfig) {
-    this.metrics = config.metrics;
-    this.logger = config.logger;
-    this.risk = config.risk;
-    this.publicClient = config.publicClient;
+    super(config, { engine: "liquidation", intentAction: "liquidation" });
     this.adapterAddress = config.adapterAddress;
     this.lensAddress = config.lensAddress;
     this.debtTokenAddresses = config.debtTokenAddresses ?? [];
     this.wbtcAddress = config.wbtcAddress;
-    this.btcRedeemKey = config.btcRedeemKey;
     this.isDirectRedemption = config.isDirectRedemption;
-    this.llpAddress = config.llpAddress;
-    this.ponderUrl = config.ponderUrl;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
-    this.executor = config.executor;
     // The config already carries every collaborator a strategy needs, so it is spread in rather
     // than re-listed field by field. Only these two cannot come from it: the debt-token list is
     // discovered later (during `prepare()`), and the token cache is shared with this engine so a
@@ -142,11 +98,6 @@ export class LiquidationEngine {
   async prepare(): Promise<void> {
     if (this.debtTokenAddresses.length === 0) await this.discoverDebtTokens();
     await this.funding.prepare();
-  }
-
-  /** Resolve a token's symbol/decimals via the shared, cached reader. */
-  private getTokenMeta(tokenAddress: Address) {
-    return this.tokenMetaCache.get(this.publicClient, tokenAddress);
   }
 
   /**
@@ -180,120 +131,84 @@ export class LiquidationEngine {
       publicClient: this.publicClient,
       adapterAddress: this.adapterAddress,
       logger: this.logger,
-      tokenSymbol: async (token) => (await this.getTokenMeta(token)).symbol,
+      tokenSymbol: async (token) => (await this.tokenMeta(token)).symbol,
     });
-  }
-
-  /**
-   * Resolve this engine's in-flight `liquidation` intents against the chain — the crash- and
-   * ambiguous-send-safety step. Run **every cycle** (start of `run()`) so an intent left live
-   * by a send error is resolved by its reserved nonce vs. the chain (mempool ⇒ hold; mined ⇒
-   * re-drive on settled state; not-broadcast ⇒ re-drive). No-op without a store.
-   */
-  async reconcile(): Promise<void> {
-    await this.executor.reconcile("liquidation");
   }
 
   /**
    * Run one iteration of the liquidation bot.
    * For each position: estimate via Lens, simulate, then execute.
    */
-  async run(): Promise<void> {
-    const startTime = Date.now();
-    // Every exposure slot this cycle opens. The `finally` releases any the code below missed,
-    // so an unexpected throw can never leak a slot and wedge the exposure cap.
-    const slots: RiskSlot[] = [];
+  protected async poll(slots: RiskSlot[]): Promise<void> {
+    // Publish spendable balances to the gate before judging any candidate. The gate reserves each
+    // action's declared spend against these, which is what stops this engine and the arbitrage
+    // engine — same signer, same WBTC — from both committing the same balance. A read failure
+    // propagates to the cycle's catch: unable to price our own inventory, we do not trade.
+    await this.funding.refreshInventory();
 
-    try {
-      // Risk gate — a HALTED gate (kill-switch or tripped breaker) skips the cycle.
-      if (this.risk.state() === "HALTED") {
-        this.logger.warn("Risk gate is HALTED — skipping liquidation run");
-        return;
-      }
+    // Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
+    const { positions, dataTimestampMs } = await this.fetchLiquidatablePositions();
 
-      // Crash-/ambiguous-send-safety: resolve in-flight intents against the chain (no-op
-      // without a store), then re-seed the shared nonce lease from the chain (reclaiming any
-      // reserved-but-not-broadcast nonce). Done before fetching so a position stuck as a live
-      // intent is resolved even in a cycle that would otherwise skip it.
-      await this.reconcile();
-      await this.executor.resyncNonces();
+    this.metrics.recordPositionsLiquidatable(positions.length);
 
-      // Publish spendable balances to the gate before judging any candidate. The gate reserves each
-      // action's declared spend against these, which is what stops this engine and the arbitrage
-      // engine — same signer, same WBTC — from both committing the same balance. A read failure
-      // propagates to the cycle's catch: unable to price our own inventory, we do not trade.
-      await this.funding.refreshInventory();
-
-      // Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
-      const { positions, dataTimestampMs } = await this.fetchLiquidatablePositions();
-
-      this.metrics.recordPositionsLiquidatable(positions.length);
-
-      if (positions.length === 0) {
-        this.logger.info("No liquidatable positions found");
-        return;
-      }
-
-      this.logger.info(`Found ${positions.length} liquidatable position(s)`);
-
-      // Estimate liquidation inputs via Lens for each position
-      const estimateResults = await Promise.allSettled(
-        positions.map((p) =>
-          this.publicClient.readContract({
-            address: this.lensAddress,
-            abi: lensAbi,
-            functionName: "estimateLiquidation",
-            args: [p.proxyAddress, this.isDirectRedemption],
-          })
-        )
-      );
-
-      // Build position + amounts pairs, filter failed estimates
-      const candidates: LiquidationCandidate[] = [];
-
-      for (let i = 0; i < estimateResults.length; i++) {
-        const result = estimateResults[i];
-        const pos = positions[i];
-
-        if (result.status === "fulfilled") {
-          const [amounts, wbtcPayment] = result.value;
-          // Buffer each amount (default 1%) to cover interest accrual between the Lens read and
-          // execution. `wbtcPayment` (fairness top-up +, in direct-redemption mode, the redemption fee) is
-          // pulled from msg.sender by the adapter, so it is a real outflow even though it is not
-          // threaded into the call — it is carried here to be declared to the risk gate, which
-          // reserves it against the WBTC the arbitrage engine is spending from the same signer.
-          // Already mode-correct: the Lens was asked with `isDirectRedemption`.
-          candidates.push({ position: pos, amounts: bufferAmounts(amounts), wbtcPayment });
-        } else {
-          this.metrics.recordError("lens_estimate_error");
-          const reason = result.reason;
-          const errorMsg = reason instanceof Error ? reason.message : "Unknown error";
-          this.logger.warn(`Lens estimate failed for ${pos.proxyAddress}: ${errorMsg}`);
-        }
-      }
-
-      if (candidates.length === 0) {
-        this.logger.info("No positions passed Lens estimation");
-        return;
-      }
-
-      // Vet + price. Each mode decides viability its own way and hands back the call to send.
-      const validCandidates = await this.funding.vet(candidates);
-
-      if (validCandidates.length === 0) {
-        this.logger.info("No positions passed simulation");
-        return;
-      }
-
-      this.logger.info(`${validCandidates.length}/${positions.length} positions passed simulation`);
-      return await this.sendAll(validCandidates, dataTimestampMs, slots);
-    } catch (error) {
-      this.metrics.recordError("run_error");
-      this.logger.error("Liquidation run failed:", error);
-    } finally {
-      settleUnfinished(slots);
-      this.metrics.recordPollDuration(Date.now() - startTime);
+    if (positions.length === 0) {
+      this.logger.info("No liquidatable positions found");
+      return;
     }
+
+    this.logger.info(`Found ${positions.length} liquidatable position(s)`);
+
+    // Estimate liquidation inputs via Lens for each position
+    const estimateResults = await Promise.allSettled(
+      positions.map((p) =>
+        this.publicClient.readContract({
+          address: this.lensAddress,
+          abi: lensAbi,
+          functionName: "estimateLiquidation",
+          args: [p.proxyAddress, this.isDirectRedemption],
+        })
+      )
+    );
+
+    // Build position + amounts pairs, filter failed estimates
+    const candidates: LiquidationCandidate[] = [];
+
+    for (let i = 0; i < estimateResults.length; i++) {
+      const result = estimateResults[i];
+      const pos = positions[i];
+
+      if (result.status === "fulfilled") {
+        const [amounts, wbtcPayment] = result.value;
+        // Buffer each amount (default 1%) to cover interest accrual between the Lens read and
+        // execution. `wbtcPayment` (fairness top-up +, in direct-redemption mode, the redemption fee) is
+        // pulled from msg.sender by the adapter, so it is a real outflow even though it is not
+        // threaded into the call — it is carried here to be declared to the risk gate, which
+        // reserves it against the WBTC the arbitrage engine is spending from the same signer.
+        // Already mode-correct: the Lens was asked with `isDirectRedemption`.
+        candidates.push({ position: pos, amounts: bufferAmounts(amounts), wbtcPayment });
+      } else {
+        this.metrics.recordError("lens_estimate_error");
+        const reason = result.reason;
+        const errorMsg = reason instanceof Error ? reason.message : "Unknown error";
+        this.logger.warn(`Lens estimate failed for ${pos.proxyAddress}: ${errorMsg}`);
+      }
+    }
+
+    if (candidates.length === 0) {
+      this.logger.info("No positions passed Lens estimation");
+      return;
+    }
+
+    // Vet + price. Each mode decides viability its own way and hands back the call to send.
+    const validCandidates = await this.funding.vet(candidates);
+
+    if (validCandidates.length === 0) {
+      this.logger.info("No positions passed simulation");
+      return;
+    }
+
+    this.logger.info(`${validCandidates.length}/${positions.length} positions passed simulation`);
+    await this.sendAll(validCandidates, dataTimestampMs, slots);
   }
 
   /**
@@ -332,7 +247,7 @@ export class LiquidationEngine {
         // the action from its probe and moves none of the signer's tokens. The engine stays out of
         // that judgement and owns only the slot's lifecycle.
         const slot = this.risk.openSlot({
-          kind: "liquidation",
+          kind: this.intentAction,
           subject: position.proxyAddress,
           dataTimestampMs,
           ...risk,
@@ -349,7 +264,7 @@ export class LiquidationEngine {
         // notifies.
         const out = await this.executor.commit(call, {
           target: call.address,
-          action: "liquidation",
+          action: this.intentAction,
           subject: position.proxyAddress,
         });
 
@@ -446,7 +361,7 @@ export class LiquidationEngine {
         }
       }
     } catch (error) {
-      this.metrics.recordError("poll_error");
+      this.metrics.recordError("batch_error");
       this.logger.error("Error in bot run:", error);
     } finally {
       settleUnfinished(slots);
@@ -463,10 +378,7 @@ export class LiquidationEngine {
     dataTimestampMs?: number;
   }> {
     try {
-      const data = await fetchJsonWithRetry<PonderResponse>(
-        `${this.ponderUrl}/liquidatable-positions`,
-        DEFAULT_FETCH_RETRY
-      );
+      const data = await this.indexer.read<PonderResponse>("/liquidatable-positions");
       this.metrics.recordPositionsChecked(data.checked);
       return { positions: data.liquidatable, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
@@ -480,10 +392,8 @@ export class LiquidationEngine {
    * Log and record liquidator's token balances (debt tokens + WBTC)
    */
   async logBalances(): Promise<void> {
-    const liquidator = this.identity.from;
-
-    // Best-effort: a balance read failing on an RPC blip must not crash the poll
-    // loop (mirrors ArbitrageEngine.logBalance). run() has its own try/catch.
+    // Best-effort: a balance read failing on an RPC blip must not crash the poll loop. The cycle
+    // has its own catch, but reaching it would abandon the whole cycle over a log line.
     try {
       this.logger.info("Token balances:");
 
@@ -492,8 +402,8 @@ export class LiquidationEngine {
       // 3-RPC concurrency; subsequent cycles only fire balanceOf (cache hit).
       for (const tokenAddress of this.debtTokenAddresses) {
         const [{ symbol, decimals }, balance] = await Promise.all([
-          this.getTokenMeta(tokenAddress),
-          readBalance(this.publicClient, tokenAddress, liquidator),
+          this.tokenMeta(tokenAddress),
+          this.readOwnBalance(tokenAddress),
         ]);
 
         this.metrics.recordTokenBalance(symbol, tokenAddress, balance, decimals);
@@ -502,8 +412,8 @@ export class LiquidationEngine {
 
       // WBTC balance
       const [{ symbol: wbtcSymbol, decimals: wbtcDecimals }, wbtcBalance] = await Promise.all([
-        this.getTokenMeta(this.wbtcAddress),
-        readBalance(this.publicClient, this.wbtcAddress, liquidator),
+        this.tokenMeta(this.wbtcAddress),
+        this.readOwnBalance(this.wbtcAddress),
       ]);
 
       this.metrics.recordTokenBalance(wbtcSymbol, this.wbtcAddress, wbtcBalance, wbtcDecimals);

@@ -10,10 +10,10 @@ import {
   maxUint256,
 } from "viem";
 
-// ERC-20 balance / allowance / approval primitives — the leaf reads and writes
-// behind the bots' inventory + approval logic. Retry, caching, thresholds, and
-// receipt-waiting stay in the service (they differ per bot); these are the shared
-// building blocks.
+// ERC-20 balance / allowance / approval primitives — the leaf reads and writes behind the bots'
+// inventory + approval logic. They are deliberately bare: retry belongs to the transport (see
+// `instrumentedHttp`), so wrapping a read here would stack a second schedule on viem's own.
+// Caching, thresholds and receipt-waiting stay in the service, where they differ per bot.
 
 export interface TokenMeta {
   symbol: string;

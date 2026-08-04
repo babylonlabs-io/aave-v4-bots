@@ -92,7 +92,7 @@ a signer, a nonce sequence, a token balance, and a kill switch: a breaker trip h
 send in one engine burns a nonce the other is queued behind, and both spend the same WBTC. When
 changing either engine, consider what it does to the other.
 
-**The Executor seam** (`packages/engine/src/executor.ts`) is how AUTO and MANUAL share one
+**The Executor seam** (`packages/engine/src/shared/executor.ts`) is how AUTO and MANUAL share one
 pipeline. `commit()` either signs+broadcasts under the shared nonce lock (AUTO) or writes a
 content-hashed proposal for `operator-cli` to sign (MANUAL). Engines hold an `Executor`, never a
 raw signer. `commit()` deliberately does **not** settle the risk slot — the engine owns that on

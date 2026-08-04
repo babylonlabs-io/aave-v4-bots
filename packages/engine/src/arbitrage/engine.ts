@@ -1,28 +1,10 @@
-import {
-  type Address,
-  ContractFunctionRevertedError,
-  type Hex,
-  type PublicClient,
-  formatUnits,
-} from "viem";
+import { type Address, ContractFunctionRevertedError, type Hex, formatUnits } from "viem";
 
 import { vaultSwapAbi } from "@repo/abis";
-import {
-  type RetryConfig,
-  type TokenMeta,
-  fetchJsonWithRetry,
-  readBalance,
-  readTokenMeta,
-  withRetry,
-} from "@repo/chain";
-import {
-  type ContractCall,
-  type ExecutionIdentity,
-  waitForReceiptWithTimeout,
-} from "@repo/execution";
-import type { Logger } from "@repo/logger";
-import { type RiskGate, type RiskSlot, settleUnfinished } from "@repo/risk";
-import type { AllowanceResult, Executor } from "../executor";
+import { type ContractCall, waitForReceiptWithTimeout } from "@repo/execution";
+import { type RiskSlot, settleUnfinished } from "@repo/risk";
+import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
+import type { AllowanceResult } from "../shared/executor";
 import { maxWbtcInWithSlippage } from "./domain";
 import type { EscrowedVault, PonderResponse } from "./types";
 
@@ -70,7 +52,6 @@ export interface ArbitrageMetrics {
 export interface ArbitrageEngineParams {
   vaultSwapAddress: Address;
   wbtcAddress: Address;
-  ponderUrl: string;
   maxSlippageBps: number;
   vaultProcessingDelayMs: number;
   txReceiptTimeoutMs: number;
@@ -87,182 +68,108 @@ export interface ArbitrageEngineParams {
   vaultKeeperAddress?: Address;
 }
 
-export interface ArbitrageEngineConfig extends ArbitrageEngineParams {
-  publicClient: PublicClient;
-  retryConfig: RetryConfig;
-  metrics: ArbitrageMetrics;
-  logger: Logger;
-  risk: RiskGate;
-  /**
-   * The execution-mode seam and the engine's sole execution collaborator: how each acquisition is
-   * committed (AUTO sign+broadcast vs keyless MANUAL propose+notify), plus who the txs come from
-   * (`executor.identity`). The composition root (`@repo/runtime`) builds it — an `AutoExecutor`
-   * wrapping the wallet + shared nonce authority, or a keyless `ManualExecutor` — and injects it, so
-   * the engine holds no `WalletClient`, `TxSender`, or nonce state of its own. Both engines the
-   * arbitrageur runs share one instance, so they never collide on a nonce.
-   */
-  executor: Executor;
-  /** Called at the end of each `run()` (e.g. to update the health poll timestamp). */
-  onPollComplete?: () => void;
-}
+export interface ArbitrageEngineConfig
+  extends ArbitrageEngineParams,
+    BaseEngineConfig<ArbitrageMetrics> {}
 
-export class ArbitrageEngine {
-  private metrics: ArbitrageMetrics;
-  private logger: Logger;
-  private risk: RiskGate;
-  /** The engine's one execution collaborator (see `executor.ts`). The engine reaches nothing lower. */
-  private executor: Executor;
-  private onPollComplete?: () => void;
-  private publicClient: PublicClient;
+export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   private vaultSwapAddress: Address;
   private wbtcAddress: Address;
   private vaultKeeperAddress?: Address;
-  private ponderUrl: string;
   private maxSlippageBps: number;
   private vaultProcessingDelayMs: number;
-  private retryConfig: RetryConfig;
   private txReceiptTimeoutMs: number;
-  private wbtcMeta?: TokenMeta;
-
-  /** Who these txs come from — the executor's identity (the signer in AUTO, the operator in MANUAL). */
-  private get identity(): ExecutionIdentity {
-    return this.executor.identity;
-  }
 
   constructor(config: ArbitrageEngineConfig) {
-    this.metrics = config.metrics;
-    this.logger = config.logger;
-    this.risk = config.risk;
-    this.onPollComplete = config.onPollComplete;
-    this.publicClient = config.publicClient;
+    super(config, { engine: "arbitrage", intentAction: "vault-acquisition" });
     this.vaultSwapAddress = config.vaultSwapAddress;
     this.wbtcAddress = config.wbtcAddress;
     this.vaultKeeperAddress = config.vaultKeeperAddress;
-    this.ponderUrl = config.ponderUrl;
     this.maxSlippageBps = config.maxSlippageBps;
     this.vaultProcessingDelayMs = config.vaultProcessingDelayMs;
-    this.retryConfig = config.retryConfig;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
-    this.executor = config.executor;
   }
 
   /**
    * Run one iteration of the arbitrageur bot
    */
-  async run(): Promise<void> {
-    const startTime = Date.now();
-    // Every exposure slot this cycle hands to the receipt phase. The `finally` releases any the
-    // code below missed — a throw between the send and receipt phases (a store write, say) would
-    // otherwise strand them reserved and permanently shrink the cap. Matches `LiquidationEngine`.
-    const cycleSlots: RiskSlot[] = [];
+  protected async poll(cycleSlots: RiskSlot[]): Promise<void> {
+    // Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
+    const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();
 
-    try {
-      // Risk gate — a HALTED gate (kill-switch or tripped breaker) skips the cycle.
-      if (this.risk.state() === "HALTED") {
-        this.logger.warn("Risk gate is HALTED — skipping arbitrage run");
-        return;
-      }
-
-      // Crash-/ambiguous-send-safety: resolve in-flight vault-acquisition intents (no-op
-      // without a store), then re-seed the shared nonce lease from the chain (reclaiming any
-      // reserved-but-not-broadcast nonce).
-      await this.reconcile();
-      await this.executor.resyncNonces();
-
-      // Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
-      const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();
-
-      if (vaults.length === 0) {
-        this.logger.info("No escrowed vaults available");
-        return;
-      }
-
-      this.logger.info(`Found ${vaults.length} escrowed vault(s)`);
-
-      // SEND PHASE — broadcast every acquisition we can afford, awaiting no receipts. Same shape
-      // as `LiquidationEngine`: send-all, then batch-wait. Awaiting each receipt inline (and
-      // sleeping between vaults) made one poll cycle take as long as the whole batch serialized —
-      // measured at ~5.8 s/vault, a 133 s cycle for 23 vaults — during which the engine neither
-      // re-read the escrow nor reacted to anything newly escrowed.
-      //
-      // The exposure cap (`RISK_MAX_IN_FLIGHT`) is the concurrency bound: every send reserves a
-      // slot, so the gate — not a sleep — decides how much may be in flight at once.
-      //
-      // Inventory. Serialization was doing real work here that batching removes: each swap settled
-      // before the next gas estimate, so the estimate was itself an accurate balance check. With N
-      // sends in flight, N estimates all pass against the same starting balance and the batch can
-      // overdraw — and an overdrawn swap reverts with the vault still in escrow, so it is not a
-      // lost race and DOES feed the breaker.
-      //
-      // The gate owns that accounting rather than a local counter, because the liquidation engine
-      // spends the same signer's WBTC concurrently; a per-batch budget here could not see it. We
-      // just publish a fresh balance and declare each acquisition's worst case as `spend`.
-      this.risk.setAvailable(this.wbtcAddress, await this.readWbtcBalance());
-      const sent: SentAcquisition[] = [];
-
-      for (const vault of vaults) {
-        const prep = await this.prepareAndSend(vault, dataTimestampMs);
-
-        if (prep.kind === "sent") {
-          sent.push(prep.entry);
-          cycleSlots.push(prep.entry.slot);
-          // Opt-in throttle between BROADCASTS — it no longer gates a full acquisition, so it costs
-          // one pause per send rather than one per round trip. Defaults to 0 (off): the liquidation
-          // engine sends back-to-back unthrottled and this now matches it. Raise it only for an RPC
-          // that rate-limits bursts.
-          if (this.vaultProcessingDelayMs > 0) await this.sleep(this.vaultProcessingDelayMs);
-          continue;
-        }
-        if (prep.kind === "send-error") {
-          // Ambiguous — the tx may have propagated, leaving a possible nonce gap. Stop sending;
-          // the receipts already in `sent` are still awaited below, and the next cycle's
-          // reconcile + resync resolve the gap and re-drive.
-          this.logger.warn("Stopping sends after a send error; will re-drive next cycle");
-          break;
-        }
-      }
-
-      // RECEIPT PHASE — one batch wait for everything broadcast above.
-      if (sent.length === 0) return;
-      this.logger.info(`Waiting for ${sent.length} acquisition receipt(s)...`);
-      const receipts = await Promise.allSettled(
-        sent.map(({ hash }) =>
-          waitForReceiptWithTimeout(this.publicClient, hash, this.txReceiptTimeoutMs, "swap")
-        )
-      );
-
-      for (let i = 0; i < sent.length; i++) {
-        const result = receipts[i];
-        if (result.status === "fulfilled") {
-          await this.finishAcquisition(sent[i], result.value);
-        } else {
-          // The receipt lookup itself failed — the tx's fate is unknown, so this is not evidence
-          // the chain rejected us. Leave the intent live for reconcile and free the slot without
-          // blaming the breaker. `unresolved`, not `abandoned`: the tx IS out there, so its WBTC
-          // stays counted as spent until a balance refresh proves otherwise.
-          sent[i].slot.settle({ ok: false, unresolved: true });
-          this.metrics.recordError("receipt_fetch_error");
-          this.logger.error(`Failed to get receipt for ${sent[i].hash}: ${result.reason}`);
-        }
-      }
-    } catch (error) {
-      this.logger.error("Error in bot run:", error);
-      this.metrics.recordError("poll_error");
-    } finally {
-      settleUnfinished(cycleSlots);
-      // Record poll duration and update last poll time
-      const duration = Date.now() - startTime;
-      this.metrics.recordPollDuration(duration);
-      this.onPollComplete?.();
+    if (vaults.length === 0) {
+      this.logger.info("No escrowed vaults available");
+      return;
     }
-  }
 
-  /**
-   * Resolve this engine's in-flight `vault-acquisition` intents against the chain — the crash-
-   * and ambiguous-send-safety step, run every cycle (start of `run()`). No-op without a store.
-   */
-  async reconcile(): Promise<void> {
-    await this.executor.reconcile("vault-acquisition");
+    this.logger.info(`Found ${vaults.length} escrowed vault(s)`);
+
+    // SEND PHASE — broadcast every acquisition we can afford, awaiting no receipts. Same shape
+    // as `LiquidationEngine`: send-all, then batch-wait. Awaiting each receipt inline (and
+    // sleeping between vaults) made one poll cycle take as long as the whole batch serialized —
+    // measured at ~5.8 s/vault, a 133 s cycle for 23 vaults — during which the engine neither
+    // re-read the escrow nor reacted to anything newly escrowed.
+    //
+    // The exposure cap (`RISK_MAX_IN_FLIGHT`) is the concurrency bound: every send reserves a
+    // slot, so the gate — not a sleep — decides how much may be in flight at once.
+    //
+    // Inventory. Serialization was doing real work here that batching removes: each swap settled
+    // before the next gas estimate, so the estimate was itself an accurate balance check. With N
+    // sends in flight, N estimates all pass against the same starting balance and the batch can
+    // overdraw — and an overdrawn swap reverts with the vault still in escrow, so it is not a
+    // lost race and DOES feed the breaker.
+    //
+    // The gate owns that accounting rather than a local counter, because the liquidation engine
+    // spends the same signer's WBTC concurrently; a per-batch budget here could not see it. We
+    // just publish a fresh balance and declare each acquisition's worst case as `spend`.
+    this.risk.setAvailable(this.wbtcAddress, await this.readOwnBalance(this.wbtcAddress));
+    const sent: SentAcquisition[] = [];
+
+    for (const vault of vaults) {
+      const prep = await this.prepareAndSend(vault, dataTimestampMs);
+
+      if (prep.kind === "sent") {
+        sent.push(prep.entry);
+        cycleSlots.push(prep.entry.slot);
+        // Opt-in throttle between BROADCASTS — it no longer gates a full acquisition, so it costs
+        // one pause per send rather than one per round trip. Defaults to 0 (off): the liquidation
+        // engine sends back-to-back unthrottled and this now matches it. Raise it only for an RPC
+        // that rate-limits bursts.
+        if (this.vaultProcessingDelayMs > 0) await this.sleep(this.vaultProcessingDelayMs);
+        continue;
+      }
+      if (prep.kind === "send-error") {
+        // Ambiguous — the tx may have propagated, leaving a possible nonce gap. Stop sending;
+        // the receipts already in `sent` are still awaited below, and the next cycle's
+        // reconcile + resync resolve the gap and re-drive.
+        this.logger.warn("Stopping sends after a send error; will re-drive next cycle");
+        break;
+      }
+    }
+
+    // RECEIPT PHASE — one batch wait for everything broadcast above.
+    if (sent.length === 0) return;
+    this.logger.info(`Waiting for ${sent.length} acquisition receipt(s)...`);
+    const receipts = await Promise.allSettled(
+      sent.map(({ hash }) =>
+        waitForReceiptWithTimeout(this.publicClient, hash, this.txReceiptTimeoutMs, "swap")
+      )
+    );
+
+    for (let i = 0; i < sent.length; i++) {
+      const result = receipts[i];
+      if (result.status === "fulfilled") {
+        await this.finishAcquisition(sent[i], result.value);
+      } else {
+        // The receipt lookup itself failed — the tx's fate is unknown, so this is not evidence
+        // the chain rejected us. Leave the intent live for reconcile and free the slot without
+        // blaming the breaker. `unresolved`, not `abandoned`: the tx IS out there, so its WBTC
+        // stays counted as spent until a balance refresh proves otherwise.
+        sent[i].slot.settle({ ok: false, unresolved: true });
+        this.metrics.recordError("receipt_fetch_error");
+        this.logger.error(`Failed to get receipt for ${sent[i].hash}: ${result.reason}`);
+      }
+    }
   }
 
   /**
@@ -273,10 +180,7 @@ export class ArbitrageEngine {
     dataTimestampMs?: number;
   }> {
     try {
-      const data = await fetchJsonWithRetry<PonderResponse>(
-        `${this.ponderUrl}/escrowed-vaults`,
-        this.retryConfig
-      );
+      const data = await this.indexer.read<PonderResponse>("/escrowed-vaults");
       if (!Array.isArray(data.vaults)) {
         throw new Error("Invalid Ponder response: vaults must be an array");
       }
@@ -439,7 +343,7 @@ export class ArbitrageEngine {
       // do NOT own would make this number — and therefore `RISK_MIN_PROFIT` — meaningless.
       const expectedProfit = preview.amountVault - maxWbtcIn;
       slot = this.risk.openSlot({
-        kind: "vault-acquisition",
+        kind: this.intentAction,
         subject: vaultId,
         expectedProfit,
         dataTimestampMs,
@@ -503,7 +407,7 @@ export class ArbitrageEngine {
       // (claim → send → markPending → submitted, all inside `commit`); MANUAL proposes + notifies.
       const out = await this.executor.commit(call, {
         target: this.vaultSwapAddress,
-        action: "vault-acquisition",
+        action: this.intentAction,
         subject: vaultId,
       });
 
@@ -627,15 +531,6 @@ export class ArbitrageEngine {
     }
   }
 
-  /** Signer's WBTC balance, published to the gate once per cycle as its inventory figure. */
-  private readWbtcBalance(): Promise<bigint> {
-    return withRetry(
-      () => readBalance(this.publicClient, this.wbtcAddress, this.identity.from),
-      this.retryConfig,
-      "wbtc balance"
-    );
-  }
-
   /**
    * Ensure the arbitrageur has approved VaultSwap to spend at least `requiredAmount` of WBTC,
    * through the mode seam. AUTO reads the allowance and, if short, broadcasts `approve(max)` + waits
@@ -653,36 +548,15 @@ export class ArbitrageEngine {
   }
 
   /**
-   * Resolve and cache WBTC symbol + decimals.
-   * ERC-20 metadata is immutable per address — fetched once, reused forever.
-   */
-  private async getWbtcMeta(): Promise<TokenMeta> {
-    if (this.wbtcMeta) return this.wbtcMeta;
-
-    this.wbtcMeta = await withRetry(
-      () => readTokenMeta(this.publicClient, this.wbtcAddress),
-      this.retryConfig,
-      "wbtc metadata"
-    );
-    return this.wbtcMeta;
-  }
-
-  /**
    * Log arbitrageur's WBTC balance
    */
   async logBalance(): Promise<void> {
-    const arbitrageur = this.identity.from;
-
     try {
       // Run metadata + balanceOf in parallel: cold-start is no slower than
       // before (still 3 concurrent reads); steady-state is just balanceOf.
       const [{ symbol, decimals }, balance] = await Promise.all([
-        this.getWbtcMeta(),
-        withRetry(
-          () => readBalance(this.publicClient, this.wbtcAddress, arbitrageur),
-          this.retryConfig,
-          "balance check"
-        ),
+        this.tokenMeta(this.wbtcAddress),
+        this.readOwnBalance(this.wbtcAddress),
       ]);
 
       const formattedBalance = formatUnits(balance, decimals);

@@ -167,7 +167,10 @@ The client exposes an HTTP server on `METRICS_PORT` (default 9090):
   reachable; 503 otherwise.
 - `GET /metrics` — Prometheus exposition.
 
-The Ponder reachability probe hits `${PONDER_URL}/positions`, which returns
+The Ponder readiness probe hits `${PONDER_URL}/ready` — Ponder's own signal, 503 until historical
+indexing completes. It says nothing about an indexer that finished backfilling and later stopped
+advancing: that is the lag guard's job (`INDEXER_MAX_LAG_BLOCKS`). Probing a data route such as
+`${PONDER_URL}/positions` instead would answer 200 in both cases, and returns
 the full position table. Aggressive probe intervals will scan that table on
 every check.
 

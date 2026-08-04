@@ -201,7 +201,6 @@ describe("config validation", () => {
       expect(liq?.adapterAddress).toBe(adapter);
       expect(liq?.lensAddress).toBe(lens);
       expect(liq?.wbtcAddress).toBe(validEnv.WBTC_ADDRESS); // shared with arbitrage
-      expect(liq?.ponderUrl).toBe(validEnv.PONDER_URL); // shared
       expect(liq?.pollingIntervalMs).toBe(12000); // default
     });
 

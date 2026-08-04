@@ -30,3 +30,8 @@ export {
   buildSecretsConfig,
   runtimeEnvFields,
 } from "./runtime";
+export {
+  type IndexerSettings,
+  buildIndexerConfig,
+  indexerEnvFields,
+} from "./indexer";

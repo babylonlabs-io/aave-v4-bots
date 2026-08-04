@@ -565,7 +565,7 @@ listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `eth_rpc_calls_total` | Counter | Outbound JSON-RPC calls by `method` |
+| `eth_rpc_calls_total` | Counter | Outbound JSON-RPC attempts by `method` (retries counted separately) |
 | `liquidator_positions_checked` | Gauge | Positions checked in last poll |
 | `liquidator_positions_liquidatable` | Gauge | Liquidatable positions found |
 | `liquidator_liquidations_total` | Counter | Successful liquidations |

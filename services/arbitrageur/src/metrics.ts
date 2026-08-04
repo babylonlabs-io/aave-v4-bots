@@ -1,5 +1,6 @@
 import {
   createArbitrageMetrics,
+  createIndexerMetrics,
   createLiquidationMetrics,
   createMetricsRegistry,
 } from "@repo/observability";
@@ -17,5 +18,7 @@ export const metrics = createArbitrageMetrics(registry);
  * appear on an arbitrage-only deploy.
  */
 export const createLiquidationMetricsSet = () => createLiquidationMetrics(registry);
+/** Built once and shared: the guard counts indexer incidents, not per-engine ones. */
+export const indexerMetrics = createIndexerMetrics(registry);
 
 export { recordRpcCall, getMetrics, getMetricsContentType };

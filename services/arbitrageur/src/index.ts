@@ -6,7 +6,7 @@ dotenvConfig({ path: resolve(process.cwd(), ".env.arbitrageur") });
 
 import type { PublicClient } from "viem";
 
-import { type Executor, LiquidationEngine } from "@repo/engine";
+import { type Executor, type Indexer, LiquidationEngine, createIndexer } from "@repo/engine";
 import { createLogger } from "@repo/logger";
 import { updateLastPollTime } from "@repo/observability";
 import type { RiskGate } from "@repo/risk";
@@ -17,6 +17,7 @@ import {
   createLiquidationMetricsSet,
   getMetrics,
   getMetricsContentType,
+  indexerMetrics,
   recordRpcCall,
 } from "./metrics";
 
@@ -38,6 +39,8 @@ Environment variables:
 interface BotWithClients {
   bot: ArbitrageurBot;
   publicClient: PublicClient;
+  /** Built once here so both engines read the indexer identically and share one incident clock. */
+  indexer: Indexer;
   /**
    * The ONE execution collaborator for the whole process, injected into every engine — the same
    * "one per process" shape as the single risk gate. AUTO signs+broadcasts off the shared signer +
@@ -60,11 +63,46 @@ async function createBot(config: Config): Promise<BotWithClients> {
     observability: {
       port: config.metricsPort,
       ponderUrl: config.ponderUrl,
-      ponderHealthEndpoint: "/escrowed-vaults",
+      // Ponder's own readiness, not a data route: a wedged indexer still answers
+      // `/escrowed-vaults` with a stale 200, which is exactly what this probe must not call healthy.
+      ponderHealthEndpoint: "/ready",
       getMetrics,
       getMetricsContentType,
     },
   });
+
+  // Refuse to trade on a half-built worldview — during backfill the lists are arbitrarily
+  // incomplete and the lag guard cannot see it, because the checkpoint is legitimately old.
+  //
+  // Opt-in: unset ⇒ start immediately. Waiting is a constraint on *startup*, so a deployment whose
+  // backfill legitimately runs long chooses it rather than inheriting it from a default.
+  // ONE indexer for the process, handed to both engines below: the reads and the liveness verdict
+  // together. Two of these would each keep their own incident clock against the same indexer, so a
+  // single outage would be counted twice and the halt would fire at half the configured duration.
+  const indexer = createIndexer({
+    baseUrl: config.ponderUrl,
+    retry: config.retryConfig,
+    chainId: executor.identity.chainId,
+    getRpcHead: () => publicClient.getBlockNumber(),
+    risk,
+    logger,
+    metrics: indexerMetrics,
+    config: config.indexer,
+  });
+
+  const readyTimeoutMs = config.indexer.readyTimeoutMs;
+  if (
+    readyTimeoutMs !== undefined &&
+    !(await indexer.waitUntilReady({
+      timeoutMs: readyTimeoutMs,
+      onWaiting: () =>
+        logger.info("Waiting for the indexer to finish backfilling before trading..."),
+    }))
+  ) {
+    throw new Error(
+      `Indexer at ${config.ponderUrl} was not ready within ${readyTimeoutMs}ms — refusing to trade on partially indexed history.`
+    );
+  }
 
   const bot = new ArbitrageurBot({
     risk,
@@ -73,18 +111,12 @@ async function createBot(config: Config): Promise<BotWithClients> {
     vaultSwapAddress: config.vaultSwapAddress,
     wbtcAddress: config.wbtcAddress,
     vaultKeeperAddress: config.vaultKeeperAddress,
-    ponderUrl: config.ponderUrl,
+    indexer,
     maxSlippageBps: config.maxSlippageBps,
     vaultProcessingDelayMs: config.vaultProcessingDelayMs,
-    retryConfig: {
-      maxAttempts: config.retryMaxAttempts,
-      initialDelayMs: config.retryInitialDelayMs,
-      maxDelayMs: config.retryMaxDelayMs,
-      backoffMultiplier: 2,
-    },
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
   });
-  return { bot, publicClient, executor, risk };
+  return { bot, publicClient, executor, risk, indexer };
 }
 
 /**
@@ -97,7 +129,8 @@ async function startLiquidationEngine(
   liq: LiquidationRunConfig,
   publicClient: PublicClient,
   executor: Executor,
-  risk: RiskGate
+  risk: RiskGate,
+  indexer: Indexer
 ): Promise<void> {
   const liqLogger = createLogger({ prefix: "[Arbitrageur:Liq] " });
   const { pollingIntervalMs, ...params } = liq;
@@ -112,6 +145,9 @@ async function startLiquidationEngine(
     // engines act as one.
     risk,
     executor,
+    // The same instance the arbitrage engine holds — see `createBot`.
+    indexer,
+    onPollComplete: updateLastPollTime,
   });
 
   liqLogger.info(`Liquidation engine enabled (execution: ${executor.mode})`);
@@ -126,7 +162,6 @@ async function startLiquidationEngine(
     } catch (error) {
       liqLogger.error("Unexpected error in liquidation poll cycle:", error);
     }
-    updateLastPollTime();
     setTimeout(poll, pollingIntervalMs);
   };
   // Kick off without awaiting the first cycle — the two engines poll independently
@@ -138,12 +173,12 @@ async function runPollingMode(config: Config): Promise<void> {
   logger.info("Aave V4 Arbitrageur Bot Starting...");
   logger.info("===================================");
 
-  const { bot, publicClient, executor, risk } = await createBot(config);
+  const { bot, publicClient, executor, risk, indexer } = await createBot(config);
 
   // Opt-in: also run the liquidation engine (both engines, one process) — sharing the one
   // nonce allocator so the two engines' concurrent sends never collide on the signer.
   if (config.liquidation) {
-    await startLiquidationEngine(config.liquidation, publicClient, executor, risk);
+    await startLiquidationEngine(config.liquidation, publicClient, executor, risk, indexer);
   }
 
   logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);

@@ -1,5 +1,10 @@
 import { safeAbi } from "@repo/abis";
-import { type RpcCallObserver, instrumentedHttp, readCodeHash } from "@repo/chain";
+import {
+  type RetryConfig,
+  type RpcCallObserver,
+  instrumentedHttp,
+  readCodeHash,
+} from "@repo/chain";
 import type { ExecutionSettings, NotifierSettings, RiskSettings } from "@repo/config";
 import { type Executor, createAutoExecutorFromWallet, createManualExecutor } from "@repo/engine";
 import { createNonceAllocator, createNonceLease } from "@repo/execution";
@@ -46,6 +51,14 @@ export interface BootConfig extends RiskSettings {
   execution: ExecutionSettings;
   /** Receipt-wait budget for AUTO approvals (the executor's only use of it). */
   txReceiptTimeoutMs: number;
+  /**
+   * The process's retry policy. Applied here to the RPC transport, so it governs **every** chain
+   * read the process makes.
+   *
+   * One policy, applied once at the transport rather than at call sites: a read cannot then be
+   * resilient in one engine and not another. Unset ⇒ viem's own defaults.
+   */
+  retryConfig?: RetryConfig;
 }
 
 /** The per-service knobs the shared boot can't derive: the RPC-call metric and the tagged logger. */
@@ -89,9 +102,10 @@ export async function bootstrapService(config: BootConfig, deps: BootDeps): Prom
   // a *signing key* through this provider (MANUAL is keyless and never touches one).
   const secrets = createSecrets(config.secrets);
 
-  // Every viem call routes through `instrumentedHttp` so each outbound JSON-RPC method increments the
-  // `eth_rpc_calls_total{method=...}` counter (providers bill per method, even under batching).
-  const transport = instrumentedHttp(config.rpcUrl, recordRpcCall);
+  // Every viem call routes through `instrumentedHttp`, which both applies the retry policy and
+  // increments `eth_rpc_calls_total{method=...}` per attempt (providers bill per method per
+  // attempt, even under batching).
+  const transport = instrumentedHttp(config.rpcUrl, recordRpcCall, { retry: config.retryConfig });
 
   // Auto-detect the chain id from the RPC, then build the real chain + client on it.
   const chainId = await createPublicClient({ transport }).getChainId();

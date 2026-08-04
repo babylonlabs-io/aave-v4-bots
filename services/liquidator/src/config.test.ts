@@ -357,6 +357,25 @@ describe("flash funding config", () => {
     expect(() => loadConfig()).not.toThrow();
   });
 
+  it("defaults the indexer retry to a ceiling below the poll interval", async () => {
+    // 5s, not @repo/chain's 30s: at a 12s poll a backoff chain allowed to reach 30s would still be
+    // sleeping when the next cycle was due, turning one slow read into several skipped ones.
+    process.env = { ...originalEnv, ...base };
+    const { loadConfig } = await import("./config");
+    expect(loadConfig().retryConfig).toEqual({
+      maxAttempts: 3,
+      initialDelayMs: 1000,
+      maxDelayMs: 5000,
+      backoffMultiplier: 2,
+    });
+  });
+
+  it("lets an operator tune the indexer retry", async () => {
+    process.env = { ...originalEnv, ...base, RETRY_MAX_ATTEMPTS: "5", RETRY_MAX_DELAY_MS: "2000" };
+    const { loadConfig } = await import("./config");
+    expect(loadConfig().retryConfig).toMatchObject({ maxAttempts: 5, maxDelayMs: 2000 });
+  });
+
   it("refuses a complete flash setup with the mode flag left off", async () => {
     // The dangerous direction: every address is right, so nothing looks wrong, but the mode flag is
     // what selects flash and the bot would quietly repay from its own inventory instead.

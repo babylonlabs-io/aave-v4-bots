@@ -2,7 +2,18 @@ import { VenueType, liquidationRouterAbi } from "@repo/abis";
 import { createRiskGate } from "@repo/risk";
 import { type Address, BaseError, ContractFunctionRevertedError, encodeErrorResult } from "viem";
 import { describe, expect, it, vi } from "vitest";
+import { createIndexerClient } from "../shared/indexerClient";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
+
+/**
+ * The indexer as these tests drive it: a real client bound to a dummy base, so the existing
+ * `global.fetch` mocks (and the failure cases that reject) still exercise the same path.
+ */
+const INDEXER_STUB = {
+  ...createIndexerClient({ baseUrl: "http://indexer", retry: { maxAttempts: 1 } }),
+  // The guard is unconfigured in these tests, which is the state it reports as "go ahead".
+  ok: async () => true,
+};
 
 /**
  * The engine's `flash` branch, end to end from a Ponder response to a committed call.
@@ -103,7 +114,7 @@ function harness(
     btcRedeemKey: `0x${"00".repeat(32)}`,
     isDirectRedemption: false,
     llpAddress: VENUE,
-    ponderUrl: "http://localhost:42069",
+    indexer: INDEXER_STUB,
     txReceiptTimeoutMs: 1000,
     funding: { mode: "flash", routerAddress: ROUTER, venues, maxSlippageBps: 2_000 },
     metrics: {
@@ -233,7 +244,7 @@ describe("liquidation engine — flash funding", () => {
           btcRedeemKey: `0x${"00".repeat(32)}`,
           isDirectRedemption: false,
           llpAddress: VENUE,
-          ponderUrl: "http://x",
+          indexer: INDEXER_STUB,
           txReceiptTimeoutMs: 1,
           logger: silentLogger,
           funding: {

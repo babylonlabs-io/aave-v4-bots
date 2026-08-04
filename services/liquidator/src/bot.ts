@@ -1,5 +1,6 @@
 import { LiquidationEngine, type LiquidationEngineConfig } from "@repo/engine";
 import { createLogger } from "@repo/logger";
+import { updateLastPollTime } from "@repo/observability";
 
 import { metrics } from "./metrics";
 
@@ -7,7 +8,10 @@ import { metrics } from "./metrics";
  * The `risk` gate is **injected**, not constructed here: a process must have exactly one
  * `RiskGate` so a kill-switch / tripped breaker halts every engine it owns.
  */
-export type LiquidationBotConfig = Omit<LiquidationEngineConfig, "metrics" | "logger">;
+export type LiquidationBotConfig = Omit<
+  LiquidationEngineConfig,
+  "metrics" | "logger" | "onPollComplete"
+>;
 
 /**
  * Composition wrapper: the shared `LiquidationEngine` wired with this service's
@@ -19,6 +23,7 @@ export class LiquidationBot extends LiquidationEngine {
       ...config,
       metrics,
       logger: createLogger({ prefix: "[Bot] " }),
+      onPollComplete: updateLastPollTime,
     });
   }
 }

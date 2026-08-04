@@ -1,16 +1,20 @@
+import type { RetryConfig } from "@repo/chain";
 import {
   type ExecutionSettings,
+  type IndexerSettings,
   type NotifierSettings,
   type RiskSettings,
   addressListSchema,
   addressSchema,
   assertProfitFloorEnforceable,
   buildExecutionConfig,
+  buildIndexerConfig,
   buildNotifierConfig,
   buildPersistenceConfig,
   buildRiskConfig,
   buildSecretsConfig,
   bytes32Schema,
+  indexerEnvFields,
   parseEnv,
   positiveIntSchema,
   riskEnvFields,
@@ -30,7 +34,14 @@ const DEFAULT_KEY_REF = "LIQUIDATOR_PRIVATE_KEY";
 // The engine's domain params (addresses, ponder URL, redemption flags, tx
 // timeout) are declared in `@repo/engine` and inherited here; this interface
 // only adds the composition-root fields the service needs to wire the engine up.
-export interface Config extends LiquidationEngineParams, RiskSettings {
+export interface Config extends LiquidationEngineParams, RiskSettings, IndexerSettings {
+  /** Indexer base URL — the composition root builds the client, health probe and ready wait from it. */
+  ponderUrl: string;
+  /**
+   * The process's retry policy. Applied to the RPC transport by `startRuntime`, and to the indexer
+   * client here — one policy, both protocols.
+   */
+  retryConfig: RetryConfig;
   // RPC endpoint the bot's viem clients connect to
   rpcUrl: string;
 
@@ -72,6 +83,9 @@ const envSchema = z.object({
   // pre-existing permissive behavior).
   ...riskEnvFields,
 
+  // Indexer-liveness thresholds. Unset ⇒ the guard is off.
+  ...indexerEnvFields,
+
   // Required
   PONDER_URL: urlSchema,
   CLIENT_RPC_URL: urlSchema,
@@ -99,6 +113,15 @@ const envSchema = z.object({
   IS_DIRECT_REDEMPTION: z.string().optional(),
   LLP_ADDRESS: addressSchema.optional().default(ZERO_ADDRESS),
   POLLING_INTERVAL_MS: positiveIntSchema.optional().default("12000"),
+
+  // The process's retry policy: applied to the indexer client here, and to the RPC transport by
+  // `startRuntime`. The two honour different parts of it — viem's transport takes only the attempt
+  // count and the initial delay, and runs its own uncapped exponential schedule — so
+  // `RETRY_MAX_DELAY_MS` bounds indexer reads only. It matters when `maxAttempts` is raised: at
+  // three attempts neither path's backoff exceeds ~2s.
+  RETRY_MAX_ATTEMPTS: positiveIntSchema.optional().default("3"),
+  RETRY_INITIAL_DELAY_MS: positiveIntSchema.optional().default("1000"),
+  RETRY_MAX_DELAY_MS: positiveIntSchema.optional().default("5000"),
   METRICS_PORT: positiveIntSchema.optional().default("9090"),
   TX_RECEIPT_TIMEOUT_MS: positiveIntSchema.optional().default("120000"),
 
@@ -149,6 +172,13 @@ export function loadConfig(): Config {
 
   return {
     ...risk,
+    ...buildIndexerConfig(env),
+    retryConfig: {
+      maxAttempts: Number.parseInt(env.RETRY_MAX_ATTEMPTS, 10),
+      initialDelayMs: Number.parseInt(env.RETRY_INITIAL_DELAY_MS, 10),
+      maxDelayMs: Number.parseInt(env.RETRY_MAX_DELAY_MS, 10),
+      backoffMultiplier: 2,
+    },
     funding,
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     ponderUrl: env.PONDER_URL,

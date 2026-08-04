@@ -319,7 +319,8 @@ RETRY_MAX_ATTEMPTS=3
 # Initial retry delay in milliseconds (default: 1000)
 RETRY_INITIAL_DELAY_MS=1000
 
-# Maximum retry delay in milliseconds (default: 30000)
+# Maximum retry delay in milliseconds (default: 30000). Bounds indexer reads only: the RPC
+# transport takes the attempt count and initial delay, then runs viem's own uncapped schedule.
 RETRY_MAX_DELAY_MS=30000
 
 # Transaction receipt timeout in milliseconds (default: 120000 = 2 minutes)
@@ -370,7 +371,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `RISK_CONTROL_TOKEN_REF` | Secret reference enabling authenticated `/halt`, `/resume`, `/status` | if `RISK_START_HALTED=true` | — |
 | `RISK_CONTROL_PORT` | Kill-switch server port, separate from `METRICS_PORT` | No | `9095` |
 | `RISK_CONTROL_HOST` | Kill-switch bind host; loopback by default | No | `127.0.0.1` |
-| `RETRY_MAX_ATTEMPTS` | Max retry attempts on failure | No | `3` |
+| `RETRY_MAX_ATTEMPTS` | Max attempts per read, for both the indexer and the RPC transport | No | `3` |
 | `RETRY_INITIAL_DELAY_MS` | Initial retry delay | No | `1000` |
 | `RETRY_MAX_DELAY_MS` | Maximum retry delay | No | `30000` |
 | `TX_RECEIPT_TIMEOUT_MS` | Transaction receipt timeout | No | `120000` |
@@ -532,7 +533,7 @@ listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `eth_rpc_calls_total` | Counter | Outbound JSON-RPC calls by `method` |
+| `eth_rpc_calls_total` | Counter | Outbound JSON-RPC attempts by `method` (retries counted separately) |
 | `arbitrageur_vaults_acquired_total` | Counter | Total vaults acquired |
 | `arbitrageur_wbtc_spent_total` | Counter | Total WBTC spent (satoshis) |
 | `arbitrageur_wbtc_balance` | Gauge | Current WBTC balance (satoshis) |

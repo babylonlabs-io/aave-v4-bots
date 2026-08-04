@@ -4,9 +4,20 @@ import { type RiskConfig, type RiskGate, createRiskGate } from "@repo/risk";
 import { describe, expect, it, vi } from "vitest";
 import { ArbitrageEngine } from "./arbitrage/engine";
 import type { EscrowedVault } from "./arbitrage/types";
-import { createAutoExecutorFromWallet } from "./executor";
 import { LiquidationEngine } from "./liquidation/engine";
 import type { LiquidatablePosition } from "./liquidation/types";
+import { createAutoExecutorFromWallet } from "./shared/executor";
+import { createIndexerClient } from "./shared/indexerClient";
+
+/**
+ * The indexer as these tests drive it: a real client bound to a dummy base, so the existing
+ * `global.fetch` mocks (and the failure cases that reject) still exercise the same path.
+ */
+const INDEXER_STUB = {
+  ...createIndexerClient({ baseUrl: "http://indexer", retry: { maxAttempts: 1 } }),
+  // The guard is unconfigured in these tests, which is the state it reports as "go ahead".
+  ok: async () => true,
+};
 
 // The arbitrageur runs BOTH engines in one process off ONE signer. Two invariants follow, and
 // both are properties of the pair, not of either engine alone — so they are tested here:
@@ -142,7 +153,7 @@ function setup(
     btcRedeemKey: `0x${"0".repeat(64)}`,
     isDirectRedemption: false,
     llpAddress: "0xllp",
-    ponderUrl: "http://x",
+    indexer: INDEXER_STUB,
     txReceiptTimeoutMs: 1000,
     metrics: {
       recordError: vi.fn(),
@@ -163,10 +174,9 @@ function setup(
     publicClient: publicClient as unknown as AutoDeps["publicClient"],
     vaultSwapAddress: "0xvaultswap",
     wbtcAddress: "0xwbtc",
-    ponderUrl: "http://x",
+    indexer: INDEXER_STUB,
     maxSlippageBps: 100,
     vaultProcessingDelayMs: 0,
-    retryConfig: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, backoffMultiplier: 1 },
     txReceiptTimeoutMs: 1000,
     metrics: {
       recordError: vi.fn(),
