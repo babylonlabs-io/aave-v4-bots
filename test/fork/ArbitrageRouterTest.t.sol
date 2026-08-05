@@ -14,7 +14,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {BTCVaultSwap, IBTCVaultSwap} from "../../lib/contracts/src/applications/aave/llps/BTCVaultSwap.sol";
 
 contract ArbitrageRouterTest is TestSuites, Test {
-    address internal ADMIN = vm.addr(69420);
+    uint256 internal ADMIN_PRIVATE_KEY = 69420;
+    address internal ADMIN = vm.addr(ADMIN_PRIVATE_KEY);
     address internal RANDOM_CALLER = vm.addr(69421);
     address internal FUND = vm.addr(42161);
 
@@ -111,12 +112,33 @@ contract ArbitrageRouterTest is TestSuites, Test {
         _setUpPerTest();
 
         SelfCallRelayer.Call[] memory calls = new SelfCallRelayer.Call[](params.arbitrage.vaultIds.length);
+        SelfCallRelayer.Call[] memory callsMinProfitInf = new SelfCallRelayer.Call[](params.arbitrage.vaultIds.length);
+        SelfCallRelayer.Call[] memory callsMaxWbtcInZero = new SelfCallRelayer.Call[](params.arbitrage.vaultIds.length);
         for (uint256 i = 0; i < calls.length; i++) {
             calls[i].data = abi.encodeWithSelector(
                 ArbitrageRouterOldVaultSwap.swapWbtcToVault.selector,
                 params.tbvContracts.btcVaultSwap,
                 params.arbitrage.vaultIds[i],
                 TESTNET_VK,
+                0,
+                type(uint256).max
+            );
+
+            callsMinProfitInf[i].data = abi.encodeWithSelector(
+                ArbitrageRouterOldVaultSwap.swapWbtcToVault.selector,
+                params.tbvContracts.btcVaultSwap,
+                params.arbitrage.vaultIds[i],
+                TESTNET_VK,
+                type(uint256).max,
+                type(uint256).max
+            );
+
+            callsMaxWbtcInZero[i].data = abi.encodeWithSelector(
+                ArbitrageRouterOldVaultSwap.swapWbtcToVault.selector,
+                params.tbvContracts.btcVaultSwap,
+                params.arbitrage.vaultIds[i],
+                TESTNET_VK,
+                0,
                 0
             );
 
@@ -126,12 +148,36 @@ contract ArbitrageRouterTest is TestSuites, Test {
             );
         }
 
+        {
+            SelfCallRelayer.RelayerMessage memory messageMinProfitInf =
+                SelfCallRelayer.RelayerMessage({calls: callsMinProfitInf, deadline: type(uint256).max});
+            bytes32 digestMinProfitInf = _digest(router, messageMinProfitInf);
+            (uint8 vMinProfitInf, bytes32 rMinProfitInf, bytes32 sMinProfitInf) = vm.sign(ADMIN_PRIVATE_KEY, digestMinProfitInf);
+            bytes memory signatureMinProfitInf = abi.encodePacked(rMinProfitInf, sMinProfitInf, vMinProfitInf);
+
+            vm.prank(RANDOM_CALLER);
+            vm.expectRevert("ArbitrageRouter: insufficient profit");
+            ArbitrageRouterOldVaultSwap(router).relay(messageMinProfitInf, signatureMinProfitInf);
+        }
+
+        {
+            SelfCallRelayer.RelayerMessage memory messageMaxWbtcInZero =
+                SelfCallRelayer.RelayerMessage({calls: callsMaxWbtcInZero, deadline: type(uint256).max});
+            bytes32 digestMaxWbtcInZero = _digest(router, messageMaxWbtcInZero);
+            (uint8 vMaxWbtcInZero, bytes32 rMaxWbtcInZero, bytes32 sMaxWbtcInZero) = vm.sign(ADMIN_PRIVATE_KEY, digestMaxWbtcInZero);
+            bytes memory signatureMaxWbtcInZero = abi.encodePacked(rMaxWbtcInZero, sMaxWbtcInZero, vMaxWbtcInZero);
+
+            vm.prank(RANDOM_CALLER);
+            vm.expectRevert("ArbitrageRouter: exceeds maxWbtcIn");
+            ArbitrageRouterOldVaultSwap(router).relay(messageMaxWbtcInZero, signatureMaxWbtcInZero);
+        }
+
         SelfCallRelayer.RelayerMessage memory message =
             SelfCallRelayer.RelayerMessage({calls: calls, deadline: type(uint256).max});
 
         bytes32 digest = _digest(router, message);
 
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(69420, digest);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ADMIN_PRIVATE_KEY, digest);
         bytes memory signature = abi.encodePacked(r, s, v);
 
         vm.prank(RANDOM_CALLER);

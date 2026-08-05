@@ -112,12 +112,17 @@ contract ArbitrageRouterOldVaultSwap is SelfCallRelayer {
     /// @param onBehalfOf Registered, non-blocklisted vault keeper whose BTC key receives the vault
     /// @param minProfit Minimum acceptable `amountVault - amountWbtcToAcquire`; see the contract-level
     ///        note on why this estimate is approximate
-    function swapWbtcToVault(address vaultSwap, bytes32 vaultId, address onBehalfOf, uint256 minProfit)
-        external
-        onlySelf
-    {
+    /// @param maxWbtcIn Maximum WBTC to spend on the swap; must be at least `amountWbtcToAcquire` from the preview
+    function swapWbtcToVault(
+        address vaultSwap,
+        bytes32 vaultId,
+        address onBehalfOf,
+        uint256 minProfit,
+        uint256 maxWbtcIn
+    ) external onlySelf {
         IOldBTCVaultSwap.EscrowedVaultPreviewResult memory preview = _preview(vaultSwap, vaultId);
-        require(preview.amountVault - preview.amountWbtcToAcquire >= minProfit, "ArbitrageRouter: insufficent profit");
+        require(preview.amountVault - preview.amountWbtcToAcquire >= minProfit, "ArbitrageRouter: insufficient profit");
+        require(preview.amountWbtcToAcquire <= maxWbtcIn, "ArbitrageRouter: exceeds maxWbtcIn");
 
         IERC20(wbtc).safeTransferFrom(payer, address(this), preview.amountWbtcToAcquire);
         IERC20(wbtc).forceApprove(vaultSwap, preview.amountWbtcToAcquire);
