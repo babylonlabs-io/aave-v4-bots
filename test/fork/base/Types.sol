@@ -17,8 +17,19 @@ library Types {
         address[] debtTokens;
     }
 
-    struct TestParams {
+    struct LiquidationTestParams {
         Liquidation liquidation;
+        TBVContracts tbvContracts;
+    }
+
+    struct Arbitrage {
+        string network;
+        uint256 blockNumber;
+        bytes32[] vaultIds;
+    }
+
+    struct ArbitrageTestParams {
+        Arbitrage arbitrage;
         TBVContracts tbvContracts;
     }
 }

@@ -23,7 +23,7 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVHelper {
     address internal ADMIN = vm.addr(69420);
 
     function test_MORPHO_LIQUIDATION_TEST0() external {
-        Types.TestParams memory params = LIQUIDATION_TESTS[0];
+        Types.LiquidationTestParams memory params = LIQUIDATION_TESTS[0];
         vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
 
         address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());

@@ -37,7 +37,7 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
 
     function test_UNISWAPV4_LIQUIDATION_TESTALL() external {
         for (uint256 i = 0; i < LIQUIDATION_TESTS.length; i++) {
-            Types.TestParams memory params = LIQUIDATION_TESTS[i];
+            Types.LiquidationTestParams memory params = LIQUIDATION_TESTS[i];
             vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
 
             address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
@@ -92,7 +92,7 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
     }
 
     function test_UNISWAPV4_LIQUIDATION_TEST0() external {
-        Types.TestParams memory params = LIQUIDATION_TESTS[0];
+        Types.LiquidationTestParams memory params = LIQUIDATION_TESTS[0];
         vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
 
         address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
