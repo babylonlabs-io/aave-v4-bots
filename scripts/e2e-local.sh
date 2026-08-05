@@ -160,6 +160,9 @@ export PROTOCOL_PAUSER="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 export APP_PAUSER="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 export AUTOMATED_RISK_STEWARD="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 export PROTOCOL_FEE_RECIPIENT="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+# Peg-ins activate immediately. The contracts default this to 150 blocks (~30 min on mainnet), which
+# every suite here would then have to mine past before a vault exists to liquidate or arbitrage.
+export PEGIN_ACTIVATION_DELAY=0
 
 # ── Local-only state ─────────────────────────────────────────────────────────
 RPC_URL="${E2E_RPC_URL:-http://127.0.0.1:8545}"
