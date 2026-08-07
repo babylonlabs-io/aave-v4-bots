@@ -32,9 +32,13 @@ COPY services/ponder/ ./services/ponder/
 # ============================================
 FROM node:22-alpine AS runner
 
-# Install pnpm for running ponder and wget for healthchecks
+# wget for the healthcheck. Remove the npm bundled in the base image: it is
+# unused at runtime and ships known-vulnerable transitive deps (tar, etc.) that
+# the image scanner flags. pnpm/corepack are intentionally NOT installed here —
+# ponder is started directly (see CMD), so no package manager ships in the
+# runtime image.
 RUN apk add --no-cache wget=~1.25 && \
-    corepack enable && corepack prepare pnpm@9.13.2 --activate
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
@@ -66,5 +70,6 @@ EXPOSE 42069
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider "http://localhost:${PONDER_PORT:-42069}/" || exit 1
 
-# Default command: start production mode
-CMD ["pnpm", "start"]
+# Default command: start production mode. Run ponder directly (no pnpm at
+# runtime); sh applies the PONDER_PORT env default and exec keeps ponder as PID 1.
+CMD ["/bin/sh", "-c", "exec node_modules/.bin/ponder start --port ${PONDER_PORT:-42069}"]

@@ -31,6 +31,9 @@ pnpm-debug.log*
 # Test files
 coverage
 .nyc_output
+**/*.test.ts
+**/*.spec.ts
+**/vitest.config.ts
 
 # OS files
 .DS_Store
