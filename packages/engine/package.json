@@ -1,0 +1,31 @@
+{
+  "name": "@repo/engine",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@repo/abis": "workspace:*",
+    "@repo/chain": "workspace:*",
+    "@repo/execution": "workspace:*",
+    "@repo/logger": "workspace:*",
+    "@repo/notifications": "workspace:*",
+    "@repo/persistence": "workspace:*",
+    "@repo/risk": "workspace:*",
+    "viem": "^2.37.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "@types/pg": "^8.15.0",
+    "pg": "^8.16.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.0"
+  }
+}

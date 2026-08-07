@@ -9,9 +9,9 @@ import {
     ArbitrageRouterOldVaultSwap,
     SelfCallRelayer,
     IOldBTCVaultSwap
-} from "../../src/ArbitrageRouterOldVaultSwap.sol";
+} from "../../contracts/ArbitrageRouterOldVaultSwap.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {BTCVaultSwap, IBTCVaultSwap} from "../../lib/contracts/src/applications/aave/llps/BTCVaultSwap.sol";
+import {BTCVaultSwap, IBTCVaultSwap} from "vault-contracts/applications/aave/llps/BTCVaultSwap.sol";
 
 contract ArbitrageRouterTest is TestSuites, Test {
     uint256 internal ADMIN_PRIVATE_KEY = 69420;
@@ -152,7 +152,8 @@ contract ArbitrageRouterTest is TestSuites, Test {
             SelfCallRelayer.RelayerMessage memory messageMinProfitInf =
                 SelfCallRelayer.RelayerMessage({calls: callsMinProfitInf, deadline: type(uint256).max});
             bytes32 digestMinProfitInf = _digest(router, messageMinProfitInf);
-            (uint8 vMinProfitInf, bytes32 rMinProfitInf, bytes32 sMinProfitInf) = vm.sign(ADMIN_PRIVATE_KEY, digestMinProfitInf);
+            (uint8 vMinProfitInf, bytes32 rMinProfitInf, bytes32 sMinProfitInf) =
+                vm.sign(ADMIN_PRIVATE_KEY, digestMinProfitInf);
             bytes memory signatureMinProfitInf = abi.encodePacked(rMinProfitInf, sMinProfitInf, vMinProfitInf);
 
             vm.prank(RANDOM_CALLER);
@@ -164,7 +165,8 @@ contract ArbitrageRouterTest is TestSuites, Test {
             SelfCallRelayer.RelayerMessage memory messageMaxWbtcInZero =
                 SelfCallRelayer.RelayerMessage({calls: callsMaxWbtcInZero, deadline: type(uint256).max});
             bytes32 digestMaxWbtcInZero = _digest(router, messageMaxWbtcInZero);
-            (uint8 vMaxWbtcInZero, bytes32 rMaxWbtcInZero, bytes32 sMaxWbtcInZero) = vm.sign(ADMIN_PRIVATE_KEY, digestMaxWbtcInZero);
+            (uint8 vMaxWbtcInZero, bytes32 rMaxWbtcInZero, bytes32 sMaxWbtcInZero) =
+                vm.sign(ADMIN_PRIVATE_KEY, digestMaxWbtcInZero);
             bytes memory signatureMaxWbtcInZero = abi.encodePacked(rMaxWbtcInZero, sMaxWbtcInZero, vMaxWbtcInZero);
 
             vm.prank(RANDOM_CALLER);

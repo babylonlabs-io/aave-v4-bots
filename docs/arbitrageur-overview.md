@@ -98,7 +98,10 @@ vault:
 
 ## Arbitrageur Bot
 
-The bot automates monitoring and acquisition of escrowed vaults.
+The bot automates monitoring and acquisition of escrowed vaults. It
+always runs the arbitrage engine; when `ADAPTER_ADDRESS` and
+`LENS_ADDRESS` are also configured, the same process also runs the
+liquidation engine with the same executor and risk gate.
 
 ### Bot Operation
 
@@ -112,19 +115,65 @@ The bot automates monitoring and acquisition of escrowed vaults.
    - Ensures WBTC approval for BTCVaultSwap.
    - Calls `swapWbtcForVault(vaultId, maxWbtcIn)` where
      `maxWbtcIn = currentDebt + currentDebt * MAX_SLIPPAGE_BPS / 10000`.
-   - Waits for receipt up to `TX_RECEIPT_TIMEOUT_MS`.
+4. **Batch** — every affordable vault is broadcast first, then all receipts are awaited
+   together (each up to `TX_RECEIPT_TIMEOUT_MS`), the same shape the liquidation engine uses.
+   Two bounds apply while sending:
+   - **Exposure** — each send reserves a risk-gate slot, so `RISK_MAX_IN_FLIGHT` caps how many
+     acquisitions are in flight at once.
+   - **Inventory** — the risk gate reserves each vault's `maxWbtcIn` against the signer's WBTC
+     until the acquisition settles, and blocks one the balance cannot cover. The reservation is
+     shared with the liquidation engine, which spends the same WBTC (`wbtcPayment`) — so neither
+     engine can commit balance the other has already claimed.
 
-The vault is redeemed to the arbitrageur's keeper-registered BTC key
-inside the same transaction.
+In `AUTO` mode the bot signs and broadcasts with the configured signer.
+In `MANUAL` mode it writes a content-hashed proposal to the Postgres
+StateStore and notifies an operator, who reviews and broadcasts it with
+`operator-cli`. The vault is redeemed to the arbitrageur's
+keeper-registered BTC key inside the same transaction.
 
 ### Configuration
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `POLLING_INTERVAL_MS` | How often to check for escrowed vaults | `30000` |
-| `MAX_SLIPPAGE_BPS` | Slippage tolerance (basis points) over `currentDebt` | `100` (1%) |
-| `VAULT_PROCESSING_DELAY_MS` | Delay between processing successive vaults | `5000` |
-| `TX_RECEIPT_TIMEOUT_MS` | Receipt wait timeout | `120000` |
+| Parameter | Description | Required? | Default |
+|-----------|-------------|-----------|---------|
+| `CLIENT_RPC_URL` | Ethereum RPC endpoint | Yes | — |
+| `PONDER_URL` | Ponder indexer API URL | Yes | — |
+| `VAULT_SWAP_ADDRESS` | BTCVaultSwap contract address | Yes | — |
+| `WBTC_ADDRESS` | WBTC token address | Yes | — |
+| `VAULT_KEEPER_ADDRESS` | Keeper the vault is redeemed to when the executor isn't one itself (uses `swapWbtcForVaultOnBehalf`) | No | — |
+| `POLLING_INTERVAL_MS` | How often to check for escrowed vaults | No | `30000` |
+| `MAX_SLIPPAGE_BPS` | Slippage tolerance (basis points) over `currentDebt` | No | `100` |
+| `VAULT_PROCESSING_DELAY_MS` | Throttle between acquisition broadcasts. Acquisitions are batched, so not a per-acquisition pause. `0` disables | No | `0` |
+| `TX_RECEIPT_TIMEOUT_MS` | Receipt wait timeout | No | `120000` |
+| `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
+| `ARBITRAGEUR_PRIVATE_KEY` | Default local signer key ref target; not used with KMS or MANUAL | AUTO + local | — |
+| `SECRETS_PROVIDER` | Secret reference backend: `env` or `aws` | No | `env` |
+| `SIGNER_SOURCE` | AUTO signer backend: `local` or `aws` KMS | No | `local` |
+| `SIGNER_KEY_REF` | Local signer secret reference | No | `ARBITRAGEUR_PRIVATE_KEY` |
+| `KMS_KEY_ID` | AWS KMS key id/ARN/alias for `SIGNER_SOURCE=aws` | KMS only | — |
+| `SIGNER_ADDRESS` | Expected KMS signer address | No | — |
+| `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
+| `DATABASE_URL` | Enables Postgres StateStore; required for MANUAL proposals | MANUAL only | — |
+| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables | No | `bot` |
+| `MANUAL_EXECUTOR_ADDRESS` | Address the operator signs/broadcasts from | MANUAL only | — |
+| `MANUAL_EXECUTOR_KIND` | Operator custody model: `eoa` or `safe` | MANUAL only | — |
+| `MANUAL_INTENT_TTL_MS` | Expire un-actioned MANUAL proposals after this many ms; `0` disables | No | `10800000` |
+| `MANUAL_INTENT_STUCK_MS` | Alert on stuck MANUAL intents after this many ms; `0` disables | No | `3600000` |
+| `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
+| `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
+| `ADAPTER_ADDRESS` | Enables optional liquidation engine when set with `LENS_ADDRESS` | Liquidation only | — |
+| `LENS_ADDRESS` | Lens address for optional liquidation mode | Liquidation only | — |
+| `LIQUIDATION_POLLING_INTERVAL_MS` | Poll interval for the optional liquidation engine | No | `12000` |
+| `LIQUIDATION_FUNDING` | Funding mode for the optional liquidation engine: `inventory` or `flash`. See the [liquidator overview](./liquidator-overview.md#funding-modes) | No | `inventory` |
+| `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after consecutive failed actions | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. Rejected at boot if the liquidation engine is enabled and inventory-funded (#27); allowed when it is off or flash-funded | No | — |
+| `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
+| `RISK_MAX_DATA_STALENESS_MS` | Maximum source data age | No | — |
+| `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
+| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=hash,...` | No | — |
+| `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
+| `RISK_CONTROL_TOKEN_REF` | Secret reference enabling authenticated kill switch | if `RISK_START_HALTED=true` | — |
+| `RISK_CONTROL_PORT` | Kill-switch server port, separate from metrics | No | `9095` |
+| `RISK_CONTROL_HOST` | Kill-switch bind host | No | `127.0.0.1` |
 
 ### Requirements
 

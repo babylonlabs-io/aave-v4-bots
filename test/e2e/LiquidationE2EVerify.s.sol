@@ -5,7 +5,6 @@ import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {BaseBot} from "./abstract/BaseBot.sol";
 import {E2EConstants} from "./E2EConstants.sol";
-import {ArrayHelper} from "./lib/ArrayHelper.sol";
 
 /// @title LiquidationE2EVerify
 /// @notice Asserts the liquidation bot really executed the LLP-mode flow.
@@ -77,10 +76,24 @@ contract LiquidationE2EVerify is Script, BaseBot {
         console.log("Now (sats):    ", nowWbtc);
         console.log("Gained (sats): ", nowWbtc > initialWbtc ? nowWbtc - initialWbtc : 0);
 
+        // The LLP fairness payment is the ONLY thing that exercises the WBTC flash-loan leg, and it
+        // lands here: the adapter pulls it from the liquidator (the router) and forwards it to the
+        // borrower. The borrower holds no WBTC otherwise — they pegged in BTC and borrowed USDC — so
+        // any balance at all is the payment, and in flash mode the router held none of its own.
+        uint256 borrowerWbtc = _getWbtcBalance(borrower);
+        console.log("\n--- Borrower WBTC (LLP fairness payment) ---");
+        console.log("Received (sats):", borrowerWbtc);
+
         // ── Pass / fail ───────────────────────────────────────────────────
         bool positionLiquidated = (col == 0 && debt == 0);
-        bool liquidatorSpentUsdc = nowUsdc < initialUsdc;
+        // The signature of flash funding, and the reason it is asserted rather than merely logged:
+        // the router borrows the USDC and repays itself from the seized collateral, so the bot's own
+        // USDC must be untouched. An inventory-funded liquidation spends it — so this is what
+        // catches the bot silently falling back to the other mode, which a "position was
+        // liquidated" check alone cannot.
+        bool liquidatorUsdcUntouched = nowUsdc == initialUsdc;
         bool liquidatorReceivedWbtc = nowWbtc > initialWbtc;
+        bool fairnessPaymentFlashFunded = borrowerWbtc > 0;
 
         console.log("\n--- Verification Results ---");
 
@@ -89,66 +102,37 @@ contract LiquidationE2EVerify is Script, BaseBot {
         } else {
             console.log("[FAIL] Borrower position NOT liquidated (collateral or debt > 0)");
         }
-        if (liquidatorSpentUsdc) {
-            console.log("[PASS] Liquidator spent USDC repaying debt");
+        if (liquidatorUsdcUntouched) {
+            console.log("[PASS] Liquidator spent no USDC (repayment was flash-funded)");
         } else {
-            console.log("[FAIL] Liquidator USDC balance unchanged from initial");
+            console.log("[FAIL] Liquidator USDC fell - the liquidation was funded from inventory");
         }
         if (liquidatorReceivedWbtc) {
-            console.log("[PASS] Liquidator received WBTC from LLP (sell-discount payout)");
+            console.log("[PASS] Liquidator received WBTC (profit swept from the router)");
         } else {
             console.log("[FAIL] Liquidator WBTC balance unchanged from initial");
         }
+        if (fairnessPaymentFlashFunded) {
+            console.log("[PASS] Fairness payment reached the borrower (WBTC flash-loan leg ran)");
+        } else {
+            console.log("[FAIL] Borrower received no WBTC - the WBTC flash-loan leg never ran");
+        }
 
-        if (positionLiquidated && liquidatorSpentUsdc && liquidatorReceivedWbtc) {
+        if (positionLiquidated && liquidatorUsdcUntouched && liquidatorReceivedWbtc && fairnessPaymentFlashFunded) {
+            // The bot traded, which already proves the code-hash guard accepted the real deployed
+            // bytecode (a mismatch would have booted it HALTED). Now exercise the control plane on
+            // the live process, last so a kill-switch failure can never mask a trading failure.
+            console.log("\n--- Verifying kill switch on the running bot ---");
+            _checkKillSwitch(
+                E2EConstants.LIQUIDATOR_CONTROL_PORT, E2EConstants.LIQUIDATOR_METRICS_PORT, E2EConstants.CONTROL_TOKEN
+            );
+            console.log("[PASS] Kill switch: auth, method + traversal guards, halt/resume, loopback-only");
+
             console.log("\n=== E2E Liquidation Test PASSED ===\n");
         } else {
             console.log("\n=== E2E Liquidation Test FAILED ===\n");
             console.log("Check /tmp/liq-ponder.log and /tmp/liq-bot.log for details");
             revert("Liquidation did not occur as expected");
         }
-    }
-
-    /// @dev Canonical proxy lookup (matches LiquidationE2ESetup). The
-    ///      previous `Clones.predictDeterministicAddress` formula did not
-    ///      match what the new adapter actually deploys, which produced
-    ///      false-positive PASS readings (col=0/debt=0 from the wrong
-    ///      account).
-    function _getUserProxyAddress(address user) internal view returns (address) {
-        return aaveAdapter.getPosition(user).proxyContract;
-    }
-
-    function _getUsdcBalance(address user) internal returns (uint256) {
-        bytes memory result = ffi_castCall(address(usdc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
-        return abi.decode(result, (uint256));
-    }
-
-    function _getWbtcBalance(address user) internal returns (uint256) {
-        bytes memory result = ffi_castCall(address(wbtc), "balanceOf(address)", ArrayHelper.create(vm.toString(user)));
-        return abi.decode(result, (uint256));
-    }
-
-    /// @dev Read live position info via FFI so the polling loop sees
-    ///      changes the bot makes outside this script's local EVM.
-    ///      ISpoke.UserAccountData is 7 uint256s in this order:
-    ///      (riskPremium, avgCollateralFactor, healthFactor,
-    ///      totalCollateralValue, totalDebtValueRay, activeCollateralCount,
-    ///      borrowCount).
-    function _getPositionInfo(address user)
-        internal
-        returns (uint256 totalCollateral, uint256 totalDebt, uint256 healthFactor)
-    {
-        address proxy = _getUserProxyAddress(user);
-        bytes memory result =
-            ffi_castCall(address(aaveSpoke), "getUserAccountData(address)", ArrayHelper.create(vm.toString(proxy)));
-        (,, healthFactor, totalCollateral, totalDebt,,) =
-            abi.decode(result, (uint256, uint256, uint256, uint256, uint256, uint256, uint256));
-    }
-
-    function _readInitialBalance(string memory filename) internal view returns (uint256) {
-        string memory content = vm.readFile(filename);
-        uint256 parsed = vm.parseUint(content);
-        require(parsed > 0, "Missing initial balance from setup");
-        return parsed;
     }
 }

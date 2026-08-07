@@ -7,10 +7,12 @@
     "dev": "ponder dev --port ${PONDER_PORT:-42069}",
     "start": "ponder start --port ${PONDER_PORT:-42069}",
     "codegen": "ponder codegen",
-    "test": "node --import tsx --test tests/positionAccounting.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@repo/abis": "workspace:*",
+    "@repo/logger": "workspace:*",
+    "@repo/secrets": "workspace:*",
     "ponder": "^0.13.6",
     "hono": "^4.5.0",
     "viem": "^2.37.0"

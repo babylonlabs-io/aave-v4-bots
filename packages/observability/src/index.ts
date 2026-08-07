@@ -7,5 +7,16 @@ export {
   runHealthChecks,
 } from "./health";
 
-// Metrics + health HTTP server
-export { type MetricsServerConfig, setPublicClient, startMetricsServer } from "./server";
+// Metrics + health HTTP server. The kill switch is NOT here — `@repo/risk` owns it and serves it
+// on its own socket (see `startRiskRuntime`).
+export { type ObservabilityServerConfig, startObservabilityServer } from "./server";
+
+// Prom-client adapters for the engine metric ports, and the shared registry they register into —
+// what the server above serves on `/metrics`.
+export {
+  type MetricsRegistry,
+  createMetricsRegistry,
+  createLiquidationMetrics,
+  createArbitrageMetrics,
+  createIndexerMetrics,
+} from "./metrics";

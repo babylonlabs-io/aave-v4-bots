@@ -1,9 +1,21 @@
 [profile.default]
-src = "src"
+src = "contracts"
 out = "out"
 libs = ["lib"]
 test = "test"
+# The repo already had `scripts/` for its bash tooling; forge scripts live alongside it rather
+# than in a second, near-identically named directory.
+script = "scripts"
 auto_detect_solc = true
+
+# `test/utils` is a symlink to lib/tbv-contracts/test/utils that the e2e runner and CI create at
+# runtime, because PopHelpers' FFI *node* scripts resolve the relative path `test/utils/`. Solidity
+# never reaches those files that way — its imports go through the `test-utils/` remapping below —
+# but forge still compiles whatever it finds under `test`, and their relative
+# `../../src/protocol/...` imports then resolve against this repo's root, which has no
+# `src/protocol`. Without this skip, `forge build` and `forge test` fail after any e2e run until the
+# symlink is deleted.
+skip = ["test/utils/**"]
 
 # Compiler optimizations to match contracts repo
 optimizer = true
@@ -12,25 +24,25 @@ via_ir = true  # Use IR-based code generator to avoid stack too deep errors
 
 # Remappings to import from contracts submodule
 remappings = [
-    "forge-std/=lib/contracts/lib/forge-std/src/",
-    "vault-contracts/=lib/contracts/src/",
-    "aave-v4/=lib/contracts/lib/aave-v4/src/",
-    "@openzeppelin/contracts-upgradeable/=lib/contracts/lib/openzeppelin-contracts-upgradeable/contracts/",
-    "@openzeppelin/contracts/=lib/contracts/lib/openzeppelin-contracts/contracts/",
-    "src/spoke/=lib/contracts/lib/aave-v4/src/spoke/",
-    "src/libraries/=lib/contracts/lib/aave-v4/src/libraries/",
-    "src/hub/=lib/contracts/lib/aave-v4/src/hub/",
-    "src/dependencies/=lib/contracts/lib/aave-v4/src/dependencies/",
-    "src/utils/=lib/contracts/lib/aave-v4/src/utils/",
-    "src/interfaces/INoncesKeyed.sol=lib/contracts/lib/aave-v4/src/interfaces/INoncesKeyed.sol",
-    "src/interfaces/IMulticall.sol=lib/contracts/lib/aave-v4/src/interfaces/IMulticall.sol",
-    "src/interfaces/IIntentConsumer.sol=lib/contracts/lib/aave-v4/src/interfaces/IIntentConsumer.sol",
-    "src/interfaces/IExtSload.sol=lib/contracts/lib/aave-v4/src/interfaces/IExtSload.sol",
-    "src/access/=lib/contracts/lib/aave-v4/src/access/",
-    "script/utils/=lib/contracts/script/utils/",
-    "lib/aave-v4/=lib/contracts/lib/aave-v4/",
-    "test-utils/=lib/contracts/test/utils/",
-    "test-e2e-base/=lib/contracts/test/e2e/base/"
+    "forge-std/=lib/tbv-contracts/lib/forge-std/src/",
+    "vault-contracts/=lib/tbv-contracts/src/",
+    "aave-v4/=lib/tbv-contracts/lib/aave-v4/src/",
+    "@openzeppelin/contracts-upgradeable/=lib/tbv-contracts/lib/openzeppelin-contracts-upgradeable/contracts/",
+    "@openzeppelin/contracts/=lib/tbv-contracts/lib/openzeppelin-contracts/contracts/",
+    "src/spoke/=lib/tbv-contracts/lib/aave-v4/src/spoke/",
+    "src/libraries/=lib/tbv-contracts/lib/aave-v4/src/libraries/",
+    "src/hub/=lib/tbv-contracts/lib/aave-v4/src/hub/",
+    "src/dependencies/=lib/tbv-contracts/lib/aave-v4/src/dependencies/",
+    "src/utils/=lib/tbv-contracts/lib/aave-v4/src/utils/",
+    "src/interfaces/INoncesKeyed.sol=lib/tbv-contracts/lib/aave-v4/src/interfaces/INoncesKeyed.sol",
+    "src/interfaces/IMulticall.sol=lib/tbv-contracts/lib/aave-v4/src/interfaces/IMulticall.sol",
+    "src/interfaces/IIntentConsumer.sol=lib/tbv-contracts/lib/aave-v4/src/interfaces/IIntentConsumer.sol",
+    "src/interfaces/IExtSload.sol=lib/tbv-contracts/lib/aave-v4/src/interfaces/IExtSload.sol",
+    "src/access/=lib/tbv-contracts/lib/aave-v4/src/access/",
+    "script/utils/=lib/tbv-contracts/script/utils/",
+    "lib/aave-v4/=lib/tbv-contracts/lib/aave-v4/",
+    "test-utils/=lib/tbv-contracts/test/utils/",
+    "test-e2e-base/=lib/tbv-contracts/test/e2e/base/"
 ]
 
 # E2E test profile - requires Bitcoin regtest and Postgres running
@@ -38,9 +50,9 @@ remappings = [
 [profile.e2e]
 ffi = true  # Enable FFI for bot/ponder process management and Bitcoin CLI
 fs_permissions = [
-    { access = "read-write", path = "./lib/contracts/test/data" },
+    { access = "read-write", path = "./lib/tbv-contracts/test/data" },
     { access = "read-write", path = "./test/e2e/data" },
-    { access = "read-write", path = "./lib/contracts/deployments" },
+    { access = "read-write", path = "./lib/tbv-contracts/deployments" },
     { access = "read-write", path = "./" }  # Allow creating .env file in root
 ]
 gas_snapshot_check = false

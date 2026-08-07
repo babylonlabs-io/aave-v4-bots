@@ -48,11 +48,11 @@ services:
       - liquidator-network
     restart: unless-stopped
 
-  liquidator-client:
+  liquidator-bot:
     build:
       context: .
-      dockerfile: docker/liquidator-client.Dockerfile
-    container_name: liquidator-client
+      dockerfile: docker/liquidator.Dockerfile
+    container_name: liquidator-bot
     env_file:
       - .env.liquidator
     environment:
@@ -122,11 +122,11 @@ services:
       - arbitrageur-network
     restart: unless-stopped
 
-  arbitrageur-client:
+  arbitrageur-bot:
     build:
       context: .
-      dockerfile: docker/arbitrageur-client.Dockerfile
-    container_name: arbitrageur-client
+      dockerfile: docker/arbitrageur.Dockerfile
+    container_name: arbitrageur-bot
     env_file:
       - .env.arbitrageur
     environment:

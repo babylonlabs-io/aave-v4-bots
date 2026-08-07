@@ -1,10 +1,13 @@
 import { db, publicClients } from "ponder:api";
 import schema from "ponder:schema";
-import { lensAbi, vaultSwapAbi } from "@repo/abis";
+import { VAULT_GONE_ERRORS, lensAbi, vaultSwapAbi } from "@repo/abis";
+import { createLogger } from "@repo/logger";
 import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
 import { BaseError, ContractFunctionRevertedError } from "viem";
 import type { Address, PublicClient } from "viem";
+
+const logger = createLogger();
 
 function replaceBigInts<T>(value: T) {
   return replaceBigIntsBase(value, (x) => String(x));
@@ -18,6 +21,23 @@ function isExpectedContractRevert(error: unknown): boolean {
     return error.walk((e) => e instanceof ContractFunctionRevertedError) !== null;
   }
   return false;
+}
+
+// `previewEscrowedVaults` validates every vault it is given and reverts the whole call if any one
+// of them has left escrow. The indexer lags the chain, so it routinely still lists vaults that were
+// just acquired — those are gone, not broken, and must not be reported as fetch failures. Decoding
+// this relies on the error entries in `vaultSwapAbi`; without them viem yields no `errorName` and
+// every acquired vault would look like an infrastructure fault again.
+const vaultGoneErrors: ReadonlySet<string> = new Set(VAULT_GONE_ERRORS);
+
+function isVaultGoneRevert(error: unknown): boolean {
+  if (!(error instanceof BaseError)) return false;
+  const revert = error.walk((e) => e instanceof ContractFunctionRevertedError);
+  return (
+    revert instanceof ContractFunctionRevertedError &&
+    revert.data?.errorName !== undefined &&
+    vaultGoneErrors.has(revert.data.errorName)
+  );
 }
 
 // Multicall3 is canonically deployed at this address on most public chains, but
@@ -35,15 +55,61 @@ async function isMulticallSupported(publicClient: PublicClient): Promise<boolean
     const code = await publicClient.getCode({ address: MULTICALL3_ADDRESS });
     multicallSupported = !!code && code !== "0x";
     if (!multicallSupported) {
-      console.warn(
+      logger.warn(
         `Multicall3 not deployed at ${MULTICALL3_ADDRESS}; falling back to per-position readContract. Set MULTICALL3_ADDRESS or deploy Multicall3 to recover the batched-RPC savings.`
       );
     }
     return multicallSupported;
   } catch (error) {
-    console.warn("Multicall3 probe failed; falling back to per-position readContract:", error);
+    logger.warn("Multicall3 probe failed; falling back to per-position readContract:", error);
     multicallSupported = false;
     return false;
+  }
+}
+
+/**
+ * The block this endpoint's **live** contract reads are pinned to, and its timestamp.
+ *
+ * Read the block *and* pin every subsequent `eth_call` to it, so `dataTimestampMs` describes the
+ * exact state the caller is being handed. Timestamping one block and then reading at "latest"
+ * would decouple the two: a load-balanced RPC URL can serve the reads from a lagging replica, and
+ * a reorg can replace the head between the calls — either way the reported age would not be the
+ * age of the data, which is precisely what the risk gate's freshness guard relies on.
+ *
+ * Clients pass the timestamp to the risk gate as `dataTimestampMs`: if the RPC behind this indexer
+ * is lagging, `now - dataTimestampMs` exceeds the freshness threshold and the action is blocked.
+ * Note it measures *RPC* staleness, not indexer **head** lag — that is a separate guard the
+ * indexer-liveness work owns.
+ *
+ * A failed probe returns `undefined`, and the reads fall back to unpinned "latest". Be clear about
+ * what that means downstream: the risk gate is **fail-closed** on freshness. A client with
+ * `RISK_MAX_DATA_STALENESS_MS` set will block *every* action when the timestamp is missing — it
+ * will not "skip the guard". That is the safe direction (never trade on data of unknown age), but
+ * it means a sustained failure of this probe stops the bot trading while this endpoint still
+ * returns 200 with candidates. Alert on the warning below, not just on HTTP status.
+ */
+interface BlockRef {
+  /** Pin live reads here, so the data and the timestamp describe the same state. */
+  blockNumber: bigint;
+  dataTimestampMs: number;
+}
+
+async function readBlockRef(publicClient: PublicClient): Promise<BlockRef | undefined> {
+  try {
+    const block = await publicClient.getBlock();
+    // `getBlock()` defaults to the latest *mined* block, so `number` is never null here.
+    if (block.number === null) return undefined;
+    return { blockNumber: block.number, dataTimestampMs: Number(block.timestamp) * 1000 };
+  } catch (error) {
+    // The severity is the point: a client with RISK_MAX_DATA_STALENESS_MS set fail-closes on the
+    // missing field and stops submitting entirely, while this endpoint keeps returning 200 with
+    // candidates. This line is the only signal of that, so it must not read as benign.
+    logger.warn(
+      "Could not read block timestamp; omitting dataTimestampMs — clients with " +
+        "RISK_MAX_DATA_STALENESS_MS set will BLOCK every action until this recovers:",
+      error
+    );
+    return undefined;
   }
 }
 
@@ -87,6 +153,11 @@ app.get("/liquidatable-positions", async (c) => {
     return c.json({ liquidatable: [], total: 0, checked: 0 });
   }
 
+  // Pin the live `estimateLiquidation` reads below to one block, and report its timestamp as the
+  // risk-gate `dataTimestampMs`. `blockNumber: undefined` (failed probe) means unpinned "latest".
+  const blockRef = await readBlockRef(publicClient);
+  const dataTimestampMs = blockRef?.dataTimestampMs;
+
   // Build proxy -> borrower lookup
   const proxyToBorrower = new Map<string, string>();
   for (const m of proxyMappings) {
@@ -120,6 +191,7 @@ app.get("/liquidatable-positions", async (c) => {
       })),
       allowFailure: true,
       multicallAddress: MULTICALL3_ADDRESS,
+      blockNumber: blockRef?.blockNumber,
     });
     probes = results.map((r) =>
       r.status === "success"
@@ -135,6 +207,7 @@ app.get("/liquidatable-positions", async (c) => {
           abi: lensAbi,
           functionName: "estimateLiquidation",
           args: [p.proxyAddress as Address, false],
+          blockNumber: blockRef?.blockNumber,
         })
       )
     );
@@ -160,7 +233,7 @@ app.get("/liquidatable-positions", async (c) => {
     if (probe.status === "failure") {
       // Healthy positions revert by design; anything else is a real RPC error.
       if (!isExpectedContractRevert(probe.error)) {
-        console.warn(
+        logger.warn(
           `estimateLiquidation error for ${p.proxyAddress} (not a contract revert):`,
           probe.error instanceof Error ? probe.error.message : probe.error
         );
@@ -170,7 +243,7 @@ app.get("/liquidatable-positions", async (c) => {
 
     const borrower = proxyToBorrower.get(p.proxyAddress.toLowerCase());
     if (!borrower) {
-      console.error(`No borrower mapping found for proxy ${p.proxyAddress}`);
+      logger.error(`No borrower mapping found for proxy ${p.proxyAddress}`);
       continue;
     }
 
@@ -190,6 +263,7 @@ app.get("/liquidatable-positions", async (c) => {
       liquidatable,
       total: liquidatable.length,
       checked: positions.length,
+      dataTimestampMs,
     })
   );
 });
@@ -243,6 +317,11 @@ app.get("/escrowed-vaults", async (c) => {
     return c.json({ vaults: [], total: 0, failedVaultsCount: 0 });
   }
 
+  // Pin the live `previewEscrowedVaults` reads below to one block, and report its timestamp as the
+  // risk-gate `dataTimestampMs`. `blockNumber: undefined` (failed probe) means unpinned "latest".
+  const blockRef = await readBlockRef(publicClient);
+  const dataTimestampMs = blockRef?.dataTimestampMs;
+
   // Build vault ID array and createdAt lookup
   const vaultIds = vaults.map((v) => v.vaultId);
   const createdAtMap = new Map(vaults.map((v) => [v.vaultId, v.createdAt]));
@@ -270,6 +349,7 @@ app.get("/escrowed-vaults", async (c) => {
       abi: vaultSwapAbi,
       functionName: "previewEscrowedVaults",
       args: [vaultIds],
+      blockNumber: blockRef?.blockNumber,
     });
 
     const enrichedVaults = vaultsInfo.map(toApiVault);
@@ -279,11 +359,14 @@ app.get("/escrowed-vaults", async (c) => {
         vaults: enrichedVaults,
         total: enrichedVaults.length,
         failedVaultsCount: 0,
+        dataTimestampMs,
       })
     );
   } catch (error) {
-    console.error("Batch previewEscrowedVaults failed, falling back to per-vault fetch:", error);
-
+    // Deliberately not logged yet. The overwhelmingly common cause is a vault acquired between the
+    // index read and this call, which reverts the whole batch — routine, and the per-vault pass
+    // below is what can tell that apart from a real fault. Logging here would put an error line on
+    // every poll of a draining escrow, which is the noise this endpoint is meant to stop emitting.
     const settled = await Promise.allSettled(
       vaultIds.map((vaultId) =>
         publicClient.readContract({
@@ -291,34 +374,54 @@ app.get("/escrowed-vaults", async (c) => {
           abi: vaultSwapAbi,
           functionName: "previewEscrowedVaults",
           args: [[vaultId]],
+          blockNumber: blockRef?.blockNumber,
         })
       )
     );
 
     const enrichedVaults = [];
     let failed = 0;
+    let gone = 0;
 
     for (let i = 0; i < settled.length; i++) {
       const result = settled[i];
       const vaultId = vaultIds[i];
       if (result.status === "fulfilled" && result.value.length > 0) {
         enrichedVaults.push(toApiVault(result.value[0]));
+      } else if (result.status === "rejected" && isVaultGoneRevert(result.reason)) {
+        // Already acquired between the index read and now. Omit it and say nothing: this is the
+        // steady state while the escrow drains, not a fault to report or retry.
+        gone += 1;
       } else {
         failed += 1;
-        console.error(
+        logger.error(
           `Failed to fetch vault info for ${vaultId}:`,
           result.status === "rejected" ? result.reason : "empty response"
         );
       }
     }
 
+    // Now the batch failure can be reported at its true severity: an error only if some vault
+    // failed for a reason other than having been acquired.
+    if (failed > 0) {
+      logger.error("Batch previewEscrowedVaults failed, fell back to per-vault fetch:", error);
+    } else if (gone > 0) {
+      logger.info(
+        `Batch previewEscrowedVaults skipped: ${gone} vault(s) acquired since the last index update`
+      );
+    }
+
+    // 500 only when something genuinely broke. An empty list because every vault was acquired is a
+    // valid, complete answer — previously it returned 500 and drove the bot through its full fetch
+    // retry/backoff on every poll once the escrow was drained.
     return c.json(
       replaceBigInts({
         vaults: enrichedVaults,
         total: enrichedVaults.length,
         failedVaultsCount: failed,
+        dataTimestampMs,
       }),
-      enrichedVaults.length > 0 ? 200 : 500
+      enrichedVaults.length > 0 || failed === 0 ? 200 : 500
     );
   }
 });

@@ -24,7 +24,7 @@ import {Test} from "forge-std/Test.sol";
 import {IV4Quoter} from "../../../lib/v4-periphery/src/interfaces/IV4Quoter.sol";
 import {MockUniswapV4DexAggRouter} from "../../mocks/MockUniswapV4DexAggRouter.sol";
 import {IV4Router} from "../../../lib/v4-periphery/src/interfaces/IV4Router.sol";
-import {Types as LiquidationTypes} from "../../../src/LiquidationRouter.sol";
+import {Types as LiquidationTypes} from "../../../contracts/LiquidationRouter.sol";
 import {console} from "forge-std/console.sol";
 
 struct QuoteParams {

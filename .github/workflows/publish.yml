@@ -27,13 +27,13 @@ jobs:
       security-events: write
       packages: read
 
-  docker_liquidator_client:
+  docker_liquidator_bot:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/liquidator-client.Dockerfile
-      repoName: liquidation-aave-client
+      dockerfile: ./docker/liquidator.Dockerfile
+      repoName: liquidation-aave-bot
       push_to_dockerhub: false
     permissions:
       contents: read
@@ -56,13 +56,13 @@ jobs:
       security-events: write
       packages: read
 
-  docker_arbitrageur_client:
+  docker_arbitrageur_bot:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/arbitrageur-client.Dockerfile
-      repoName: arbitrageur-aave-client
+      dockerfile: ./docker/arbitrageur.Dockerfile
+      repoName: arbitrageur-aave-bot
       push_to_dockerhub: false
     permissions:
       contents: read
