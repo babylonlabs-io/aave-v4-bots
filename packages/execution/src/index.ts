@@ -1,5 +1,4 @@
 import { createLogger } from "@repo/logger";
-import type { ProposedTx } from "@repo/persistence";
 import {
   type Abi,
   type Account,
@@ -180,15 +179,23 @@ export function encodeCall(call: ContractCall): { to: Address; data: Hex } {
 }
 
 /**
- * The semantic content of a MANUAL proposal — the fields a `payloadHash` commits to.
+ * The transaction a MANUAL proposal asks an operator to sign, and the shape `hashPayload` commits
+ * to. Every field is JSON-serializable (no `bigint`) — `value`/`gasLimit` are **decimal strings** —
+ * because `@repo/persistence` stores it verbatim as `jsonb` and `operator-cli` renders it.
  *
- * The **stored** shape is the definition, so this is an alias rather than a restatement: a hash that
- * committed to a different set of fields than the row it is stored beside would be a tamper check
- * with a hole in it. The import must stay `import type`: it is erased at build time, which is what
- * lets `@repo/persistence` be a devDependency here — and the runtime images install `--prod`, so a
- * value import would resolve in dev and CI and fail only in the shipped container.
+ * `nonce` and fee fields are deliberately absent: they belong to whoever signs (the operator's
+ * wallet fills them at broadcast), not to the bot proposing the call.
  */
-export type ProposalPayload = ProposedTx;
+export interface ProposedTx {
+  chainId: number;
+  to: Address;
+  /** Encoded calldata. */
+  data: Hex;
+  /** Wei, as a decimal string (`"0"` today). */
+  value: string;
+  /** Gas limit hint, decimal string — advisory; the signer decides. */
+  gasLimit?: string;
+}
 
 /** Bumps if the hash encoding ever changes, so an old proposal's hash stays interpretable. */
 const PAYLOAD_HASH_VERSION = "aave-v4-bot-proposal-v1";
@@ -204,7 +211,7 @@ const PAYLOAD_HASH_VERSION = "aave-v4-bot-proposal-v1";
  * `gasLimit` collapses to its documented `0` sentinel. Recomputing from a freshly-built payload or
  * from one read back out of the database yields the same hash.
  */
-export function hashPayload(payload: ProposalPayload): Hex {
+export function hashPayload(payload: ProposedTx): Hex {
   return keccak256(
     encodeAbiParameters(
       [

@@ -1,6 +1,7 @@
+import type { ProposedTx } from "@repo/execution";
 import type { Address, Hex } from "viem";
 import { describe, expect, it } from "vitest";
-import { type IntentInput, type ProposedTx, type SafeEnvelope, idempotencyKey } from "./index";
+import { type IntentInput, type SafeEnvelope, idempotencyKey } from "./index";
 import { createMemoryStateStore } from "./memory";
 
 // `reconcilePending` moved to `@repo/engine` (it orchestrates this store *and* chain queries);

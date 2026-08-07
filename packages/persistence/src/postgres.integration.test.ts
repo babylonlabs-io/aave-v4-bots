@@ -1,7 +1,8 @@
+import type { ProposedTx } from "@repo/execution";
 import pg from "pg";
 import type { Address, Hex } from "viem";
 import { afterAll, describe, expect, it } from "vitest";
-import { type ProposedTx, idempotencyKey } from "./index";
+import { idempotencyKey } from "./index";
 import { createPostgresStateStore } from "./postgres";
 
 // Opt-in integration test that hits a **real Postgres** (the unit test in `persistence.test.ts`

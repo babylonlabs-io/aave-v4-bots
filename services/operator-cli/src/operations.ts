@@ -1,10 +1,6 @@
 import { findSafeExecutionByHash } from "@repo/chain";
-import {
-  type ProposalPayload,
-  computeSafeTxHash,
-  decodeExecTransaction,
-  hashPayload,
-} from "@repo/execution";
+import type { ProposedTx } from "@repo/execution";
+import { computeSafeTxHash, decodeExecTransaction, hashPayload } from "@repo/execution";
 import type { SafeEnvelope, StateStore, TxIntent } from "@repo/persistence";
 import type { Address, Hex, PublicClient } from "viem";
 import type { OperatorSigner } from "./signer";
@@ -43,11 +39,11 @@ async function load(ctx: OperatorContext, id: string): Promise<TxIntent> {
 export function verifyProposal(
   ctx: OperatorContext,
   row: TxIntent
-): { payload: ProposalPayload; payloadHash: Hex } {
+): { payload: ProposedTx; payloadHash: Hex } {
   if (!row.payload || !row.payloadHash) {
     throw new Error(`intent ${row.id} is not a MANUAL proposal (no payload to sign)`);
   }
-  const payload: ProposalPayload = row.payload;
+  const payload: ProposedTx = row.payload;
   const recomputed = hashPayload(payload);
   if (recomputed !== row.payloadHash) {
     throw new Error(
@@ -80,7 +76,7 @@ function assertSignerIsExecutor(ctx: OperatorContext): void {
 function assertSafeEnvelopeIntact(
   ctx: OperatorContext,
   id: string,
-  payload: ProposalPayload,
+  payload: ProposedTx,
   envelope: SafeEnvelope
 ): void {
   const recomputed = computeSafeTxHash({
@@ -263,7 +259,7 @@ export async function confirmProposal(
 /** An EOA broadcast must be the executor calling the target with exactly the payload. */
 function verifyEoaTx(
   ctx: OperatorContext,
-  payload: ProposalPayload,
+  payload: ProposedTx,
   tx: { from: Address; to: Address | null; input: Hex; value: bigint }
 ): void {
   if (!eq(tx.from, ctx.executorAddress)) {
@@ -282,7 +278,7 @@ function verifyEoaTx(
 function verifySafeTx(
   ctx: OperatorContext,
   row: TxIntent,
-  payload: ProposalPayload,
+  payload: ProposedTx,
   tx: { to: Address | null; input: Hex }
 ): void {
   if (!tx.to || !eq(tx.to, ctx.executorAddress)) {

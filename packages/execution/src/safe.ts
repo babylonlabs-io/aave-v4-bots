@@ -9,7 +9,7 @@ import {
   getAddress,
   hashTypedData,
 } from "viem";
-import type { ProposalPayload } from "./index";
+import type { ProposedTx } from "./index";
 
 // The pure (chain-free) half of MANUAL `safe` custody: wrap a proposal's INNER call into a SafeTx,
 // compute the EIP-712 `safeTxHash` the owners sign, and encode/decode `execTransaction`. The
@@ -23,14 +23,16 @@ import type { ProposalPayload } from "./index";
 
 /**
  * The Safe-specific fields wrapping a proposal's inner call into a SafeTx. Decimal strings, so the
- * whole thing is JSON-serializable — structurally the non-hash fields of `@repo/persistence`'s
- * `SafeEnvelope` (kept decoupled; the engine/CLI, which see both, bridge them).
+ * whole thing is JSON-serializable — `@repo/persistence` stores it as `jsonb`, in a `SafeEnvelope`
+ * that extends `SafeExecution` below.
  */
 export interface SafeTxParams {
-  /** The Safe's on-chain nonce this SafeTx consumes. */
+  /** The Safe's on-chain nonce this SafeTx consumes (distinct per concurrent claim). */
   safeNonce: number;
-  /** `0` = CALL, `1` = DELEGATECALL. */
+  /** `0` = CALL, `1` = DELEGATECALL. v1 policy: always CALL. */
   operation: 0 | 1;
+  /** SafeTx gas + refund fields, decimal strings. v1 policy: all `"0"` / zero address — no Safe-level
+   *  refund (a refund moves value out of the Safe on every exec). `confirm` rejects any deviation. */
   safeTxGas: string;
   baseGas: string;
   gasPrice: string;
@@ -40,7 +42,9 @@ export interface SafeTxParams {
 
 /** A built SafeTx execution: its params, the Safe version, and the `safeTxHash` owners sign. */
 export interface SafeExecution extends SafeTxParams {
+  /** The Safe contract version the hash was computed against (part of the EIP-712 domain). */
   safeVersion: string;
+  /** The EIP-712 SafeTx hash the owners sign; reconcile matches the Safe's `Execution*` event to it. */
   safeTxHash: Hex;
 }
 
@@ -66,7 +70,7 @@ export function defaultSafeTxParams(safeNonce: number): SafeTxParams {
 /** The EIP-712 typed-data of a SafeTx — the single source for both hashing and signing, so an owner
  *  never signs something other than what `computeSafeTxHash` commits to. */
 export function safeTxTypedData(args: {
-  inner: ProposalPayload;
+  inner: ProposedTx;
   params: SafeTxParams;
   safe: Address;
   chainId: number;
@@ -105,7 +109,7 @@ export function safeTxTypedData(args: {
 /** The EIP-712 `safeTxHash` an owner signs. A test cross-checks this against the Safe's own on-chain
  *  `getTransactionHash(...)` (see `@repo/abis` `safeAbi`), so the domain/type layout cannot drift. */
 export function computeSafeTxHash(args: {
-  inner: ProposalPayload;
+  inner: ProposedTx;
   params: SafeTxParams;
   safe: Address;
   chainId: number;
@@ -119,7 +123,7 @@ export function computeSafeTxHash(args: {
  * `SafeEnvelope`, fixed before owners sign so the signed hash is exactly what executes.
  */
 export function buildSafeExecution(args: {
-  inner: ProposalPayload;
+  inner: ProposedTx;
   safe: Address;
   chainId: number;
   safeNonce: number;
@@ -149,7 +153,7 @@ export function encodeSafeSignatures(sigs: Array<{ owner: Address; signature: He
 
 /** Encode the `execTransaction` calldata that broadcasts a SafeTx with its collected `signatures`. */
 export function encodeExecTransaction(args: {
-  inner: ProposalPayload;
+  inner: ProposedTx;
   params: SafeTxParams;
   signatures: Hex;
 }): Hex {

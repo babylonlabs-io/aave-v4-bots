@@ -1,3 +1,4 @@
+import type { ProposedTx } from "@repo/execution";
 import pg from "pg";
 import type { Address, Hex } from "viem";
 import {
@@ -6,7 +7,6 @@ import {
   type IntentInput,
   type IntentStatus,
   type PersistenceConfig,
-  type ProposedTx,
   type RecordResult,
   type SafeEnvelope,
   type StateStore,

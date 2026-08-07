@@ -1,4 +1,5 @@
-import type { IntentInput, ProposedTx } from "./types";
+import type { ProposedTx } from "@repo/execution";
+import type { IntentInput } from "./types";
 
 /**
  * Deterministic idempotency key for an action. Addresses are lower-cased so a checksum vs.

@@ -1,6 +1,6 @@
 import { safeAbi } from "@repo/abis";
+import type { ProposedTx } from "@repo/execution";
 import {
-  type ProposalPayload,
   buildSafeExecution,
   encodeExecTransaction,
   encodeSafeSignatures,
@@ -30,9 +30,9 @@ export interface OperatorSigner {
    * The Safe envelope to persist at claim (`safe` custody), or `undefined` (`eoa`). For a Safe this
    * allocates the on-chain nonce and fixes the SafeTx — after this the `safeTxHash` is settled.
    */
-  buildEnvelope(inner: ProposalPayload): Promise<SafeEnvelope | undefined>;
+  buildEnvelope(inner: ProposedTx): Promise<SafeEnvelope | undefined>;
   /** Sign + broadcast the claimed proposal; returns the on-chain tx hash. */
-  send(inner: ProposalPayload, envelope: SafeEnvelope | undefined): Promise<Hex>;
+  send(inner: ProposedTx, envelope: SafeEnvelope | undefined): Promise<Hex>;
 }
 
 /** EOA custody: the operator's account signs + sends the inner call directly. */

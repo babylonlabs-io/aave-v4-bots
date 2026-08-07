@@ -1,9 +1,17 @@
+import type { ProposedTx, SafeExecution } from "@repo/execution";
 import type { Address, Hex } from "viem";
 
 // Crash-safety seam — the `StateStore` port + its data types. A `StateStore` gives the send path
 // durable memory of *what it intended to do*: an idempotency-keyed intent record, so a crash
 // mid-submit does not double-send. Adapters (`./postgres`, `./memory`) implement this; the engine
 // depends only on these types, never on a driver like `pg`.
+//
+// The two shapes this store *carries* rather than defines — the proposed transaction and the Safe
+// execution wrapping it — come from `@repo/execution`, whose `hashPayload` / `buildSafeExecution`
+// are what give them meaning. This store treats both as opaque jsonb, so restating their fields
+// here would be a second definition that only the engine's assignments happened to keep in step.
+// The import is type-only (erased at build time), so `@repo/execution` is a devDependency and no
+// consumer gains a runtime dependency through it.
 //
 // Its scope is intent idempotency and the reconcile work-list. Nonce ownership belongs to
 // `@repo/execution`'s `NonceLease` / `NonceAllocator`, re-seeded from the chain each cycle.
@@ -69,55 +77,18 @@ export const AWAITING_OPERATOR: readonly IntentStatus[] = ["proposed", "claimed"
 export const TERMINAL: readonly IntentStatus[] = ["confirmed", "failed", "superseded", "expired"];
 
 /**
- * The transaction a MANUAL proposal asks an operator to sign. Every field is JSON-serializable (no
- * `bigint`) — `value`/`gasLimit` are **decimal strings** — because the payload is stored as `jsonb`
- * and rendered by `operator-cli`.
- *
- * **This store treats `payloadHash` as opaque.** It does not compute it: `propose` takes the hash
- * as an argument and stores it verbatim. The canonical encoding that turns a `ProposedTx` into that
- * hash is the *producer's* contract (its `encodeCall` + keccak), and both the producer and
- * `operator-cli` must use the same one. Critically, `jsonb` does **not** preserve byte layout — it
- * may reorder keys and drops an absent `gasLimit` — so recomputation must canonicalize the *parsed
- * object* (sorted keys, explicit optional handling), never the raw stored bytes.
- *
- * `nonce` and fee fields are deliberately absent: they belong to whoever signs (the operator's
- * wallet fills them at broadcast), not to the bot proposing the call.
- */
-export interface ProposedTx {
-  chainId: number;
-  to: Address;
-  /** Encoded calldata. */
-  data: Hex;
-  /** Wei, as a decimal string (`"0"` today). */
-  value: string;
-  /** Gas limit hint, decimal string — advisory; the signer decides. */
-  gasLimit?: string;
-}
-
-/**
  * A Safe execution envelope — the full SafeTx an operator's owners sign, **fixed at claim time** so
  * the hash they sign is exactly what executes and what reconcile later matches. The inner call is the
- * intent's `payload`; these are the Safe-specific fields wrapping it. Absent (`null`) for EOA custody.
+ * intent's `payload`; the inherited fields are the Safe-specific ones wrapping it. Absent (`null`)
+ * for EOA custody.
  *
- * Persisted as `jsonb`, so — like `ProposedTx` — every field is JSON-serializable (decimal strings,
- * no `bigint`). Once written it is never renegotiated: a second claim would need a fresh proposal.
+ * It is exactly what `buildSafeExecution` produced, plus the one field that is ours rather than the
+ * SafeTx's — hence the `extends` rather than a restatement of the same fields. A field added to the
+ * SafeTx is then inherited here and persisted; restated, it would be dropped in silence by the
+ * spread that builds this, leaving a stored envelope that no longer reproduces the hash the owners
+ * signed. Once written it is never renegotiated: a second claim would need a fresh proposal.
  */
-export interface SafeEnvelope {
-  /** The Safe's on-chain nonce reserved for this SafeTx (distinct per concurrent claim). */
-  safeNonce: number;
-  /** `0` = CALL, `1` = DELEGATECALL. v1 policy: always CALL. */
-  operation: 0 | 1;
-  /** SafeTx gas + refund fields, decimal strings. v1 policy: all `"0"` / zero address — no Safe-level
-   *  refund (a refund moves value out of the Safe on every exec). `confirm` rejects any deviation. */
-  safeTxGas: string;
-  baseGas: string;
-  gasPrice: string;
-  gasToken: Address;
-  refundReceiver: Address;
-  /** The Safe contract version the hash was computed against (part of the EIP-712 domain). */
-  safeVersion: string;
-  /** The EIP-712 SafeTx hash the owners sign; reconcile matches the Safe's `Execution*` event to it. */
-  safeTxHash: Hex;
+export interface SafeEnvelope extends SafeExecution {
   /**
    * The chain block height read at claim time. NOT part of the SafeTx / `safeTxHash` — operational
    * metadata that bounds `operator-cli release`'s log scan (from here to `latest`) when it checks
@@ -163,7 +134,16 @@ export interface TxIntent extends IntentInput {
   error: string | null;
   /** The proposed transaction, for a MANUAL intent; `null` for an AUTO one. */
   payload: ProposedTx | null;
-  /** Opaque content hash of `payload` (the operator's out-of-band check); `null` for AUTO. See `ProposedTx`. */
+  /**
+   * Content hash of `payload` — the operator's out-of-band check; `null` for AUTO.
+   *
+   * **This store treats it as opaque.** It does not compute it: `propose` takes the hash as an
+   * argument and stores it verbatim. The canonical encoding that turns a `ProposedTx` into that hash
+   * is the producer's contract (`@repo/execution`'s `hashPayload`), and both the producer and
+   * `operator-cli` must use the same one. Critically, `jsonb` does **not** preserve byte layout — it
+   * may reorder keys and drops an absent `gasLimit` — so recomputation must canonicalize the *parsed
+   * object* (sorted keys, explicit optional handling), never the raw stored bytes.
+   */
   payloadHash: Hex | null;
   /** The Safe execution envelope, set at `claimProposal` under `safe` custody; `null` otherwise. */
   safeEnvelope: SafeEnvelope | null;

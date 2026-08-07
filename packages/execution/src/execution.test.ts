@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ContractCall,
   PreBroadcastError,
-  type ProposalPayload,
+  type ProposedTx,
   type SignedTx,
   createNonceAllocator,
   createNonceLease,
@@ -488,7 +488,7 @@ describe("@repo/execution", () => {
   });
 
   describe("hashPayload", () => {
-    const base = (): ProposalPayload => ({
+    const base = (): ProposedTx => ({
       chainId: 31337,
       to: "0x000000000000000000000000000000000000dEaD",
       data: "0xdeadbeef",
@@ -509,7 +509,7 @@ describe("@repo/execution", () => {
 
       // Same semantic payload, keys in a different order and the address lower-cased (as a lenient
       // JSON store might return it), gasLimit still absent.
-      const roundTripped: ProposalPayload = {
+      const roundTripped: ProposedTx = {
         value: "0",
         data: "0xdeadbeef",
         to: "0x000000000000000000000000000000000000dead",

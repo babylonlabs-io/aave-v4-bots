@@ -1,5 +1,6 @@
 import { erc20Abi } from "@repo/abis";
 import { approveMax, readAllowance } from "@repo/chain";
+import type { ProposedTx } from "@repo/execution";
 import {
   type ContractCall,
   type ExecutionIdentity,
@@ -14,7 +15,7 @@ import {
 } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { Notifier } from "@repo/notifications";
-import type { IntentInput, ProposedTx, StateStore, TxIntent } from "@repo/persistence";
+import type { IntentInput, StateStore, TxIntent } from "@repo/persistence";
 import {
   type Address,
   type Chain,

@@ -1,3 +1,4 @@
+import type { ProposedTx } from "@repo/execution";
 import type { Hex } from "viem";
 import {
   AWAITING_OPERATOR,
@@ -5,7 +6,6 @@ import {
   type IntentInput,
   type IntentStatus,
   LIVE_FOR_DEDUP,
-  type ProposedTx,
   type RecordResult,
   type StateStore,
   type TransitionMeta,

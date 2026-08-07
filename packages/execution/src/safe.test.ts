@@ -10,7 +10,7 @@ import {
 } from "viem";
 import { describe, expect, it } from "vitest";
 import {
-  type ProposalPayload,
+  type ProposedTx,
   buildSafeExecution,
   computeSafeTxHash,
   decodeExecTransaction,
@@ -24,7 +24,7 @@ const SAFE = "0x1111111111111111111111111111111111111111" as Address;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
 const ZERO = "0x0000000000000000000000000000000000000000" as Address;
 
-const inner: ProposalPayload = {
+const inner: ProposedTx = {
   chainId: 8453,
   to: TARGET,
   data: "0xdeadbeef",

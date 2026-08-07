@@ -1,9 +1,5 @@
-import {
-  type ProposalPayload,
-  buildSafeExecution,
-  encodeExecTransaction,
-  hashPayload,
-} from "@repo/execution";
+import type { ProposedTx } from "@repo/execution";
+import { buildSafeExecution, encodeExecTransaction, hashPayload } from "@repo/execution";
 import { type IntentInput, createMemoryStateStore, idempotencyKey } from "@repo/persistence";
 import type { Address, Hex, PublicClient } from "viem";
 import { describe, expect, it } from "vitest";
@@ -23,7 +19,7 @@ const input = (subject = "p"): IntentInput => ({
   action: "liquidation",
   subject,
 });
-const payload = (over: Partial<ProposalPayload> = {}): ProposalPayload => ({
+const payload = (over: Partial<ProposedTx> = {}): ProposedTx => ({
   chainId: CHAIN,
   to: TARGET,
   data: "0xdeadbeef",
