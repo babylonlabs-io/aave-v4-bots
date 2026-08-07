@@ -184,8 +184,9 @@ export function encodeCall(call: ContractCall): { to: Address; data: Hex } {
  *
  * The **stored** shape is the definition, so this is an alias rather than a restatement: a hash that
  * committed to a different set of fields than the row it is stored beside would be a tamper check
- * with a hole in it. `import type` is erased, so `@repo/persistence` is a devDependency here and no
- * consumer of this package gains a runtime dependency on `pg`.
+ * with a hole in it. The import must stay `import type`: it is erased at build time, which is what
+ * lets `@repo/persistence` be a devDependency here — and the runtime images install `--prod`, so a
+ * value import would resolve in dev and CI and fail only in the shipped container.
  */
 export type ProposalPayload = ProposedTx;
 

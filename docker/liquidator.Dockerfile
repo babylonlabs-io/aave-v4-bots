@@ -29,8 +29,11 @@ COPY packages/secrets/package.json ./packages/secrets/
 COPY packages/signer/package.json ./packages/signer/
 COPY services/liquidator/package.json ./services/liquidator/
 
-# Install dependencies (workspace-aware)
-RUN pnpm install --frozen-lockfile --filter @services/liquidator...
+# Install production dependencies only (workspace-aware).
+# --prod omits devDependencies (vitest and its vite/rollup/postcss toolchain),
+# so build/test tooling never ships in the runtime image. The app runs via tsx,
+# which is declared as a runtime dependency for this reason.
+RUN pnpm install --frozen-lockfile --prod --filter @services/liquidator...
 
 # Copy source code
 COPY packages/abis/ ./packages/abis/
@@ -53,9 +56,13 @@ COPY services/liquidator/ ./services/liquidator/
 # ============================================
 FROM node:22-alpine AS runner
 
-# Install pnpm for running tsx and wget for healthchecks
+# wget for the healthcheck. Remove the npm bundled in the base image: it is
+# unused at runtime and ships known-vulnerable transitive deps (tar, etc.) that
+# the image scanner flags. pnpm/corepack are intentionally NOT installed here —
+# the app runs directly via tsx (see CMD), so no package manager ships in the
+# runtime image.
 RUN apk add --no-cache wget=~1.25 && \
-    corepack enable && corepack prepare pnpm@9.13.2 --activate
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
@@ -63,7 +70,9 @@ RUN addgroup --system --gid 1001 nodejs && \
 
 WORKDIR /app
 
-# Copy built application from builder
+ENV NODE_ENV=production
+
+# Copy the production dependency tree and application from the builder
 COPY --from=builder /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/tsconfig.json ./
 COPY --from=builder /app/package.json ./
@@ -83,5 +92,6 @@ WORKDIR /app/services/liquidator
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:9090/health || exit 1
 
-# Default command: start polling mode
-CMD ["pnpm", "start"]
+# Default command: start polling mode. Run directly via tsx (WORKDIR is the
+# service dir, tsx is a runtime dependency) so no package manager is needed.
+CMD ["node_modules/.bin/tsx", "src/index.ts"]
