@@ -20,8 +20,11 @@ COPY packages/config/package.json ./packages/config/
 COPY packages/observability/package.json ./packages/observability/
 COPY services/liquidator/client/package.json ./services/liquidator/client/
 
-# Install dependencies (workspace-aware)
-RUN pnpm install --frozen-lockfile --filter @services/liquidator-client...
+# Install production dependencies only (workspace-aware).
+# --prod omits devDependencies (vitest and its vite/rollup/postcss toolchain),
+# so build/test tooling never ships in the runtime image. The app runs via tsx,
+# which is declared as a runtime dependency for this reason.
+RUN pnpm install --frozen-lockfile --prod --filter @services/liquidator-client...
 
 # Copy source code
 COPY packages/abis/ ./packages/abis/
@@ -45,7 +48,9 @@ RUN addgroup --system --gid 1001 nodejs && \
 
 WORKDIR /app
 
-# Copy built application from builder
+ENV NODE_ENV=production
+
+# Copy the production dependency tree and application from the builder
 COPY --from=builder /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/tsconfig.json ./
 COPY --from=builder /app/package.json ./
