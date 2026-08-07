@@ -1,0 +1,28 @@
+# Ponder pins drizzle-orm and kysely internally; no ponder release yet ships
+# patched versions, and overriding them independently risks breaking ponder's
+# ORM/query layer. All of these are SQL / JSON-path injection issues that require
+# ATTACKER-CONTROLLED input reaching the query builder. An indexer only builds
+# queries from its own developer-defined schema and on-chain events, never from
+# untrusted request input, so they are not reachable in this context. They clear
+# once ponder upgrades these deps (tracked separately as the ponder upgrade).
+
+# drizzle-orm: SQL injection via improperly escaped SQL identifiers. Identifiers
+# come from the indexer's own schema, not from untrusted input.
+CVE-2026-39356
+
+# kysely: SQL injection via unsanitized JSON path keys (requires Kysely<any> /
+# silenced compile errors plus untrusted keys). Ponder builds its own typed queries.
+CVE-2026-32763
+
+# kysely: MySQL backslash-escaping SQL injection in sql.lit(). Ponder uses
+# PostgreSQL/PGlite, not MySQL, and passes no untrusted sql.lit() input.
+CVE-2026-33468
+
+# kysely: JSON-path traversal injection via JSONPathBuilder.key()/.at(). Ponder
+# never passes untrusted input to JSON-path builders.
+CVE-2026-44635
+
+# vite: server.fs.deny bypass on Windows alternate paths - a DEV-SERVER issue.
+# The production indexer runs `ponder start`, never the vite dev server, and the
+# image is Linux. Pinned via ponder's vite-node loader; not exploitable at runtime.
+CVE-2026-53571
