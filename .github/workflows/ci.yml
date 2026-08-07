@@ -127,9 +127,12 @@ jobs:
           # The secret is optional: the pinned blocks need archive state, and the free public default
           # serves them. It is also fetched rarely — the cache above holds the whole of what these
           # tests read (~150KB), so the network is touched on a cold cache and not again. Set the
-          # secret only if that cold path proves flaky. (`publicnode` 403s on archive reads; `drpc`
-          # does not.)
-          SEPOLIA_RPC: ${{ secrets.SEPOLIA_RPC || 'https://sepolia.drpc.org' }}
+          # secret only if that cold path proves flaky.
+          #
+          # Archive state is the requirement that eliminates most public endpoints: `publicnode`
+          # answers `eth_chainId` and serves the block header, then fails the state reads with
+          # "historical state is not available" — so a chain-id smoke test does not qualify one.
+          SEPOLIA_RPC: ${{ secrets.SEPOLIA_RPC || 'https://sepolia.gateway.tenderly.co' }}
         run: |
           set -o pipefail
           forge test --match-path 'test/fork/**' -vv 2>&1 | tee /tmp/fork.log

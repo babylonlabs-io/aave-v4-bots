@@ -162,6 +162,23 @@ done
 grep -q "Risk gate HALTED" /tmp/arb-bot.log 2>/dev/null && fail "bot booted HALTED — check the code-hash guard"
 ok "bot running"
 
+# Which phases this run does.
+#
+# The nonce-chaos phases (eviction, crash, acquisition gap) need a durable backlog the bot will
+# still add to. Two modes cannot give them that, for opposite reasons:
+#
+#   RACING  the competing liquidator wins most liquidations, so the arbitrageur never builds one.
+#   ROUTER  each acquisition costs an extra block read, a chain-id read and a signature, so by the
+#           time a nonce is burned every remaining vault already has a live intent. The bot
+#           correctly issues nothing new — and a burned nonce is reclaimed by the *next* send, not
+#           by reconcile — so the queue behind it never drains and the run stalls. The world here
+#           is seven positions; in production new opportunities keep arriving and fill the gap.
+#
+# Both keep the invariants they exist to test: RACING observes competitive degradation, ROUTER
+# observes what happens when someone else executes our own authorization.
+CHAOS=1
+if [[ -n "${STRESS_RACING:-}" || -n "${STRESS_ROUTER:-}" ]]; then CHAOS=""; fi
+
 # STRESS_RACING: a standalone liquidator racing the arbitrageur's own liquidation engine. Its env
 # (.env.liquidator) was written by the setup script and points at the arbitrageur's indexer, so both
 # bots see the same liquidatable feed. It runs AUTO on the LIQUIDATOR signer — independent nonces, so
@@ -186,6 +203,8 @@ fi
 # timeout and sticks. So racing stays on automine — the two bots still contend (through the indexer
 # feed's lag) and every acquisition settles immediately.
 if [[ -z "${STRESS_RACING:-}" ]]; then
+  # Kept under ROUTER even though its chaos phases are off: leaving transactions unmined for a
+  # block interval is exactly what gives the front-run phase a batch to copy.
   log "Switching to interval mining (${BLOCK_TIME}s blocks)"
   cast rpc evm_setIntervalMining "$BLOCK_TIME" --rpc-url "$RPC" >/dev/null \
     || fail "evm_setIntervalMining not supported"
@@ -206,9 +225,97 @@ log "Verifying cohort split (A liquidatable, B still healthy)"
 cohort_check 1 || fail "cohort split wrong after drop #1 — see the revert above"
 ok "split holds"
 
-# Fence/recovery results default to "skipped" and are only overwritten if the eviction phase runs.
-# Declared here (not inside that phase) so the report can reference them even under racing, where
-# the phase is skipped — otherwise `set -u` trips on an unbound variable at report time.
+# Halting the chain takes BOTH flags. `evm_setIntervalMining 0` only turns the interval off — anvil
+# then falls back to automine and mines on every transaction, which is the opposite of frozen.
+freeze_chain() {
+  cast rpc evm_setAutomine false --rpc-url "$RPC" >/dev/null 2>&1 || true
+  cast rpc evm_setIntervalMining 0 --rpc-url "$RPC" >/dev/null 2>&1 || true
+}
+thaw_chain() {
+  cast rpc evm_setIntervalMining "$BLOCK_TIME" --rpc-url "$RPC" >/dev/null 2>&1 || true
+}
+
+# ── 2c. front-run our own authorization (STRESS_ROUTER) ──────────────────────
+# The one hazard permissionless relaying introduces, reproduced against the running bot.
+#
+# Under router funding an acquisition is a signed `relay(message, signature)` batch. The signature
+# carries no nonce and is not bound to a submitter, so anyone holding the calldata can execute it —
+# and the calldata is visible before we broadcast, because gas estimation puts it in front of an RPC
+# first. Here a separate account lifts an unmined batch of ours and submits it with a higher gas
+# price. It wins; our own transaction then reverts on a vault that is already gone.
+#
+# From the receipt alone that is indistinguishable from losing a race. The difference is decisive
+# for the ledger: the treasury's WBTC *did* leave, under our own signature, so releasing the
+# reservation would let the next acquisition spend money that is already spent. The bot is expected
+# to see the router's `SwapWbtcToVault` event and settle `spent`, which A13 asserts.
+FRONTRUN_RESULT="skipped"; FRONTRUN_VAULT=""
+if [[ -n "${STRESS_ROUTER:-}" ]]; then
+  ROUTER_ADDR="$(cat .e2e-arbitrage-router 2>/dev/null || true)"
+  FRONTRUNNER_KEY="$(cast --to-uint256 1001)"
+  if [[ ! "$ROUTER_ADDR" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+    printf "! no router address recorded; front-run phase skipped\n" >&2
+  else
+    log "Front-run: waiting for an unmined relay batch to copy"
+    # Freeze at the moment a target is found. Freezing first would deadlock — the bot needs blocks
+    # to produce the batch — and freezing after reading the calldata loses the race to our own
+    # transaction. So: find one, freeze, confirm it is still unmined, thaw and retry if not.
+    FR_HASH=""
+    for _ in $(seq 1 180); do
+      cand="$(sql "SELECT tx_hash FROM bot.tx_intents WHERE action='vault-acquisition' AND status IN ('pending','submitted') AND tx_hash IS NOT NULL ORDER BY nonce ASC LIMIT 1;")"
+      if [[ ! "$cand" =~ ^0x[0-9a-fA-F]{64}$ ]]; then sleep 1; continue; fi
+      if [[ "$(cast rpc eth_getTransactionReceipt "$cand" --rpc-url "$RPC" 2>/dev/null)" != "null" ]]; then
+        sleep 1; continue
+      fi
+      freeze_chain
+      if [[ "$(cast rpc eth_getTransactionReceipt "$cand" --rpc-url "$RPC" 2>/dev/null)" == "null" ]]; then
+        FR_HASH="$cand"; break
+      fi
+      thaw_chain; sleep 1
+    done
+
+    if [[ -z "$FR_HASH" ]]; then
+      thaw_chain
+      printf "! never saw an unmined acquisition; front-run phase skipped\n" >&2
+    else
+      FR_DATA="$(cast tx "$FR_HASH" input --rpc-url "$RPC" 2>/dev/null || true)"
+      FRONTRUN_VAULT="$(sql "SELECT subject FROM bot.tx_intents WHERE tx_hash='$FR_HASH' LIMIT 1;")"
+      if [[ -z "$FR_DATA" || "$FR_DATA" == "0x" ]]; then
+        thaw_chain
+        printf "! could not read calldata for %s; front-run phase skipped\n" "$FR_HASH" >&2
+      else
+        printf "  copying %s (vault %s) as the front-runner\n" "$FR_HASH" "$FRONTRUN_VAULT"
+        # `--gas-limit` is load-bearing: it suppresses estimation. Estimation runs against the
+        # PENDING block, which already holds the bot's own queued relay for this vault, so it
+        # reverts `VaultNotAcquirable` on a state that has already applied the transaction we are
+        # racing. `--legacy` because `--gas-price` alone yields a 1559 tx whose priority fee
+        # exceeds its max fee. `--async` returns the hash so both can share one block, which is why
+        # the receipt below — not the send — decides whether this actually executed.
+        FR_OUT="$(cast send "$ROUTER_ADDR" --data "$FR_DATA" \
+             --private-key "$FRONTRUNNER_KEY" --async --gas-limit 3000000 \
+             --legacy --gas-price 50000000000 --rpc-url "$RPC" 2>&1 | tail -1)" && FR_SENT=1 || FR_SENT=0
+        cast rpc evm_mine --rpc-url "$RPC" >/dev/null 2>&1 || true
+        thaw_chain
+
+        if [[ "$FR_SENT" != "1" || ! "$FR_OUT" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+          FRONTRUN_RESULT="rejected"
+          printf "! front-runner submission failed: %s\n" "$FR_OUT" >&2
+        else
+          FR_STATUS="$(cast receipt "$FR_OUT" status --rpc-url "$RPC" 2>/dev/null || echo "")"
+          if [[ "$FR_STATUS" == "true" || "$FR_STATUS" == "1" || "$FR_STATUS" == "success" ]]; then
+            FRONTRUN_RESULT="executed"
+            ok "front-runner executed our authorization ($FR_OUT)"
+          else
+            FRONTRUN_RESULT="reverted"
+            printf "! front-runner tx %s reverted (status %s)\n" "$FR_OUT" "${FR_STATUS:-unknown}" >&2
+          fi
+        fi
+      fi
+    fi
+  fi
+fi
+
+# Declared unconditionally: the report reads them on every path, and the eviction phase that sets
+# them for real is skipped in the modes that turn chaos off.
 FENCE_RESULT="skipped"; RECOVERY_RESULT="skipped"; DROP_HASH=""; DROP_NONCE=""
 
 # ── 3. wave #1 chaos: forced mempool eviction (the nonce fence) ──────────────
@@ -219,7 +326,7 @@ FENCE_RESULT="skipped"; RECOVERY_RESULT="skipped"; DROP_HASH=""; DROP_NONCE=""
 # Skipped under racing: the competing liquidator wins most liquidations, so the arbitrageur never
 # builds a durable backlog to evict against. The nonce fence is proven by the non-racing run; the
 # racing run's job is the competitive-degradation observation (§6c), not re-proving the invariants.
-if [[ -z "${STRESS_RACING:-}" ]]; then
+if [[ -n "$CHAOS" ]]; then
 wait_for_backlog "eviction" || fail "no durable in-flight work — nothing to evict"
 
 # Only meaningful against an intent carrying BOTH a nonce and a tx hash — `liveNonceFloor` filters
@@ -314,7 +421,7 @@ sleep 60   # let both engines work the second wave
 
 
 else
-  log "Racing: skipping eviction (competitor starves the arb backlog)"
+  log "Chaos phases off for this mode: skipping eviction"
 fi
 
 # ── 4. quiesce ───────────────────────────────────────────────────────────────
@@ -337,11 +444,58 @@ ok "drop applied"
 cohort_check 2 || fail "cohort B not liquidatable after drop #2 — wave #2 has no work"
 ok "wave #2 has work"
 
+# ── 5b. a competitor buys a vault out from under us (STRESS_ROUTER) ──────────
+# The other side of the same classification, and the one that must NOT report a spend.
+#
+# A separate account acquires a vault with its OWN WBTC, straight through the LLP — only
+# `onBehalfOf` must be a registered keeper, so a non-keeper may pay. Our transaction then reverts on
+# a vault that is gone, exactly as in the front-run case. The difference is invisible in the receipt
+# and decisive for the ledger: no `SwapWbtcToVault` came from OUR router, so our treasury paid
+# nothing and the reservation must be released. Reporting a spend here would strand capacity every
+# time we simply lost a race.
+COMPETITOR_RESULT="skipped"; COMPETITOR_VAULT=""
+if [[ -n "${STRESS_ROUTER:-}" ]]; then
+  COMP_KEY="$(cast --to-uint256 1001)"
+  log "Competitor: buying an escrowed vault with its own WBTC"
+  COMP_VAULT=""
+  for _ in $(seq 1 180); do
+    COMP_VAULT="$(curl -s --max-time 5 "$PONDER/escrowed-vaults" 2>/dev/null | jq -r '.vaults[0].vaultId // empty' 2>/dev/null || true)"
+    [[ "$COMP_VAULT" =~ ^0x[0-9a-fA-F]{64}$ ]] && break
+    COMP_VAULT=""; sleep 1
+  done
+  if [[ -z "$COMP_VAULT" ]]; then
+    printf "! no escrowed vault to contest; competitor phase skipped\n" >&2
+  else
+    COMPETITOR_VAULT="$COMP_VAULT"
+    freeze_chain
+    COMP_OUT="$(cast send "$VAULT_SWAP" 'swapWbtcForVaultOnBehalf(bytes32,uint256,address)' \
+         "$COMP_VAULT" 100000000000 "$SIGNER" --async --gas-limit 3000000 \
+         --private-key "$COMP_KEY" --legacy --gas-price 60000000000 --rpc-url "$RPC" 2>&1 | tail -1)" \
+      && COMP_SENT=1 || COMP_SENT=0
+    cast rpc evm_mine --rpc-url "$RPC" >/dev/null 2>&1 || true
+    thaw_chain
+
+    if [[ "$COMP_SENT" != "1" || ! "$COMP_OUT" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+      COMPETITOR_RESULT="lost"
+      printf "! competitor's submission failed: %s\n" "$COMP_OUT" >&2
+    else
+      COMP_STATUS="$(cast receipt "$COMP_OUT" status --rpc-url "$RPC" 2>/dev/null || echo "")"
+      if [[ "$COMP_STATUS" == "true" || "$COMP_STATUS" == "1" || "$COMP_STATUS" == "success" ]]; then
+        COMPETITOR_RESULT="won"
+        ok "competitor acquired ${COMP_VAULT} with its own funds"
+      else
+        COMPETITOR_RESULT="lost"
+        printf "! competitor tx %s reverted (status %s) - our bot got there first\n" "$COMP_OUT" "${COMP_STATUS:-unknown}" >&2
+      fi
+    fi
+  fi
+fi
+
 # ── 6. wave #2 chaos: crash with durable work at risk ────────────────────────
 # Same gate. A crash while the bot is merely receipt-waiting would exercise no recovery; this one
 # lands with intents the store must reconcile and transactions the chain has not yet mined.
 # Skipped under racing for the same reason as §3 — the arb has no reliable backlog to crash on.
-if [[ -z "${STRESS_RACING:-}" ]]; then
+if [[ -n "$CHAOS" ]]; then
   wait_for_backlog "crash" || fail "no durable in-flight work — nothing to crash-test"
   pkill -9 -f "services/arbitrageur/src/index.ts" 2>/dev/null || true
   ok "bot killed mid-flight"
@@ -352,7 +506,7 @@ if [[ -z "${STRESS_RACING:-}" ]]; then
   sleep 8
   ok "bot restarted"
 else
-  log "Racing: skipping crash (competitor starves the arb backlog); waves + observation only"
+  log "Chaos phases off for this mode: skipping crash; waves + observation only"
 fi
 
 log "Draining wave #2 (waiting for every cohort B position to be liquidated)"
@@ -371,7 +525,7 @@ ok "wave #2 settled in ${W2_SECS}s (${W2_DONE}/${LIQ_TOTAL_N} liquidated, live i
 # exactly that state. Recovery is asserted by the escrow drain below completing at all, plus A12.
 # Mocks cannot stand in for this: what is under test is real mempool/nonce behaviour.
 ACQ_GAP_RESULT="skipped"; ACQ_GAP_NONCE=""; ACQ_GAP_STRANDED=0
-if [[ -z "${STRESS_RACING:-}" ]]; then
+if [[ -n "$CHAOS" ]]; then
   log "Acquisition gap: waiting for >=2 unmined acquisitions to strand behind one nonce"
   ACQ_HASH=""; ACQ_NONCE=""
   for _ in $(seq 1 150); do
@@ -513,6 +667,8 @@ cat > .e2e-stress-report.json <<EOF
   "finalLatestNonce": "$(n_latest)",
   "finalPendingNonce": "$(n_pending)",
   "racing": $RACING_JSON,
+  "frontrunResult": "$FRONTRUN_RESULT", "frontrunVault": "${FRONTRUN_VAULT:-}",
+  "competitorResult": "$COMPETITOR_RESULT", "competitorVault": "${COMPETITOR_VAULT:-}",
   "acqGapResult": "$ACQ_GAP_RESULT", "acqGapNonce": "${ACQ_GAP_NONCE:-}",
   "acqGapStranded": ${ACQ_GAP_STRANDED:-0}, "arbHaltedLogs": ${ARB_HALTED_LOGS:-0},
   "cohortA": $COHORT_A_N, "cohortB": $COHORT_B_N, "positionsTotal": $LIQ_TOTAL_N,

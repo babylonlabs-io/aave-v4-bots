@@ -1,6 +1,7 @@
 import pg from "pg";
 import type { Address, Hex } from "viem";
 import {
+  AWAITING_OPERATOR,
   IN_FLIGHT_ON_CHAIN,
   type IntentInput,
   type IntentStatus,
@@ -13,7 +14,7 @@ import {
   type TransitionMeta,
   type TxIntent,
 } from "./types";
-import { idempotencyKey } from "./utils";
+import { assertProposalChain, idempotencyKey } from "./utils";
 
 // `@repo/persistence` `./postgres` adapter — the durable `StateStore` backend. Tables live
 // in a dedicated schema (default `bot`) so they never collide with the indexer's tables in
@@ -89,7 +90,7 @@ const TERMINAL_SQL = sqlList(TERMINAL);
 /** In-flight-on-chain statuses the reconcile work-list returns (excludes `proposed`/`claimed`). */
 const IN_FLIGHT_SQL = sqlList(IN_FLIGHT_ON_CHAIN);
 /** Operator-owned, pre-chain proposal states the `proposals()` work-list returns. */
-const PROPOSAL_STATES_SQL = sqlList(["proposed", "claimed"]);
+const PROPOSAL_STATES_SQL = sqlList(AWAITING_OPERATOR);
 
 export function createPostgresStateStore(config: PostgresStoreConfig): StateStore {
   const schema = config.schema ?? "bot";
@@ -210,6 +211,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
     },
 
     propose(input, payload, payloadHash) {
+      assertProposalChain(input, payload);
       return record(input, "proposed", payload, payloadHash);
     },
 

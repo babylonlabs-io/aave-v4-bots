@@ -54,8 +54,8 @@ function mockKms(options: { forceHighS?: boolean } = {}): KmsSend {
 describe("@repo/signer ./aws", () => {
   it("derives the same address as the local signer for the same key", async () => {
     const signer = await createAwsSigner({ keyId: "arn:test", client: mockKms() });
-    expect(signer.address).toBe(ADDR);
-    expect(signer.address).toBe(createLocalSigner(KEY).address);
+    expect(signer.account.address).toBe(ADDR);
+    expect(signer.account.address).toBe(createLocalSigner(KEY).account.address);
   });
 
   it("fails fast when the configured address does not match the key", async () => {

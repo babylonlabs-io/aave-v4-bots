@@ -273,19 +273,22 @@ describe("@repo/risk createRiskGate", () => {
 
   describe("token inventory", () => {
     const WBTC = "0xWBTC";
+    const SIGNER = "0xsigner";
+    /** The account every case below spends from — direct funding, where payer and signer are one. */
+    const acct = (token = WBTC) => ({ owner: SIGNER, token });
     const spending = (amount: bigint, token = WBTC) => ({
       kind: "vault-acquisition",
       subject: "0xvault",
-      spend: [{ token, amount }],
+      spend: [{ owner: SIGNER, token, amount }],
     });
 
     it("blocks an action the signer cannot afford, and frees the reservation on settle", () => {
       const gate = createRiskGate();
-      gate.setAvailable(WBTC, 100n);
+      gate.setAvailable(acct(), 100n);
 
       const first = gate.openSlot(spending(60n));
       expect(first.allowed).toBe(true);
-      expect(gate.reserved(WBTC)).toBe(60n);
+      expect(gate.reserved(acct())).toBe(60n);
 
       // 60 reserved leaves 40 spendable, so this does not fit.
       const blocked = gate.openSlot(spending(60n));
@@ -294,7 +297,7 @@ describe("@repo/risk createRiskGate", () => {
 
       // A revert transfers nothing, so the full balance is spendable again.
       first.settle({ ok: false });
-      expect(gate.reserved(WBTC)).toBe(0n);
+      expect(gate.reserved(acct())).toBe(0n);
       expect(gate.openSlot(spending(100n)).allowed).toBe(true);
     });
 
@@ -302,7 +305,7 @@ describe("@repo/risk createRiskGate", () => {
       // The whole point of reserving inside `openSlot`: both engines see the same balance, and
       // without the reservation both would pass and collectively overdraw the shared signer.
       const gate = createRiskGate();
-      gate.setAvailable(WBTC, 100n);
+      gate.setAvailable(acct(), 100n);
 
       const arbitrage = gate.openSlot(spending(80n));
       const liquidation = gate.openSlot({ ...spending(80n), kind: "liquidation" });
@@ -313,7 +316,7 @@ describe("@repo/risk createRiskGate", () => {
 
     it("keeps a confirmed spend counted until the balance is refreshed", () => {
       const gate = createRiskGate();
-      gate.setAvailable(WBTC, 100n);
+      gate.setAvailable(acct(), 100n);
 
       const slot = gate.openSlot(spending(60n));
       slot.settle({ ok: true }); // the tokens really left
@@ -324,13 +327,13 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.openSlot(spending(40n)).allowed).toBe(true);
 
       // A fresh read is authoritative and clears what we had been tracking separately.
-      gate.setAvailable(WBTC, 40n);
-      expect(gate.reserved(WBTC)).toBe(40n); // the 40n slot above is still in flight
+      gate.setAvailable(acct(), 40n);
+      expect(gate.reserved(acct())).toBe(40n); // the 40n slot above is still in flight
     });
 
     it("counts an unresolved broadcast as spent (the tx may still land)", () => {
       const gate = createRiskGate();
-      gate.setAvailable(WBTC, 100n);
+      gate.setAvailable(acct(), 100n);
 
       const slot = gate.openSlot(spending(60n));
       slot.settle({ ok: false, unresolved: true });
@@ -340,13 +343,36 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.openSlot(spending(60n)).allowed).toBe(false);
     });
 
+    // A revert normally transfers nothing, so the reservation is released outright. That inference
+    // breaks when the payment can be made by a transaction other than ours — an authorization for a
+    // permissionless relay — and releasing it would hand the same balance out twice in one cycle.
+    it("keeps a failed action's spend counted when its funds left anyway", () => {
+      const gate = createRiskGate();
+      gate.setAvailable(acct(), 100n);
+
+      gate.openSlot(spending(60n)).settle({ ok: false, contended: true, spent: true });
+
+      expect(gate.reserved(acct())).toBe(0n);
+      expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+      expect(gate.openSlot(spending(40n)).allowed).toBe(true);
+    });
+
+    it("releases a contended action's spend when its funds did not leave", () => {
+      const gate = createRiskGate();
+      gate.setAvailable(acct(), 100n);
+
+      gate.openSlot(spending(60n)).settle({ ok: false, contended: true });
+
+      expect(gate.openSlot(spending(100n)).allowed).toBe(true);
+    });
+
     it("releases the reservation when nothing was broadcast", () => {
       const gate = createRiskGate();
-      gate.setAvailable(WBTC, 100n);
+      gate.setAvailable(acct(), 100n);
 
       gate.openSlot(spending(60n)).settle({ ok: false, abandoned: true });
 
-      expect(gate.reserved(WBTC)).toBe(0n);
+      expect(gate.reserved(acct())).toBe(0n);
       expect(gate.openSlot(spending(100n)).allowed).toBe(true);
     });
 
@@ -361,26 +387,86 @@ describe("@repo/risk createRiskGate", () => {
 
     it("reserves nothing when any token in a multi-token spend does not fit", () => {
       const gate = createRiskGate();
-      gate.setAvailable(WBTC, 100n);
-      gate.setAvailable("0xUSDC", 10n);
+      gate.setAvailable(acct(), 100n);
+      gate.setAvailable(acct("0xUSDC"), 10n);
 
       const blocked = gate.openSlot({
         kind: "liquidation",
         subject: "0xborrower",
         spend: [
-          { token: WBTC, amount: 50n },
-          { token: "0xUSDC", amount: 50n }, // does not fit
+          { owner: SIGNER, token: WBTC, amount: 50n },
+          { owner: SIGNER, token: "0xUSDC", amount: 50n }, // does not fit
         ],
       });
 
       expect(blocked.allowed).toBe(false);
       // All-or-nothing: the WBTC leg must not have been reserved on the way to failing.
-      expect(gate.reserved(WBTC)).toBe(0n);
+      expect(gate.reserved(acct())).toBe(0n);
+    });
+
+    // Two engines in one process do not necessarily spend the same balance sheet: a router-funded
+    // engine draws on a treasury while another still draws on the signer. Before the ledger carried
+    // the owner, both wrote one entry — last writer won, and reservations netted across accounts.
+    it("keeps two owners of the same token on separate balances", () => {
+      const TREASURY = "0xtreasury";
+      const gate = createRiskGate();
+      gate.setAvailable(acct(), 100n);
+      gate.setAvailable({ owner: TREASURY, token: WBTC }, 10n);
+
+      // Reserving the signer's whole balance must not touch what the treasury can spend...
+      const signerSlot = gate.openSlot(spending(100n));
+      expect(signerSlot.allowed).toBe(true);
+      expect(
+        gate.openSlot({
+          kind: "vault-acquisition",
+          subject: "0xvault2",
+          spend: [{ owner: TREASURY, token: WBTC, amount: 10n }],
+        }).allowed
+      ).toBe(true);
+
+      // ...and the treasury's smaller balance still binds its own spending.
+      expect(
+        gate.openSlot({
+          kind: "vault-acquisition",
+          subject: "0xvault3",
+          spend: [{ owner: TREASURY, token: WBTC, amount: 1n }],
+        }).allowed
+      ).toBe(false);
+      expect(gate.reserved({ owner: TREASURY, token: WBTC })).toBe(10n);
+      expect(gate.reserved(acct())).toBe(100n);
+    });
+
+    it("fails closed on an owner it has never been given a balance for", () => {
+      const gate = createRiskGate();
+      gate.setAvailable(acct(), 100n);
+
+      // The token is known — for a different account. Capacity for this one is still unknown.
+      const blocked = gate.openSlot({
+        kind: "vault-acquisition",
+        subject: "0xvault",
+        spend: [{ owner: "0xtreasury", token: WBTC, amount: 1n }],
+      });
+
+      expect(blocked.allowed).toBe(false);
+      expect(blocked.reason).toContain("no known balance");
+    });
+
+    it("treats the same owner spelled differently as one balance", () => {
+      const gate = createRiskGate();
+      gate.setAvailable({ owner: "0xAbCd", token: WBTC }, 100n);
+
+      const spend = (owner: string, amount: bigint) => ({
+        kind: "vault-acquisition",
+        subject: "0xvault",
+        spend: [{ owner, token: WBTC, amount }],
+      });
+      expect(gate.openSlot(spend("0xabcd", 80n)).allowed).toBe(true);
+      expect(gate.openSlot(spend("0xABCD", 80n)).allowed).toBe(false);
     });
 
     it("treats the same token spelled differently as one balance", () => {
       const gate = createRiskGate();
-      gate.setAvailable("0xAbCd", 100n);
+      gate.setAvailable(acct("0xAbCd"), 100n);
 
       expect(gate.openSlot(spending(80n, "0xabcd")).allowed).toBe(true);
       expect(gate.openSlot(spending(80n, "0xABCD")).allowed).toBe(false);

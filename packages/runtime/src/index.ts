@@ -265,9 +265,9 @@ async function buildExecutor(
   // AUTO — one signer, its wallet, and ONE nonce authority shared by every engine (so their
   // concurrent sends never collide).
   const signer = await resolveSigner(config.signer, (ref) => secrets.get(ref));
-  logger.info(`Execution mode: AUTO — signer ${config.signer.source} (${signer.address})`);
+  logger.info(`Execution mode: AUTO — signer ${config.signer.source} (${signer.account.address})`);
   const walletClient = createWalletClient({ chain, transport, account: signer.account });
-  const nonces = createNonceAllocator(createNonceLease(), signer.address);
+  const nonces = createNonceAllocator(createNonceLease(), signer.account.address);
   const executor = createAutoExecutorFromWallet({
     store,
     nonces,

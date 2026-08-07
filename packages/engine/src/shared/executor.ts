@@ -16,9 +16,9 @@ import type { Logger } from "@repo/logger";
 import type { Notifier } from "@repo/notifications";
 import type { IntentInput, ProposedTx, StateStore, TxIntent } from "@repo/persistence";
 import {
-  type Account,
   type Address,
   type Chain,
+  type LocalAccount,
   type PublicClient,
   type Transport,
   type WalletClient,
@@ -116,6 +116,16 @@ interface BaseExecutor {
 /** AUTO — signs and broadcasts. */
 export interface AutoExecutor extends BaseExecutor {
   readonly mode: "AUTO";
+  /**
+   * The account this executor signs with.
+   *
+   * On the AUTO arm only, because MANUAL has no key at all — so `mode === "AUTO"` is what proves a
+   * caller may sign, rather than an optional field and a runtime check. Exposed for the signatures
+   * a transaction does not carry: the arbitrage router's EIP-712 authorization is an *argument* to
+   * the call `commit` receives, so it has to be produced before there is a transaction to sign.
+   * Reading it here rather than injecting an account alongside is what keeps the two the same key.
+   */
+  readonly account: LocalAccount;
 }
 
 /** MANUAL — keyless. No nonce API exists at all: a MANUAL bot never sequences a signer's nonce. */
@@ -136,7 +146,7 @@ export function createAutoExecutor(deps: {
   sender: TxSender;
   publicClient: PublicClient;
   /** Holds the key: the AUTO executor signs approvals with it. Never leaves this closure. */
-  walletClient: WalletClient<Transport, Chain, Account>;
+  walletClient: WalletClient<Transport, Chain, LocalAccount>;
   /** Receipt-wait budget for approvals (matches the engine's action timeout). */
   txReceiptTimeoutMs: number;
   logger: Logger;
@@ -147,6 +157,7 @@ export function createAutoExecutor(deps: {
   return {
     mode: "AUTO",
     identity,
+    account: walletClient.account,
 
     reconcile: (action) => crash.reconcile(action),
     resyncNonces: () => crash.resyncNonces(),
@@ -216,7 +227,7 @@ export function createAutoExecutorFromWallet(deps: {
   /** The shared nonce authority. Omit and a per-signer one is created (single-engine services). */
   nonces?: NonceAllocator;
   publicClient: PublicClient;
-  walletClient: WalletClient<Transport, Chain, Account>;
+  walletClient: WalletClient<Transport, Chain, LocalAccount>;
   txReceiptTimeoutMs: number;
   logger: Logger;
   sender?: TxSender;
@@ -330,7 +341,10 @@ export function createManualExecutor(deps: {
   /** Propose `call` under `claim` (dedup + supersede-on-change), notifying on a fresh proposal. */
   async function propose(call: ContractCall, action: IntentClaim): Promise<ProposalResult> {
     const { payload, hash } = buildPayload(call);
-    const claim: IntentInput = { ...action, chainId: identity.chainId };
+    // The row's chain comes off the payload, not a second read of `identity`: the payload's is the
+    // one `hash` commits to and the one the operator broadcasts against, so deriving the key from it
+    // is what makes the two agree rather than merely happening to.
+    const claim: IntentInput = { ...action, chainId: payload.chainId };
 
     const recorded = await store.propose(claim, payload, hash);
     if (recorded.recorded) {

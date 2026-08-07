@@ -47,7 +47,7 @@ export function verifyProposal(
   if (!row.payload || !row.payloadHash) {
     throw new Error(`intent ${row.id} is not a MANUAL proposal (no payload to sign)`);
   }
-  const payload = row.payload as ProposalPayload;
+  const payload: ProposalPayload = row.payload;
   const recomputed = hashPayload(payload);
   if (recomputed !== row.payloadHash) {
     throw new Error(

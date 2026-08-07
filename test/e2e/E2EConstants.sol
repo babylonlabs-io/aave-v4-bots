@@ -33,6 +33,17 @@ library E2EConstants {
     // Borrower (Anvil account[11])
     uint256 internal constant BORROWER_PRIVATE_KEY = 12;
 
+    // Router funding. Deliberately accounts no bot holds a key for — the point of the mode is that
+    // the float and the signing key live apart, which an alias of an existing role would not show.
+    //
+    // The treasury supplies the WBTC and approves the ArbitrageRouter. A key well clear of the
+    // stress suite's borrowers, which run from 20 upward.
+    uint256 internal constant TREASURY_PRIVATE_KEY = 1000;
+    /// Plays both antagonists in the stress suite's router mode: it submits a copy of OUR signed
+    /// batch (paying only gas — the treasury still pays), and separately buys a vault with its own
+    /// WBTC. Neither proves anything unless it is an account the bot depends on for nothing.
+    uint256 internal constant FRONTRUNNER_PRIVATE_KEY = 1001;
+
     // Postgres database configuration (separate databases to avoid Ponder sync conflicts)
     string internal constant LIQUIDATOR_DB_URL = "postgresql://ponder:ponder@localhost:5432/ponder_liquidator";
     string internal constant ARBITRAGEUR_DB_URL = "postgresql://ponder:ponder@localhost:5432/ponder_arbitrageur";

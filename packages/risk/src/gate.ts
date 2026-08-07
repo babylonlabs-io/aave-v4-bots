@@ -6,6 +6,7 @@ import type {
   RiskGate,
   RiskSlot,
   RiskState,
+  TokenAccount,
 } from "./types";
 
 /**
@@ -19,15 +20,24 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   let consecutiveFailures = 0;
   let inFlight = 0;
 
-  // Token ledger. Spendable capacity for a token is `available - spentSinceRefresh - reserved`:
+  // Token ledger. Spendable capacity for one `(owner, token)` is
+  // `available - spentSinceRefresh - reserved`:
   //   available          last balance the gate was told, from a chain read (authoritative)
   //   spentSinceRefresh   outflows counted against it since then, not yet visible in that figure
   //   reserved            declared spend of actions currently in flight
-  // Addresses are case-normalised so the same token spelled two ways is one entry.
+  //
+  // Keyed by the paying account as well as the token, because two engines in one process do not
+  // necessarily spend the same balance sheet: a router-funded engine draws on a treasury while
+  // another still draws on the signer. Netting those into one entry would let a reservation against
+  // money one engine cannot touch starve the other — or admit a spend the payer cannot cover.
+  // Where both engines DO share an account the entry is shared, which is the cross-engine
+  // overdraw protection this ledger exists for.
+  //
+  // Addresses are case-normalised so the same account or token spelled two ways is one entry.
   const available = new Map<string, bigint>();
   const spentSinceRefresh = new Map<string, bigint>();
   const reserved = new Map<string, bigint>();
-  const key = (token: string) => token.toLowerCase();
+  const key = ({ owner, token }: TokenAccount) => `${owner.toLowerCase()}|${token.toLowerCase()}`;
   const get = (m: Map<string, bigint>, k: string) => m.get(k) ?? 0n;
   const capacity = (k: string) => get(available, k) - get(spentSinceRefresh, k) - get(reserved, k);
 
@@ -77,13 +87,14 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
     // reserved in `openSlot` with no `await` between, which is what makes it safe for two engines
     // sharing one signer: without that atomicity both could pass against the same balance and
     // collectively overdraw it. Every token is validated before any is reserved.
-    for (const { token, amount } of action.spend ?? []) {
-      const k = key(token);
-      // Fail closed. A token the gate was never told about has unknown capacity, and treating
-      // unknown as unlimited is exactly the overdraw this guard exists to prevent.
-      if (!available.has(k)) return `no known balance for ${token}`;
+    for (const spend of action.spend ?? []) {
+      const { owner, token, amount } = spend;
+      const k = key(spend);
+      // Fail closed. An account/token the gate was never told about has unknown capacity, and
+      // treating unknown as unlimited is exactly the overdraw this guard exists to prevent.
+      if (!available.has(k)) return `no known balance for ${token} held by ${owner}`;
       if (amount > capacity(k)) {
-        return `insufficient ${token}: needs ${amount}, ${capacity(k)} spendable`;
+        return `insufficient ${token} held by ${owner}: needs ${amount}, ${capacity(k)} spendable`;
       }
     }
 
@@ -155,8 +166,8 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       // `RiskSlot` and its `finally` backstop — so the count drains on its own and cannot leak.
     },
 
-    setAvailable(token, amount) {
-      const k = key(token);
+    setAvailable(account, amount) {
+      const k = key(account);
       available.set(k, amount);
       // The fresh read already reflects everything that has landed, so what we had been counting
       // separately is now double-counting. Reservations survive: those are still in flight and are
@@ -164,7 +175,7 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       spentSinceRefresh.set(k, 0n);
     },
 
-    reserved: (token) => get(reserved, key(token)),
+    reserved: (account) => get(reserved, key(account)),
 
     openSlot(action) {
       const blocked = evaluate(action);
@@ -175,9 +186,9 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       // Reserve every declared spend. `evaluate` validated all of them above and nothing has
       // awaited since, so this cannot partially apply.
       const spend = action.spend ?? [];
-      for (const { token, amount } of spend) {
-        const k = key(token);
-        reserved.set(k, get(reserved, k) + amount);
+      for (const entry of spend) {
+        const k = key(entry);
+        reserved.set(k, get(reserved, k) + entry.amount);
       }
 
       let settled = false;
@@ -191,13 +202,14 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
           // Release the reservation, and decide whether the tokens actually left. A confirmed tx
           // spent them. An `unresolved` one may still: counting it as spent under-reports capacity
           // until the next refresh, which merely skips affordable work — the opposite error
-          // overdraws the signer and reverts. Anything else (pre-broadcast, or a revert, which
-          // transfers nothing) released the tokens untouched.
-          const spent = outcome.ok || outcome.unresolved === true;
-          for (const { token, amount } of spend) {
-            const k = key(token);
-            reserved.set(k, get(reserved, k) - amount);
-            if (spent) spentSinceRefresh.set(k, get(spentSinceRefresh, k) + amount);
+          // overdraws the signer and reverts. `spent` says so outright, for a failure whose funds
+          // moved anyway. Anything else (pre-broadcast, or a revert, which transfers nothing)
+          // released the tokens untouched.
+          const spent = outcome.ok || outcome.unresolved === true || outcome.spent === true;
+          for (const entry of spend) {
+            const k = key(entry);
+            reserved.set(k, get(reserved, k) - entry.amount);
+            if (spent) spentSinceRefresh.set(k, get(spentSinceRefresh, k) + entry.amount);
           }
 
           release(outcome);

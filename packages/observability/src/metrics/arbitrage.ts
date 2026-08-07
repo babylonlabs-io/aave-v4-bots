@@ -45,6 +45,22 @@ export function createArbitrageMetrics(registry: Registry): ArbitrageMetrics {
     registers: [registry],
   });
 
+  // Labelled by owner so the treasury's figures never overwrite the signer's, matching how the
+  // risk gate keys its ledger by `(owner, token)`.
+  const fundingBalance = new Gauge({
+    name: "arbitrageur_funding_wbtc_balance",
+    help: "WBTC held by the account that pays for acquisitions (in satoshis)",
+    labelNames: ["owner"] as const,
+    registers: [registry],
+  });
+
+  const fundingAllowance = new Gauge({
+    name: "arbitrageur_funding_wbtc_allowance",
+    help: "WBTC the payer has approved the router to spend (in satoshis). Absent under inventory funding, where the payer spends directly",
+    labelNames: ["owner"] as const,
+    registers: [registry],
+  });
+
   return {
     recordVaultAcquired(wbtcPaidSatoshis) {
       vaultsAcquiredTotal.inc();
@@ -59,6 +75,10 @@ export function createArbitrageMetrics(registry: Registry): ArbitrageMetrics {
     },
     recordWbtcBalance(balanceSatoshis) {
       wbtcBalance.set(Number(balanceSatoshis));
+    },
+    recordFundingCapacity({ owner, balance, allowance }) {
+      fundingBalance.set({ owner }, Number(balance));
+      if (allowance !== undefined) fundingAllowance.set({ owner }, Number(allowance));
     },
   };
 }

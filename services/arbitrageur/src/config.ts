@@ -25,6 +25,7 @@ import {
 import {
   type ArbitrageEngineParams,
   type LiquidationEngineParams,
+  buildArbitrageFundingParams,
   buildFundingParams,
 } from "@repo/engine";
 import type { PersistenceConfig } from "@repo/persistence";
@@ -67,15 +68,12 @@ const envSchema = z.object({
   // `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself.
   VAULT_KEEPER_ADDRESS: addressSchema.optional(),
 
-  // Signer + secrets source selection (all optional; defaults preserve current behavior:
-  // a local signer whose key is read from the ARBITRAGEUR_PRIVATE_KEY env var). Both
-  // engines the arbitrageur may run share this one signer.
-  SECRETS_PROVIDER: z.enum(["env", "aws"]).optional().default("env"),
-  SIGNER_SOURCE: z.enum(["local", "aws"]).optional().default("local"),
-  SIGNER_KEY_REF: z.string().min(1).optional(),
-  KMS_KEY_ID: z.string().min(1).optional(),
-  SIGNER_ADDRESS: addressSchema.optional(),
-  AWS_REGION: z.string().min(1).optional(),
+  // Where the WBTC for an acquisition comes from. `router` has a treasury pay through an
+  // `ArbitrageRouter`, so this bot's key needs only gas. Guarded two-ways in
+  // `buildArbitrageFundingParams`.
+  ARBITRAGE_FUNDING: z.enum(["inventory", "router"]).optional().default("inventory"),
+  ARBITRAGE_ROUTER_ADDRESS: addressSchema.optional(),
+  ARBITRAGE_RELAY_DEADLINE_SECONDS: positiveIntSchema.optional().default("120"),
 
   // Optional with defaults (validated as positive/non-negative integers)
   POLLING_INTERVAL_MS: positiveIntSchema.optional().default("30000"),
@@ -137,11 +135,7 @@ export interface Config extends ArbitrageEngineParams, RiskSettings, IndexerSett
   // Metrics/health HTTP server port
   metricsPort: number;
 
-  // Retry configuration — parsed into a `RetryConfig` object at wiring time
-  retryMaxAttempts: number;
-  retryInitialDelayMs: number;
-  retryMaxDelayMs: number;
-  /** The three above, assembled — what both engines actually take. */
+  // How the bot retries the indexer. Both engines this process may run take it as-is.
   retryConfig: RetryConfig;
 
   // Where secrets are resolved from, and how the signer is obtained. Resolved into a
@@ -237,14 +231,12 @@ export function loadConfig(): Config {
     vaultSwapAddress: env.VAULT_SWAP_ADDRESS as Address,
     wbtcAddress,
     vaultKeeperAddress: env.VAULT_KEEPER_ADDRESS as Address | undefined,
+    funding: buildArbitrageFundingParams(env),
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     vaultProcessingDelayMs: Number.parseInt(env.VAULT_PROCESSING_DELAY_MS, 10),
     maxSlippageBps: Number.parseInt(env.MAX_SLIPPAGE_BPS, 10),
     metricsPort: Number.parseInt(env.METRICS_PORT, 10),
     retryConfig,
-    retryMaxAttempts: Number.parseInt(env.RETRY_MAX_ATTEMPTS, 10),
-    retryInitialDelayMs: Number.parseInt(env.RETRY_INITIAL_DELAY_MS, 10),
-    retryMaxDelayMs: Number.parseInt(env.RETRY_MAX_DELAY_MS, 10),
     txReceiptTimeoutMs,
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),

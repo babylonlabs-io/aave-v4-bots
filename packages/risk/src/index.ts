@@ -14,6 +14,8 @@ export type {
   RiskGate,
   RiskSlot,
   RiskState,
+  TokenAccount,
+  TokenSpend,
 } from "./types";
 
 export { createRiskGate } from "./gate";

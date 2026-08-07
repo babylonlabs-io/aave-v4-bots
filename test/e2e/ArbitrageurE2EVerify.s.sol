@@ -18,7 +18,7 @@ import {E2EConstants} from "./E2EConstants.sol";
 ///      and would otherwise show stale values).
 contract ArbitrageurE2EVerify is Script, BaseBot {
     /// @notice Main entry point for the verification script
-    function run() public {
+    function run() public virtual {
         // Load deployed contracts
         init(vm);
 

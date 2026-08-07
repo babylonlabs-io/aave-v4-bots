@@ -20,6 +20,7 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [Prerequisites](#41-prerequisites)
    - [Native Installation](#42-native-installation)
    - [Docker Installation](#43-docker-installation)
+   - [Router contract (flash funding only)](#44-router-contract-flash-funding-only)
 5. [Configuration](#5-configuration)
    - [Environment Files](#51-environment-files)
    - [Ponder Indexer Configuration](#52-ponder-indexer-configuration)
@@ -178,6 +179,31 @@ Docker Compose will automatically pull these images. To build locally instead:
 ```bash
 docker compose build liquidator-ponder liquidator-bot
 ```
+
+### 4.4. Router contract (flash funding only)
+
+Skip this under `LIQUIDATION_FUNDING=inventory` — the bot repays from its own balances and needs no
+contract of its own.
+
+Flash funding repays each debt token through a `LiquidationRouter`, which you deploy once:
+
+```bash
+export LIQUIDATION_ROUTER_OWNER=0x...   # this bot's signer — the only address it will act for
+export LENS_ADDRESS=0x...               # AaveAdapterLens
+export VAULT_SWAP_ADDRESS=0x...         # the BTCVaultSwap (LLP)
+export DEPLOYER_PRIVATE_KEY=0x...
+
+forge script scripts/DeployLiquidationRouter.s.sol:DeployLiquidationRouter \
+  --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
+```
+
+Put the deployed address in `LIQUIDATION_ROUTER_ADDRESS`. `owner` is immutable and is checked
+against the bot's signer at boot, so a router deployed for a different key has to be redeployed
+rather than reconfigured.
+
+The router still needs its venues — a `UniswapV4SwapVenue` per debt token plus the WBTC flash-loan
+venue for the LLP fairness payment. Those are bot configuration, not deploy arguments: see
+`FLASH_SWAP_POOLS` and `WBTC_FLASH_LOAN_ADDRESS` in §5.
 
 ## 5. Configuration
 

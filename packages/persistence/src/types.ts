@@ -42,7 +42,7 @@ export type IntentStatus =
   | "expired";
 
 /**
- * The three status sets the store's operations partition the lifecycle by. Named once, here,
+ * The four status sets the store's operations partition the lifecycle by. Named once, here,
  * because the split between them is load-bearing and easy to get subtly wrong:
  *
  * - **`LIVE_FOR_DEDUP`** — an intent in one of these blocks a second `recordIntent`/`propose` for
@@ -51,6 +51,8 @@ export type IntentStatus =
  * - **`IN_FLIGHT_ON_CHAIN`** — the `reconcile()` work-list: intents that may exist ON CHAIN. It
  *   **excludes `proposed` and `claimed`** (neither has a tx), so reconcile — and the nonce fence
  *   that reads the same list — never sees one.
+ * - **`AWAITING_OPERATOR`** — the `proposals()` work-list: intents an operator, not the bot, has to
+ *   move. Every implementation of that method must agree on it, so both adapters read it here.
  * - **`TERMINAL`** — revivable states a fresh attempt may overwrite.
  *
  * `proposed`/`claimed` are deliberately in the first and not the second: live enough to dedup,
@@ -63,6 +65,7 @@ export const LIVE_FOR_DEDUP: readonly IntentStatus[] = [
   "submitted",
 ];
 export const IN_FLIGHT_ON_CHAIN: readonly IntentStatus[] = ["pending", "submitted"];
+export const AWAITING_OPERATOR: readonly IntentStatus[] = ["proposed", "claimed"];
 export const TERMINAL: readonly IntentStatus[] = ["confirmed", "failed", "superseded", "expired"];
 
 /**

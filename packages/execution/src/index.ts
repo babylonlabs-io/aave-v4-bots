@@ -1,4 +1,5 @@
 import { createLogger } from "@repo/logger";
+import type { ProposedTx } from "@repo/persistence";
 import {
   type Abi,
   type Account,
@@ -179,18 +180,14 @@ export function encodeCall(call: ContractCall): { to: Address; data: Hex } {
 }
 
 /**
- * The semantic content of a MANUAL proposal — the fields a `payloadHash` commits to. Structurally
- * identical to `@repo/persistence`'s `ProposedTx` (kept decoupled: neither package depends on the
- * other, and the engine, which has both, bridges them). `value`/`gasLimit` are **decimal strings**,
- * as stored in `jsonb`.
+ * The semantic content of a MANUAL proposal — the fields a `payloadHash` commits to.
+ *
+ * The **stored** shape is the definition, so this is an alias rather than a restatement: a hash that
+ * committed to a different set of fields than the row it is stored beside would be a tamper check
+ * with a hole in it. `import type` is erased, so `@repo/persistence` is a devDependency here and no
+ * consumer of this package gains a runtime dependency on `pg`.
  */
-export interface ProposalPayload {
-  chainId: number;
-  to: Address;
-  data: Hex;
-  value: string;
-  gasLimit?: string;
-}
+export type ProposalPayload = ProposedTx;
 
 /** Bumps if the hash encoding ever changes, so an old proposal's hash stays interpretable. */
 const PAYLOAD_HASH_VERSION = "aave-v4-bot-proposal-v1";

@@ -9,7 +9,7 @@ describe("@repo/signer", () => {
   describe("createLocalSigner", () => {
     it("derives the correct address from the private key", () => {
       const signer = createLocalSigner(KEY);
-      expect(signer.address).toBe(ADDR);
+      expect(signer.account.address).toBe(ADDR);
       expect(signer.account.address).toBe(ADDR);
     });
 
@@ -75,7 +75,7 @@ describe("@repo/signer", () => {
   describe("createSigner", () => {
     it("builds a local signer from the resolved private key", async () => {
       const signer = await createSigner({ source: "local", privateKey: KEY });
-      expect(signer.address).toBe(ADDR);
+      expect(signer.account.address).toBe(ADDR);
     });
 
     it("surfaces an invalid resolved key (validation happens in the local signer)", async () => {

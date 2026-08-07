@@ -50,6 +50,15 @@ export const vaultSwapAbi = [
     stateMutability: "nonpayable",
   },
   // Batch preview of escrowed vaults with full debt/profitability info
+  // The LLP's own WBTC. Read at boot under router funding: the router's WBTC is immutable while its
+  // `vaultSwap` is a per-call argument, so the two can disagree and every acquisition would revert.
+  {
+    type: "function",
+    name: "WBTC",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
   {
     type: "function",
     name: "previewEscrowedVaults",

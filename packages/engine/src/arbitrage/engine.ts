@@ -1,11 +1,11 @@
 import { type Address, ContractFunctionRevertedError, type Hex, formatUnits } from "viem";
 
 import { vaultSwapAbi } from "@repo/abis";
-import { type ContractCall, waitForReceiptWithTimeout } from "@repo/execution";
+import { waitForReceiptWithTimeout } from "@repo/execution";
 import { type RiskSlot, settleUnfinished } from "@repo/risk";
 import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
-import type { AllowanceResult } from "../shared/executor";
 import { maxWbtcInWithSlippage } from "./domain";
+import { type ArbitrageFunding, type FundingParams, createArbitrageFunding } from "./funding";
 import type { EscrowedVault, PonderResponse } from "./types";
 
 /**
@@ -41,6 +41,15 @@ export interface ArbitrageMetrics {
   recordPollDuration(durationMs: number): void;
   recordVaultAcquired(debt: bigint): void;
   recordWbtcBalance(balance: bigint): void;
+  /**
+   * Spendable WBTC for acquisitions, and what bounds it.
+   *
+   * Reported by the funding mode rather than derived from `recordWbtcBalance`, because under
+   * treasury funding the signer's balance is the wrong account entirely — and capacity there is
+   * the *lesser* of the treasury's balance and its allowance to the router, either of which can
+   * run out first. An operator watching only a balance would miss an exhausted approval.
+   */
+  recordFundingCapacity(capacity: { owner: string; balance: bigint; allowance?: bigint }): void;
 }
 
 /**
@@ -66,6 +75,8 @@ export interface ArbitrageEngineParams {
    * (`swapWbtcForVault`).
    */
   vaultKeeperAddress?: Address;
+  /** Where the WBTC for an acquisition comes from. Omitted ⇒ the signer's own balance. */
+  funding?: FundingParams;
 }
 
 export interface ArbitrageEngineConfig
@@ -75,7 +86,7 @@ export interface ArbitrageEngineConfig
 export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   private vaultSwapAddress: Address;
   private wbtcAddress: Address;
-  private vaultKeeperAddress?: Address;
+  private funding: ArbitrageFunding;
   private maxSlippageBps: number;
   private vaultProcessingDelayMs: number;
   private txReceiptTimeoutMs: number;
@@ -84,15 +95,25 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     super(config, { engine: "arbitrage", intentAction: "vault-acquisition" });
     this.vaultSwapAddress = config.vaultSwapAddress;
     this.wbtcAddress = config.wbtcAddress;
-    this.vaultKeeperAddress = config.vaultKeeperAddress;
+    // The config already carries every collaborator a mode needs, so it is spread in rather than
+    // re-listed field by field.
+    this.funding = createArbitrageFunding(config);
     this.maxSlippageBps = config.maxSlippageBps;
     this.vaultProcessingDelayMs = config.vaultProcessingDelayMs;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
   }
 
   /**
-   * Run one iteration of the arbitrageur bot
+   * Boot-time setup, once per process, before the first cycle.
+   *
+   * One call so a service never has to know which setup its funding mode needs: the signer paying
+   * for itself has nothing to verify, while a treasury-funded deployment checks the router and the
+   * approval it cannot grant itself.
    */
+  async prepare(): Promise<void> {
+    await this.funding.prepare();
+  }
+
   protected async poll(cycleSlots: RiskSlot[]): Promise<void> {
     // Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
     const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();
@@ -122,7 +143,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     // The gate owns that accounting rather than a local counter, because the liquidation engine
     // spends the same signer's WBTC concurrently; a per-batch budget here could not see it. We
     // just publish a fresh balance and declare each acquisition's worst case as `spend`.
-    this.risk.setAvailable(this.wbtcAddress, await this.readOwnBalance(this.wbtcAddress));
+    await this.funding.refreshInventory();
     const sent: SentAcquisition[] = [];
 
     for (const vault of vaults) {
@@ -193,6 +214,25 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   }
 
   /**
+   * Release a slot for an acquisition this process did not broadcast — asking the funding mode
+   * first whether its funds went anyway.
+   *
+   * "We sent nothing" normally means "our money stayed put", which is what `abandoned` encodes. It
+   * stops being true once the payment is authorized *separately* from the transaction: a signed
+   * batch for a permissionless relay is executable by anyone who sees it, and it is seen before we
+   * broadcast — gas estimation puts it in front of an RPC provider first. Releasing the
+   * reservation while such a batch is live could admit a later vault against money already spent.
+   */
+  private async abandonAfterAuthorizing(slot: RiskSlot, vaultId: Hex): Promise<void> {
+    const spent = await this.funding.spentWithoutUs(vaultId);
+    if (spent) {
+      this.logger.warn(`Vault ${vaultId} was acquired with our authorization by another submitter`);
+      this.metrics.recordError("relay_executed_elsewhere");
+    }
+    slot.settle({ ok: false, abandoned: true, spent });
+  }
+
+  /**
    * Whether the vault has left escrow — i.e. another arbitrageur acquired it. Used only to classify
    * a reverted swap: `isVaultAcquirable` returns a clean bool, so a genuine RPC failure throws and
    * is caught as `false` (still acquirable ⇒ treat the revert as a real failure). Failing toward
@@ -210,24 +250,6 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     } catch {
       return false;
     }
-  }
-
-  /**
-   * The acquisition call for one vault. With `vaultKeeperAddress` set, payer and beneficiary are
-   * different accounts — this process pays the WBTC, that keeper's BTC key receives the vault — so
-   * it goes through `swapWbtcForVaultOnBehalf`. Unset, the executor is itself the keeper and pays
-   * for itself. Either way `msg.sender` is the payer, so the balance and allowance checks around
-   * this are unaffected by the choice.
-   */
-  private acquireCall(vaultId: Hex, maxWbtcIn: bigint): ContractCall {
-    const target = { address: this.vaultSwapAddress, abi: vaultSwapAbi };
-    return this.vaultKeeperAddress
-      ? {
-          ...target,
-          functionName: "swapWbtcForVaultOnBehalf",
-          args: [vaultId, maxWbtcIn, this.vaultKeeperAddress],
-        }
-      : { ...target, functionName: "swapWbtcForVault", args: [vaultId, maxWbtcIn] };
   }
 
   /**
@@ -350,7 +372,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         // The WORST case the tx authorises, not the preview cost — the swap may legally charge
         // anywhere up to this. Reserved until the receipt phase settles, so a concurrent
         // liquidation on the same signer cannot spend the same WBTC.
-        spend: [{ token: this.wbtcAddress, amount: maxWbtcIn }],
+        spend: [this.funding.spend(maxWbtcIn)],
       });
       if (!slot.allowed) {
         this.logger.warn(`Risk gate blocked vault ${vaultId}: ${slot.reason}`);
@@ -358,13 +380,14 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         return { kind: "skipped" };
       }
 
-      // Ensure WBTC approval covers the slippage-adjusted max spend amount. AUTO broadcasts +
-      // waits (only ever returns `satisfied`); MANUAL proposes the approval for the operator to
-      // sign and returns `proposed`/`duplicate` — the swap cannot go out until they do, so free
-      // the slot and skip this vault (the approval intent stands; a later cycle retries the swap).
-      const approval = await this.ensureApproval(maxWbtcIn);
+      // Make sure the slippage-adjusted max spend can actually be delivered. Under inventory
+      // funding that is the signer's approval to the LLP: AUTO broadcasts + waits (only ever
+      // returns `satisfied`); MANUAL proposes it for the operator to sign and returns
+      // `proposed`/`duplicate` — the swap cannot go out until they do, so free the slot and skip
+      // this vault (the intent stands; a later cycle retries the swap).
+      const approval = await this.funding.ensureFunded(maxWbtcIn);
       if (approval.kind !== "satisfied") {
-        this.logger.info(`WBTC approval ${approval.kind} — awaiting operator signature`);
+        this.logger.info(`WBTC funding ${approval.kind} — awaiting operator signature`);
         slot.settle({ ok: false, abandoned: true });
         return { kind: "skipped" };
       }
@@ -375,8 +398,14 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
 
       // ONE call description, used for both the estimate below and the commit further down — an
       // estimate of a different call would validate something we never broadcast.
-      const call = this.acquireCall(vaultId as Hex, maxWbtcIn);
+      const call = await this.funding.buildAcquisition({
+        vaultId: vaultId as Hex,
+        preview,
+        maxWbtcIn,
+      });
 
+      // From here on an authorization for this vault exists and may outlive this transaction, so
+      // every exit below settles through `abandonAfterAuthorizing` rather than releasing outright.
       // Estimate gas first to catch potential failures early
       try {
         await this.publicClient.estimateContractGas({
@@ -398,15 +427,19 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           this.logger.error(`   Error: ${errorMsg}`);
           this.metrics.recordError("gas_estimation_failed");
         }
-        // Nothing broadcast — free the exposure slot without blaming the chain.
-        slot.settle({ ok: false, abandoned: true });
+        // Nothing broadcast by us — free the exposure slot without blaming the chain.
+        await this.abandonAfterAuthorizing(slot, vaultId as Hex);
         return { kind: "skipped" };
       }
 
       // Commit the swap through the mode seam. AUTO signs + broadcasts under the shared nonce lock
       // (claim → send → markPending → submitted, all inside `commit`); MANUAL proposes + notifies.
       const out = await this.executor.commit(call, {
-        target: this.vaultSwapAddress,
+        // What the transaction actually calls — the LLP under inventory funding, the router under
+        // router funding. Naming a fixed address instead would put one contract in the persisted
+        // intent and the idempotency key while the signed payload went to another, which is what an
+        // operator reads when deciding whether to sign a MANUAL proposal.
+        target: call.address,
         action: this.intentAction,
         subject: vaultId,
       });
@@ -415,19 +448,20 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         switch (out.kind) {
           case "duplicate":
             // A live intent for this subject already exists — nothing broadcast; free the slot.
-            slot.settle({ ok: false, abandoned: true });
+            await this.abandonAfterAuthorizing(slot, vaultId as Hex);
             this.metrics.recordError("intent_in_flight");
             return { kind: "skipped" };
           case "proposed":
             // MANUAL — written down for an operator; nothing on chain, no receipt to await.
-            slot.settle({ ok: false, abandoned: true });
+            await this.abandonAfterAuthorizing(slot, vaultId as Hex);
             return { kind: "skipped" };
           case "aborted":
             this.logger.error(`Failed to send swap for vault ${vaultId}: ${out.error}`);
             this.metrics.recordError("swap_send_error");
             // Only a failed *broadcast* is a real failure signal for the breaker; a pre-broadcast
             // failure reached no chain, so an RPC/database blip cannot trip it.
-            slot.settle({ ok: false, abandoned: !out.broadcastAttempted });
+            if (out.broadcastAttempted) slot.settle({ ok: false });
+            else await this.abandonAfterAuthorizing(slot, vaultId as Hex);
             // The send left a possible nonce gap — stop the cycle; the next resync reclaims it.
             return { kind: "send-error" };
           default:
@@ -510,9 +544,29 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       // not feed the breaker (settle `contended`, not `ok:false`).
       const lostRace = await this.wasVaultTaken(vaultId as Hex);
       if (lostRace) {
-        slot.settle({ ok: false, contended: true });
-        this.logger.info(`Vault ${vaultId} acquired by another bot — not counted as a failure`);
-        this.metrics.recordError("race_lost");
+        // Losing the race does not always mean keeping the money. Ask the funding mode whether its
+        // funds paid for the vault anyway — they can, where the payment is authorized separately
+        // from this transaction and anyone may submit that authorization. Releasing the
+        // reservation in that case would hand the same balance out twice in one cycle.
+        const spent = await this.funding.spentWithoutUs(vaultId as Hex);
+        slot.settle({ ok: false, contended: true, spent });
+        if (spent) {
+          this.logger.warn(
+            `Vault ${vaultId} was acquired with our own authorization by another submitter — funds spent, gas theirs`
+          );
+          this.metrics.recordError("relay_executed_elsewhere");
+        } else {
+          this.logger.info(`Vault ${vaultId} acquired by another bot — not counted as a failure`);
+          this.metrics.recordError("race_lost");
+        }
+      } else if (await this.funding.authorizationExpired(vaultId as Hex, receipt.blockNumber)) {
+        // The vault is still in escrow and we did not lose a race — but the router rejected the
+        // batch before touching anything, because it sat behind a stalled nonce for longer than it
+        // was signed for. Nothing moved and nothing was refused on its merits, so this must not
+        // feed the breaker: a queue stall would otherwise halt a perfectly healthy bot.
+        slot.settle({ ok: false, abandoned: true });
+        this.logger.warn(`Authorization for vault ${vaultId} expired before its tx mined`);
+        this.metrics.recordError("authorization_expired");
       } else {
         slot.settle({ ok: false });
         this.logger.error("Swap transaction reverted");
@@ -529,22 +583,6 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       // Backstop: the slot handed over by `prepareAndSend` must not survive this method.
       settleUnfinished([slot]);
     }
-  }
-
-  /**
-   * Ensure the arbitrageur has approved VaultSwap to spend at least `requiredAmount` of WBTC,
-   * through the mode seam. AUTO reads the allowance and, if short, broadcasts `approve(max)` + waits
-   * (key and all, inside the executor); MANUAL proposes the approval for an operator to sign. The
-   * approval runs mid-poll, so the executor routes its broadcast through the shared nonce allocator
-   * — otherwise it would collide with the liquidation engine's nonces.
-   */
-  private ensureApproval(requiredAmount: bigint): Promise<AllowanceResult> {
-    return this.executor.ensureAllowance({
-      token: this.wbtcAddress,
-      spender: this.vaultSwapAddress,
-      required: requiredAmount,
-      label: "WBTC",
-    });
   }
 
   /**

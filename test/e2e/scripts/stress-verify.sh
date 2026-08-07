@@ -15,6 +15,16 @@ PG="docker exec -e PGPASSWORD=ponder e2e-pg psql -U ponder -d ponder_arbitrageur
 SIGNER="0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
 
 sql() { $PG "$1" 2>/dev/null | tr -d ' \r'; }
+
+# One counter sample from the live bot. An absent series means the path never ran, which for a
+# counter is the same as zero.
+ARB_METRICS="http://127.0.0.1:${E2E_ARB_METRICS_PORT:-9091}/metrics"
+metric_value() {
+  curl -fsS --max-time 5 "$ARB_METRICS" 2>/dev/null \
+    | awk -v k="$1" '$0 ~ k && $0 !~ /^#/ { v=$NF } END { print (v == "" ? 0 : v) }' \
+    | cut -d. -f1
+}
+
 FAILED=0
 pass() { printf "[PASS] %s\n" "$*"; }
 flunk() { printf "[FAIL] %s\n" "$*" >&2; FAILED=1; }
@@ -98,12 +108,25 @@ if [[ -f .e2e-stress-report.json ]]; then
     flunk "A10 only ${w2_done} of ${pos_total} positions liquidated across both bots"
   fi
 
+  # Vaults taken by this run's own antagonists are not the bot's to acquire. The front-run phase
+  # executes OUR authorization from another account, and the competitor buys with its own WBTC —
+  # both leave the escrow legitimately empty by one, so the target has to come down to match or the
+  # assertion punishes the bot for a race the harness deliberately made it lose.
+  taken=0
+  [[ "$(jq -r '.frontrunResult // ""' .e2e-stress-report.json)" == "executed" ]] && taken=$((taken + 1))
+  [[ "$(jq -r '.competitorResult // ""' .e2e-stress-report.json)" == "won" ]] && taken=$((taken + 1))
+  esc_expected=$((esc_target - taken))
+
   if [[ "$esc_target" -eq 0 ]]; then
     printf "[SKIP] A11 no vaults escrowed to acquire\n"
-  elif [[ "${acq_count:-0}" -ge "$esc_target" ]]; then
-    pass "A11 every escrowed vault arbitraged (${acq_count}/${esc_target}, indexer shows ${esc_left} left)"
+  elif [[ "${acq_count:-0}" -ge "$esc_expected" ]]; then
+    if [[ "$taken" -gt 0 ]]; then
+      pass "A11 every escrowed vault arbitraged (${acq_count}/${esc_expected}; ${taken} taken by this run's competitors, indexer shows ${esc_left} left)"
+    else
+      pass "A11 every escrowed vault arbitraged (${acq_count}/${esc_target}, indexer shows ${esc_left} left)"
+    fi
   else
-    flunk "A11 only ${acq_count} of ${esc_target} escrowed vaults acquired (indexer shows ${esc_left} left)"
+    flunk "A11 only ${acq_count} of ${esc_expected} escrowed vaults acquired (${taken} taken by competitors; indexer shows ${esc_left} left)"
   fi
 fi
 
@@ -128,6 +151,44 @@ if [[ -f .e2e-stress-report.json ]]; then
       fi
       ;;
     *) printf "[SKIP] A12 acquisition gap not injected (%s)\n" "$acq_gap" ;;
+  esac
+fi
+
+# ── A13: a front-run authorization is settled as spent, not as a lost race ───
+# Our batch executed, but from someone else's transaction, so ours reverted on a vault already gone.
+# By receipt alone that is an ordinary lost race — and treating it as one releases a reservation for
+# money that has already left the treasury, letting the next acquisition overdraw it.
+if [[ -f .e2e-stress-report.json ]]; then
+  frontrun="$(jq -r '.frontrunResult // "skipped"' .e2e-stress-report.json)"
+  fr_vault="$(jq -r '.frontrunVault // ""' .e2e-stress-report.json)"
+  case "$frontrun" in
+    executed)
+      elsewhere="$(metric_value 'arbitrageur_errors_total{type="relay_executed_elsewhere"}')"
+      if [[ "${elsewhere:-0}" -lt 1 ]]; then
+        flunk "A13 our authorization was executed by another submitter (vault ${fr_vault}) but the bot never recorded relay_executed_elsewhere — it released a spend that already happened"
+      else
+        pass "A13 front-run authorization settled as spent, not as a lost race (${elsewhere} occurrence(s))"
+      fi
+      ;;
+    *) printf "[SKIP] A13 no authorization was front-run (%s)\n" "$frontrun" ;;
+  esac
+fi
+
+# ── A14: a competitor's own-funded win is NOT reported as our spend ──────────
+# The mirror of A13. Same observable revert, opposite ledger consequence: nothing of ours moved, so
+# the reservation must be released. A false positive here strands capacity on every lost race.
+if [[ -f .e2e-stress-report.json ]]; then
+  competitor="$(jq -r '.competitorResult // "skipped"' .e2e-stress-report.json)"
+  case "$competitor" in
+    won)
+      races="$(metric_value 'arbitrageur_errors_total{type="race_lost"}')"
+      if [[ "${races:-0}" -lt 1 ]]; then
+        flunk "A14 a competitor took a vault with its own funds but the bot never recorded race_lost"
+      else
+        pass "A14 competitor's own-funded win settled as a lost race (${races} occurrence(s))"
+      fi
+      ;;
+    *) printf "[SKIP] A14 no competitor acquisition (%s)\n" "$competitor" ;;
   esac
 fi
 

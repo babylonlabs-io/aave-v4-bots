@@ -183,6 +183,7 @@ function setup(
       recordPollDuration: vi.fn(),
       recordVaultAcquired: vi.fn(),
       recordWbtcBalance: vi.fn(),
+      recordFundingCapacity: vi.fn(),
     },
     logger: silentLogger,
     risk,
@@ -295,6 +296,12 @@ describe("dual-engine shared risk gate", () => {
     // Every debt repayment plus the adapter's WBTC pull.
     expect(liquidation?.spend?.length).toBeGreaterThan(0);
     // The worst case the swap may charge, not the preview cost.
-    expect(acquisition?.spend).toEqual([{ token: "0xwbtc", amount: 50_500_000n }]);
+    expect(acquisition?.spend).toEqual([{ owner: SIGNER, token: "0xwbtc", amount: 50_500_000n }]);
+
+    // Both engines name the SAME owner here, which is what keeps the ledger entry shared and the
+    // cross-engine overdraw guard working. The owner is a field precisely so a future
+    // router-funded engine can name a treasury instead — at which point these must diverge, and
+    // the two balances must stop netting.
+    expect(new Set(liquidation?.spend?.map((s) => s.owner))).toEqual(new Set([SIGNER]));
   });
 });

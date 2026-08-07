@@ -55,6 +55,13 @@ export {
   buildFundingParams,
 } from "./liquidation/funding";
 export { VenueType } from "@repo/abis";
+// Arbitrage funding — the mode a composition root picks, and the EIP-712 authorizer router funding
+// signs with. Aliased because the liquidation seam exports a `FundingParams` of its own.
+export {
+  type ArbitrageFunding,
+  type FundingParams as ArbitrageFundingParams,
+  buildArbitrageFundingParams,
+} from "./arbitrage/funding";
 // Indexer liveness. The guard is process-level (one indexer, however many engines read it), so a
 // composition root builds it once and hands the same instance to each engine.
 export {

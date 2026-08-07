@@ -82,7 +82,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     // than re-listed field by field. Only these two cannot come from it: the debt-token list is
     // discovered later (during `prepare()`), and the token cache is shared with this engine so a
     // symbol is read once per process.
-    this.funding = createLiquidationFunding(config.funding ?? { mode: "inventory" }, {
+    this.funding = createLiquidationFunding({
       ...config,
       debtTokens: () => this.debtTokenAddresses,
       tokenMeta: this.tokenMetaCache,

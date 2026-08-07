@@ -149,6 +149,9 @@ importers:
         specifier: ^2.37.0
         version: 2.41.2(typescript@5.9.3)(zod@3.25.76)
     devDependencies:
+      '@repo/persistence':
+        specifier: workspace:*
+        version: link:../persistence
       '@types/node':
         specifier: ^22.13.14
         version: 22.19.2

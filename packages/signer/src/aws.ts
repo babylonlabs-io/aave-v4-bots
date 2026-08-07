@@ -126,7 +126,7 @@ export async function createAwsSigner(config: AwsSignerConfig): Promise<Signer> 
     },
   });
 
-  return { address, account };
+  return { account };
 }
 
 /** Derive the Ethereum address from a KMS secp256k1 public key (DER `SubjectPublicKeyInfo`). */

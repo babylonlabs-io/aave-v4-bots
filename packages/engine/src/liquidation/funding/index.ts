@@ -1,6 +1,6 @@
 import { FlashFunding } from "./flash";
 import { InventoryFunding } from "./inventory";
-import type { FundingContext, FundingParams, LiquidationFunding } from "./types";
+import type { FundingContext, LiquidationFunding } from "./types";
 
 // The seam's public surface: consumers import `./funding`, never its internals.
 export * from "./types";
@@ -31,10 +31,8 @@ export {
  * liquidation-only and built from liquidation addresses, so hoisting it would drag that domain into
  * a package the arbitrageur also boots from, for no gain.
  */
-export function createLiquidationFunding(
-  params: FundingParams,
-  context: FundingContext
-): LiquidationFunding {
+export function createLiquidationFunding(context: FundingContext): LiquidationFunding {
+  const params = context.funding ?? { mode: "inventory" };
   return params.mode === "flash"
     ? new FlashFunding({
         ...context,

@@ -26,6 +26,13 @@ jobs:
             setup: LiquidationE2ESetup
             verify: LiquidationE2EVerify
             fork: true
+          # Router-funded acquisition: the WBTC comes from a treasury that approved an
+          # ArbitrageRouter, and the bot's key only signs the authorization. The suite's own
+          # assertion is that the treasury's balance fell — every other suite would still pass with
+          # the bot paying for itself, so this is the only one that proves the split.
+          - suite: router-arbitrageur
+            setup: RouterArbitrageurE2ESetup
+            verify: RouterArbitrageurE2EVerify
           # MANUAL suites run against the ARBITRAGEUR — the bot that carries inventory (WBTC to
           # acquire vaults, USDC to repay debt), so the one worth making keyless. Both engines are
           # on, so the operator drives a liquidation AND the acquisition of the vault it escrows.
@@ -120,6 +127,10 @@ jobs:
       # The network is still touched when there is no cache to restore: the first run, runs racing it
       # before it is saved, and after GitHub evicts an entry unused for 7 days. That is why the RPC
       # below has a working public default rather than requiring a secret.
+      #
+      # The cache cannot cover anvil's boot handshake either: `--fork-url` asks the endpoint for its
+      # chain id before serving anything, so an endpoint that stops answering fails the job outright
+      # however warm the cache is.
       - name: Cache forked RPC state
         if: ${{ matrix.fork }}
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0 https://github.com/actions/cache/releases/tag/v4.2.0
@@ -205,7 +216,7 @@ jobs:
       - name: Start Anvil (forked)
         if: ${{ matrix.fork }}
         env:
-          SEPOLIA_RPC: ${{ secrets.SEPOLIA_RPC || 'https://sepolia.drpc.org' }}
+          SEPOLIA_RPC: ${{ secrets.SEPOLIA_RPC || 'https://sepolia.gateway.tenderly.co' }}
         run: |
           anvil --silent --fork-url "$SEPOLIA_RPC" --chain-id 31337 --fork-block-number 11141103 &
           for _ in $(seq 1 60); do

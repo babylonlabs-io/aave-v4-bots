@@ -77,7 +77,7 @@ export class InventoryFunding implements LiquidationFunding {
       tokens.map((token) => readBalance(publicClient, token, owner))
     );
     for (let i = 0; i < tokens.length; i++) {
-      risk.setAvailable(tokens[i], balances[i]);
+      risk.setAvailable({ owner, token: tokens[i] }, balances[i]);
     }
   }
 
@@ -149,13 +149,17 @@ export class InventoryFunding implements LiquidationFunding {
    */
   private risk(candidate: LiquidationCandidate): FundedCandidate["risk"] {
     const debtTokens = this.deps.debtTokens();
+    // Inventory funding spends the signer's own tokens, so it is both the payer and the account
+    // the gate reserves against.
+    const owner = this.deps.executor.identity.from;
     return {
       spend: [
         ...candidate.amounts.map((amount, idx) => ({
+          owner,
           token: debtTokens[idx] ?? this.deps.wbtcAddress,
           amount,
         })),
-        { token: this.deps.wbtcAddress, amount: candidate.wbtcPayment },
+        { owner, token: this.deps.wbtcAddress, amount: candidate.wbtcPayment },
       ],
     };
   }

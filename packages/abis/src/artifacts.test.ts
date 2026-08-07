@@ -2,7 +2,14 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { adapterAbi, lensAbi, liquidationRouterAbi, spokeAbi, vaultSwapAbi } from "./index";
+import {
+  adapterAbi,
+  arbitrageRouterAbi,
+  lensAbi,
+  liquidationRouterAbi,
+  spokeAbi,
+  vaultSwapAbi,
+} from "./index";
 
 // These ABIs are hand-maintained subsets of the compiled contracts, and nothing else checks them:
 // a wrong argument type or a re-ordered tuple component still compiles, still type-checks, and
@@ -63,6 +70,7 @@ const CASES: ReadonlyArray<[string, readonly AbiEntry[], string]> = [
   ["lensAbi", lensAbi, "AaveAdapterLens"],
   ["spokeAbi", spokeAbi, "Spoke"],
   ["liquidationRouterAbi", liquidationRouterAbi, "LiquidationRouter"],
+  ["arbitrageRouterAbi", arbitrageRouterAbi, "ArbitrageRouter"],
 ];
 
 describe("@repo/abis matches the compiled contracts", () => {

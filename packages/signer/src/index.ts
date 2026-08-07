@@ -29,7 +29,7 @@ export function createLocalSigner(privateKey: string): Signer {
     throw new Error("invalid private key: expected 0x-prefixed 32-byte hex (66 chars)");
   }
   const account = privateKeyToAccount(privateKey as Hex);
-  return { address: account.address, account };
+  return { account };
 }
 
 // `./aws` — an AWS KMS-backed signer (the key never leaves KMS; implemented in `./aws.ts`).

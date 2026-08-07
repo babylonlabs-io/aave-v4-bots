@@ -269,7 +269,7 @@ Each suite runs the real bot processes against a live Anvil + Bitcoin regtest, d
 scripts in `test/e2e/`. Pick one with `SUITE` (default `liquidator`):
 
 ```bash
-E2E_FORK_URL=https://sepolia.drpc.org ./scripts/e2e-local.sh  # liquidator — flash-funded, forked
+E2E_FORK_URL=https://sepolia.gateway.tenderly.co ./scripts/e2e-local.sh  # liquidator — flash-funded, forked
 SUITE=arbitrageur ./scripts/e2e-local.sh          # both engines in one process
 SUITE=manual-arbitrageur ./scripts/e2e-local.sh   # MANUAL mode + operator-cli
 ```

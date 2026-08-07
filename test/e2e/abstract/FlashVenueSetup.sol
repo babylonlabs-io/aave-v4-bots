@@ -12,6 +12,7 @@ import {LiquidityAmounts} from "../../../lib/v4-periphery/src/libraries/Liquidit
 import {TickMath} from "../../../lib/v4-periphery/lib/v4-core/src/libraries/TickMath.sol";
 import {PoolKey, Currency, IHooks} from "../../../lib/v4-periphery/lib/v4-core/src/interfaces/IPoolManager.sol";
 import {LiquidationRouter} from "../../../contracts/LiquidationRouter.sol";
+import {DeployLiquidationRouter} from "../../../scripts/DeployLiquidationRouter.s.sol";
 import {UniswapV4SwapVenue} from "../../../contracts/WrappedVenue/UniswapV4SwapVenue.sol";
 
 /// @dev The suite's tokens are its own mocks, so seeding a venue is a mint rather than a storage poke.
@@ -125,9 +126,10 @@ abstract contract FlashVenueSetup {
         internal
         returns (LiquidationRouter router, UniswapV4SwapVenue venue)
     {
-        router = new LiquidationRouter(owner, lens, btcVaultSwap);
+        // Through the operator's own deploy script, so the suite exercises the path a deployment
+        // actually takes rather than a copy of it that can drift.
+        router = new DeployLiquidationRouter().deploy(owner, lens, btcVaultSwap);
         venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(router));
-        console.log("  LiquidationRouter:", address(router));
         console.log("  UniswapV4SwapVenue:", address(venue));
     }
 

@@ -3,6 +3,8 @@ pragma solidity 0.8.28;
 
 import {console} from "forge-std/console.sol";
 import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
+import {ArbitrageRouter} from "../../contracts/ArbitrageRouter.sol";
+import {DeployArbitrageRouter} from "../../scripts/DeployArbitrageRouter.s.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
 import {ArbitrageurE2ESetup} from "./ArbitrageurE2ESetup.s.sol";
 import {E2EConstants} from "./E2EConstants.sol";
@@ -41,6 +43,14 @@ contract StressArbitrageurE2ESetup is ArbitrageurE2ESetup {
     /// *competitive degradation*: what the losing bot does when its liquidation reverts because the
     /// competitor got there first. It shares the arbitrageur's indexer.
     bool internal immutable RACING = vm.envOr("STRESS_RACING", false);
+
+    /// When set, acquisitions are funded by a treasury through an {ArbitrageRouter} rather than out
+    /// of the bot's own WBTC. That makes each acquisition a *signed, replayable* batch — which is
+    /// what the drive script's front-run phase copies, and the only mode in which a reverted
+    /// acquisition can have spent our money anyway.
+    bool internal immutable ROUTER_FUNDED = vm.envOr("STRESS_ROUTER", false);
+
+    ArbitrageRouter internal router;
 
     /// 0.1 BTC, matching the single-position suites (>= the 5,460,000 sat minimum peg-in).
     uint64 internal constant PEGIN_SATS = uint64(ONE_BTC / 10);
@@ -85,6 +95,52 @@ contract StressArbitrageurE2ESetup is ArbitrageurE2ESetup {
         if (slot == 1) return TestKeys.BTC_PUBKEY_ALICE_2;
         if (slot == 2) return TestKeys.BTC_PUBKEY_BOB;
         return TestKeys.BTC_PUBKEY_ZERO;
+    }
+
+    /// Deploy the router, fund the treasury, and have the treasury approve it. Only the treasury
+    /// can grant that approval, and `prepare()` refuses to boot without it.
+    function _setupExecutor(uint256 adminPrivateKey) internal override {
+        if (!ROUTER_FUNDED) return;
+        address treasury = vm.addr(E2EConstants.TREASURY_PRIVATE_KEY);
+
+        vm.startBroadcast(adminPrivateKey);
+        router = new DeployArbitrageRouter().deploy(arbAddr, treasury, address(wbtc));
+        wbtc.mint(treasury, 50 * uint256(ONE_BTC));
+        vm.stopBroadcast();
+
+        vm.startBroadcast(E2EConstants.TREASURY_PRIVATE_KEY);
+        wbtc.approve(address(router), 50 * uint256(ONE_BTC));
+        vm.stopBroadcast();
+
+        _provisionGas(treasury, 1 ether);
+
+        // The competitor: gas to submit our authorization, and WBTC of its own to outbid us with.
+        address competitor = vm.addr(E2EConstants.FRONTRUNNER_PRIVATE_KEY);
+        _provisionGas(competitor, 1 ether);
+        vm.startBroadcast(adminPrivateKey);
+        wbtc.mint(competitor, 10 * uint256(ONE_BTC));
+        vm.stopBroadcast();
+        vm.startBroadcast(E2EConstants.FRONTRUNNER_PRIVATE_KEY);
+        wbtc.approve(address(vaultSwap), 10 * uint256(ONE_BTC));
+        vm.stopBroadcast();
+
+        vm.writeFile(".e2e-arbitrage-router", vm.toString(address(router)));
+        console.log("Treasury (payer):", treasury, "funded + approved; router:", address(router));
+    }
+
+    /// @dev `VAULT_KEEPER_ADDRESS` is mandatory under router funding — it only redeems on behalf.
+    function _executionEnvLines() internal view override returns (string memory) {
+        if (!ROUTER_FUNDED) return super._executionEnvLines();
+        return string.concat(
+            super._executionEnvLines(),
+            "ARBITRAGE_FUNDING=router\n",
+            "ARBITRAGE_ROUTER_ADDRESS=",
+            vm.toString(address(router)),
+            "\n",
+            "VAULT_KEEPER_ADDRESS=",
+            vm.toString(arbAddr),
+            "\n"
+        );
     }
 
     /// @dev Deferred to `stress-drive.sh`. Building seven positions keeps this script's body running

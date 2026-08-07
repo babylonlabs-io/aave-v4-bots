@@ -144,4 +144,10 @@ export interface FundingContext {
   debtTokens: () => readonly Address[];
   /** Shared with the engine so a token's symbol/decimals are read once per process, not per user. */
   tokenMeta: TokenMetaCache;
+  /**
+   * Which mode to build. Omitted ⇒ `inventory`, which is what a deployment that configures nothing
+   * gets. Carried here rather than passed alongside so the choice and the collaborators it needs
+   * cannot disagree — a separate argument could name one mode while this field named another.
+   */
+  funding?: FundingParams;
 }

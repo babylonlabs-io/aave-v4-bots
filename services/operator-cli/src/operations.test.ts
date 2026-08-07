@@ -83,11 +83,20 @@ describe("verifyProposal (tamper check)", () => {
     await expect(ops.showProposal(c, idempotencyKey(input()))).rejects.toThrow(/hash mismatch/);
   });
 
+  // Injected rather than proposed: the store refuses to write a payload whose chain disagrees with
+  // its intent, so the only way this row exists is a rewritten record — with a hash that recomputes
+  // cleanly, so the chain check is the sole thing standing between the operator and signing for the
+  // wrong chain.
   it("refuses a payload for a different chain", async () => {
     const c = ctx();
     const p = payload({ chainId: 999 });
-    await c.store.propose(input(), p, hashPayload(p));
-    await expect(ops.showProposal(c, idempotencyKey(input()))).rejects.toThrow(/chain mismatch/);
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), payload(), hashPayload(payload()));
+    const row = await c.store.getIntent(id);
+    const tampered = { ...row, payload: p, payloadHash: hashPayload(p) } as NonNullable<typeof row>;
+    const tamperedCtx = { ...c, store: { ...c.store, getIntent: async () => tampered } };
+
+    await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/chain mismatch/);
   });
 
   it("refuses a claimed Safe row whose stored safeTxHash was tampered", async () => {

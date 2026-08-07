@@ -115,6 +115,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
     maxSlippageBps: config.maxSlippageBps,
     vaultProcessingDelayMs: config.vaultProcessingDelayMs,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
+    funding: config.funding,
   });
   return { bot, publicClient, executor, risk, indexer };
 }
@@ -175,6 +176,12 @@ async function runPollingMode(config: Config): Promise<void> {
 
   const { bot, publicClient, executor, risk, indexer } = await createBot(config);
 
+  // Boot-time setup for the funding mode, BEFORE any poll loop starts. Router funding verifies the
+  // router's immutables and the treasury's approval here, and this process may also run a
+  // liquidation engine off the same signer — starting that first would let it broadcast while the
+  // arbitrage configuration is still unproven, which is exactly what failing at boot is for.
+  await bot.prepare();
+
   // Opt-in: also run the liquidation engine (both engines, one process) — sharing the one
   // nonce allocator so the two engines' concurrent sends never collide on the signer.
   if (config.liquidation) {
@@ -182,7 +189,7 @@ async function runPollingMode(config: Config): Promise<void> {
   }
 
   logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);
-  logger.info(`Retry attempts: ${config.retryMaxAttempts}`);
+  logger.info(`Retry attempts: ${config.retryConfig.maxAttempts}`);
   logger.info(`Transaction timeout: ${config.txReceiptTimeoutMs / 1000}s`);
 
   // Log initial balance

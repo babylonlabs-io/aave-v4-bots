@@ -98,9 +98,12 @@ describe("config validation", () => {
       expect(config.vaultProcessingDelayMs).toBe(0);
       expect(config.maxSlippageBps).toBe(100);
       expect(config.metricsPort).toBe(9091);
-      expect(config.retryMaxAttempts).toBe(3);
-      expect(config.retryInitialDelayMs).toBe(1000);
-      expect(config.retryMaxDelayMs).toBe(30000);
+      expect(config.retryConfig).toEqual({
+        maxAttempts: 3,
+        initialDelayMs: 1000,
+        maxDelayMs: 30000,
+        backoffMultiplier: 2,
+      });
       expect(config.txReceiptTimeoutMs).toBe(120000);
     });
 
@@ -120,7 +123,7 @@ describe("config validation", () => {
       expect(config.pollingIntervalMs).toBe(60000);
       expect(config.maxSlippageBps).toBe(200);
       expect(config.metricsPort).toBe(3000);
-      expect(config.retryMaxAttempts).toBe(5);
+      expect(config.retryConfig).toMatchObject({ maxAttempts: 5 });
       expect(config.txReceiptTimeoutMs).toBe(60000);
     });
   });

@@ -1,5 +1,6 @@
 import type { Hex } from "viem";
 import {
+  AWAITING_OPERATOR,
   IN_FLIGHT_ON_CHAIN,
   type IntentInput,
   type IntentStatus,
@@ -10,7 +11,7 @@ import {
   type TransitionMeta,
   type TxIntent,
 } from "./types";
-import { idempotencyKey } from "./utils";
+import { assertProposalChain, idempotencyKey } from "./utils";
 
 // In-memory `StateStore` — **non-durable**, for dev and tests (production uses `./postgres`).
 // Mirrors the Postgres adapter's semantics exactly: idempotency refuse/revive, the MANUAL proposal
@@ -89,6 +90,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
     },
 
     async propose(input, payload, payloadHash) {
+      assertProposalChain(input, payload);
       return record(input, "proposed", payload, payloadHash);
     },
 
@@ -96,7 +98,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       return [...rows.values()]
         .filter(
           (r) =>
-            (r.status === "proposed" || r.status === "claimed") &&
+            AWAITING_OPERATOR.includes(r.status) &&
             r.payloadHash !== null &&
             (action === undefined || r.action === action)
         )

@@ -15,6 +15,7 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [Prerequisites](#41-prerequisites)
    - [Native Installation](#42-native-installation)
    - [Docker Installation](#43-docker-installation)
+   - [Router contract (treasury-funded acquisition only)](#44-router-contract-treasury-funded-acquisition-only)
 5. [Configuration](#5-configuration)
    - [Environment Files](#51-environment-files)
    - [Ponder Indexer Configuration](#52-ponder-indexer-configuration)
@@ -31,6 +32,7 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [Prometheus Metrics](#82-prometheus-metrics)
    - [Indexer Endpoints](#83-indexer-endpoints)
 9. [Vault Acquisition Flow](#9-vault-acquisition-flow)
+   - [Incident: signing key compromised](#91-incident-the-signing-key-is-compromised-router-funding)
     - [Economic Model](#91-economic-model)
     - [Interest Accrual](#92-interest-accrual)
 10. [Troubleshooting](#10-troubleshooting)
@@ -172,6 +174,46 @@ Docker Compose will automatically pull these images. To build locally instead:
 docker compose build arbitrageur-ponder arbitrageur-bot
 ```
 
+### 4.4. Router contract (treasury-funded acquisition only)
+
+Skip this under `ARBITRAGE_FUNDING=inventory` — the bot pays for acquisitions from its own WBTC and
+needs no contract of its own.
+
+Router funding moves the float off the signing key: a treasury holds the WBTC, and the bot only
+signs an authorization and submits it. Deploy the router once:
+
+```bash
+export ARBITRAGE_ROUTER_SIGNER=0x...   # this bot's signer. Authorizes acquisitions; holds no funds
+export ARBITRAGE_ROUTER_PAYER=0x...    # the treasury. Supplies the WBTC
+export WBTC_ADDRESS=0x...              # must match the LLP's WBTC
+export DEPLOYER_PRIVATE_KEY=0x...
+
+forge script scripts/DeployArbitrageRouter.s.sol:DeployArbitrageRouter \
+  --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
+```
+
+**The deploy is not the whole setup.** The router can move nothing until the treasury approves it,
+and only the treasury can do that:
+
+```bash
+cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" "$AMOUNT" \
+  --rpc-url "$RPC_URL" --private-key "$TREASURY_KEY"
+```
+
+Approve **working capital, not an unlimited amount.** The `vaultSwap` is an argument to each signed
+call, so a compromised signer can direct the whole allowance into a contract of its choosing — the
+approval is the blast radius.
+
+All three constructor arguments are immutable and are checked against the bot's configuration at
+boot, so a mismatch is a redeploy rather than a reconfiguration. There is no rotation: recovering
+from a lost signer key means the treasury revokes its approval, then you deploy a new router and
+point the bot at it.
+
+Not available with `EXECUTION_MODE=MANUAL`, and rejected at boot. The router needs an EIP-712
+authorization that exists *before* the transaction carrying it, which a proposal for an operator
+cannot express — and that authorizing key is not one to hand a keyless bot, since it can direct the
+treasury's whole allowance.
+
 ## 5. Configuration
 
 ### 5.1. Environment Files
@@ -283,6 +325,15 @@ DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
 NOTIFIER=none
 # SLACK_WEBHOOK_REF=SLACK_WEBHOOK_URL
 
+# ====== Acquisition funding ======
+# inventory (default) pays for acquisitions from this signer's WBTC; router has a treasury pay
+# through an ArbitrageRouter, leaving this key holding only gas. Enforced both ways: setting the
+# router variables WITHOUT the flag is a boot error, since the mode is never inferred from them.
+# ARBITRAGE_FUNDING=inventory
+# ARBITRAGE_ROUTER_ADDRESS=0x...          # its immutable signer must be this bot's key (§4.4)
+# VAULT_KEEPER_ADDRESS=0x...              # REQUIRED under router: it only redeems on behalf
+# ARBITRAGE_RELAY_DEADLINE_SECONDS=120    # how long a signed batch stays valid, in chain seconds
+
 # Optional liquidation engine, sharing the same signer/executor/risk gate
 # ADAPTER_ADDRESS=0x...
 # LENS_ADDRESS=0x...
@@ -334,7 +385,10 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `CLIENT_RPC_URL` | RPC for transaction execution | Yes | — |
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap contract address | Yes | — |
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
-| `VAULT_KEEPER_ADDRESS` | Registered vault keeper the acquired vault is redeemed to. Set it when the executor is **not** itself a keeper (e.g. a Safe): the bot pays and this keeper receives, via `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself. Only point this at a keeper you control — the BTC lands there while the WBTC leaves the bot, so the legs only net out (and `RISK_MIN_PROFIT` only means anything) under one owner | No | — |
+| `ARBITRAGE_FUNDING` | `inventory` (pay from this signer's WBTC) or `router` (a treasury pays through an `ArbitrageRouter`) | No | `inventory` |
+| `ARBITRAGE_ROUTER_ADDRESS` | The deployed `ArbitrageRouter`. Its immutable `signer`, `payer` and `wbtc` are read back and checked at boot | router | — |
+| `ARBITRAGE_RELAY_DEADLINE_SECONDS` | How long a signed batch stays valid, in **chain** seconds. Bounded to 1–300: the router carries no nonce, so a signed batch is replayable by anyone until it expires, and the signature is public from the moment it is broadcast | No | `120` |
+| `VAULT_KEEPER_ADDRESS` | Registered vault keeper the acquired vault is redeemed to. **Required** under `ARBITRAGE_FUNDING=router`, which only ever redeems on behalf of a keeper. Set it when the executor is **not** itself a keeper (e.g. a Safe): the bot pays and this keeper receives, via `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself. Only point this at a keeper you control — the BTC lands there while the WBTC leaves the bot, so the legs only net out (and `RISK_MIN_PROFIT` only means anything) under one owner | No | — |
 | `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | No | `100` |
 | `POLLING_INTERVAL_MS` | How often to check for vaults | No | `30000` |
 | `VAULT_PROCESSING_DELAY_MS` | Throttle between acquisition broadcasts. Acquisitions are batched, so not a per-acquisition pause. `0` disables | No | `0` |
@@ -413,19 +467,36 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 
 The arbitrageur wallet requires:
 
+Under `ARBITRAGE_FUNDING=inventory` (the default), the arbitrageur wallet requires:
+
 | Asset | Purpose | Notes |
 |-------|---------|-------|
 | **ETH** | Transaction gas | Monitor balance for continuous operation |
 | **WBTC** | Vault acquisition payments | Must have sufficient balance to acquire vaults |
 
+Under `ARBITRAGE_FUNDING=router` the WBTC moves to the treasury and this wallet needs **only ETH**.
+The router pulls exactly the preview cost from the treasury and sweeps any residue straight back, so
+the signing key can direct that allowance but can never receive it. What the treasury must hold:
+
+| Asset | Held by | Notes |
+|-------|---------|-------|
+| **ETH** | the bot's signer | Gas only. It pays for the transaction, not the vault |
+| **WBTC** | the treasury (`payer`) | Plus an allowance to the router — the bot cannot grant it, and boot fails without it |
+
 **WBTC requirements:**
 - Vaults are acquired at a discount (see [Economic Model](#101-economic-model) for details)
 - Maintain buffer for multiple simultaneous acquisitions
 - Monitor `arbitrageur_wbtc_balance` metric
+- Under router funding, spendable capacity is `min(treasury balance, allowance)` — an allowance that
+  runs down stops acquisitions just as surely as an empty treasury
 
 **Recommended monitoring:**
 - Set up alerts for low ETH balance
-- Set up alerts for low WBTC balance
+- Set up alerts for low WBTC balance — on `arbitrageur_funding_wbtc_balance`, which follows whichever
+  account actually pays. `arbitrageur_wbtc_balance` is always the *signer's*, so under router funding
+  it will sit flat while the treasury drains
+- Under router funding, alert on `arbitrageur_funding_wbtc_allowance` too: an exhausted approval
+  stops acquisitions exactly like an empty treasury, and only the treasury can raise it
 - In MANUAL mode, monitor proposals with `operator-cli list` and Slack/log notifications
 
 ## 7. Starting the Service
@@ -644,6 +715,38 @@ and `isProfitable`. Slippage is applied to `currentDebt`:
 
 > **Note**: Vault acquisition is first-come-first-served. The first successful
 > `swapWbtcForVault()` transaction wins the vault.
+
+### 9.1. Incident: the signing key is compromised (router funding)
+
+Router funding shrinks the blast radius of a lost key — the router pulls only the preview cost from
+the treasury and sweeps any residue straight back, so the key can never *receive* the float. It does
+not eliminate it: `vaultSwap` is an argument to each signed call, so whoever holds the key can point
+the router at a contract of their choosing and spend the entire allowance into it.
+
+**The approval is the exposure, so revoke it first.** Do this before stopping the bot — the bot's
+own submissions are not what is dangerous, and a stopped bot does nothing to stop an attacker:
+
+```bash
+cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" 0 \
+  --rpc-url "$RPC_URL" --private-key "$TREASURY_KEY"
+```
+
+Then, in order:
+
+1. Halt the bot via the kill switch (`POST /halt`), or stop the process.
+2. Deploy a **new** router for the new signer — see §4.4. `signer`, `payer` and `wbtc` are all
+   immutable, so there is no rotation: the compromised router is retired, not repaired.
+3. Point `ARBITRAGE_ROUTER_ADDRESS` at the new one and restart. Boot re-reads the router's
+   immutables and refuses to start if they disagree with the bot's key.
+4. Approve the new router from the treasury, with working capital rather than an unlimited amount.
+
+Signed batches already in flight stay valid until their `ARBITRAGE_RELAY_DEADLINE_SECONDS` expires —
+they carry no nonce and anyone may submit them — but revoking the approval makes them fail, which is
+the second reason to revoke first.
+
+The same key also signs liquidations. If the liquidation engine is enabled, treat
+`LIQUIDATION_ROUTER_ADDRESS` as compromised too: its `owner` is this signer, and it sweeps proceeds
+there.
 
 ## 10. Troubleshooting
 

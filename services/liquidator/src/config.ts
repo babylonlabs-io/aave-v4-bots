@@ -93,20 +93,6 @@ const envSchema = z.object({
   LENS_ADDRESS: addressSchema,
   WBTC_ADDRESS: addressSchema,
 
-  // Signer + secrets source selection (all optional; defaults preserve current behavior:
-  // a local signer whose key is read from the LIQUIDATOR_PRIVATE_KEY env var).
-  SECRETS_PROVIDER: z.enum(["env", "aws"]).optional().default("env"),
-  SIGNER_SOURCE: z.enum(["local", "aws"]).optional().default("local"),
-  SIGNER_KEY_REF: z.string().min(1).optional(),
-  KMS_KEY_ID: z.string().min(1).optional(),
-  SIGNER_ADDRESS: addressSchema.optional(),
-  AWS_REGION: z.string().min(1).optional(),
-
-  // Crash-safety persistence (optional). DATABASE_URL enables the Postgres StateStore;
-  // PERSISTENCE_SCHEMA isolates the bot tables (default "bot") from the indexer's.
-  DATABASE_URL: z.string().min(1).optional(),
-  PERSISTENCE_SCHEMA: z.string().min(1).optional(),
-
   // Optional
   DEBT_TOKEN_ADDRESSES: addressListSchema.optional(),
   BTC_REDEEM_KEY: bytes32Schema.optional().default(ZERO_BYTES32),

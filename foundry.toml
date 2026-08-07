@@ -3,6 +3,9 @@ src = "contracts"
 out = "out"
 libs = ["lib"]
 test = "test"
+# The repo already had `scripts/` for its bash tooling; forge scripts live alongside it rather
+# than in a second, near-identically named directory.
+script = "scripts"
 auto_detect_solc = true
 
 # `test/utils` is a symlink to lib/tbv-contracts/test/utils that the e2e runner and CI create at

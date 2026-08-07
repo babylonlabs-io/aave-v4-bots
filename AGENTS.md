@@ -53,7 +53,7 @@ the `lib/tbv-contracts/` submodule, starts the real bot processes, and tears eve
 needs `foundry` and docker. Suites are selected with `SUITE` (default `liquidator`):
 
 ```bash
-E2E_FORK_URL=https://sepolia.drpc.org ./scripts/e2e-local.sh  # liquidator (default) — needs a fork
+E2E_FORK_URL=https://sepolia.gateway.tenderly.co ./scripts/e2e-local.sh  # liquidator (default) — needs a fork
 SUITE=arbitrageur ./scripts/e2e-local.sh              # one bot, both engines
 SUITE=manual-arbitrageur ./scripts/e2e-local.sh       # keyless MANUAL mode + operator-cli
 SUITE=stress-arbitrageur ./scripts/e2e-local.sh       # mass-liquidation + nonce chaos

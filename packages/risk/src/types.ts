@@ -19,13 +19,13 @@ export interface RiskAction {
   /** When the source data was produced (ms epoch) — checked against `maxDataStalenessMs`. */
   dataTimestampMs?: number;
   /**
-   * Token outflows this action authorizes. Reserved against the signer's spendable balance for as
-   * long as the action is in flight, so that concurrent engines sharing one signer cannot each pass
-   * an affordability check against the same balance and collectively overdraw it. Omit when the
-   * action moves no tokens.
+   * Token outflows this action authorizes. Reserved against the paying account's spendable balance
+   * for as long as the action is in flight, so that concurrent engines spending the same account
+   * cannot each pass an affordability check against the same balance and collectively overdraw it.
+   * Omit when the action moves no tokens.
    *
-   * Fails CLOSED: naming a token whose balance the gate has never been told (`setAvailable`) blocks
-   * the action rather than treating it as unlimited.
+   * Fails CLOSED: naming an `(owner, token)` whose balance the gate has never been told
+   * (`setAvailable`) blocks the action rather than treating it as unlimited.
    */
   spend?: readonly TokenSpend[];
 }
@@ -59,11 +59,37 @@ export interface ActionOutcome {
    * refresh corrects whichever way it went.
    */
   unresolved?: boolean;
+  /**
+   * The declared spend **did** leave, even though this action failed by every other measure.
+   *
+   * Normally a failure implies the tokens stayed put — a reverted transaction transfers nothing —
+   * so the reservation is released outright. That inference breaks when the payment can be made by
+   * a transaction other than ours: an authorization signed for a permissionless relay can be
+   * submitted by anyone, so ours may revert *because* someone else spent our funds with it. Set
+   * this to keep the outflow counted against the balance until the next refresh proves otherwise.
+   *
+   * Orthogonal to the flags above: an action is typically `contended` **and** `spent`, meaning a
+   * competitor handled the subject but our money is what paid for it.
+   */
+  spent?: boolean;
 }
 
-/** One token outflow an action authorizes, reserved against the signer's balance while in flight. */
-export interface TokenSpend {
+/**
+ * The balance sheet one outflow is drawn from.
+ *
+ * `owner` exists because the account paying is not always the account signing. An engine funded
+ * through a router spends a treasury's tokens, while another engine in the same process still
+ * spends the signer's — two balances, and netting them would let a reservation against one starve
+ * or overdraw the other. Under direct funding every owner is simply the signer.
+ */
+export interface TokenAccount {
+  /** The account the tokens leave. */
+  owner: string;
   token: string;
+}
+
+/** One token outflow an action authorizes, reserved against `owner`'s balance while in flight. */
+export interface TokenSpend extends TokenAccount {
   /** WORST CASE the tx may transfer — the slippage ceiling, or the buffered repay amount. */
   amount: bigint;
 }
@@ -128,14 +154,14 @@ export interface RiskGate {
    */
   minProfit(): bigint | undefined;
   /**
-   * Tell the gate the signer's spendable balance of `token`, from a fresh chain read. Authoritative:
+   * Tell the gate `owner`'s spendable balance of `token`, from a fresh chain read. Authoritative:
    * it replaces the previous figure and clears what the gate had counted as spent since the last
    * one, so drift from inflows (liquidation payouts, redemptions, transfers in) self-corrects every
-   * time it is called. Engines call it once per cycle for each token they spend.
+   * time it is called. Engines call it once per cycle for each account/token pair they spend.
    */
-  setAvailable(token: string, amount: bigint): void;
-  /** Declared spend currently reserved by in-flight actions, per token — for logs and metrics. */
-  reserved(token: string): bigint;
+  setAvailable(account: TokenAccount, amount: bigint): void;
+  /** Declared spend currently reserved by in-flight actions, per account/token — logs and metrics. */
+  reserved(account: TokenAccount): bigint;
   /**
    * Verify the configured contract bytecode hashes and **halt on mismatch** (an upgraded or
    * self-destructed target is treated as compromised). No-op when unconfigured. Kept out of the

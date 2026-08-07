@@ -27,6 +27,7 @@ function createMetrics() {
     recordError: vi.fn(),
     recordPollDuration: vi.fn(),
     recordWbtcBalance: vi.fn(),
+    recordFundingCapacity: vi.fn(),
   };
 }
 const silentLogger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -45,6 +46,9 @@ const mockVault: EscrowedVault = {
  * durable nonce + hash record) runs BEFORE the broadcast resolves, so crash-safety tests
  * exercise the same ordering as the real sender.
  */
+/** The signer pays under inventory funding, so it is the account the gate reserves against. */
+const WBTC_ACCOUNT = { owner: "0xarbitrageur", token: "0xwbtc" };
+
 function mockSender(identity = { from: "0xarbitrageur" as `0x${string}`, chainId: 31337 }) {
   return {
     identity,
@@ -146,7 +150,7 @@ function createBot(
   // Seed it here so those tests exercise the acquisition path rather than the inventory guard —
   // the inventory tests set their own figure explicitly.
   const risk = engineOverrides.risk ?? createRiskGate();
-  risk.setAvailable("0xwbtc", 10n ** 24n);
+  risk.setAvailable(WBTC_ACCOUNT, 10n ** 24n);
   return new ArbitrageEngine({
     publicClient: clients.publicClient as unknown as ArbitrageEngineConfig["publicClient"],
     vaultSwapAddress: "0xvaultswap",
@@ -625,7 +629,116 @@ describe("ArbitrageEngine", () => {
       // The gate blocks it, and a blocked slot reserves nothing — so an unaffordable vault leaves
       // no trace in either the exposure count or the token ledger.
       expect(risk.inFlight()).toBe(0);
-      expect(risk.reserved("0xwbtc")).toBe(0n);
+      expect(risk.reserved(WBTC_ACCOUNT)).toBe(0n);
+    });
+
+    // A revert with the vault STILL in escrow normally means the chain refused what we tried to do,
+    // which is our failure. An expired authorization is not that: the router rejects the batch
+    // before touching anything, because it sat behind a stalled nonce longer than it was signed
+    // for. A breaker of one proves the difference — a real revert would halt here.
+    it("does not blame the breaker when the authorization expired before mining", async () => {
+      const clients = createMockClients();
+      fundedWith(clients, balanceFor(1n));
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 10n,
+      });
+
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      const funding = (bot as unknown as { funding: { authorizationExpired: unknown } }).funding;
+      funding.authorizationExpired = async () => true;
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+      });
+
+      await bot.run();
+
+      expect(risk.state()).toBe("RUNNING");
+      // Nothing moved either, so the reservation is released outright.
+      expect(risk.reserved(WBTC_ACCOUNT)).toBe(0n);
+    });
+
+    // The subtler half of the same hazard: we never broadcast at all — gas estimation failed — but
+    // the authorization had already left the process, and estimation is what put it in front of an
+    // RPC. "We sent nothing" therefore no longer implies "our money stayed put".
+    it("keeps the spend counted when an unsent acquisition was authorized and paid anyway", async () => {
+      const clients = createMockClients();
+      fundedWith(clients, balanceFor(1n));
+      clients.publicClient.estimateContractGas.mockRejectedValue(new Error("VaultNotAcquirable"));
+      const inner = clients.publicClient.readContract.getMockImplementation();
+      clients.publicClient.readContract.mockImplementation((arg: { functionName: string }) => {
+        if (arg.functionName === "isVaultAcquirable") return Promise.resolve(false);
+        return inner?.(arg);
+      });
+
+      const risk = createRiskGate();
+      const bot = createBot(clients, { risk });
+      const funding = (bot as unknown as { funding: { spentWithoutUs: unknown } }).funding;
+      funding.spentWithoutUs = async () => true;
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+      });
+
+      await bot.run();
+
+      expect(risk.reserved(WBTC_ACCOUNT)).toBe(0n);
+      expect(
+        risk.openSlot({
+          kind: "vault-acquisition",
+          subject: "0xnext",
+          spend: [{ ...WBTC_ACCOUNT, amount: balanceFor(1n) }],
+        }).allowed
+      ).toBe(false);
+    });
+
+    // Under router funding the payment is authorized separately from the transaction, and `relay`
+    // is permissionless — so a third party can submit our signed batch and have it execute first.
+    // Our transaction reverts on a vault that is already gone, which looks exactly like a lost
+    // race, except the treasury's WBTC left under our own signature. Releasing the reservation
+    // would hand the same balance out twice in one cycle.
+    it("keeps the spend counted when our own authorization acquired the vault", async () => {
+      const clients = createMockClients();
+      fundedWith(clients, balanceFor(1n));
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 10n,
+      });
+      // The vault is gone by the time we classify — from the receipt alone, an ordinary lost race.
+      const inner = clients.publicClient.readContract.getMockImplementation();
+      clients.publicClient.readContract.mockImplementation((arg: { functionName: string }) => {
+        if (arg.functionName === "isVaultAcquirable") return Promise.resolve(false);
+        return inner?.(arg);
+      });
+
+      const risk = createRiskGate();
+      const bot = createBot(clients, { risk });
+      // Stand in for router funding: the one thing that differs is whether a lost race can still
+      // have spent our money.
+      const funding = (bot as unknown as { funding: { spentWithoutUs: unknown } }).funding;
+      funding.spentWithoutUs = async () => true;
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+      });
+
+      await bot.run();
+
+      // Reservation released, but the outflow stays counted against the balance until a refresh —
+      // so the very next acquisition of the same size no longer fits.
+      expect(risk.reserved(WBTC_ACCOUNT)).toBe(0n);
+      expect(
+        risk.openSlot({
+          kind: "vault-acquisition",
+          subject: "0xnext",
+          spend: [{ ...WBTC_ACCOUNT, amount: balanceFor(1n) }],
+        }).allowed
+      ).toBe(false);
     });
 
     it("frees the reservation for a competitor-won vault so the next one can use it", async () => {
@@ -646,7 +759,7 @@ describe("ArbitrageEngine", () => {
       await bot.run();
 
       // A revert transfers nothing, so holding its WBTC would strand capacity the signer still has.
-      expect(risk.reserved("0xwbtc")).toBe(0n);
+      expect(risk.reserved(WBTC_ACCOUNT)).toBe(0n);
     });
   });
 

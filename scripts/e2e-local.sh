@@ -3,8 +3,9 @@
 # Boots dependencies, runs the three forge scripts, tears everything down on exit.
 #
 # Usage:
-#   E2E_FORK_URL=https://sepolia.drpc.org scripts/e2e-local.sh   # SUITE=liquidator (needs a fork)
+#   E2E_FORK_URL=https://sepolia.gateway.tenderly.co scripts/e2e-local.sh   # SUITE=liquidator (needs a fork)
 #   SUITE=arbitrageur scripts/e2e-local.sh # run the arbitrageur suite (one bot, both engines)
+#   SUITE=router-arbitrageur scripts/e2e-local.sh # acquisitions funded by a treasury, not the key
 #
 # The liquidator suite is flash-funded and borrows from the REAL UniswapV4 and Morpho deployments,
 # so it only runs against a fork — hence `E2E_FORK_URL`. Every other suite is inventory-funded and
@@ -79,7 +80,7 @@ SUITE="${SUITE:-liquidator}"
 if [[ "$SUITE" == "liquidator" && -z "${E2E_FORK_URL:-}" ]]; then
   log_err "SUITE=liquidator needs E2E_FORK_URL: it flash-funds through the real UniswapV4 and"
   log_err "Morpho deployments, which exist only on a fork. For example:"
-  log_err "  E2E_FORK_URL=https://sepolia.drpc.org SUITE=liquidator scripts/e2e-local.sh"
+  log_err "  E2E_FORK_URL=https://sepolia.gateway.tenderly.co SUITE=liquidator scripts/e2e-local.sh"
   log_err "The inventory-funded path is covered by SUITE=arbitrageur, which needs no fork."
   exit 1
 fi
@@ -438,6 +439,9 @@ DRIVE=""
 case "$SUITE" in
   arbitrageur) SETUP="ArbitrageurE2ESetup"; VERIFY="ArbitrageurE2EVerify" ;;
   liquidator)  SETUP="LiquidationE2ESetup"; VERIFY="LiquidationE2EVerify" ;;
+  # Router-funded acquisition: a treasury holds the WBTC, the bot's key only authorizes.
+  router-arbitrageur)
+    SETUP="RouterArbitrageurE2ESetup"; VERIFY="RouterArbitrageurE2EVerify" ;;
   manual-arbitrageur)
     SETUP="ManualArbitrageurE2ESetup"; VERIFY="ArbitrageurE2EVerify"
     DRIVE="test/e2e/scripts/operator-confirm.sh"; DRIVE_KIND="eoa" ;;
@@ -450,7 +454,7 @@ case "$SUITE" in
     SETUP="StressArbitrageurE2ESetup"; VERIFY=""
     DRIVE="test/e2e/scripts/stress-drive.sh"
     BASH_VERIFY="test/e2e/scripts/stress-verify.sh" ;;
-  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | liquidator | manual-arbitrageur | manual-safe-arbitrageur | stress-arbitrageur)"; exit 1 ;;
+  *) log_err "unknown SUITE '$SUITE' (expected: arbitrageur | router-arbitrageur | liquidator | manual-arbitrageur | manual-safe-arbitrageur | stress-arbitrageur)"; exit 1 ;;
 esac
 
 if [[ "${E2E_SIGNER_SOURCE:-local}" == "aws" ]]; then

@@ -17,7 +17,9 @@ when `RISK_CONTROL_TOKEN_REF` is set; it is not mounted on the metrics port.
 |--------|------|--------|-------------|
 | `arbitrageur_vaults_acquired_total` | Counter | - | Total vaults acquired (one per successful `swapWbtcForVault`) |
 | `arbitrageur_wbtc_spent_total` | Counter | - | Cumulative budgeted WBTC spend in satoshis (see note below) |
-| `arbitrageur_wbtc_balance` | Gauge | - | Current arbitrageur WBTC balance (satoshis) |
+| `arbitrageur_funding_wbtc_balance` | Gauge | `owner` | WBTC held by the account that **pays** for acquisitions. Under `ARBITRAGE_FUNDING=inventory` that is the signer; under `router` it is the treasury, and the signer's own balance is not the one to watch |
+| `arbitrageur_funding_wbtc_allowance` | Gauge | `owner` | WBTC the payer has approved the router to spend. Only emitted under `ARBITRAGE_FUNDING=router` — inventory funding has nothing to approve |
+| `arbitrageur_wbtc_balance` | Gauge | - | The **signer's** WBTC balance (satoshis). Under router funding this is not what funds acquisitions — see the two gauges above |
 | `arbitrageur_errors_total` | Counter | `type` | Errors by type (see below) |
 | `arbitrageur_poll_duration_seconds` | Histogram | - | Poll cycle duration. Buckets: 0.1, 0.5, 1, 2, 5, 10, 30, 60 |
 | `arbitrageur_last_poll_timestamp` | Gauge | - | Last poll unix timestamp (seconds) |
@@ -48,7 +50,9 @@ following label values:
 | `swap_send_error` | Executor failed or aborted while committing the swap |
 | `tx_timeout` | Receipt wait exceeded `TX_RECEIPT_TIMEOUT_MS` |
 | `swap_reverted` | Receipt status was `reverted` and the vault is still in escrow |
-| `race_lost` | The vault was gone before acquisition (gas estimation) or after a reverted swap — another arbitrageur won. Ordinary competition: does not feed the breaker |
+| `race_lost` | The vault was gone before acquisition (gas estimation) or after a reverted swap — another arbitrageur won with their own funds. Ordinary competition: does not feed the breaker |
+| `authorization_expired` | `ARBITRAGE_FUNDING=router` only. The swap reverted with the vault still in escrow, because the signed batch sat behind a stalled nonce for longer than `ARBITRAGE_RELAY_DEADLINE_SECONDS`. Nothing moved and nothing was refused on its merits, so it is breaker-exempt. A run of these means the send queue is stalling — look at nonce gaps, not at the market |
+| `relay_executed_elsewhere` | `ARBITRAGE_FUNDING=router` only. Our swap reverted on a vault already gone, and the router's own event shows **our** authorization is what acquired it — someone else submitted our signed batch and paid the gas. The vault reached our keeper and the treasury paid, so the spend stays counted; only the gas was theirs |
 | `receipt_fetch_error` | Failed to fetch transaction receipt; the transaction's fate is unknown and the intent stays live for reconcile |
 | `contract_revert` | `writeContract` rejected with a `ContractFunctionRevertedError` |
 | `acquire_error` | Other unhandled exception during acquisition |

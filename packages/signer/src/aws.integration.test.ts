@@ -23,11 +23,13 @@ describe.runIf(!!KEY_ID)("createAwsSigner (integration — real AWS KMS)", () =>
     "derives an address and signs a message that recovers to it",
     async () => {
       const signer = await createAwsSigner({ keyId: KEY_ID as string, region: REGION });
-      expect(signer.address).toMatch(/^0x[0-9a-fA-F]{40}$/);
+      expect(signer.account.address).toMatch(/^0x[0-9a-fA-F]{40}$/);
 
       const message = `@repo/signer kms integration ${Date.now()}`;
       const signature = await signer.account.signMessage!({ message });
-      await expect(recoverMessageAddress({ message, signature })).resolves.toBe(signer.address);
+      await expect(recoverMessageAddress({ message, signature })).resolves.toBe(
+        signer.account.address
+      );
     },
     TIMEOUT
   );
@@ -39,7 +41,7 @@ describe.runIf(!!KEY_ID)("createAwsSigner (integration — real AWS KMS)", () =>
       const serializedTransaction = await signer.account.signTransaction!({
         type: "eip1559",
         chainId: 1,
-        to: signer.address,
+        to: signer.account.address,
         value: 0n,
         nonce: 0,
         gas: 21000n,
@@ -50,7 +52,7 @@ describe.runIf(!!KEY_ID)("createAwsSigner (integration — real AWS KMS)", () =>
         recoverTransactionAddress({
           serializedTransaction: serializedTransaction as `0x02${string}`,
         })
-      ).resolves.toBe(signer.address);
+      ).resolves.toBe(signer.account.address);
     },
     TIMEOUT
   );

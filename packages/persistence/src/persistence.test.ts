@@ -90,6 +90,18 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
     expect(row).toMatchObject({ status: "proposed", payload: p, payloadHash: HASH_A, nonce: null });
   });
 
+  // Rejected rather than stored, because the two chain ids drive different consumers: the row's keys
+  // dedup and reconcile, the payload's is what the operator signs and broadcasts against. A row that
+  // disagreed with itself would have the operator acting on a chain the bot never looks at.
+  it("refuses a payload that targets a different chain than the intent", async () => {
+    const store = createMemoryStateStore();
+
+    await expect(store.propose(input("p"), payload({ chainId: 1 }), HASH_A)).rejects.toThrow(
+      /chain 31337 but its payload targets 1/
+    );
+    expect(store.all()).toHaveLength(0);
+  });
+
   it("dedups a proposal — a second propose for the same subject is refused", async () => {
     const store = createMemoryStateStore();
     await store.propose(input("p"), payload(), HASH_A);
