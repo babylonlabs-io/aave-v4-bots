@@ -38,9 +38,13 @@ COPY services/liquidator/client/ ./services/liquidator/client/
 # ============================================
 FROM node:22-alpine AS runner
 
-# Install pnpm for running tsx and wget for healthchecks
+# wget for the healthcheck. Remove the npm bundled in the base image: it is
+# unused at runtime and ships known-vulnerable transitive deps (tar, etc.) that
+# the image scanner flags. pnpm/corepack are intentionally NOT installed here —
+# the app runs directly via tsx (see CMD), so no package manager ships in the
+# runtime image.
 RUN apk add --no-cache wget=~1.25 && \
-    corepack enable && corepack prepare pnpm@9.13.2 --activate
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
@@ -70,5 +74,6 @@ WORKDIR /app/services/liquidator/client
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:9090/health || exit 1
 
-# Default command: start polling mode
-CMD ["pnpm", "start"]
+# Default command: start polling mode. Run directly via tsx (WORKDIR is the
+# service dir, tsx is a runtime dependency) so no package manager is needed.
+CMD ["node_modules/.bin/tsx", "src/index.ts"]
