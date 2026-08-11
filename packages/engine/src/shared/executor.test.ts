@@ -14,9 +14,11 @@ import {
 } from "@repo/persistence";
 import type { Address, Hex, PublicClient } from "viem";
 import { describe, expect, it, vi } from "vitest";
+import { createChainReader } from "./liveness";
 
 import { createCrashSafety } from "./crashSafety";
-import { createAutoExecutor, createManualExecutor } from "./executor";
+import { createAutoExecutor, createAutoExecutorFromWallet, createManualExecutor } from "./executor";
+import { createAutoExecutorWithSender } from "./executorTestKit";
 
 const OPERATOR = "0x0000000000000000000000000000000000000Fee" as Address;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
@@ -70,27 +72,23 @@ const allocator = (nonce = 7): NonceAllocator => ({
   resync: vi.fn(async () => {}),
 });
 
+/** Terse defaults over `./executorTestKit`, which owns the crash + sender construction. */
 function autoExecutor(
   sender = autoSender(),
   store?: MemoryStateStore,
   publicClient = autoPublicClient()
 ) {
-  const crash = createCrashSafety({
-    store,
-    nonces: allocator(),
-    publicClient,
-    signer: sender.identity.from,
-    logger: silentLogger,
-  });
-  const exec = createAutoExecutor({
-    crash,
-    sender,
-    publicClient,
-    walletClient: autoWallet,
-    txReceiptTimeoutMs: 1000,
-    logger: silentLogger,
-  });
-  return { exec, crash };
+  return {
+    exec: createAutoExecutorWithSender({
+      sender,
+      store,
+      nonces: allocator(),
+      publicClient,
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      logger: silentLogger,
+    }),
+  };
 }
 
 describe("createAutoExecutor", () => {
@@ -180,7 +178,7 @@ describe("createAutoExecutor", () => {
     const sender = autoSender({ send: send as unknown as TxSender["send"] });
     const crash = createCrashSafety({
       nonces: allocator(42),
-      publicClient: autoPublicClient(),
+      reader: createChainReader(autoPublicClient()),
       signer: sender.identity.from,
       logger: silentLogger,
     });
@@ -215,18 +213,67 @@ describe("createAutoExecutor", () => {
       expect(autoWallet.writeContract).not.toHaveBeenCalled();
     });
 
-    it("approves + waits the receipt when allowance is short (AUTO broadcasts a real approval)", async () => {
+    // Through the `TxSender`, NOT `walletClient.writeContract`. The sender is what carries the
+    // submission policy, so an approval sent any other way would go to the public mempool while the
+    // engine's own transactions went private — two routes on one nonce sequence, under two different
+    // assumptions about who can see them.
+    it("approves through the sender + waits the receipt when allowance is short", async () => {
       const pc = autoPublicClient(allowanceReader(0n));
       (autoWallet.writeContract as ReturnType<typeof vi.fn>).mockClear();
-      const { exec } = autoExecutor(autoSender(), undefined, pc);
+      const sender = autoSender();
+      const { exec } = autoExecutor(sender, undefined, pc);
 
       const result = await exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n });
 
       expect(result).toEqual({ kind: "satisfied" });
-      expect(autoWallet.writeContract).toHaveBeenCalledWith(
-        expect.objectContaining({ functionName: "approve", args: [SPENDER, expect.anything()] })
+      // Two arguments now: the call, and the `onSigned` hook that durably records nonce + hash
+      // before the approval reaches the chain — the same pre-broadcast record `commit` makes.
+      expect(sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: WBTC,
+          functionName: "approve",
+          args: [SPENDER, expect.anything()],
+        }),
+        expect.any(Function)
       );
+      expect(autoWallet.writeContract).not.toHaveBeenCalled();
       expect(pc.waitForTransactionReceipt).toHaveBeenCalled();
+    });
+
+    // The reason approvals are claimed at all, and it is nonce safety rather than idempotency:
+    // `liveNonceFloor` fences a reserved nonce by walking persisted intents, so a send with no
+    // intent has nothing fencing it. Invisible under public submission (the node's own pending count
+    // covers it) and unsafe under private submission, where the node cannot see the transaction —
+    // the next resync would rewind onto the nonce and sign over a live approval.
+    it("records an intent so the approval's nonce is fenced like every other send", async () => {
+      const store = createMemoryStateStore();
+      const pc = autoPublicClient(allowanceReader(0n));
+      const { exec } = autoExecutor(autoSender(), store, pc);
+
+      await exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n });
+
+      const row = store.get(
+        idempotencyKey({ chainId: 31337, target: WBTC, action: "approval", subject: SPENDER })
+      );
+      expect(row).toMatchObject({ status: "confirmed", txHash: "0xhash", nonce: 7 });
+    });
+
+    // A second approval while one is in flight would race it on a nonce. The caller is told the
+    // allowance is not ready and comes back next cycle, rather than sending a competing transaction.
+    it("refuses a second approval while one is already live", async () => {
+      const store = createMemoryStateStore();
+      const pc = autoPublicClient(allowanceReader(0n));
+      const { exec } = autoExecutor(autoSender(), store, pc);
+      await store.recordIntent({
+        chainId: 31337,
+        target: WBTC,
+        action: "approval",
+        subject: SPENDER,
+      });
+
+      const result = await exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n });
+
+      expect(result.kind).toBe("duplicate");
     });
 
     it("throws when the approval reverts (as the engine's boot approval always did)", async () => {
@@ -420,7 +467,7 @@ describe("createManualExecutor (keyless)", () => {
       expect(store.get(idempotencyKey(claim("p")))?.status).toBe("proposed");
 
       clock = 1_000 + 5_001; // one ms past the TTL
-      await exec.reconcile("liquidation");
+      await exec.reconcile();
       expect(store.get(idempotencyKey(claim("p")))?.status).toBe("expired");
 
       // `expired` is terminal ⇒ revivable: a fresh proposal for the same subject re-notifies.
@@ -436,7 +483,7 @@ describe("createManualExecutor (keyless)", () => {
 
       await exec.commit(CALL, claim("p"));
       clock = 1_000 + 100; // still within the window
-      await exec.reconcile("liquidation");
+      await exec.reconcile();
       expect(store.get(idempotencyKey(claim("p")))?.status).toBe("proposed");
     });
 
@@ -447,7 +494,7 @@ describe("createManualExecutor (keyless)", () => {
 
       await exec.commit(CALL, claim("p"));
       clock = 1_000 + 10 ** 9; // far past any TTL
-      await exec.reconcile("liquidation");
+      await exec.reconcile();
       expect(store.get(idempotencyKey(claim("p")))?.status).toBe("proposed");
     });
 
@@ -461,7 +508,7 @@ describe("createManualExecutor (keyless)", () => {
         5_000
       );
 
-      // An `approval` proposal — no `reconcile("approval")` ever runs for it.
+      // An `approval` proposal — no engine owns that action, so only an unscoped sweep reaches it.
       await exec.ensureAllowance({
         token: "0x0000000000000000000000000000000000000abc" as Address,
         spender: "0x0000000000000000000000000000000000000def" as Address,
@@ -470,7 +517,7 @@ describe("createManualExecutor (keyless)", () => {
       expect(store.all()[0]?.status).toBe("proposed");
 
       clock = 1_000 + 5_001;
-      await exec.reconcile("liquidation"); // a DIFFERENT action still sweeps it
+      await exec.reconcile(); // a DIFFERENT action still sweeps it
 
       expect(store.all()[0]?.status).toBe("expired");
     });
@@ -501,7 +548,7 @@ describe("createManualExecutor (keyless)", () => {
       const exec = manualExecutor(store, notifier, manualPublicClient(), 0, 60_000, () => clock);
 
       clock = 1_000 + 60_001; // past the stuck window
-      await exec.reconcile("liquidation");
+      await exec.reconcile();
 
       expect(stuckEvents(events)).toMatchObject([{ kind: "intent-stuck", intentId: id }]);
     });
@@ -514,12 +561,12 @@ describe("createManualExecutor (keyless)", () => {
       const exec = manualExecutor(store, notifier, manualPublicClient(), 0, 60_000, () => clock);
 
       clock = 1_000 + 100; // still fresh
-      await exec.reconcile("liquidation");
+      await exec.reconcile();
       expect(stuckEvents(events)).toHaveLength(0);
 
       clock = 1_000 + 60_001; // now stuck
-      await exec.reconcile("liquidation");
-      await exec.reconcile("liquidation"); // a persistently-stuck intent must not re-alert
+      await exec.reconcile();
+      await exec.reconcile(); // a persistently-stuck intent must not re-alert
       expect(stuckEvents(events)).toHaveLength(1);
     });
 
@@ -531,8 +578,103 @@ describe("createManualExecutor (keyless)", () => {
       const exec = manualExecutor(store, notifier, manualPublicClient(), 0, 0, () => clock);
 
       clock = 1_000 + 10 ** 9;
-      await exec.reconcile("liquidation");
+      await exec.reconcile();
       expect(stuckEvents(events)).toHaveLength(0);
     });
+  });
+});
+
+// The wiring `createAutoExecutorFromWallet` does between the composition root's submission choice
+// and the transaction that carries it. Typecheck cannot see a dropped field here — the parameter is
+// optional, so omitting it compiles and silently broadcasts publicly, which is exactly the failure
+// an operator cannot observe until a liquidation is front-run.
+describe("createAutoExecutorFromWallet — submission routing", () => {
+  const wallet = {
+    account: { address: "0xsigner" },
+    chain: { id: 31337 },
+    prepareTransactionRequest: vi.fn(async (r: { nonce?: number }) => ({
+      ...r,
+      nonce: r.nonce ?? 1,
+    })),
+    signTransaction: vi.fn(async () => "0xraw" as Hex),
+  } as unknown as Parameters<typeof createAutoExecutorFromWallet>[0]["walletClient"];
+
+  const clients = () => {
+    const publicClient = autoPublicClient({
+      sendRawTransaction: vi.fn(async () => "0xpublic" as Hex),
+      readContract: vi.fn(async () => 0n),
+    });
+    return { publicClient };
+  };
+
+  it("routes sends through an injected submitter, never the node", async () => {
+    const { publicClient } = clients();
+    const submitter = { send: vi.fn(async () => "0xprivate" as Hex) };
+    const exec = createAutoExecutorFromWallet({
+      nonces: allocator(),
+      publicClient,
+      walletClient: wallet,
+      txReceiptTimeoutMs: 1000,
+      logger: silentLogger,
+      submission: { submitter, reader: createChainReader(publicClient), maxFenceMs: 420_000 },
+    });
+
+    const out = await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    expect(out).toMatchObject({ kind: "broadcast" });
+    expect(submitter.send).toHaveBeenCalledWith("0xraw");
+    expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the node's mempool when none is injected — today's behaviour", async () => {
+    const { publicClient } = clients();
+    const exec = createAutoExecutorFromWallet({
+      nonces: allocator(),
+      publicClient,
+      walletClient: wallet,
+      txReceiptTimeoutMs: 1000,
+      logger: silentLogger,
+    });
+
+    await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    expect(publicClient.sendRawTransaction).toHaveBeenCalled();
+  });
+
+  // A `sender` together with a `submission` is not tested here because it does not compile:
+  // `AutoExecutorDeps` is a union, so the two are mutually exclusive at the type level rather than
+  // caught by a runtime throw.
+});
+
+// A stuck approval must not pin the engine. Its intent is claimed under `action: "approval"`, which
+// no engine owns — so a reconcile scoped to the caller's action would leave it live forever, and a
+// live approval intent makes every later `ensureAllowance` a duplicate: the bot skips every
+// opportunity while looking perfectly healthy. Reconcile is therefore unscoped, matching MANUAL and
+// matching `liveNonceFloor`, which already spans every action.
+describe("createAutoExecutor — reconcile is unscoped", () => {
+  it("asks the store for every in-flight intent, not one action's", async () => {
+    const seen: Array<string | undefined> = [];
+    const crash = {
+      reconcile: async (action?: string) => {
+        seen.push(action);
+      },
+      resyncNonces: async () => {},
+      transition: async () => {},
+      claim: async () => ({ claimed: true }),
+      markPending: async () => {},
+      send: async (fn: (n: number) => Promise<Hex>) => fn(1),
+    } as unknown as Parameters<typeof createAutoExecutor>[0]["crash"];
+
+    const exec = createAutoExecutor({
+      crash,
+      sender: autoSender(),
+      publicClient: autoPublicClient(),
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      logger: silentLogger,
+    });
+    await exec.reconcile();
+
+    expect(seen).toEqual([undefined]);
   });
 });

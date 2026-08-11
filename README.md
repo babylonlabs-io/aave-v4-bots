@@ -301,12 +301,15 @@ batch stranded behind a nonce gap recovers without halting.
 SUITE=stress-arbitrageur ./scripts/e2e-local.sh                                        # 4 + 3 positions
 SUITE=stress-arbitrageur STRESS_COHORT_A=24 STRESS_COHORT_B=16 ./scripts/e2e-local.sh  # mass event
 SUITE=stress-arbitrageur STRESS_RACING=1 ./scripts/e2e-local.sh                        # + a rival bot
+SUITE=stress-arbitrageur STRESS_PRIVATE=1 ./scripts/e2e-local.sh                       # private submission
 ```
 
 | Variable | Effect |
 |----------|--------|
 | `STRESS_COHORT_A` / `STRESS_COHORT_B` | Positions per wave (default `4` / `3`); setup costs ~11 s each |
 | `STRESS_RACING` | Runs a competing standalone liquidator; skips the nonce-chaos phases, which need a backlog the competitor would starve |
+| `STRESS_ROUTER` | Acquisitions funded by a treasury through `ArbitrageRouter`; adds the front-run phases (A13/A14) |
+| `STRESS_PRIVATE` | Routes the bot's sends through a stand-in Flashbots Protect (`test/e2e/scripts/fake-relay.mjs`) and has it swallow one transaction. Asserts the nonce is fenced while the relay may still land it, and released once the horizon passes (A15) |
 | `E2E_STRESS_BLOCK_TIME` | Interval-mining block time in seconds (default `8`) — wide blocks are what let a backlog form |
 
 Assertions and timings are written to `.e2e-stress-report.json`; bot logs land in `/tmp/arb-bot.log`

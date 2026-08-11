@@ -425,3 +425,92 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
     expect(store.get(id)).toMatchObject({ status: "proposed", payload: { value: "5" } });
   });
 });
+
+// Everything in a schema is scoped to one account by assumption, never by column: the idempotency
+// key carries no signer, `reconcile()` returns every in-flight intent, and the nonce fence reads
+// them as one sequence. Two bots sharing a schema therefore resolve each other's transactions
+// against the wrong nonces — and collide outright on approvals, where the same token and spender
+// give two signers the same key. `PERSISTENCE_SCHEMA` defaults to `bot` for both services, so that
+// is one shared DATABASE_URL away. This makes it a boot failure instead.
+describe("bindExecutionIdentity", () => {
+  const A = { chainId: 1, address: "0xAaAa000000000000000000000000000000000001" as const };
+  const B = { chainId: 1, address: "0xbBbB000000000000000000000000000000000002" as const };
+
+  it("claims an unowned store", async () => {
+    const store = createMemoryStateStore();
+    await expect(store.bindExecutionIdentity(A)).resolves.toBeUndefined();
+  });
+
+  it("is idempotent for the owner, and case-insensitive about its address", async () => {
+    const store = createMemoryStateStore();
+    await store.bindExecutionIdentity(A);
+    await expect(store.bindExecutionIdentity(A)).resolves.toBeUndefined();
+    await expect(
+      store.bindExecutionIdentity({ ...A, address: A.address.toLowerCase() as typeof A.address })
+    ).resolves.toBeUndefined();
+  });
+
+  it("refuses a second signer", async () => {
+    const store = createMemoryStateStore();
+    await store.bindExecutionIdentity(A);
+    await expect(store.bindExecutionIdentity(B)).rejects.toThrow(
+      /one store belongs to one account/
+    );
+  });
+
+  // Same address, different chain is still a different execution identity: nonces are per chain.
+  it("refuses the same address on another chain", async () => {
+    const store = createMemoryStateStore();
+    await store.bindExecutionIdentity(A);
+    await expect(store.bindExecutionIdentity({ ...A, chainId: 8453 })).rejects.toThrow(/bound to/);
+  });
+});
+
+// Intent ids are reused: a terminal row is revived by the next `recordIntent` for the same subject.
+// So a writer that finished with attempt 1 — a receipt arriving after reconcile already resolved it
+// — can find attempt 2 sitting under the same id. Without a guard it stamps the old verdict on the
+// new transaction. The rule: chain evidence may correct our reading of the transaction it is about,
+// and must never touch a different one.
+describe("transition — bound to the row the caller observed", () => {
+  const input: IntentInput = {
+    chainId: 1,
+    target: "0x2222222222222222222222222222222222222222",
+    action: "liquidation",
+    subject: "pos-1",
+  };
+
+  const seed = async () => {
+    const store = createMemoryStateStore();
+    const { id } = (await store.recordIntent(input)) as { id: string };
+    await store.transition(id, "submitted", { nonce: 1, txHash: "0xaaa" });
+    return { store, id };
+  };
+
+  it("applies when the row still carries the observed hash", async () => {
+    const { store, id } = await seed();
+    await expect(store.transition(id, "confirmed", {}, { txHash: "0xaaa" })).resolves.toBe(true);
+    expect(store.get(id)?.status).toBe("confirmed");
+  });
+
+  it("refuses to stamp a later attempt that reused the id", async () => {
+    const { store, id } = await seed();
+    // Attempt 1 ends; the subject is revived and attempt 2 broadcasts a different transaction.
+    await store.transition(id, "failed", { error: "not accepted" });
+    await store.recordIntent(input);
+    await store.transition(id, "submitted", { nonce: 2, txHash: "0xbbb" });
+
+    // A receipt for attempt 1 arrives late.
+    await expect(store.transition(id, "confirmed", {}, { txHash: "0xaaa" })).resolves.toBe(false);
+    expect(store.get(id)).toMatchObject({ status: "submitted", txHash: "0xbbb" });
+  });
+
+  it("refuses when the row has moved on from the status the caller saw", async () => {
+    const { store, id } = await seed();
+    await store.transition(id, "confirmed", {});
+
+    await expect(
+      store.transition(id, "failed", { error: "stale" }, { status: ["submitted"] })
+    ).resolves.toBe(false);
+    expect(store.get(id)?.status).toBe("confirmed");
+  });
+});

@@ -4,7 +4,7 @@ import { type MemoryStateStore, type StateStore, createMemoryStateStore } from "
 import { createRiskGate } from "@repo/risk";
 import { TransactionReceiptNotFoundError } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAutoExecutorFromWallet } from "../shared/executor";
+import { createAutoExecutorWithSender } from "../shared/executorTestKit";
 import { createIndexerClient } from "../shared/indexerClient";
 import { ArbitrageEngine, type ArbitrageEngineConfig } from "./engine";
 import type { EscrowedVault } from "./types";
@@ -130,7 +130,7 @@ const passthroughNonces = (): NonceAllocator => ({
   resync: async () => {},
 });
 
-type AutoDeps = Parameters<typeof createAutoExecutorFromWallet>[0];
+type AutoDeps = Parameters<typeof createAutoExecutorWithSender>[0];
 
 /**
  * Build the engine with a default AUTO executor over the mock wallet + sender (the composition the
@@ -163,7 +163,7 @@ function createBot(
     logger: silentLogger,
     executor:
       executor ??
-      createAutoExecutorFromWallet({
+      createAutoExecutorWithSender({
         store,
         nonces: nonces ?? passthroughNonces(),
         sender: clients.sender as unknown as AutoDeps["sender"],
@@ -315,9 +315,14 @@ describe("ArbitrageEngine", () => {
 
       await bot.acquireVault(mockVault);
 
-      // Approval still goes through writeContract; the swap goes through the TxSender.
-      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
-      expect(clients.sender.send).toHaveBeenCalledOnce();
+      // Both the approval and the swap go through the TxSender, so one submission policy covers
+      // every transaction the signer sends.
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function)
+      );
+      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
     });
 
     it("approves when allowance covers debt but not slippage-adjusted maxWbtcIn", async () => {
@@ -352,9 +357,12 @@ describe("ArbitrageEngine", () => {
       const bot = createBot(clients, { maxSlippageBps: 100 });
       await bot.acquireVault(mockVault);
 
-      // Should still approve because swap uses maxWbtcIn, not currentDebt
-      expect(clients.walletClient.writeContract).toHaveBeenCalledOnce();
-      expect(clients.sender.send).toHaveBeenCalledOnce();
+      // Should still approve because swap uses maxWbtcIn, not currentDebt — approval + swap.
+      expect(clients.sender.send).toHaveBeenCalledTimes(2);
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function)
+      );
     });
 
     it("uses debt as maxWbtcIn when slippage floor division rounds to zero", async () => {

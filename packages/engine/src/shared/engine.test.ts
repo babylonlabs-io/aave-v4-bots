@@ -80,14 +80,15 @@ describe("BaseEngine", () => {
     expect(onPollComplete).toHaveBeenCalledOnce();
   });
 
-  // The action is part of the persisted idempotency key, so sweeping by the wrong one silently
-  // leaves every in-flight intent unresolved rather than failing.
-  it("sweeps by the engine's own intent action, not its display name", async () => {
+  // Reconcile is unscoped: an intent belongs to the signer, not to the engine that created it. The
+  // engine used to name its own action here, which stranded any action no engine owns — `approval`
+  // — leaving it live forever and making every later `ensureAllowance` a duplicate.
+  it("sweeps every in-flight intent, not just its own action's", async () => {
     const { engine, reconciled } = harness();
 
     await engine.run();
 
-    expect(reconciled).toEqual(["test-action"]);
+    expect(reconciled).toEqual([undefined]);
   });
 
   it("skips everything but the bookkeeping when the gate is HALTED", async () => {

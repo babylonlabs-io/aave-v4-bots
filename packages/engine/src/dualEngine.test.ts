@@ -6,7 +6,7 @@ import { ArbitrageEngine } from "./arbitrage/engine";
 import type { EscrowedVault } from "./arbitrage/types";
 import { LiquidationEngine } from "./liquidation/engine";
 import type { LiquidatablePosition } from "./liquidation/types";
-import { createAutoExecutorFromWallet } from "./shared/executor";
+import { createAutoExecutorWithSender } from "./shared/executorTestKit";
 import { createIndexerClient } from "./shared/indexerClient";
 
 /**
@@ -27,7 +27,7 @@ const INDEXER_STUB = {
 //   2. one `RiskGate`: halting it stops both engines, and a breaker tripped by one stops the
 //      other — a gate per engine would leave the other trading through a halt.
 
-type AutoDeps = Parameters<typeof createAutoExecutorFromWallet>[0];
+type AutoDeps = Parameters<typeof createAutoExecutorWithSender>[0];
 
 const silentLogger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const SIGNER = "0xshared" as `0x${string}`;
@@ -136,7 +136,7 @@ function setup(
 
   // ONE executor for both engines — the one nonce authority lives inside it, exactly as the
   // arbitrageur composition root builds it. This is what makes their concurrent sends never collide.
-  const executor = createAutoExecutorFromWallet({
+  const executor = createAutoExecutorWithSender({
     nonces,
     sender: sender as unknown as AutoDeps["sender"],
     publicClient: publicClient as unknown as AutoDeps["publicClient"],

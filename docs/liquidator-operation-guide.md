@@ -397,7 +397,7 @@ METRICS_PORT=9090
 | `SIGNER_ADDRESS` | Expected KMS signer address; boot fails on mismatch | No | — |
 | `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
 | `DATABASE_URL` | Enables Postgres StateStore for intent idempotency and reconcile-on-boot | MANUAL only | — |
-| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables, separate from Ponder | No | `bot` |
+| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables, separate from Ponder. **One schema per signer** — a schema is claimed by the first execution identity to use it and a second one fails at boot, because intents in it are keyed and reconciled as a single account. Running both services against one `DATABASE_URL` therefore needs a distinct value here for each. | No | `bot` |
 | `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
 | `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
@@ -437,7 +437,16 @@ pnpm --filter @services/operator-cli operator-cli broadcast <id>
 pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
 ```
 
-### 5.5. Contract Addresses
+### 5.5. MEV protection (private submission)
+
+Identical to the arbitrageur's, and configured with the same variables —
+`SUBMITTER`, `FLASHBOTS_PROTECT_URL`, `PRIVATE_MIN_PRIORITY_FEE_WEI`,
+`PRIVATE_RECLAIM_AFTER_MS`. Liquidation is the more contested path of the two, so
+the reach-versus-protection trade-off matters more here, not less: read
+[§5.5 of the arbitrageur guide](arbitrageur-operation-guide.md#55-mev-protection-private-submission)
+before enabling it, including what a stuck private nonce looks like.
+
+### 5.6. Contract Addresses
 
 Testnet contract addresses are provided as part of the onboarding requirements.
 
@@ -592,6 +601,8 @@ listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
 | Metric | Type | Description |
 |--------|------|-------------|
 | `eth_rpc_calls_total` | Counter | Outbound JSON-RPC attempts by `method` (retries counted separately) |
+| `submitter_send_total` | Counter | Broadcast attempts by `result` (`accepted`/`rejected`/`ambiguous`) — private submission only; see §5.5 |
+| `relay_tx_status_total` | Counter | Relay status by `status`, plus `sim_error` (our tx is unviable) and `probe_error` (relay unreachable) |
 | `liquidator_positions_checked` | Gauge | Positions checked in last poll |
 | `liquidator_positions_liquidatable` | Gauge | Liquidatable positions found |
 | `liquidator_liquidations_total` | Counter | Successful liquidations |

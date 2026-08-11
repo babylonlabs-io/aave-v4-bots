@@ -1,6 +1,5 @@
-import { maxUint256 } from "viem";
 import { describe, expect, it, vi } from "vitest";
-import { TokenMetaCache, approveMax, readAllowance, readBalance, readTokenMeta } from "./tokens";
+import { TokenMetaCache, readAllowance, readBalance, readTokenMeta } from "./tokens";
 
 const TOKEN = "0xtoken" as `0x${string}`;
 const OTHER = "0xother" as `0x${string}`;
@@ -8,7 +7,6 @@ const OWNER = "0xowner" as `0x${string}`;
 const SPENDER = "0xspender" as `0x${string}`;
 
 type PublicClientArg = Parameters<typeof readBalance>[0];
-type WalletArg = Parameters<typeof approveMax>[0];
 
 function mockPublicClient() {
   return {
@@ -81,16 +79,6 @@ describe("token reads", () => {
     expect(allowance).toBe(500n);
     expect(client.readContract).toHaveBeenCalledWith(
       expect.objectContaining({ functionName: "allowance", args: [OWNER, SPENDER] })
-    );
-  });
-
-  it("approveMax approves spender for maxUint256 and returns the hash", async () => {
-    const wallet = { writeContract: vi.fn().mockResolvedValue("0xhash") };
-    const hash = await approveMax(wallet as unknown as WalletArg, TOKEN, SPENDER);
-
-    expect(hash).toBe("0xhash");
-    expect(wallet.writeContract).toHaveBeenCalledWith(
-      expect.objectContaining({ functionName: "approve", args: [SPENDER, maxUint256] })
     );
   });
 });

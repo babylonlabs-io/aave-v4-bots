@@ -56,10 +56,14 @@ else
   pass "A3 sequence drained (no gap holding the queue; max recorded ${max_used} <= mined ${latest})"
 fi
 
-# ── A5: idempotency — one successful effect per subject ──────────────────────
-multi="$(sql "SELECT COUNT(*) FROM (SELECT subject FROM bot.tx_intents WHERE status='confirmed' GROUP BY subject HAVING COUNT(*) > 1) d;")"
-if [[ "${multi:-1}" == "0" ]]; then pass "A5 one confirmed intent per subject (no double-execute)"
-else flunk "A5 ${multi} subject(s) confirmed more than once"; fi
+# ── A5: idempotency — one successful effect per action identity ──────────────
+# Grouped by the same tuple `idempotencyKey` uses (`target, action, subject`), not by `subject`
+# alone. A bare subject is not an identity: an approval's subject is the *spender*, so approving two
+# different tokens for one spender is two legitimate effects that share it. Grouping by subject read
+# that as a double-execute.
+multi="$(sql "SELECT COUNT(*) FROM (SELECT target, action, subject FROM bot.tx_intents WHERE status='confirmed' GROUP BY target, action, subject HAVING COUNT(*) > 1) d;")"
+if [[ "${multi:-1}" == "0" ]]; then pass "A5 one confirmed intent per action identity (no double-execute)"
+else flunk "A5 ${multi} action identity/identities confirmed more than once"; fi
 
 # ── A4: both waves completed ─────────────────────────────────────────────────
 # `confirmed` is written from a receipt, so these counts are chain-derived rather than the bot's
@@ -171,6 +175,24 @@ if [[ -f .e2e-stress-report.json ]]; then
       fi
       ;;
     *) printf "[SKIP] A13 no authorization was front-run (%s)\n" "$frontrun" ;;
+  esac
+fi
+
+# ── A15: a privately-submitted tx the relay dropped neither reuses its nonce nor stalls ──
+# The two failure modes private submission introduces, and they pull opposite ways. Reusing the
+# nonce early signs over a transaction the relay may still land; never releasing it leaves every
+# later transaction unmineable behind the gap. The drive phase asserts the first inline (it can
+# only be observed while the horizon is open); this records the second, which is the one that
+# would otherwise look like a healthy-but-idle bot.
+if [[ -f .e2e-stress-report.json ]]; then
+  priv="$(jq -r '.privateResult // "skipped"' .e2e-stress-report.json)"
+  priv_nonce="$(jq -r '.privateNonce // "?"' .e2e-stress-report.json)"
+  case "$priv" in
+    recovered)
+      pass "A15 signer recovered after the relay dropped a transaction (nonce ${priv_nonce})" ;;
+    stalled)
+      flunk "A15 the signer never landed another transaction after the reclaim horizon — every later send is queued behind dropped nonce ${priv_nonce}" ;;
+    *) printf "[SKIP] A15 private submission not exercised (%s)\n" "$priv" ;;
   esac
 fi
 

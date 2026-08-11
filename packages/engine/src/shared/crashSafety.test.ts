@@ -1,11 +1,21 @@
-import { type NonceAllocator, createNonceAllocator, createNonceLease } from "@repo/execution";
+import {
+  type NonceAllocator,
+  type RelayTxStatus,
+  createNonceAllocator,
+  createNonceLease,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { createMemoryStateStore, idempotencyKey } from "@repo/persistence";
 import { type Address, type Hex, type PublicClient, TransactionNotFoundError } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import { type CrashSafetyConfig, createCrashSafety } from "./crashSafety";
-import { UNKNOWN_TX_GRACE_MS } from "./reconcile";
+import {
+  type ChainReader,
+  UNKNOWN_TX_GRACE_MS,
+  createChainReader,
+  createRelayAwareReader,
+} from "./liveness";
 
 const SIGNER = "0x1111111111111111111111111111111111111111" as Address;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
@@ -29,7 +39,7 @@ const allocator = (nonce: number): NonceAllocator => ({
 
 const crash = (over: Partial<CrashSafetyConfig> = {}) =>
   createCrashSafety({
-    publicClient,
+    reader: createChainReader(publicClient),
     signer: SIGNER,
     logger: silentLogger,
     nonces: allocator(0),
@@ -107,7 +117,7 @@ describe("createCrashSafety", () => {
 
   describe("reconcile / resyncNonces", () => {
     it("reconcile no-ops without a store", async () => {
-      await expect(crash().reconcile("liquidation")).resolves.toBeUndefined();
+      await expect(crash().reconcile()).resolves.toBeUndefined();
     });
 
     it("resyncNonces re-seeds the allocator from the chain's pending count", async () => {
@@ -160,7 +170,7 @@ describe("createCrashSafety", () => {
       const cs = createCrashSafety({
         store,
         nonces,
-        publicClient: args.publicClient,
+        reader: createChainReader(args.publicClient),
         signer: SIGNER,
         logger: silentLogger,
         now: () => Date.now() + ageMs,
@@ -254,5 +264,213 @@ describe("createCrashSafety", () => {
         "ECONNREFUSED"
       );
     });
+  });
+});
+
+// Private submission removes the assumption the fence above rests on: that a transaction we sent is
+// one our own node can see. It cannot see a privately-submitted one — by design — so `isKnown` says
+// no and `pending` omits it, and BOTH of the tests above would reach the wrong conclusion.
+//
+// These two must fail if `createCrashSafety` ever stops taking a reader, which is the whole point of
+// the seam: the second one is the acute failure, because it does not merely reuse a nonce, it lets
+// the engine re-drive a liquidation that is still live at the relay.
+describe("resyncNonces — private submission, where the node cannot see our tx", () => {
+  const blindChain = (pending: number) =>
+    ({
+      getTransactionCount: vi.fn(async () => pending),
+      // Never knows the hash: that is what "private" means.
+      getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => {
+        throw new TransactionNotFoundError({ hash });
+      }),
+    }) as unknown as PublicClient;
+
+  const relayReader = (status: RelayTxStatus["status"] | "throw") =>
+    createRelayAwareReader(
+      createChainReader(blindChain(5)),
+      {
+        status: async () => {
+          if (status === "throw") throw new Error("flashbots status failed: HTTP 503");
+          return { status, maxBlockNumber: 0, isRevert: false, seenInMempool: false };
+        },
+      },
+      silentLogger
+    );
+
+  async function nextNonceWithReader(reader: ChainReader, ageMs?: number, maxFenceMs?: number) {
+    const store = createMemoryStateStore();
+    const intent = { ...input("pos-1"), action: "liquidation" };
+    await store.recordIntent(intent);
+    await store.transition(idempotencyKey(intent), "submitted", { nonce: 5, txHash: HASH });
+
+    const nonces = createNonceAllocator(createNonceLease(), SIGNER);
+    const cs = createCrashSafety({
+      store,
+      nonces,
+      signer: SIGNER,
+      logger: silentLogger,
+      reader,
+      maxFenceMs,
+      now: () => Date.now() + (ageMs ?? UNKNOWN_TX_GRACE_MS + 1),
+    });
+    await cs.resyncNonces();
+    return nonces.withNonce(async (n) => n);
+  }
+
+  it("fences the nonce of a tx the relay is still holding", async () => {
+    // public pending = 5, node isKnown = false, relay = PENDING, our intent holds nonce 5.
+    // Without the relay-aware reader this rewinds to 5 and signs over a live liquidation.
+    expect(await nextNonceWithReader(relayReader("PENDING"))).toBe(6);
+  });
+
+  it("fences it when the relay itself is unreachable, rather than assuming it is gone", async () => {
+    // §4.6: a Flashbots outage must cost throughput, never nonce safety.
+    expect(await nextNonceWithReader(relayReader("throw"))).toBe(6);
+  });
+
+  // Narrow but real: the relay knows a transaction is in a block before our RPC serves that block,
+  // so `INCLUDED` can arrive while `isKnown` is still no. Reclaiming there would hand out a nonce
+  // that a landed transaction already spent — the next send would die on `nonce too low`, which the
+  // send path treats as ambiguous and the engines count as a genuine failure.
+  it("fences a tx the relay reports INCLUDED before our node has the block", async () => {
+    expect(await nextNonceWithReader(relayReader("INCLUDED"))).toBe(6);
+  });
+
+  // A terminal status does NOT release the nonce. `UNKNOWN` cannot be told apart from "the relay
+  // forgot this hash", so letting any status free a nonce would put a third party's field in charge
+  // of whether we sign over a live transaction.
+  it("keeps fencing even when the relay reports the tx FAILED", async () => {
+    expect(await nextNonceWithReader(relayReader("FAILED"), undefined, 420_000)).toBe(6);
+  });
+
+  // …and this is what releases it instead: a clock that always advances, set past the relay's own
+  // retry horizon. Without it the reader — which fails closed by design — would fence forever, and
+  // every later send would queue behind the gap. That is the stall this bound exists to prevent.
+  it("releases the nonce once the fence bound has elapsed, whatever the relay says", async () => {
+    expect(await nextNonceWithReader(relayReader("PENDING"), 420_001, 420_000)).toBe(5);
+  });
+
+  it("does not release one second early", async () => {
+    expect(await nextNonceWithReader(relayReader("PENDING"), 419_999, 420_000)).toBe(6);
+  });
+
+  // Public submission keeps its old behaviour exactly: no bound at all. A public transaction can sit
+  // in a node's pool indefinitely, so age says nothing about whether it can still be mined — only
+  // the node does. Applying the private bound here would start reclaiming nonces out from under live
+  // public transactions, which is why it is opt-in rather than a default.
+  it("leaves a known public tx fenced no matter how old", async () => {
+    const knowing = {
+      getTransactionCount: vi.fn(async () => 5),
+      getTransaction: vi.fn(async () => ({ hash: HASH })),
+    } as unknown as PublicClient;
+    expect(await nextNonceWithReader(createChainReader(knowing), 10_000_000)).toBe(6);
+  });
+});
+
+// The two age bounds are opposite ends of one window, and inverting them empties the middle: the
+// reader would never be consulted, so private mode would stop asking the relay entirely and release
+// nonces after the 30s grace rather than its configured horizon. Silent and much too fast.
+describe("the fence's two bounds must not cross", () => {
+  const build = (maxFenceMs: number, graceMs?: number) =>
+    createCrashSafety({
+      nonces: allocator(0),
+      reader: createChainReader(publicClient),
+      signer: SIGNER,
+      logger: silentLogger,
+      maxFenceMs,
+      graceMs,
+    });
+
+  it("refuses a bound at or below the grace window", () => {
+    expect(() => build(UNKNOWN_TX_GRACE_MS)).toThrow(/must exceed the unknown-tx grace window/);
+    expect(() => build(UNKNOWN_TX_GRACE_MS - 1)).toThrow(/must exceed/);
+  });
+
+  it("accounts for an overridden grace window, not just the default", () => {
+    expect(() => build(60_000, 60_000)).toThrow(/must exceed/);
+    expect(() => build(60_001, 60_000)).not.toThrow();
+  });
+});
+
+// Releasing a dead nonce from the fence stops it *raising* the floor, but the lease is a
+// monotonic counter and never comes back down to it — so the hole has to be handed out explicitly.
+// Public submission hides this: a mempool evicts a dropped transaction's dependents, the floor
+// collapses on its own, and the next send fills the gap. A privately-submitted transaction was never
+// in a mempool, so nothing cascades and the hole is permanent.
+describe("resyncNonces — reissuing a nonce hole", () => {
+  /** A chain whose pending count stops at the gap (verified anvil behaviour) and knows `known`. */
+  const gappedChain = (pending: number, known: Hex[]) =>
+    ({
+      getTransactionCount: vi.fn(async () => pending),
+      getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => {
+        if (!known.includes(hash)) throw new TransactionNotFoundError({ hash });
+        return { hash };
+      }),
+    }) as unknown as PublicClient;
+
+  /** Seed intents at `nonces`, resync, and report the nonce the next send actually gets. */
+  async function nextNonceWithIntents(args: {
+    intents: Array<{ nonce: number; hash: Hex; ageMs?: number }>;
+    publicClient: PublicClient;
+    maxFenceMs?: number;
+  }) {
+    const store = createMemoryStateStore();
+    for (const [i, it] of args.intents.entries()) {
+      const intent = { ...input(`pos-${i}`) };
+      await store.recordIntent(intent);
+      await store.transition(idempotencyKey(intent), "submitted", {
+        nonce: it.nonce,
+        txHash: it.hash,
+      });
+    }
+    const nonces = createNonceAllocator(createNonceLease(), SIGNER);
+    const cs = createCrashSafety({
+      store,
+      nonces,
+      reader: createChainReader(args.publicClient),
+      signer: SIGNER,
+      logger: silentLogger,
+      maxFenceMs: args.maxFenceMs,
+      now: () => Date.now() + UNKNOWN_TX_GRACE_MS + 1,
+    });
+    await cs.resyncNonces();
+    return nonces.withNonce(async (n) => n);
+  }
+
+  const H7 = "0xh7" as Hex;
+  const H8 = "0xh8" as Hex;
+
+  it("hands out the hole rather than piling further transactions behind it", async () => {
+    // Nonce 6 was dropped (the node never knew it); 7 and 8 were forwarded and are queued, so the
+    // chain's pending count stops at 6 while the fence floor sits at 9.
+    const next = await nextNonceWithIntents({
+      intents: [
+        { nonce: 6, hash: HASH },
+        { nonce: 7, hash: H7 },
+        { nonce: 8, hash: H8 },
+      ],
+      publicClient: gappedChain(6, [H7, H8]),
+    });
+    expect(next).toBe(6);
+  });
+
+  // The invariant that separates reissuing a dead hole from simply capping the lease at the chain's
+  // count: while the transaction at the hole may still land, its nonce must stay untouchable.
+  it("does NOT hand out the hole while a live transaction still holds it", async () => {
+    const next = await nextNonceWithIntents({
+      intents: [
+        { nonce: 6, hash: HASH },
+        { nonce: 7, hash: H7 },
+      ],
+      publicClient: gappedChain(6, [HASH, H7]), // the node still knows 6 — it may yet mine
+    });
+    expect(next).toBe(8);
+  });
+
+  it("reports no hole when the chain has already caught up", async () => {
+    const next = await nextNonceWithIntents({
+      intents: [{ nonce: 6, hash: HASH }],
+      publicClient: gappedChain(7, [HASH]), // 6 mined; pending is past it
+    });
+    expect(next).toBe(7);
   });
 });

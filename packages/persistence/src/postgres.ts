@@ -11,7 +11,6 @@ import {
   type SafeEnvelope,
   type StateStore,
   TERMINAL,
-  type TransitionMeta,
   type TxIntent,
 } from "./types";
 import { assertProposalChain, idempotencyKey } from "./utils";
@@ -98,6 +97,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
     throw new Error(`invalid persistence schema name: "${schema}"`);
   }
   const intents = `${schema}.tx_intents`;
+  const owner = `${schema}.execution_owner`;
 
   const client: PgClientLike =
     config.client ?? (new pg.Pool({ connectionString: config.connectionString }) as PgClientLike);
@@ -124,7 +124,13 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
            -- Additive migration for databases created before the MANUAL proposal columns existed.
            ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload JSONB;
            ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload_hash TEXT;
-           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS safe_envelope JSONB;`;
+           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS safe_envelope JSONB;
+           CREATE TABLE IF NOT EXISTS ${owner} (
+             lock BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (lock),
+             chain_id BIGINT NOT NULL,
+             address TEXT NOT NULL,
+             bound_at BIGINT NOT NULL
+           );`;
 
   // `CREATE ... IF NOT EXISTS` is NOT concurrency-safe in Postgres: two backends running it at once
   // (e.g. this bot and another process sharing the database, or two engines on first boot) can each
@@ -317,27 +323,59 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       return res.rowCount ?? 0;
     },
 
-    async transition(id: string, to: IntentStatus, meta?: TransitionMeta) {
+    async transition(id, to, meta, expect) {
       await ensureReady();
-      await client.query(
+      const res = await client.query(
         `UPDATE ${intents} SET
            status = $2,
            nonce = COALESCE($3, nonce),
            tx_hash = COALESCE($4, tx_hash),
            error = COALESCE($5, error),
            updated_at = $6
-         WHERE id = $1`,
-        [id, to, meta?.nonce ?? null, meta?.txHash ?? null, meta?.error ?? null, Date.now()]
+         WHERE id = $1
+           AND ($7::text IS NULL OR tx_hash = $7)
+           AND ($8::text[] IS NULL OR status = ANY($8))`,
+        [
+          id,
+          to,
+          meta?.nonce ?? null,
+          meta?.txHash ?? null,
+          meta?.error ?? null,
+          Date.now(),
+          expect?.txHash ?? null,
+          expect?.status ? [...expect.status] : null,
+        ]
       );
+      return (res.rowCount ?? 0) > 0;
     },
 
-    async reconcile(action?: string) {
+    async bindExecutionIdentity({ chainId, address }) {
+      await ensureReady();
+      // Claim-or-read in one statement: `DO NOTHING` leaves an existing owner untouched, and the
+      // follow-up read tells us whether it is us. A check-then-write would race two bots starting
+      // together — the exact situation this guards.
+      await client.query(
+        `INSERT INTO ${owner} (lock, chain_id, address, bound_at)
+         VALUES (TRUE, $1, $2, $3) ON CONFLICT (lock) DO NOTHING`,
+        [chainId, address.toLowerCase(), Date.now()]
+      );
+      const res = await client.query<{ chain_id: string; address: string }>(
+        `SELECT chain_id, address FROM ${owner} WHERE lock`
+      );
+      const held = res.rows[0];
+      if (held && (Number(held.chain_id) !== chainId || held.address !== address.toLowerCase())) {
+        throw new Error(
+          `persistence schema "${schema}" is bound to ${held.chain_id}:${held.address}, but this process executes as ${chainId}:${address.toLowerCase()}. Intents in one schema are keyed and reconciled as a single account, so sharing it across signers resolves each other's transactions against the wrong nonces. Give this service its own PERSISTENCE_SCHEMA (or its own DATABASE_URL).`
+        );
+      }
+    },
+
+    async reconcile() {
       await ensureReady();
       const res = await client.query<IntentRow>(
         `SELECT ${INTENT_COLUMNS} FROM ${intents}
-         WHERE status IN (${IN_FLIGHT_SQL}) AND ($1::text IS NULL OR action = $1)
-         ORDER BY created_at ASC`,
-        [action ?? null]
+         WHERE status IN (${IN_FLIGHT_SQL})
+         ORDER BY created_at ASC`
       );
       return res.rows.map(mapIntent);
     },

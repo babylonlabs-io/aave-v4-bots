@@ -3,14 +3,14 @@ import { privateKeyToAccount } from "viem/accounts";
 import { type AwsSignerConfig, type KmsSend, createAwsSigner } from "./aws";
 import type { Signer } from "./types";
 
-// `@repo/signer` public surface: the `Signer` port (`./types`), the `./local` adapter +
-// selectors below, the `./aws` KMS adapter, and the broadcast `Submitter` seam. See `./types`
-// for how the port is modelled.
+// `@repo/signer` public surface: the `Signer` port (`./types`), the `./local` adapter + the
+// selectors below, and the `./aws` KMS adapter. See `./types` for how the port is modelled.
+//
+// Scope is **key custody only** — who holds the key and how signing happens. Where the signed
+// bytes then go is `@repo/execution`'s `Submitter` seam, which lives beside the `createTxSender`
+// that gives it meaning.
 //
 // Local sends stay on viem's machinery (do not re-implement assemble→sign→broadcast).
-// The explicit `signTransaction` → `Submitter.send` split (sign once, choose the broadcast
-// path) ships below as a seam but is only wired onto the hot path once a non-default (e.g.
-// private-relay) `Submitter` actually needs it.
 
 export type { Signer } from "./types";
 
@@ -127,30 +127,4 @@ export async function resolveSigner(
     return createSigner({ source: "local", privateKey: await resolveRef(config.keyRef) });
   }
   return createSigner(config);
-}
-
-// ── Broadcast seam ───────────────────────────────────────────────────────────────
-
-/** Where/how a signed tx is broadcast. Extended later (private relay vs public). */
-export interface SubmitPolicy {
-  readonly relay?: "public";
-}
-
-export interface Submitter {
-  /** Broadcast a serialized signed tx; returns the tx hash. */
-  send(serializedTransaction: Hex, policy?: SubmitPolicy): Promise<Hex>;
-}
-
-/** Minimal structural view of the viem `PublicClient` broadcast method. */
-export interface RawTxBroadcaster {
-  sendRawTransaction(args: { serializedTransaction: Hex }): Promise<Hex>;
-}
-
-/** `./public` — broadcast via the node's public mempool (today's behavior). */
-export function createPublicSubmitter(client: RawTxBroadcaster): Submitter {
-  return {
-    send(serializedTransaction) {
-      return client.sendRawTransaction({ serializedTransaction });
-    },
-  };
 }

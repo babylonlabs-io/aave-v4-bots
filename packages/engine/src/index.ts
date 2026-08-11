@@ -37,9 +37,19 @@ export {
   type CommitResult,
   type Executor,
   type ManualExecutor,
+  type Submission,
   createAutoExecutorFromWallet,
   createManualExecutor,
 } from "./shared/executor";
+// Liveness for privately-submitted transactions. Exported because the composition root is where the
+// submission choice is made, and this reader has to be built from the same decision — wiring the
+// submitter without it is what turns MEV protection into nonce reuse.
+export {
+  type ChainReader,
+  type RelayStatusSource,
+  createChainReader,
+  createRelayAwareReader,
+} from "./shared/liveness";
 // The funding seam's *configuration* surface — what a composition root supplies to pick a mode and
 // describe its venues. The strategies themselves, the factory that chooses between them, and the
 // per-candidate plumbing stay inside the package: the engine owns which strategy it runs, and

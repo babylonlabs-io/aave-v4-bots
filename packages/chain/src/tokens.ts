@@ -1,14 +1,5 @@
 import { erc20Abi } from "@repo/abis";
-import {
-  type Account,
-  type Address,
-  type Chain,
-  type Hex,
-  type PublicClient,
-  type Transport,
-  type WalletClient,
-  maxUint256,
-} from "viem";
+import type { Address, PublicClient } from "viem";
 
 // ERC-20 balance / allowance / approval primitives — the leaf reads and writes behind the bots'
 // inventory + approval logic. They are deliberately bare: retry belongs to the transport (see
@@ -64,25 +55,5 @@ export function readAllowance(
     abi: erc20Abi,
     functionName: "allowance",
     args: [owner, spender],
-  });
-}
-
-/**
- * Approve `spender` for the max uint256 amount of `token`. Returns the tx hash. Pass an
- * explicit `nonce` when the send must go through the shared nonce authority (auto-nonce
- * otherwise).
- */
-export function approveMax(
-  wallet: WalletClient<Transport, Chain, Account>,
-  token: Address,
-  spender: Address,
-  nonce?: number
-): Promise<Hex> {
-  return wallet.writeContract({
-    address: token,
-    abi: erc20Abi,
-    functionName: "approve",
-    args: [spender, maxUint256],
-    ...(nonce !== undefined ? { nonce } : {}),
   });
 }

@@ -141,7 +141,7 @@ export abstract class BaseEngine<M extends CycleMetrics> {
    * Public because services also run it once at boot, before the first cycle.
    */
   async reconcile(): Promise<void> {
-    await this.executor.reconcile(this.intentAction);
+    await this.executor.reconcile();
   }
 
   /**

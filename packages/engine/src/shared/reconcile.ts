@@ -1,6 +1,3 @@
-import { safeAbi } from "@repo/abis";
-import { getNonce, getReceiptStatus, isTxKnown } from "@repo/chain";
-import type { Logger } from "@repo/logger";
 import type {
   IntentStatus,
   SafeEnvelope,
@@ -8,130 +5,31 @@ import type {
   TransitionMeta,
   TxIntent,
 } from "@repo/persistence";
-import { type Address, type Hex, type PublicClient, parseEventLogs } from "viem";
+import type { Address, Hex } from "viem";
 
-/**
- * How a `safe`-custody intent's `execTransaction` resolved:
- * - `success` / `failure` — the Safe's matching `Execution{Success,Failure}` event decided it;
- * - `reverted` — the receipt exists but the outer `execTransaction` itself reverted (status 0);
- * - `no-event` — receipt exists, status 1, but no matching Safe event (anomalous);
- * - `null` — no receipt yet.
- */
-export type SafeExecutionOutcome = "success" | "failure" | "reverted" | "no-event" | null;
+import type { Logger } from "@repo/logger";
+import {
+  type ChainReader,
+  type LivenessCheck,
+  UNKNOWN_TX_GRACE_MS,
+  couldBeInFlight,
+} from "./liveness";
 
+// Boot/cycle reconcile: resolve persisted in-flight intents against the chain before the engine
+// re-drives anything. The liveness question it leans on lives in `./liveness`, shared with the
+// nonce fence so the two can never disagree about whether a transaction is still out there.
+//
 // Reconciliation is **orchestration**, not storage: it reads in-flight intents from the
 // `StateStore`, asks the chain what became of them, and writes the resolution back. It spans two
 // seams, so it belongs to the engine that coordinates them — `persistence` owns the `StateStore`
 // port and nothing more, and `chain` owns the queries. Neither has to know the other exists.
 
-/**
- * The chain reads `reconcilePending` needs, declared by the consumer that needs them.
- *
- * A port, not a `PublicClient`, so the algorithm can be exercised against a scripted chain and so
- * a future non-viem source (an RPC pool, an indexer, a replay harness) can satisfy it without
- * touching this file. `createChainReader` is the viem implementation; `@repo/chain` supplies the
- * raw queries and stays free of any interface declared on its callers' behalf.
- */
-export interface ChainReader {
-  /** Receipt status for `hash`, or `null` if the receipt is not found yet. */
-  getReceiptStatus(hash: Hex): Promise<"success" | "reverted" | null>;
-  /** Transaction count for `address` at `latest` (mined) or `pending` (mined + mempool). */
-  getNonce(address: Address, tag: "latest" | "pending"): Promise<number>;
-  /**
-   * Does the node know this tx at all (mempool **or** mined)? Senders record the hash before
-   * broadcasting, so a recorded hash proves only that we signed — this distinguishes "in flight"
-   * from "signed, but the node rejected the broadcast (e.g. insufficient funds)".
-   */
-  isKnown(hash: Hex): Promise<boolean>;
-  /**
-   * Resolve a Safe `execTransaction`: scan `txHash`'s receipt for `safeAddress`'s
-   * `Execution{Success,Failure}` event matching `safeTxHash`. See `SafeExecutionOutcome`. Used only
-   * for `safe`-custody intents (those carrying a `safeEnvelope`).
-   */
-  getSafeExecution(
-    txHash: Hex,
-    safeAddress: Address,
-    safeTxHash: Hex
-  ): Promise<SafeExecutionOutcome>;
-}
-
-/** Bind the `ChainReader` port to a viem `PublicClient`. */
-export function createChainReader(publicClient: PublicClient): ChainReader {
-  return {
-    getReceiptStatus: (hash) => getReceiptStatus(publicClient, hash),
-    getNonce: (address, tag) => getNonce(publicClient, address, tag),
-    isKnown: (hash) => isTxKnown(publicClient, hash),
-    async getSafeExecution(txHash, safeAddress, safeTxHash) {
-      // No receipt yet ⇒ not mined ⇒ still in flight. viem throws when the receipt is absent.
-      const receipt = await publicClient.getTransactionReceipt({ hash: txHash }).catch(() => null);
-      if (!receipt) return null;
-      // The outer execTransaction itself reverted — the SafeTx never ran, nothing is on chain.
-      if (receipt.status === "reverted") return "reverted";
-      // Match on BOTH the emitting Safe and the SafeTx hash: another contract in the same tx could
-      // carry a same-signature event with a coincident bytes32, and must never be mistaken for ours.
-      const events = parseEventLogs({
-        abi: safeAbi,
-        eventName: ["ExecutionSuccess", "ExecutionFailure"],
-        logs: receipt.logs,
-        strict: false,
-      });
-      const match = events.find(
-        (e) =>
-          e.address.toLowerCase() === safeAddress.toLowerCase() &&
-          e.args.txHash?.toLowerCase() === safeTxHash.toLowerCase()
-      );
-      if (!match) return "no-event";
-      return match.eventName === "ExecutionSuccess" ? "success" : "failure";
-    },
-  };
-}
-
+/** What one `reconcilePending` pass resolved. */
 export interface ReconcileSummary {
   examined: number;
   confirmed: number;
   failed: number;
   stillInFlight: number;
-}
-
-/**
- * How long after its pre-broadcast record a tx the node claims not to know is still treated as
- * possibly in flight.
- *
- * `isKnown` is only as truthful as the endpoint answering it. Behind a load-balanced RPC pool the
- * backend we ask may not be the backend we broadcast to, so a tx that really is on the wire can
- * read as unknown for as long as it takes to propagate. Acting on that immediately is what turns a
- * routing artifact into a double-submitted liquidation, so a `false` only counts once the tx has
- * had time to spread.
- *
- * The cost of the window is bounded and dull: a genuinely rejected broadcast is re-driven one grace
- * period later than it could have been.
- */
-export const UNKNOWN_TX_GRACE_MS = 30_000;
-
-/** The clock + tolerance `couldBeInFlight` judges against. */
-export interface LivenessCheck {
-  reader: ChainReader;
-  now: () => number;
-  /** Defaults to `UNKNOWN_TX_GRACE_MS`. */
-  graceMs?: number;
-}
-
-/**
- * Could this signed tx be on the wire right now? The question both `reconcilePending` and the nonce
- * fence must answer the same way — one decides whether to re-drive the action, the other whether to
- * hand its nonce to someone else, and disagreeing would mean re-driving an action whose nonce is
- * still reserved (or the reverse).
- *
- * A tx recorded within the grace window is taken as live without asking: too young for a "no" to
- * mean anything. Past that, the node's answer stands.
- */
-export async function couldBeInFlight(
-  check: LivenessCheck,
-  intent: { txHash: Hex; updatedAt: number }
-): Promise<boolean> {
-  const graceMs = check.graceMs ?? UNKNOWN_TX_GRACE_MS;
-  if (check.now() - intent.updatedAt < graceMs) return true;
-  return check.reader.isKnown(intent.txHash);
 }
 
 /**
@@ -157,6 +55,7 @@ const failedAs = (meta: TransitionMeta): Resolution => ({
   meta,
   bucket: "failed",
 });
+
 /** Genuinely in flight — leave the row as-is, just count it. */
 const stillInFlight: Resolution = { bucket: "stillInFlight" };
 
@@ -236,10 +135,25 @@ async function resolveBroadcastIntent(
  * Otherwise it was never broadcast → `failed`, safe to re-drive.
  */
 function resolveUnbroadcastIntent(
+  liveness: LivenessCheck,
   nonces: { latest: number; pending: number },
   intent: TxIntent
 ): Resolution {
   const { nonce } = intent;
+
+  // `pending` with neither nonce nor hash is an intent being signed right now: `recordIntent` writes
+  // it before `signContractCall`, and `markPending` fills both in only once signing returns. A
+  // *failed* send does not look like this — `commit` moves it to `submitted` first. Age separates it
+  // from a crash leftover; without the guard one engine marks another's in-progress claim `failed`
+  // and frees its subject mid-send.
+  if (
+    intent.status === "pending" &&
+    nonce === null &&
+    intent.txHash === null &&
+    liveness.now() - intent.updatedAt < (liveness.graceMs ?? UNKNOWN_TX_GRACE_MS)
+  ) {
+    return stillInFlight;
+  }
   if (nonce !== null && nonces.latest > nonce) {
     return failedAs({ error: "nonce mined without recorded hash" });
   }
@@ -265,18 +179,23 @@ export async function reconcilePending(args: {
   store: StateStore;
   reader: ChainReader;
   signer: Address;
-  /** Restrict to one action's intents (e.g. `"liquidation"`); omit for all. */
-  action?: string;
   logger?: Pick<Logger, "info" | "warn">;
   /** Injectable clock, for tests. */
   now?: () => number;
   /** How long an unknown-to-the-node tx stays presumed-live; defaults to `UNKNOWN_TX_GRACE_MS`. */
   graceMs?: number;
+  /**
+   * See `LivenessCheck.maxFenceMs`. Passed through so this and the nonce fence answer "could this
+   * still be on the wire?" the same way — the whole reason `couldBeInFlight` is shared. Without it
+   * a privately-submitted transaction past its horizon is released by the fence but still counted
+   * live here, so its intent never resolves and its subject stays blocked forever.
+   */
+  maxFenceMs?: number;
 }): Promise<ReconcileSummary> {
-  const { store, reader, signer, action, logger, graceMs } = args;
+  const { store, reader, signer, logger, graceMs, maxFenceMs } = args;
   const now = args.now ?? Date.now;
-  const liveness: LivenessCheck = { reader, now, graceMs };
-  const inflight = await store.reconcile(action);
+  const liveness: LivenessCheck = { reader, now, graceMs, maxFenceMs };
+  const inflight = await store.reconcile();
   const summary: ReconcileSummary = {
     examined: inflight.length,
     confirmed: 0,
@@ -305,9 +224,16 @@ export async function reconcilePending(args: {
       ? intent.safeEnvelope
         ? await resolveSafeIntent(reader, signer, intent, intent.txHash, intent.safeEnvelope)
         : await resolveBroadcastIntent(liveness, nonces, intent, intent.txHash)
-      : resolveUnbroadcastIntent(nonces, intent);
+      : resolveUnbroadcastIntent(liveness, nonces, intent);
 
-    if (resolution.status) await store.transition(intent.id, resolution.status, resolution.meta);
+    // Bound to the snapshot this pass read: the row may since have advanced, or been revived as a
+    // fresh attempt under the same id, and a stale resolution must not land on it.
+    if (resolution.status) {
+      await store.transition(intent.id, resolution.status, resolution.meta, {
+        status: [intent.status],
+        ...(intent.txHash ? { txHash: intent.txHash } : {}),
+      });
+    }
     if (resolution.warn) logger?.warn(resolution.warn);
     summary[resolution.bucket]++;
   }

@@ -5,6 +5,7 @@ import {
   PreBroadcastError,
   type ProposedTx,
   type SignedTx,
+  SubmitRejectedError,
   createNonceAllocator,
   createNonceLease,
   createTxSender,
@@ -360,6 +361,36 @@ describe("@repo/execution", () => {
         const error = await sender.send(CALL, async () => {}).catch((e) => e);
         expect(error).not.toBeInstanceOf(PreBroadcastError);
         expect(error.message).toBe("rpc timeout");
+      });
+
+      // A submitter that says outright "I never broadcast this" is believed, without any inspection
+      // of the error's text. That is what lets a second backend (the private relay) classify its own
+      // rejections instead of having `isInsufficientFunds` — which only understands viem-against-a-
+      // node — silently call every relay error ambiguous and march the breaker toward a halt.
+      it("types a submitter's own declared rejection as PreBroadcastError", async () => {
+        const { walletClient, publicClient } = txClients({});
+        const sender = createTxSender(
+          publicClient as unknown as PublicClientArg,
+          walletClient as unknown as WalletClientArg,
+          () => Promise.reject(new SubmitRejectedError("invalid transaction"))
+        );
+
+        await expect(sender.send(CALL, async () => {})).rejects.toBeInstanceOf(PreBroadcastError);
+      });
+
+      // The other half of the same contract: a submitter that does NOT declare it stays ambiguous,
+      // so an unrecognised relay failure can never free a nonce under a live transaction.
+      it("leaves an undeclared submitter failure ambiguous", async () => {
+        const { walletClient, publicClient } = txClients({});
+        const sender = createTxSender(
+          publicClient as unknown as PublicClientArg,
+          walletClient as unknown as WalletClientArg,
+          () => Promise.reject(new Error("flashbots submit failed: HTTP 502"))
+        );
+
+        const error = await sender.send(CALL, async () => {}).catch((e) => e);
+        expect(error).not.toBeInstanceOf(PreBroadcastError);
+        expect(error.message).toMatch(/HTTP 502/);
       });
 
       // A node that refuses the broadcast for insufficient funds queued nothing, so unlike the

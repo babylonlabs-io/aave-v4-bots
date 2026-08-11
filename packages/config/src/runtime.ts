@@ -3,7 +3,7 @@ import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { z } from "zod";
 
-import { addressSchema, nonNegativeIntSchema } from "./schemas";
+import { addressSchema, nonNegativeIntSchema, positiveIntSchema, urlSchema } from "./schemas";
 
 /** A 0x-prefixed address. `@repo/config` avoids a `viem` dependency, so it names the shape itself. */
 type Hex40 = `0x${string}`;
@@ -29,6 +29,28 @@ export const runtimeEnvFields = {
   KMS_KEY_ID: z.string().min(1).optional(),
   SIGNER_ADDRESS: addressSchema.optional(),
   AWS_REGION: z.string().min(1).optional(),
+
+  /**
+   * Where a signed transaction is broadcast. `public` (default) is today's behaviour — the node's
+   * mempool. `flashbots-protect` submits privately, so the transaction is not visible to
+   * front-runners; see `docs/design-026-private-relay-submission.md` for what that costs elsewhere.
+   */
+  SUBMITTER: z.enum(["public", "flashbots-protect"]).optional().default("public"),
+  /** Protect RPC the signed transaction is sent to. */
+  FLASHBOTS_PROTECT_URL: urlSchema.optional(),
+  /** Where a private transaction's status (and its `maxBlockNumber` horizon) is read from. */
+  FLASHBOTS_STATUS_URL: urlSchema.optional().default("https://protect.flashbots.net"),
+  /**
+   * Floor for the priority fee on a privately-submitted transaction, in wei. Required in private
+   * mode and deliberately has no default — see `buildSubmitterConfig`.
+   */
+  PRIVATE_MIN_PRIORITY_FEE_WEI: positiveIntSchema.optional(),
+  /**
+   * How long a privately-submitted transaction may hold its nonce before it is declared gone, in ms.
+   * Must exceed the relay's own retry horizon (Protect: ~25 blocks ≈ 5 min) plus a reorg margin —
+   * below that it could free a nonce the relay may still spend. Default 7 minutes.
+   */
+  PRIVATE_RECLAIM_AFTER_MS: positiveIntSchema.optional().default("420000"),
 
   /** Enables the Postgres StateStore. Unset ⇒ no persistence (in-memory nonce sequencing). */
   DATABASE_URL: z.string().min(1).optional(),
@@ -91,7 +113,7 @@ export interface RuntimeEnv {
  * cross-field validation (it inspects the signer + persistence vars) doesn't force every other
  * builder's callers to supply signer fields.
  */
-export interface ExecutionEnv {
+export interface ExecutionEnv extends SubmitterEnv {
   EXECUTION_MODE: "AUTO" | "MANUAL";
   // Address vars stay `string` here — the `addressSchema` regex validates the format but zod infers
   // `string`; `buildExecutionConfig` narrows to `Hex40` on the way out.
@@ -107,12 +129,18 @@ export interface ExecutionEnv {
 }
 
 /**
- * How a service executes. A discriminated union so MANUAL *carries* its broadcasting address (and
- * proposal TTL) — the composition root reads them without a re-check, and AUTO simply has no
- * key-shaped fields.
+ * How a service executes. A discriminated union so each mode *carries* exactly what it needs — the
+ * composition root reads them without a re-check, and neither arm has fields the other would make
+ * meaningless.
+ *
+ * `submitter` sits on the AUTO arm because submission is only a decision when the bot broadcasts.
+ * MANUAL is keyless: an operator signs and sends with their own wallet, so where the bytes go is
+ * theirs to choose. Nesting it makes that unrepresentable rather than merely documented — otherwise
+ * `MANUAL` + `flashbots-protect` type-checks and boots, builds a relay submitter that never sends
+ * anything, and leaves an operator believing they have MEV protection they do not have.
  */
 export type ExecutionSettings =
-  | { mode: "AUTO" }
+  | { mode: "AUTO"; submitter: SubmitterSettings }
   | {
       mode: "MANUAL";
       /** The account whose balances/allowances the engine reads and whose `from` it simulates from —
@@ -145,6 +173,95 @@ export function buildNotifierConfig(env: RuntimeEnv): NotifierSettings {
   return { source: env.NOTIFIER, webhookRef: env.SLACK_WEBHOOK_REF };
 }
 
+/**
+ * The env subset `buildSubmitterConfig` reads. `DATABASE_URL` is here because private submission
+ * *requires* a store, for the same reason MANUAL does — see below.
+ */
+export interface SubmitterEnv {
+  SUBMITTER: "public" | "flashbots-protect";
+  FLASHBOTS_PROTECT_URL?: string;
+  FLASHBOTS_STATUS_URL: string;
+  PRIVATE_MIN_PRIORITY_FEE_WEI?: string;
+  PRIVATE_RECLAIM_AFTER_MS: string;
+  DATABASE_URL?: string;
+}
+
+/**
+ * Where signed transactions are broadcast. A discriminated union so the private mode *carries* the
+ * collaborators it cannot run without — the composition root reads them off it with no re-check, and
+ * `public` simply has no relay-shaped fields.
+ */
+export type SubmitterSettings =
+  | { mode: "public" }
+  | {
+      mode: "flashbots-protect";
+      /** Protect RPC the signed transaction goes to. */
+      rpcUrl: string;
+      /** Status endpoint — the liveness source, and where each transaction's horizon is read from. */
+      statusUrl: string;
+      /** Floor for the priority fee; a transaction below it is not worth a builder's inclusion. */
+      minPriorityFeeWei: bigint;
+      /**
+       * How long a transaction may hold its nonce before the fence releases it regardless of what
+       * the relay says. The only thing that frees a private nonce — see `LivenessCheck.maxFenceMs`.
+       */
+      reclaimAfterMs: number;
+    };
+
+/**
+ * Project the submission env into a service's boot plan, refusing every combination that would
+ * broadcast differently from what the operator wrote.
+ *
+ * Guards **both** directions, like `buildArbitrageFundingParams`. The dangerous one is a relay
+ * variable set without the mode: the bot would run and broadcast every liquidation into the public
+ * mempool while the operator believed they had MEV protection. Silence there is the whole failure.
+ *
+ * The two private-mode requirements are not tuning knobs, they are the conditions under which
+ * private submission is safe at all (`docs/design-026-private-relay-submission.md` §4.2, §4.3):
+ *
+ * - **A store.** Nonce safety currently rests on our own node being able to see our transactions,
+ *   and a private transaction is invisible to it by design. The store is what holds the
+ *   `nonce / hash / subject / horizon` state that replaces that visibility. Without it nothing
+ *   fences the nonce — which is not a degraded mode, it is an unsafe one.
+ * - **A priority-fee floor.** Flashbots drops transactions builders have no reason to include, so a
+ *   negligible tip means MEV protection that silently never lands anything. No default: what is
+ *   competitive is a market condition on the day, and a wrong guess here fails quietly.
+ */
+export function buildSubmitterConfig(env: SubmitterEnv): SubmitterSettings {
+  const relayOnly = [
+    ["FLASHBOTS_PROTECT_URL", env.FLASHBOTS_PROTECT_URL],
+    ["PRIVATE_MIN_PRIORITY_FEE_WEI", env.PRIVATE_MIN_PRIORITY_FEE_WEI],
+  ] as const;
+
+  if (env.SUBMITTER !== "flashbots-protect") {
+    const stray = relayOnly.filter(([, v]) => v !== undefined).map(([name]) => name);
+    if (stray.length > 0) {
+      throw new Error(
+        `${stray.join(", ")} ${stray.length === 1 ? "is" : "are"} set but SUBMITTER is "${env.SUBMITTER}", so every transaction would go to the PUBLIC mempool with no MEV protection. Set SUBMITTER=flashbots-protect, or remove the relay-only variables.`
+      );
+    }
+    return { mode: "public" };
+  }
+
+  const missing = relayOnly.filter(([, v]) => v === undefined).map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(`SUBMITTER=flashbots-protect requires ${missing.join(", ")}`);
+  }
+  if (!env.DATABASE_URL) {
+    throw new Error(
+      "SUBMITTER=flashbots-protect requires DATABASE_URL — a privately-submitted transaction is invisible to our own node, so without persisted intents nothing fences the nonce against reuse"
+    );
+  }
+
+  return {
+    mode: "flashbots-protect",
+    rpcUrl: env.FLASHBOTS_PROTECT_URL as string,
+    statusUrl: env.FLASHBOTS_STATUS_URL,
+    minPriorityFeeWei: BigInt(env.PRIVATE_MIN_PRIORITY_FEE_WEI as string),
+    reclaimAfterMs: Number.parseInt(env.PRIVATE_RECLAIM_AFTER_MS, 10),
+  };
+}
+
 /** Where secrets are resolved from. The key material itself never appears in `Config`. */
 export function buildSecretsConfig(env: RuntimeEnv): SecretsConfig {
   return { source: env.SECRETS_PROVIDER, region: env.AWS_REGION };
@@ -173,7 +290,16 @@ export function buildExecutionConfig(
   opts: { signerKeyPresent?: boolean } = {}
 ): ExecutionSettings {
   if (env.EXECUTION_MODE === "AUTO") {
-    return { mode: "AUTO" };
+    return { mode: "AUTO", submitter: buildSubmitterConfig(env) };
+  }
+
+  // Relay variables under MANUAL are the same category of mistake as signer variables below: the
+  // process would boot, the operator would believe their transactions were protected, and in fact
+  // this bot broadcasts nothing at all — their own wallet does, in public.
+  if (env.SUBMITTER === "flashbots-protect") {
+    throw new Error(
+      "EXECUTION_MODE=MANUAL does not broadcast — an operator signs and sends with their own wallet, so SUBMITTER=flashbots-protect would protect nothing. Unset it, or run AUTO."
+    );
   }
 
   if (!env.MANUAL_EXECUTOR_ADDRESS) {

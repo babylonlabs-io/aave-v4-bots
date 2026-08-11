@@ -167,6 +167,18 @@ export type RecordResult = { recorded: true; id: string } | { recorded: false; e
 
 export interface StateStore {
   /**
+   * Claim this schema for one execution identity, or fail if another already owns it.
+   *
+   * Everything here is scoped to one account by assumption, never by column: the idempotency key
+   * carries no signer, `reconcile()` returns every in-flight intent, and the nonce fence reads them
+   * as one sequence. Two bots sharing a schema resolve each other's transactions against the wrong
+   * nonces — and `PERSISTENCE_SCHEMA` defaults to `bot` for both services, so one shared
+   * `DATABASE_URL` does it silently. This makes it a boot failure instead.
+   *
+   * Called once at startup, before anything else touches the store. Idempotent for the owner.
+   */
+  bindExecutionIdentity(identity: { chainId: number; address: Address }): Promise<void>;
+  /**
    * Record an AUTO intent as `pending`. Refuses (`recorded: false`) if a **live** intent
    * (`LIVE_FOR_DEDUP`, which now includes MANUAL `proposed`) already exists for the same
    * `(chainId, target, action, subject)`; revives a terminal one.
@@ -241,14 +253,35 @@ export interface StateStore {
    * stays honest about what a zero window means.
    */
   expireProposals(ttlMs: number, action?: string): Promise<number>;
-  /** Move an intent to a new status, attaching any `meta` (nonce/txHash/error). */
-  transition(id: string, to: IntentStatus, meta?: TransitionMeta): Promise<void>;
   /**
-   * In-flight (`IN_FLIGHT_ON_CHAIN`) intents — the reconcile work list. Excludes `proposed`
-   * (no tx to reconcile). Optionally filtered to a single `action` so an engine reconciles only
-   * its own intents (the arbitrageur's two engines share one store but own distinct actions).
+   * Move an intent to a new status, attaching any `meta` (nonce/txHash/error). Returns whether it
+   * applied — `false` means `expect` did not hold and the row was left alone.
+   *
+   * `expect` binds the write to the row the caller observed, because intent ids are **reused**: a
+   * terminal row is revived for the next attempt on the same subject, so a late writer would
+   * otherwise stamp its outcome onto a transaction it knows nothing about. Chain evidence may
+   * correct our reading of the transaction it is about, never of a different one.
    */
-  reconcile(action?: string): Promise<TxIntent[]>;
+  transition(
+    id: string,
+    to: IntentStatus,
+    meta?: TransitionMeta,
+    expect?: {
+      /** Only write if the row still carries this hash — i.e. it is still the attempt observed. */
+      txHash?: Hex;
+      /** Only write if the row is still in one of these statuses. */
+      status?: readonly IntentStatus[];
+    }
+  ): Promise<boolean>;
+  /**
+   * Every in-flight (`IN_FLIGHT_ON_CHAIN`) intent — the reconcile work list. Excludes `proposed`
+   * (no tx to reconcile).
+   *
+   * Unscoped: one schema belongs to one execution identity (`bindExecutionIdentity` enforces it),
+   * and within that identity an intent belongs to the account, not to the engine that created it.
+   * Scoping by action instead would strand any action no engine owns — `approval`.
+   */
+  reconcile(): Promise<TxIntent[]>;
   /** Release the underlying connection pool. */
   close(): Promise<void>;
 }

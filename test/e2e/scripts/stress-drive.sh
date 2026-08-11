@@ -146,6 +146,52 @@ wait_for_backlog() {
 # Deferred out of setup: forge flushes its broadcasts only after the script body returns, so the
 # Lens deploy lands too late for the base class's bounded wait. By now forge has exited and every
 # contract is on chain.
+# ── 0a. private submission (STRESS_PRIVATE) ──────────────────────────────────
+# Put a stand-in Flashbots Protect between the bot and anvil, so the bot's transactions become
+# invisible to its own node — which is the whole premise of the private-submission liveness work
+# and the one condition a public mempool cannot produce.
+#
+# Note which URL changes: `CLIENT_RPC_URL` still points at anvil. That asymmetry IS the hazard —
+# the bot reads the chain from a node that cannot see what it sent.
+RELAY_PID=""
+if [[ -n "${STRESS_PRIVATE:-}" ]]; then
+  # A relay leaked from an earlier run is worse than none: it answers on the same port with the
+  # PREVIOUS run's withheld hashes, so this run reads a transaction that its own fresh database has
+  # never heard of and the phase fails for a reason that has nothing to do with the bot.
+  if curl -s --max-time 2 "http://127.0.0.1:8555/__seen" >/dev/null 2>&1; then
+    fail "something is already listening on :8555 — a fake relay leaked from an earlier run; kill it first"
+  fi
+  # Reap it however this script exits, including `fail`, so the next run starts clean.
+  trap '[[ -n "${RELAY_PID:-}" ]] && kill "$RELAY_PID" 2>/dev/null || true' EXIT
+  log "Private submission: starting the fake relay on :8555"
+  FAKE_RELAY_PORT=8555 FAKE_RELAY_UPSTREAM="$RPC" FAKE_RELAY_HORIZON_BLOCKS=10 \
+    node test/e2e/scripts/fake-relay.mjs >/tmp/fake-relay.log 2>&1 &
+  RELAY_PID=$!
+  for _ in $(seq 1 30); do
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8555/tx/0x00" || echo 000)" == "200" ]] && break
+    sleep 1
+  done
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8555/tx/0x00" || echo 000)" == "200" ]] \
+    || fail "fake relay never came up — see /tmp/fake-relay.log"
+  # `PRIVATE_RECLAIM_AFTER_MS` must exceed the 30s unknown-tx grace window or `createCrashSafety`
+  # refuses to build (the two bounds would cross and the reader would never be consulted). 45s keeps
+  # the run short while staying the right side of that.
+  #
+  # `TX_RECEIPT_TIMEOUT_MS` is cut from its 120s default because a withheld transaction is one whose
+  # receipt never arrives: the engine blocks for the whole budget before it can even begin to
+  # recover. That is real behaviour rather than a test artifact — it is just far longer than this
+  # phase should wait to observe the recovery that follows it.
+  cat >> ./.env.arbitrageur <<'PRIVENV'
+SUBMITTER=flashbots-protect
+FLASHBOTS_PROTECT_URL=http://127.0.0.1:8555
+FLASHBOTS_STATUS_URL=http://127.0.0.1:8555
+PRIVATE_MIN_PRIORITY_FEE_WEI=1000000000
+PRIVATE_RECLAIM_AFTER_MS=45000
+TX_RECEIPT_TIMEOUT_MS=25000
+PRIVENV
+  ok "relay up; bot configured for private submission"
+fi
+
 BOT_READY=0
 log "Starting the bot (setup deferred it until all deploys landed)"
 # Subshell so `.env.arbitrageur` stays contained — sourcing it into the parent would leak the arb's
@@ -177,7 +223,7 @@ ok "bot running"
 # Both keep the invariants they exist to test: RACING observes competitive degradation, ROUTER
 # observes what happens when someone else executes our own authorization.
 CHAOS=1
-if [[ -n "${STRESS_RACING:-}" || -n "${STRESS_ROUTER:-}" ]]; then CHAOS=""; fi
+if [[ -n "${STRESS_RACING:-}" || -n "${STRESS_ROUTER:-}" || -n "${STRESS_PRIVATE:-}" ]]; then CHAOS=""; fi
 
 # STRESS_RACING: a standalone liquidator racing the arbitrageur's own liquidation engine. Its env
 # (.env.liquidator) was written by the setup script and points at the arbitrageur's indexer, so both
@@ -317,6 +363,69 @@ fi
 # Declared unconditionally: the report reads them on every path, and the eviction phase that sets
 # them for real is skipped in the modes that turn chaos off.
 FENCE_RESULT="skipped"; RECOVERY_RESULT="skipped"; DROP_HASH=""; DROP_NONCE=""
+
+# ── 2d. a privately-submitted transaction the relay never lands (STRESS_PRIVATE) ──
+# The outcome no public mempool can produce, and the one the whole liveness seam exists for.
+#
+# The relay accepts a transaction, returns its hash, and never forwards it. Our own node therefore
+# never hears of it: `isKnown` says no and the pending count omits it. Two things must then hold,
+# and they pull in opposite directions:
+#
+#   BEFORE the horizon  the nonce stays fenced. Reissuing it would sign a second transaction over
+#                       one the relay may still land — and reconcile must not declare the intent
+#                       dead either, or the engine re-drives the same action.
+#   AFTER  the horizon  the nonce is released. Nonces are consumed in order, so a permanently
+#                       fenced one leaves every later transaction unmineable behind the gap: not a
+#                       degraded bot, a dead one.
+#
+# `PRIVATE_RECLAIM_AFTER_MS=45000` is the line between them.
+PRIVATE_RESULT="skipped"; PRIVATE_NONCE=""
+if [[ -n "${STRESS_PRIVATE:-}" ]]; then
+  log "Private submission: withholding the next transaction at the relay"
+  curl -s -X POST "http://127.0.0.1:8555/__withhold?count=1" >/dev/null || fail "relay control unreachable"
+
+  # Wait for the bot to send one and for the relay to confirm it swallowed it.
+  WITHHELD=""
+  for _ in $(seq 1 120); do
+    WITHHELD="$(curl -s http://127.0.0.1:8555/__seen | python3 -c 'import sys,json; w=json.load(sys.stdin)["withheld"]; print(w[0] if w else "")' 2>/dev/null || true)"
+    [[ -n "$WITHHELD" ]] && break
+    sleep 1
+  done
+
+  if [[ -z "$WITHHELD" ]]; then
+    printf "! bot sent nothing while withholding was armed; private phase skipped\n" >&2
+  else
+    # The bot persisted this hash BEFORE broadcasting, so the intent is findable by it — which also
+    # proves the relay returned the same hash the bot derived locally.
+    PRIVATE_NONCE="$(sql "SELECT nonce FROM bot.tx_intents WHERE tx_hash='$WITHHELD';")"
+    [[ "$PRIVATE_NONCE" =~ ^[0-9]+$ ]] || fail "withheld tx $WITHHELD has no persisted intent — the relay's hash and the bot's disagree"
+    ok "withheld $WITHHELD at nonce $PRIVATE_NONCE (invisible to our own node)"
+
+    cast tx "$WITHHELD" --rpc-url "$RPC" >/dev/null 2>&1 \
+      && fail "the withheld tx reached anvil — the relay forwarded what it should have swallowed"
+
+    # (i) fenced. Sample well inside the horizon; any *other* intent taking this nonce is a reuse.
+    for _ in $(seq 1 25); do
+      dupes="$(sql "SELECT count(*) FROM bot.tx_intents WHERE nonce=$PRIVATE_NONCE AND tx_hash<>'$WITHHELD';")"
+      [[ "$dupes" == "0" ]] || fail "nonce $PRIVATE_NONCE reissued while the relay may still land it ($dupes other intents)"
+      sleep 1
+    done
+    ok "nonce $PRIVATE_NONCE held for 25s while the relay still reported it live"
+
+    # (ii) released. Past the horizon the bot must be able to land transactions again — either by
+    # refilling the gap at this nonce or by moving past it. A stall shows up as neither happening.
+    BEFORE_CONFIRMED="$(sql "SELECT count(*) FROM bot.tx_intents WHERE status='confirmed';")"
+    PRIVATE_RESULT="stalled"
+    for _ in $(seq 1 150); do
+      now_confirmed="$(sql "SELECT count(*) FROM bot.tx_intents WHERE status='confirmed';")"
+      if [[ "${now_confirmed:-0}" -gt "${BEFORE_CONFIRMED:-0}" ]]; then PRIVATE_RESULT="recovered"; break; fi
+      sleep 1
+    done
+    [[ "$PRIVATE_RESULT" == "recovered" ]] \
+      || fail "no transaction confirmed in 150s after the horizon — the signer is stalled behind nonce $PRIVATE_NONCE"
+    ok "bot resumed landing transactions after the reclaim horizon"
+  fi
+fi
 
 # ── 3. wave #1 chaos: forced mempool eviction (the nonce fence) ──────────────
 # Gated on a CONFIRMED backlog rather than on elapsed time. Earlier revisions ran this after the
@@ -497,6 +606,7 @@ fi
 # Skipped under racing for the same reason as §3 — the arb has no reliable backlog to crash on.
 if [[ -n "$CHAOS" ]]; then
   wait_for_backlog "crash" || fail "no durable in-flight work — nothing to crash-test"
+  [[ -n "${RELAY_PID:-}" ]] && kill "$RELAY_PID" 2>/dev/null || true
   pkill -9 -f "services/arbitrageur/src/index.ts" 2>/dev/null || true
   ok "bot killed mid-flight"
 
@@ -670,6 +780,7 @@ cat > .e2e-stress-report.json <<EOF
   "frontrunResult": "$FRONTRUN_RESULT", "frontrunVault": "${FRONTRUN_VAULT:-}",
   "competitorResult": "$COMPETITOR_RESULT", "competitorVault": "${COMPETITOR_VAULT:-}",
   "acqGapResult": "$ACQ_GAP_RESULT", "acqGapNonce": "${ACQ_GAP_NONCE:-}",
+  "privateResult": "$PRIVATE_RESULT", "privateNonce": "${PRIVATE_NONCE:-}",
   "acqGapStranded": ${ACQ_GAP_STRANDED:-0}, "arbHaltedLogs": ${ARB_HALTED_LOGS:-0},
   "cohortA": $COHORT_A_N, "cohortB": $COHORT_B_N, "positionsTotal": $LIQ_TOTAL_N,
   "liquidatedWave1": $W1_DONE, "liquidatedWave2": $W2_DONE,

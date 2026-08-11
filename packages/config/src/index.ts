@@ -24,10 +24,12 @@ export {
 export {
   type ExecutionSettings,
   type NotifierSettings,
+  type SubmitterSettings,
   buildExecutionConfig,
   buildNotifierConfig,
   buildPersistenceConfig,
   buildSecretsConfig,
+  buildSubmitterConfig,
   runtimeEnvFields,
 } from "./runtime";
 export {

@@ -10,7 +10,8 @@ import { type MemoryStateStore, type StateStore, createMemoryStateStore } from "
 import { createRiskGate } from "@repo/risk";
 import { type PublicClient, TransactionReceiptNotFoundError, maxUint256 } from "viem";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createAutoExecutorFromWallet, createManualExecutor } from "../shared/executor";
+import { createManualExecutor } from "../shared/executor";
+import { createAutoExecutorWithSender } from "../shared/executorTestKit";
 import { createIndexerClient } from "../shared/indexerClient";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
@@ -137,7 +138,7 @@ const passthroughNonces = (): NonceAllocator => ({
   resync: async () => {},
 });
 
-type AutoDeps = Parameters<typeof createAutoExecutorFromWallet>[0];
+type AutoDeps = Parameters<typeof createAutoExecutorWithSender>[0];
 
 /**
  * Build the engine with a default AUTO executor over the mock wallet + sender (the composition the
@@ -167,7 +168,7 @@ function createBot(
     risk: createRiskGate(), // permissive by default
     executor:
       executor ??
-      createAutoExecutorFromWallet({
+      createAutoExecutorWithSender({
         store,
         nonces,
         sender: clients.sender as unknown as AutoDeps["sender"],
@@ -743,10 +744,11 @@ describe("LiquidationEngine", () => {
       await bot.prepare();
 
       expect(clients.publicClient.readContract).toHaveBeenCalled();
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           functionName: "approve",
-        })
+        }),
+        expect.any(Function)
       );
     });
 
@@ -761,7 +763,7 @@ describe("LiquidationEngine", () => {
 
       await bot.prepare();
 
-      expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
     it("still approves WBTC when no debt tokens configured", async () => {
@@ -783,12 +785,13 @@ describe("LiquidationEngine", () => {
       // borrowable debt token on the Spoke.
       await bot.prepare();
 
-      expect(clients.walletClient.writeContract).toHaveBeenCalledTimes(1);
-      expect(clients.walletClient.writeContract).toHaveBeenCalledWith(
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           address: "0xwbtc",
           functionName: "approve",
-        })
+        }),
+        expect.any(Function)
       );
     });
   });

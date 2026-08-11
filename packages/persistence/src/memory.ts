@@ -8,7 +8,6 @@ import {
   LIVE_FOR_DEDUP,
   type RecordResult,
   type StateStore,
-  type TransitionMeta,
   type TxIntent,
 } from "./types";
 import { assertProposalChain, idempotencyKey } from "./utils";
@@ -46,6 +45,7 @@ function clone(row: TxIntent): TxIntent {
  */
 export function createMemoryStateStore(now: () => number = Date.now): MemoryStateStore {
   const rows = new Map<string, TxIntent>();
+  let boundIdentity: string | undefined;
   const isLive = (status: IntentStatus) => LIVE_FOR_DEDUP.includes(status);
 
   /** Shared record/revive: refuse a live intent, else (re)create it in `status`. */
@@ -173,9 +173,12 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       return swept;
     },
 
-    async transition(id: string, to: IntentStatus, meta?: TransitionMeta) {
+    async transition(id, to, meta, expect) {
       const row = rows.get(id);
-      if (!row) return;
+      if (!row) return false;
+      // The row must still be the one the caller observed — see `StateStore.transition`.
+      if (expect?.txHash !== undefined && row.txHash !== expect.txHash) return false;
+      if (expect?.status !== undefined && !expect.status.includes(row.status)) return false;
       rows.set(id, {
         ...row,
         status: to,
@@ -184,16 +187,22 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
         error: meta?.error ?? row.error,
         updatedAt: now(),
       });
+      return true;
     },
 
-    async reconcile(action?: string) {
+    async bindExecutionIdentity({ chainId, address }) {
+      const next = `${chainId}:${address.toLowerCase()}`;
+      boundIdentity ??= next;
+      if (boundIdentity !== next) {
+        throw new Error(
+          `store is bound to ${boundIdentity}, but this process executes as ${next} — one store belongs to one account`
+        );
+      }
+    },
+
+    async reconcile() {
       // IN_FLIGHT_ON_CHAIN only — `proposed` has no tx to reconcile and must not appear here.
-      return [...rows.values()]
-        .filter(
-          (r) =>
-            IN_FLIGHT_ON_CHAIN.includes(r.status) && (action === undefined || r.action === action)
-        )
-        .map(clone);
+      return [...rows.values()].filter((r) => IN_FLIGHT_ON_CHAIN.includes(r.status)).map(clone);
     },
 
     async close() {},

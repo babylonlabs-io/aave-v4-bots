@@ -13,7 +13,6 @@ export {
 export {
   type TokenMeta,
   TokenMetaCache,
-  approveMax,
   readAllowance,
   readBalance,
   readTokenMeta,

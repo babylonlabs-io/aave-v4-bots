@@ -20,6 +20,7 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [Environment Files](#51-environment-files)
    - [Ponder Indexer Configuration](#52-ponder-indexer-configuration)
    - [Arbitrageur Client Configuration](#53-arbitrageur-client-configuration)
+   - [MEV protection (private submission)](#55-mev-protection-private-submission)
    - [Execution Modes](#54-execution-modes)
    - [Contract Addresses](#55-contract-addresses)
 6. [Wallet Setup](#6-wallet-setup)
@@ -405,7 +406,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `SIGNER_ADDRESS` | Expected KMS signer address; boot fails on mismatch | No | — |
 | `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
 | `DATABASE_URL` | Enables Postgres StateStore for intent idempotency and reconcile-on-boot | MANUAL only | — |
-| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables, separate from Ponder | No | `bot` |
+| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables, separate from Ponder. **One schema per signer** — a schema is claimed by the first execution identity to use it and a second one fails at boot, because intents in it are keyed and reconciled as a single account. Running both services against one `DATABASE_URL` therefore needs a distinct value here for each. | No | `bot` |
 | `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
 | `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
 | `ADAPTER_ADDRESS` | Enables the optional liquidation engine when set with `LENS_ADDRESS` | Liquidation only | — |
@@ -452,7 +453,69 @@ pnpm --filter @services/operator-cli operator-cli broadcast <id>
 pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
 ```
 
-### 5.5. Contract Addresses
+### 5.5. MEV protection (private submission)
+
+Off by default. `SUBMITTER=public` broadcasts to your node's mempool, which is
+where searchers watch — a profitable liquidation is visible there before it
+mines, and the mempool also advertises which positions you consider liquidatable
+and at what threshold.
+
+`SUBMITTER=flashbots-protect` submits privately instead. **AUTO only** — MANUAL is
+keyless, so you broadcast with your own wallet and submission policy is yours;
+the bot refuses the combination at startup rather than pretending to protect
+transactions it never sends.
+
+| Variable | Required | Notes |
+|---|---|---|
+| `SUBMITTER` | no | `public` (default) \| `flashbots-protect` |
+| `FLASHBOTS_PROTECT_URL` | in private mode | e.g. `https://rpc.flashbots.net/fast` |
+| `FLASHBOTS_STATUS_URL` | no | defaults to `https://protect.flashbots.net` |
+| `PRIVATE_MIN_PRIORITY_FEE_WEI` | in private mode | no default, deliberately — see below |
+| `PRIVATE_RECLAIM_AFTER_MS` | no | default `420000` (7 min) |
+
+Three things fail the boot rather than degrading quietly, because each one
+otherwise produces a bot that looks healthy and lands nothing:
+
+- **`DATABASE_URL` is mandatory.** A privately-submitted transaction is invisible
+  to your own node, so the persisted intents are the only thing that can tell
+  whether a reserved nonce is still spoken for. Without them nothing fences it.
+- **A priority-fee floor is mandatory.** Flashbots drops transactions builders
+  have no reason to include. There is no sensible default: what is competitive is
+  a market condition on the day, and guessing low fails silently.
+- **Relay variables under `SUBMITTER=public` are rejected**, so a half-applied
+  configuration cannot leave you broadcasting publicly while believing otherwise.
+
+**The trade-off is yours to make, and it is real.** Private submission reduces
+front-running, but it also narrows who can include you (Protect's default forwards
+only to the Flashbots builder; `/fast` targets all registered builders) and aligns
+submission to block boundaries. Whether that wins or loses more liquidations than
+it saves depends on your competition and capital. Judge it from your own metrics,
+not from this page:
+
+| Metric | What it tells you |
+|---|---|
+| `submitter_send_total{result="accepted"}` | the relay is taking your transactions |
+| `submitter_send_total{result="rejected"}` | the relay is *refusing* them — a malformed call or a bad fee |
+| `submitter_send_total{result="ambiguous"}` | relay unreachable or 5xx; the nonce stays fenced |
+| `relay_tx_status_total{status="INCLUDED"}` | they are landing |
+| `relay_tx_status_total{status="sim_error"}` | **your** transactions are unviable, not out-competed — check the fee floor and the call |
+| `relay_tx_status_total{status="probe_error"}` | the status API is unreachable; nonces stay fenced (safe, but throughput suffers) |
+
+`accepted` climbing while `INCLUDED` stays flat is the signature of a fee floor
+set too low, or of a builder fan-out too narrow.
+
+**A stuck private nonce.** If a transaction is dropped by the relay and never
+mined, its nonce is held until `PRIVATE_RECLAIM_AFTER_MS` elapses, then released
+automatically — later transactions queue behind it in the meantime, because nonces
+are consumed in order. That is expected and self-healing. What is *not* expected is
+the queue never draining: if `eth_getTransactionCount` stops advancing while the bot
+keeps recording intents, raise the log level and check for `Relay status probe
+failed` — a status endpoint that is persistently unreachable keeps every nonce
+fenced. Do not lower `PRIVATE_RECLAIM_AFTER_MS` below ~1 minute; it must stay above
+the 30-second unknown-transaction grace window, and the bot refuses to start if it
+does not.
+
+### 5.6. Contract Addresses
 
 Testnet contract addresses are provided as part of the onboarding requirements.
 
@@ -605,6 +668,8 @@ listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
 | Metric | Type | Description |
 |--------|------|-------------|
 | `eth_rpc_calls_total` | Counter | Outbound JSON-RPC attempts by `method` (retries counted separately) |
+| `submitter_send_total` | Counter | Broadcast attempts by `result` (`accepted`/`rejected`/`ambiguous`) — private submission only; see §5.5 |
+| `relay_tx_status_total` | Counter | Relay status by `status`, plus `sim_error` (our tx is unviable) and `probe_error` (relay unreachable) |
 | `arbitrageur_vaults_acquired_total` | Counter | Total vaults acquired |
 | `arbitrageur_wbtc_spent_total` | Counter | Total WBTC spent (satoshis) |
 | `arbitrageur_wbtc_balance` | Gauge | Current WBTC balance (satoshis) |

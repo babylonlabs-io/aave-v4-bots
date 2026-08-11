@@ -1,11 +1,12 @@
 import { erc20Abi } from "@repo/abis";
-import { approveMax, readAllowance } from "@repo/chain";
+import { readAllowance } from "@repo/chain";
 import type { ProposedTx } from "@repo/execution";
 import {
   type ContractCall,
   type ExecutionIdentity,
   type NonceAllocator,
   PreBroadcastError,
+  type Submitter,
   type TxSender,
   createNonceAllocator,
   createNonceLease,
@@ -27,7 +28,8 @@ import {
 } from "viem";
 
 import { type CrashSafety, createCrashSafety } from "./crashSafety";
-import { createChainReader, reconcilePending } from "./reconcile";
+import { type ChainReader, createChainReader } from "./liveness";
+import { reconcilePending } from "./reconcile";
 
 // The **execution mode seam**. An engine finds opportunities the same way in both modes — risk gate,
 // simulation, gas estimate, all keyless reads — and differs only at the moment it commits to acting:
@@ -76,9 +78,11 @@ interface BaseExecutor {
   /** Who these txs come from (allowance/balance owner, reconcile signer, simulation `from`). */
   readonly identity: ExecutionIdentity;
 
-  /** Resolve one `action`'s in-flight intents against the chain (in MANUAL, the operator-broadcast
-   *  ones). */
-  reconcile(action: string): Promise<void>;
+  /**
+   * Resolve this signer's in-flight intents against the chain (in MANUAL, the operator-broadcast
+   * ones). Deliberately takes no action filter — see the implementations.
+   */
+  reconcile(): Promise<void>;
   /** AUTO: reseed the shared nonce lease from the chain. MANUAL: no-op (no nonces). */
   resyncNonces(): Promise<void>;
 
@@ -160,30 +164,82 @@ export function createAutoExecutor(deps: {
     identity,
     account: walletClient.account,
 
-    reconcile: (action) => crash.reconcile(action),
+    // Unscoped, as MANUAL is: an intent belongs to the signer, not the engine that created it.
+    // Scoping by action strands `approval` — which no engine owns — and a live approval intent
+    // makes every later `ensureAllowance` a duplicate.
+    reconcile: () => crash.reconcile(),
     resyncNonces: () => crash.resyncNonces(),
+    // Guarded on the hash the receipt is for: intent ids are reused when a row is revived, so a late
+    // outcome would otherwise stamp the old attempt's verdict onto the new transaction.
     recordOutcome: (id, outcome) =>
-      crash.transition(id, outcome.kind, {
-        txHash: outcome.txHash,
-        ...(outcome.kind === "failed" ? { error: outcome.error } : {}),
-      }),
+      crash.transition(
+        id,
+        outcome.kind,
+        {
+          txHash: outcome.txHash,
+          ...(outcome.kind === "failed" ? { error: outcome.error } : {}),
+        },
+        { txHash: outcome.txHash }
+      ),
 
     async ensureAllowance({ token, spender, required, label }) {
-      // Verbatim from the engine's former `ensureApproval`: read allowance; if short, approve via
-      // the allocator (only the broadcast is under the lock — the receipt wait is outside) and
-      // confirm. The key lives here now, not on the engine.
       const allowance = await readAllowance(publicClient, token, identity.from, spender);
       if (allowance >= required) return { kind: "satisfied" };
 
       logger.info(`Approving ${label ?? token} for ${spender}...`);
-      const hash = await crash.send((nonce) => approveMax(walletClient, token, spender, nonce));
+      // Claimed for nonce safety, not idempotency: `liveNonceFloor` fences by walking persisted
+      // intents, so an unclaimed send has nothing fencing it. Invisible under public submission (the
+      // node's `pending` count covers it), unsafe under private. Same key MANUAL proposes under.
+      const claimed = await crash.claim({
+        chainId: identity.chainId,
+        target: token,
+        action: "approval",
+        subject: spender,
+      });
+      // One is already in flight — this cycle's or a crashed process's. A second would race it on a
+      // nonce, so the caller is told the allowance is not ready and retries next cycle.
+      if (!claimed.claimed) return { kind: "duplicate", existing: claimed.existing as TxIntent };
+      const intentId = claimed.intentId;
+
+      // Through the `TxSender`, not `walletClient.writeContract`: the sender is what carries the
+      // submission policy, so an approval must take the same route every other transaction does.
+      // Broadcasting it publicly while liquidations went private would put two transactions on one
+      // nonce sequence under two different sets of assumptions about who can see them.
+      let hash: Hex;
+      try {
+        hash = await crash.send((nonce) =>
+          sender.send(
+            {
+              address: token,
+              abi: erc20Abi,
+              functionName: "approve",
+              args: [spender, maxUint256],
+              nonce,
+            },
+            async (signed) => {
+              if (intentId) await crash.markPending(intentId, signed.nonce, signed.hash);
+            }
+          )
+        );
+      } catch (error) {
+        // Ambiguous — the intent stays LIVE so its nonce keeps its fence and reconcile decides.
+        const message = error instanceof Error ? error.message : String(error);
+        if (intentId) await crash.transition(intentId, "submitted", { error: message });
+        throw error;
+      }
+      if (intentId) await crash.transition(intentId, "submitted", { txHash: hash });
+
       const receipt = await publicClient.waitForTransactionReceipt({
         hash,
         timeout: txReceiptTimeoutMs,
       });
       if (receipt.status !== "success") {
+        if (intentId) {
+          await crash.transition(intentId, "failed", { txHash: hash, error: "approval reverted" });
+        }
         throw new Error(`Approval transaction reverted for ${label ?? token}`);
       }
+      if (intentId) await crash.transition(intentId, "confirmed", { txHash: hash });
       logger.info(`Approved ${label ?? token}`);
       return { kind: "satisfied" };
     },
@@ -219,11 +275,25 @@ export function createAutoExecutor(deps: {
 }
 
 /**
- * The default AUTO executor, built from a wallet: creates the `TxSender` and `CrashSafety` here and
- * wraps them, so callers (the engines' composition and, later, the services) never re-thread that
- * plumbing. `sender` is still injectable for tests and a future private-relay path.
+ * How this process broadcasts, and how it then judges whether what it broadcast is still live.
+ *
+ * The three travel together because they come from one decision and are only correct together: a
+ * private submitter without its matching `reader` leaves the nonce fence interrogating a node that
+ * cannot see our transactions, and a fail-closed reader without `maxFenceMs` never releases a nonce
+ * at all. Passing them as one value is what stops a future edit wiring up half of it.
  */
-export function createAutoExecutorFromWallet(deps: {
+export interface Submission {
+  submitter: Submitter;
+  reader: ChainReader;
+  /** See `CrashSafetyConfig.maxFenceMs` — the only thing that frees a privately-sent nonce. */
+  maxFenceMs: number;
+}
+
+/**
+ * The default AUTO executor, built from a wallet: creates the `TxSender` and `CrashSafety` here and
+ * wraps them, so callers (the engines' composition and the services) never re-thread that plumbing.
+ */
+export interface AutoExecutorDeps {
   store?: StateStore;
   /** The shared nonce authority. Omit and a per-signer one is created (single-engine services). */
   nonces?: NonceAllocator;
@@ -231,15 +301,31 @@ export function createAutoExecutorFromWallet(deps: {
   walletClient: WalletClient<Transport, Chain, LocalAccount>;
   txReceiptTimeoutMs: number;
   logger: Logger;
-  sender?: TxSender;
-}): AutoExecutor {
-  const sender = deps.sender ?? createTxSender(deps.publicClient, deps.walletClient);
+  /**
+   * Route transactions somewhere other than the node's public mempool. Omitted ⇒ the mempool, which
+   * is `createTxSender`'s own default.
+   *
+   * There is deliberately no way to pass a pre-built `TxSender` here: it would carry its own
+   * broadcast route and silently override this one. Callers holding a sender want
+   * `createAutoExecutor` (or `./executorTestKit`).
+   */
+  submission?: Submission;
+}
+
+export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecutor {
+  const { submitter, reader, maxFenceMs } = deps.submission ?? {};
+  const sender = createTxSender(
+    deps.publicClient,
+    deps.walletClient,
+    submitter?.send.bind(submitter)
+  );
   const crash = createCrashSafety({
     store: deps.store,
+    reader: reader ?? createChainReader(deps.publicClient),
+    maxFenceMs,
     // The allocator is mandatory (the arbitrageur's two engines share one). A service that runs a
     // single engine off one signer can omit it; we mint a per-signer allocator here.
     nonces: deps.nonces ?? createNonceAllocator(createNonceLease(), sender.identity.from),
-    publicClient: deps.publicClient,
     signer: sender.identity.from,
     logger: deps.logger,
   });

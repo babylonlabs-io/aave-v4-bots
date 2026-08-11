@@ -1,4 +1,10 @@
-import { type IntentInput, createMemoryStateStore, idempotencyKey } from "@repo/persistence";
+import {
+  type IntentInput,
+  type StateStore,
+  type TxIntent,
+  createMemoryStateStore,
+  idempotencyKey,
+} from "@repo/persistence";
 import {
   type Address,
   type Hex,
@@ -15,8 +21,8 @@ import {
   type SafeExecutionOutcome,
   UNKNOWN_TX_GRACE_MS,
   createChainReader,
-  reconcilePending,
-} from "./reconcile";
+} from "./liveness";
+import { reconcilePending } from "./reconcile";
 
 const SIGNER = "0x1111111111111111111111111111111111111111" as Address;
 const TARGET = "0x2222222222222222222222222222222222222222" as Address;
@@ -554,5 +560,66 @@ describe("createChainReader", () => {
         await createChainReader(publicClient).getSafeExecution("0xexec" as Hex, SAFE, SAFE_TX)
       ).toBeNull();
     });
+  });
+});
+
+// The race unscoped reconcile introduced, and the reason `pending`-with-no-nonce is protected.
+//
+// `recordIntent` writes a `pending` row *before* the sender signs, and `markPending` fills in the
+// nonce and hash only after signing returns — a window containing an RPC round trip. The
+// arbitrageur runs two engines off one store, so while engine A is inside that window, engine B's
+// reconcile sees A's row. Unguarded it reads "no nonce, no hash" as "never broadcast", marks it
+// failed and frees the subject mid-send. Approvals make it worse: both engines claim them under one
+// key, so they race the very same row.
+describe("reconcilePending — an in-progress claim is not another engine's to resolve", () => {
+  const claimed = (over: Partial<TxIntent> = {}): TxIntent =>
+    ({
+      id: "i1",
+      chainId: 31337,
+      target: TARGET,
+      action: "approval",
+      subject: TARGET,
+      status: "pending",
+      nonce: null,
+      txHash: null,
+      error: null,
+      payload: null,
+      payloadHash: null,
+      safeEnvelope: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      ...over,
+    }) as TxIntent;
+
+  const runWith = async (intent: TxIntent, ageMs: number) => {
+    const store = {
+      reconcile: async () => [intent],
+      transition: vi.fn(async () => {}),
+    } as unknown as StateStore;
+    await reconcilePending({
+      store,
+      reader: reader({ latest: 5, pending: 5 }),
+      signer: SIGNER,
+      logger: { info: vi.fn(), warn: vi.fn() },
+      now: () => intent.updatedAt + ageMs,
+    });
+    return store.transition as ReturnType<typeof vi.fn>;
+  };
+
+  it("leaves a freshly claimed intent alone while its send is still in flight", async () => {
+    const transition = await runWith(claimed(), 1_000);
+    expect(transition).not.toHaveBeenCalled();
+  });
+
+  it("still resolves it once it is too old to be mid-send", async () => {
+    const transition = await runWith(claimed(), UNKNOWN_TX_GRACE_MS + 1);
+    expect(transition).toHaveBeenCalledWith("i1", "failed", expect.anything(), expect.anything());
+  });
+
+  // A send that failed is moved to `submitted` by `commit` before reconcile ever sees it, so the
+  // guard cannot swallow one — that subject must still be freed promptly to be re-driven.
+  it("does not protect a send that already failed", async () => {
+    const transition = await runWith(claimed({ status: "submitted" }), 1_000);
+    expect(transition).toHaveBeenCalledWith("i1", "failed", expect.anything(), expect.anything());
   });
 });

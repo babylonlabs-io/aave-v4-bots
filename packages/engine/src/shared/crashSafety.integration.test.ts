@@ -6,7 +6,8 @@ import type { Address, Hex, PublicClient } from "viem";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createCrashSafety } from "./crashSafety";
-import { type ChainReader, reconcilePending } from "./reconcile";
+import { type ChainReader, createChainReader } from "./liveness";
+import { reconcilePending } from "./reconcile";
 
 // Crash-safety against a **real Postgres**, the store production actually runs on. The unit tests
 // use the in-memory model, which cannot catch a schema, transaction, or upsert bug — and
@@ -69,7 +70,7 @@ const crashSafety = (store: StateStore) =>
   createCrashSafety({
     store,
     nonces: allocator(),
-    publicClient,
+    reader: createChainReader(publicClient),
     signer: SIGNER,
     logger: silentLogger,
   });
@@ -139,7 +140,7 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
 
       await cs.markPending(intentId, 7);
 
-      const [live] = await store.reconcile("liquidation");
+      const [live] = await store.reconcile();
       expect(live).toMatchObject({ subject: "pos-1", nonce: 7, status: "pending" });
     },
     TIMEOUT

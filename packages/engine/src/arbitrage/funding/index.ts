@@ -2,11 +2,11 @@ import { InventoryFunding } from "./inventory";
 import { RouterFunding } from "./router";
 import type { ArbitrageFunding, FundingContext } from "./types";
 
-// The seam's public surface: consumers import `./funding`, never its internals.
+// The seam's public surface: consumers import `./funding`, never its internals — and get a mode
+// only through `createArbitrageFunding`, which is where the narrowings a caller must not skip live
+// (an AUTO executor, a registered keeper). Exporting the classes would offer a way around them.
 export * from "./types";
 export { buildArbitrageFundingParams } from "./config";
-export { InventoryFunding } from "./inventory";
-export { RouterFunding } from "./router";
 
 /**
  * Build the funding strategy the arbitrage engine will run with.

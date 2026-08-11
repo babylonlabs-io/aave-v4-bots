@@ -9,7 +9,7 @@ import { createLogger } from "@repo/logger";
 import { startRuntime } from "@repo/runtime";
 import { LiquidationBot } from "./bot";
 import { type Config, loadConfig } from "./config";
-import { getMetrics, getMetricsContentType, indexerMetrics, recordRpcCall } from "./metrics";
+import { getMetrics, getMetricsContentType, indexerMetrics, runtimeMetrics } from "./metrics";
 
 const logger = createLogger({ prefix: "[Bot] " });
 
@@ -19,7 +19,7 @@ async function createBot(config: Config): Promise<LiquidationBot> {
   // NOT on that server: `startRiskRuntime` serves it on its own socket, so the metrics port stays
   // safe to expose to a scrape network. This service just adds the liquidation engine on top.
   const { publicClient, risk, executor } = await startRuntime(config, {
-    recordRpcCall,
+    metrics: runtimeMetrics,
     logger,
     observability: {
       port: config.metricsPort,

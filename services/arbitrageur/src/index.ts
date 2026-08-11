@@ -18,7 +18,7 @@ import {
   getMetrics,
   getMetricsContentType,
   indexerMetrics,
-  recordRpcCall,
+  runtimeMetrics,
 } from "./metrics";
 
 const logger = createLogger({ prefix: "[Arbitrageur] " });
@@ -58,7 +58,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
   // on its own socket. This service adds the arbitrage engine on top, and (optionally) a second
   // liquidation engine off the same executor.
   const { publicClient, risk, executor } = await startRuntime(config, {
-    recordRpcCall,
+    metrics: runtimeMetrics,
     logger,
     observability: {
       port: config.metricsPort,

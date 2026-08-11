@@ -2,19 +2,16 @@ import { FlashFunding } from "./flash";
 import { InventoryFunding } from "./inventory";
 import type { FundingContext, LiquidationFunding } from "./types";
 
-// The seam's public surface: consumers import `./funding`, never its internals.
+// The seam's public surface: consumers import `./funding`, never its internals — and get a mode
+// only through `createFunding`, never by constructing one.
 export * from "./types";
 export { buildFundingParams } from "./config";
-export { InventoryFunding } from "./inventory";
-export { FlashFunding } from "./flash";
 export {
   type FlashSwapVenue,
   type VenueRegistry,
   type WbtcFlashLoanVenue,
   VenueSelectionError,
-  allFundableTokens,
   assertRegistryValid,
-  buildFlashDatas,
 } from "./venues";
 
 /**

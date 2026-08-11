@@ -134,8 +134,16 @@ describe("buildNotifierConfig", () => {
 });
 
 describe("buildExecutionConfig", () => {
+  // Submission defaults, which every `ExecutionEnv` now carries: unset ⇒ the public mempool.
+  const submitterDefaults = {
+    SUBMITTER: "public",
+    FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
+    PRIVATE_RECLAIM_AFTER_MS: "420000",
+  } as const;
+
   // A valid MANUAL setup: the broadcasting address + a store, and NO signer configured.
   const manualBase = {
+    ...submitterDefaults,
     EXECUTION_MODE: "MANUAL",
     MANUAL_EXECUTOR_ADDRESS: ADDR,
     MANUAL_EXECUTOR_KIND: "eoa",
@@ -148,6 +156,7 @@ describe("buildExecutionConfig", () => {
   it("AUTO carries no key-shaped fields (and ignores signer/store + MANUAL-only vars)", () => {
     expect(
       buildExecutionConfig({
+        ...submitterDefaults,
         EXECUTION_MODE: "AUTO",
         SIGNER_SOURCE: "local",
         SIGNER_KEY_REF: "K",
@@ -156,7 +165,7 @@ describe("buildExecutionConfig", () => {
         MANUAL_INTENT_TTL_MS: "10800000",
         MANUAL_INTENT_STUCK_MS: "3600000",
       })
-    ).toEqual({ mode: "AUTO" });
+    ).toEqual({ mode: "AUTO", submitter: { mode: "public" } });
   });
 
   it("MANUAL carries the broadcasting address, custody kind + proposal TTL", () => {

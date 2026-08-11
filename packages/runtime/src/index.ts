@@ -1,16 +1,31 @@
 import { safeAbi } from "@repo/abis";
+import { type RetryConfig, instrumentedHttp, readCodeHash } from "@repo/chain";
+import type {
+  ExecutionSettings,
+  NotifierSettings,
+  RiskSettings,
+  SubmitterSettings,
+} from "@repo/config";
 import {
-  type RetryConfig,
-  type RpcCallObserver,
-  instrumentedHttp,
-  readCodeHash,
-} from "@repo/chain";
-import type { ExecutionSettings, NotifierSettings, RiskSettings } from "@repo/config";
-import { type Executor, createAutoExecutorFromWallet, createManualExecutor } from "@repo/engine";
-import { createNonceAllocator, createNonceLease } from "@repo/execution";
+  type Executor,
+  type Submission,
+  createAutoExecutorFromWallet,
+  createChainReader,
+  createManualExecutor,
+  createRelayAwareReader,
+} from "@repo/engine";
+import {
+  createFlashbotsProtectSubmitter,
+  createNonceAllocator,
+  createNonceLease,
+} from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type Notifier, buildNotifier, riskEventSink } from "@repo/notifications";
-import { type ObservabilityServerConfig, startObservabilityServer } from "@repo/observability";
+import {
+  type MetricsRegistry,
+  type ObservabilityServerConfig,
+  startObservabilityServer,
+} from "@repo/observability";
 import { type PersistenceConfig, type StateStore, createStateStore } from "@repo/persistence";
 import { type RiskGate, startRiskRuntime } from "@repo/risk";
 import { type SecretsConfig, type SecretsProvider, createSecrets } from "@repo/secrets";
@@ -61,9 +76,18 @@ export interface BootConfig extends RiskSettings {
   retryConfig?: RetryConfig;
 }
 
-/** The per-service knobs the shared boot can't derive: the RPC-call metric and the tagged logger. */
+/** The per-service knobs the shared boot can't derive: the metric recorders and the tagged logger. */
 export interface BootDeps {
-  recordRpcCall: RpcCallObserver;
+  /**
+   * The process-level recorders this boot wires up: the RPC transport counter, and — in private
+   * submission — how the relay answered each broadcast and what it later said about it.
+   *
+   * One object rather than loose callbacks, matching how engines and the indexer take their metrics.
+   * All three are required: an operator's only view of "the relay is refusing us" or "our
+   * transactions are unviable" is these counters, and a service that quietly passed none of them
+   * would look healthy while landing nothing.
+   */
+  metrics: Pick<MetricsRegistry, "recordRpcCall" | "recordSubmit" | "recordRelayStatus">;
   logger: Logger;
 }
 
@@ -77,6 +101,45 @@ export interface BootResult {
   risk: RiskGate;
   /** The one execution collaborator for the process, injected into every engine. */
   executor: Executor;
+}
+
+/**
+ * Bind the submission choice to a `Submitter`. MANUAL never reaches this — an operator broadcasts
+ * with their own wallet, so submission policy is theirs.
+ *
+ * The mode is logged because it is otherwise invisible: a bot broadcasting publicly when the
+ * operator believed it was private looks identical from the outside, right up until a liquidation
+ * is front-run.
+ */
+function buildSubmission(
+  settings: SubmitterSettings,
+  publicClient: PublicClient,
+  logger: Logger,
+  metrics: Pick<MetricsRegistry, "recordSubmit" | "recordRelayStatus">
+): Submission | undefined {
+  // `undefined` is the public mempool, not an absence of configuration: it is already what
+  // `createTxSender` does with no override, and what the nonce fence assumes. Returning a
+  // "public submitter" here would be a second way to spell the default.
+  if (settings.mode !== "flashbots-protect") {
+    logger.info("Submission: public mempool");
+    return undefined;
+  }
+  logger.info(`Submission: Flashbots Protect (${settings.rpcUrl})`);
+  const relay = createFlashbotsProtectSubmitter({
+    rpcUrl: settings.rpcUrl,
+    statusUrl: settings.statusUrl,
+    onResult: metrics.recordSubmit,
+  });
+  return {
+    submitter: relay,
+    reader: createRelayAwareReader(
+      createChainReader(publicClient),
+      relay,
+      logger,
+      metrics.recordRelayStatus
+    ),
+    maxFenceMs: settings.reclaimAfterMs,
+  };
 }
 
 /** A minimal viem `Chain` for a self-hosted RPC whose id we auto-detect. */
@@ -96,7 +159,7 @@ function buildLocalChain(chainId: number, rpcUrl: string): Chain {
  * before any tx can go out.
  */
 export async function bootstrapService(config: BootConfig, deps: BootDeps): Promise<BootResult> {
-  const { recordRpcCall, logger } = deps;
+  const { metrics, logger } = deps;
 
   // Secrets resolve the notifier webhook + risk control token in BOTH modes; only AUTO also resolves
   // a *signing key* through this provider (MANUAL is keyless and never touches one).
@@ -105,7 +168,9 @@ export async function bootstrapService(config: BootConfig, deps: BootDeps): Prom
   // Every viem call routes through `instrumentedHttp`, which both applies the retry policy and
   // increments `eth_rpc_calls_total{method=...}` per attempt (providers bill per method per
   // attempt, even under batching).
-  const transport = instrumentedHttp(config.rpcUrl, recordRpcCall, { retry: config.retryConfig });
+  const transport = instrumentedHttp(config.rpcUrl, metrics.recordRpcCall, {
+    retry: config.retryConfig,
+  });
 
   // Auto-detect the chain id from the RPC, then build the real chain + client on it.
   const chainId = await createPublicClient({ transport }).getChainId();
@@ -147,6 +212,7 @@ export async function bootstrapService(config: BootConfig, deps: BootDeps): Prom
     notifier,
     secrets,
     logger,
+    metrics,
   });
 
   return { publicClient, store, risk, executor };
@@ -237,6 +303,7 @@ async function buildExecutor(
     notifier: Notifier;
     secrets: SecretsProvider;
     logger: Logger;
+    metrics: BootDeps["metrics"];
   }
 ): Promise<Executor> {
   const { publicClient, chain, transport, store, notifier, secrets, logger } = deps;
@@ -245,6 +312,7 @@ async function buildExecutor(
     // Keyless: no signer, no WalletClient, no NonceAllocator anywhere in this process.
     if (!store) throw new Error("MANUAL execution requires a StateStore (DATABASE_URL)");
     const identity = { from: config.execution.manualExecutorAddress, chainId: chain.id };
+    await store.bindExecutionIdentity({ chainId: identity.chainId, address: identity.from });
     // Confirm the on-chain account matches the operator's declared custody, so a `safe` deployment
     // pointed at a bare EOA (or vice-versa) stops at boot instead of mis-confirming intents later.
     await assertCustody(publicClient, identity.from, config.execution.executorKind, logger);
@@ -266,13 +334,25 @@ async function buildExecutor(
   // concurrent sends never collide).
   const signer = await resolveSigner(config.signer, (ref) => secrets.get(ref));
   logger.info(`Execution mode: AUTO — signer ${config.signer.source} (${signer.account.address})`);
+  // Before anything reads or writes the store. `resyncNonces` below already reasons over every
+  // in-flight intent as one nonce sequence, so a schema shared with another signer would fence on
+  // transactions that are not ours — this is where that stops being possible.
+  await store?.bindExecutionIdentity({ chainId: chain.id, address: signer.account.address });
+
   const walletClient = createWalletClient({ chain, transport, account: signer.account });
   const nonces = createNonceAllocator(createNonceLease(), signer.account.address);
+  const submission = buildSubmission(
+    config.execution.submitter,
+    publicClient,
+    logger,
+    deps.metrics
+  );
   const executor = createAutoExecutorFromWallet({
     store,
     nonces,
     publicClient,
     walletClient,
+    submission,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
     logger,
   });

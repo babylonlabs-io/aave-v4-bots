@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSignerConfig, createLocalSigner, createPublicSubmitter, createSigner } from "./index";
+import { buildSignerConfig, createLocalSigner, createSigner } from "./index";
 
 // Anvil account[0].
 const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
@@ -84,17 +84,5 @@ describe("@repo/signer", () => {
       );
     });
     // The `aws` route just forwards to `createAwsSigner`, covered in `aws.test.ts`.
-  });
-
-  describe("createPublicSubmitter", () => {
-    it("broadcasts the serialized tx via the client and returns the hash", async () => {
-      const client = { sendRawTransaction: vi.fn().mockResolvedValue("0xhash") };
-      const submitter = createPublicSubmitter(client);
-
-      const hash = await submitter.send("0xsigned");
-
-      expect(hash).toBe("0xhash");
-      expect(client.sendRawTransaction).toHaveBeenCalledWith({ serializedTransaction: "0xsigned" });
-    });
   });
 });

@@ -184,4 +184,64 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
     },
     TIMEOUT
   );
+
+  // SQL the memory adapter cannot stand in for: a real `ON CONFLICT DO NOTHING` claim, and a real
+  // `status = ANY($8)` guard. Both are new, and both are the kind of thing that type-checks while
+  // being wrong.
+  it(
+    "binds the schema to one execution identity and refuses another",
+    async () => {
+      const identity = {
+        chainId: 31337,
+        address: "0xAaAa000000000000000000000000000000000001" as Hex,
+      };
+      await store.bindExecutionIdentity(identity);
+      // Idempotent for the owner, including a differently-cased address.
+      await store.bindExecutionIdentity({
+        ...identity,
+        address: identity.address.toLowerCase() as Hex,
+      });
+
+      await expect(
+        store.bindExecutionIdentity({
+          chainId: 31337,
+          address: "0xbBbB000000000000000000000000000000000002",
+        })
+      ).rejects.toThrow(/is bound to/);
+      // Same address, other chain — a different nonce sequence, so a different identity.
+      await expect(store.bindExecutionIdentity({ ...identity, chainId: 8453 })).rejects.toThrow(
+        /is bound to/
+      );
+    },
+    TIMEOUT
+  );
+
+  it(
+    "applies a guarded transition only to the row the caller observed",
+    async () => {
+      const key = idempotencyKey(input("pos-guard"));
+      await store.recordIntent(input("pos-guard"));
+      await store.transition(key, "submitted", { nonce: 9, txHash: "0xaaa" as Hex });
+
+      // Wrong hash: a late writer from a previous attempt must not land.
+      expect(await store.transition(key, "confirmed", {}, { txHash: "0xbbb" as Hex })).toBe(false);
+      expect((await store.getIntent(key))?.status).toBe("submitted");
+
+      // Wrong status: the row moved on since the caller read it.
+      expect(await store.transition(key, "failed", {}, { status: ["pending"] })).toBe(false);
+      expect((await store.getIntent(key))?.status).toBe("submitted");
+
+      // Both match — it applies.
+      expect(
+        await store.transition(
+          key,
+          "confirmed",
+          {},
+          { txHash: "0xaaa" as Hex, status: ["submitted"] }
+        )
+      ).toBe(true);
+      expect((await store.getIntent(key))?.status).toBe("confirmed");
+    },
+    TIMEOUT
+  );
 });
