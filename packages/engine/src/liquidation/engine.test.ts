@@ -109,6 +109,11 @@ function createMockClients() {
             proxyContract: "0xproxy",
           });
         }
+        // Already approved, so the cycle's `refreshInventory` sends nothing and each test measures
+        // the liquidation it is about. Genuinely unlimited: inventory funding asks for
+        // `maxUint256 / 2`, so a merely large number would still trigger an approval. The tests
+        // that DO cover approvals override this with a zero allowance.
+        if (functionName === "allowance") return Promise.resolve(2n ** 256n - 1n);
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
@@ -728,9 +733,10 @@ describe("LiquidationEngine", () => {
   });
 
   // Approving the adapter is inventory-funding behaviour: it exists because the signer's own tokens
-  // pay. It is reached through the engine's `prepare()`. These pass `debtTokenAddresses`, so
-  // `prepare()` skips discovery and goes straight to the approvals.
-  describe("prepare() approvals", () => {
+  // pay. It happens inside the poll cycle (`refreshInventory`), NOT at boot — `prepare()` runs
+  // before the risk gate's state is ever read, so an approval sent from there escapes it. These
+  // pass `debtTokenAddresses`, so discovery is skipped and the cycle goes straight to the approvals.
+  describe("adapter approvals", () => {
     it("approves when allowance is below threshold", async () => {
       const clients = createMockClients();
       // Return low allowance
@@ -742,6 +748,7 @@ describe("LiquidationEngine", () => {
       });
 
       await bot.prepare();
+      await bot.run();
 
       expect(clients.publicClient.readContract).toHaveBeenCalled();
       expect(clients.sender.send).toHaveBeenCalledWith(
@@ -762,6 +769,7 @@ describe("LiquidationEngine", () => {
       });
 
       await bot.prepare();
+      await bot.run();
 
       expect(clients.sender.send).not.toHaveBeenCalled();
     });
@@ -784,6 +792,7 @@ describe("LiquidationEngine", () => {
       // for fairness + direct-redemption fee, independent of whether WBTC is a
       // borrowable debt token on the Spoke.
       await bot.prepare();
+      await bot.run();
 
       expect(clients.sender.send).toHaveBeenCalledTimes(1);
       expect(clients.sender.send).toHaveBeenCalledWith(
@@ -793,6 +802,119 @@ describe("LiquidationEngine", () => {
         }),
         expect.any(Function)
       );
+    });
+  });
+
+  // The guard this whole placement exists for. `prepare()` runs BEFORE the poll loop, and the poll
+  // loop is the only place the gate's state is read — so an approval sent from `prepare()` escapes
+  // it. That matters most in exactly the case the code-hash guard fires: it halts the gate at boot
+  // because a pinned target's bytecode changed, and the old placement then granted that same
+  // contract an unlimited allowance moments later.
+  describe("approvals and the risk gate", () => {
+    const approvalArgs = { debtTokenAddresses: [] as `0x${string}`[] };
+
+    const zeroAllowance = (clients: ReturnType<typeof createMockClients>) =>
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName }: { functionName: string }) => {
+          if (functionName === "allowance") return Promise.resolve(0n);
+          if (functionName === "symbol") return Promise.resolve("WBTC");
+          if (functionName === "decimals") return Promise.resolve(8);
+          return Promise.resolve(0n);
+        }
+      );
+
+    it("sends nothing at boot, even with an allowance of zero", async () => {
+      const clients = createMockClients();
+      zeroAllowance(clients);
+      const bot = createBot(clients, { ...approvalArgs, nonces: passthroughNonces() });
+
+      await bot.prepare();
+
+      expect(clients.sender.send).not.toHaveBeenCalled();
+    });
+
+    it("does not approve while the gate is HALTED", async () => {
+      const clients = createMockClients();
+      zeroAllowance(clients);
+      const risk = createRiskGate({ startHalted: true });
+      const bot = createBot(clients, { ...approvalArgs, risk, nonces: passthroughNonces() });
+
+      await bot.prepare();
+      await bot.run();
+
+      expect(clients.sender.send).not.toHaveBeenCalled();
+    });
+
+    // ...and repairs itself on resume, without a restart. The old placement could not: it approved
+    // once at boot and had no later path, so a halted boot left the bot unable to fund anything.
+    it("approves on the first cycle after a resume", async () => {
+      const clients = createMockClients();
+      zeroAllowance(clients);
+      const risk = createRiskGate({ startHalted: true });
+      const bot = createBot(clients, { ...approvalArgs, risk, nonces: passthroughNonces() });
+
+      await bot.prepare();
+      await bot.run();
+      expect(clients.sender.send).not.toHaveBeenCalled();
+
+      risk.resume();
+      await bot.run();
+
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function)
+      );
+    });
+  });
+
+  // A batch of position probes can fail as a whole (the aggregate exceeding a node's eth_call gas
+  // cap is the ordinary way), leaving the candidate list short. Acting on what we saw is right —
+  // refusing the cycle turns a partial view into no view — but it must not pass as a quiet market.
+  describe("a partially scanned position table", () => {
+    const feedWith = (extra: Record<string, unknown>) => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          liquidatable: [],
+          total: 0,
+          checked: 5,
+          dataTimestampMs: Date.now(),
+          ...extra,
+        }),
+      }) as unknown as typeof global.fetch;
+    };
+
+    it("reports the gap rather than reading it as nothing to do", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      feedWith({ unscanned: 7 });
+
+      await bot.run();
+
+      expect(metrics.recordError).toHaveBeenCalledWith("positions_unscanned");
+    });
+
+    it("says nothing when the whole table was scanned", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      feedWith({ unscanned: 0 });
+
+      await bot.run();
+
+      expect(metrics.recordError).not.toHaveBeenCalledWith("positions_unscanned");
+    });
+
+    // An indexer too old to report the field scanned everything, which is what it did before
+    // batching existed — so its silence must not read as a permanent partial scan.
+    it("treats an absent field as a full scan", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      feedWith({});
+
+      await bot.run();
+
+      expect(metrics.recordError).not.toHaveBeenCalledWith("positions_unscanned");
     });
   });
 
@@ -1146,7 +1268,10 @@ describe("LiquidationEngine", () => {
       const executorPublicClient = {
         getTransaction: vi.fn(async () => ({ hash: "0xhash" })),
         getTransactionReceipt: vi.fn(),
-        readContract: vi.fn(async () => 0n),
+        // Already approved, so a cycle proposes only the liquidation. Approvals now happen inside
+        // the cycle rather than at boot, and MANUAL proposes them for an operator to sign — which
+        // has its own test below.
+        readContract: vi.fn(async () => 2n ** 256n - 1n),
         getTransactionCount,
       } as unknown as PublicClient;
       const executor = createManualExecutor({

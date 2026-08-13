@@ -67,6 +67,39 @@ export function defaultSafeTxParams(safeNonce: number): SafeTxParams {
   };
 }
 
+/**
+ * Enforce the policy above on params that came from somewhere we do not control.
+ *
+ * Deliberately NOT inside `computeSafeTxHash`: that function hashes what it is given, and the Safe
+ * protocol legitimately permits refunds — declining to use them is *our* policy, not arithmetic.
+ * Keeping the rule here, beside the defaults it mirrors, means there is one definition of it rather
+ * than a copy at each place that has to check.
+ *
+ * The fields matter because they are the ones a hash cannot protect. `payloadHash` commits to the
+ * inner call only, and an envelope's own `safeTxHash` is recomputed from the same record it is
+ * stored beside — so anything able to rewrite that record can keep the two consistent. A nonzero
+ * `refundReceiver`/`gasPrice`/`gasToken` then pays the Safe's tokens out on every execution while
+ * the inner call still reads exactly as proposed. A constant cannot be rewritten that way, which is
+ * why this check holds where a hash comparison does not.
+ */
+export function assertZeroGasPolicy(params: SafeTxParams, context: string): void {
+  const offending = [
+    params.operation !== 0 && `operation ${params.operation} is not CALL`,
+    params.safeTxGas !== "0" && `safeTxGas ${params.safeTxGas}`,
+    params.baseGas !== "0" && `baseGas ${params.baseGas}`,
+    params.gasPrice !== "0" && `gasPrice ${params.gasPrice}`,
+    params.gasToken.toLowerCase() !== ZERO_ADDRESS && `gasToken ${params.gasToken}`,
+    params.refundReceiver.toLowerCase() !== ZERO_ADDRESS &&
+      `refundReceiver ${params.refundReceiver}`,
+  ].filter((entry): entry is string => typeof entry === "string");
+
+  if (offending.length > 0) {
+    throw new Error(
+      `${context}: SafeTx carries nonzero gas/refund fields (${offending.join(", ")}) — refusing. These pay the Safe's own tokens out on execution, and no hash covers them.`
+    );
+  }
+}
+
 /** The EIP-712 typed-data of a SafeTx — the single source for both hashing and signing, so an owner
  *  never signs something other than what `computeSafeTxHash` commits to. */
 export function safeTxTypedData(args: {

@@ -380,6 +380,15 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     try {
       const data = await this.indexer.read<PonderResponse>("/liquidatable-positions");
       this.metrics.recordPositionsChecked(data.checked);
+      // A short scan is not a quiet market. Surfaced rather than acted on: the positions we DID see
+      // are still worth acting on, and refusing the cycle would turn a partial view into no view.
+      // What must not happen is reading an incomplete list as "nothing to liquidate" in silence.
+      if (data.unscanned) {
+        this.metrics.recordError("positions_unscanned");
+        this.logger.warn(
+          `Indexer could not probe ${data.unscanned} position(s) this cycle — the candidate list is incomplete`
+        );
+      }
       return { positions: data.liquidatable, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
       this.metrics.recordError("ponder_fetch_error");

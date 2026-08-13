@@ -16,6 +16,7 @@ import {
   createRelayHorizon,
 } from "@repo/engine";
 import {
+  PreBroadcastError,
   createFlashbotsProtectSubmitter,
   createNonceAllocator,
   createNonceLease,
@@ -154,7 +155,12 @@ function buildLocalChain(chainId: number, rpcUrl: string): Chain {
  * Run the shared boot sequence and return the pieces a service builds its engine(s) on. Ordering is
  * load-bearing: the executor is built last (its AUTO branch seeds the nonce lease from the chain, so
  * a boot-time approval can reserve a nonce), and the risk gate verifies the pinned target bytecode
- * before any tx can go out.
+ * before the engines are built.
+ *
+ * Verifying first is not the same as being obeyed: the gate's state is read when a slot is opened,
+ * which is inside the poll cycle, so nothing here is protected by ordering alone. What protects a
+ * transaction is `assertCanBroadcast` below — every send goes through it, including the approvals
+ * inventory funding needs, which is why those moved out of boot-time setup and into the cycle.
  */
 export async function bootstrapService(config: BootConfig, deps: BootDeps): Promise<BootResult> {
   const { metrics, logger } = deps;
@@ -202,16 +208,31 @@ export async function bootstrapService(config: BootConfig, deps: BootDeps): Prom
     logger,
   });
 
-  const executor = await buildExecutor(config, {
-    publicClient,
-    chain,
-    transport,
-    store,
-    notifier,
-    secrets,
-    logger,
-    metrics,
-  });
+  const executor = await buildExecutor(
+    config,
+    // The gate's last word, as a bare callback: `@repo/execution` signs and sends and has no reason
+    // to know what a risk gate is. `openSlot` reads this state once per cycle, and a halt can land
+    // after it — the kill switch, or a periodic code-hash check finding a target's bytecode changed.
+    // `PreBroadcastError` is the classification the engines already read as "nothing reached the
+    // chain", so a refusal here settles the slot `abandoned` and leaves the breaker alone.
+    (action) => {
+      if (risk.state() === "HALTED") {
+        throw new PreBroadcastError(
+          `risk gate is HALTED — refusing to broadcast ${action} (${risk.haltReason()})`
+        );
+      }
+    },
+    {
+      publicClient,
+      chain,
+      transport,
+      store,
+      notifier,
+      secrets,
+      logger,
+      metrics,
+    }
+  );
 
   return { publicClient, store, risk, executor };
 }
@@ -293,6 +314,8 @@ async function assertCustody(
  */
 async function buildExecutor(
   config: BootConfig,
+  /** See the call site: the gate's verdict, as a callback this layer can hold without a risk dep. */
+  assertCanBroadcast: (action: string) => void,
   deps: {
     publicClient: PublicClient;
     chain: Chain;
@@ -352,6 +375,7 @@ async function buildExecutor(
     walletClient,
     submission,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
+    assertCanBroadcast,
     logger,
   });
   // Seed the shared lease from the chain once, before any send (the boot `ensureApproval` reserves

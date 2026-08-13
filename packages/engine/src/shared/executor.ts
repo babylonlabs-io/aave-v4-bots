@@ -160,9 +160,25 @@ export function createAutoExecutor(deps: {
    * answer about a transaction is authoritative and nothing has to expire.
    */
   horizon?: (hash: Hex) => Promise<number>;
+  /**
+   * Last word before anything is broadcast: throw to stop it. Supplied by the composition root, and
+   * deliberately a bare callback rather than the risk gate — this seam signs and sends, and knows
+   * nothing about why an action might be refused.
+   *
+   * It exists because the gate's state is read once per cycle, when a slot is opened, and a halt
+   * can land after that: an operator hitting the kill switch, or a periodic code-hash check finding
+   * a target's bytecode changed. Between those two moments this is the only thing left. Approvals
+   * go through it too — an approval is a transaction, and the same halt that stops a liquidation
+   * has no reason to permit granting an allowance to the contract that caused it.
+   *
+   * Throw `PreBroadcastError` (the runtime does): the engines already read that as "nothing reached
+   * the chain", so the slot settles `abandoned` and the breaker is left alone.
+   */
+  assertCanBroadcast?: (action: string) => void;
   logger: Logger;
 }): AutoExecutor {
   const { crash, sender, publicClient, walletClient, txReceiptTimeoutMs, horizon, logger } = deps;
+  const assertCanBroadcast = deps.assertCanBroadcast ?? (() => {});
   const identity = sender.identity;
 
   /**
@@ -229,6 +245,7 @@ export function createAutoExecutor(deps: {
       let hash: Hex;
       let signedHash: Hex | undefined;
       try {
+        assertCanBroadcast("approval");
         hash = await crash.send((nonce) =>
           sender.send(
             {
@@ -284,6 +301,7 @@ export function createAutoExecutor(deps: {
 
       let signedHash: Hex | undefined;
       try {
+        assertCanBroadcast(claim.action);
         // The reserved nonce arrives here under the allocator's lock. The sender signs it locally
         // first, so `onSigned` durably records nonce + hash before anything reaches the chain.
         const hash = await crash.send((nonce) =>
@@ -348,6 +366,8 @@ export interface AutoExecutorDeps {
   walletClient: WalletClient<Transport, Chain, LocalAccount>;
   txReceiptTimeoutMs: number;
   logger: Logger;
+  /** See `createAutoExecutor`. Omitted ⇒ nothing is refused here. */
+  assertCanBroadcast?: (action: string) => void;
   /**
    * Route transactions somewhere other than the node's public mempool. Omitted ⇒ the mempool, which
    * is `createTxSender`'s own default.
@@ -383,6 +403,7 @@ export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecut
     walletClient: deps.walletClient,
     txReceiptTimeoutMs: deps.txReceiptTimeoutMs,
     horizon,
+    assertCanBroadcast: deps.assertCanBroadcast,
     logger: deps.logger,
   });
 }

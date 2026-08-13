@@ -40,8 +40,11 @@ export class InventoryFunding implements LiquidationFunding {
 
   constructor(private readonly deps: InventoryFundingDeps) {}
 
+  /** Nothing to do at boot: the approvals this mode needs are sent from `refreshInventory`. */
+  async prepare(): Promise<void> {}
+
   /** Approve the adapter to pull every debt token plus WBTC. */
-  async prepare(): Promise<void> {
+  private async approveAdapter(): Promise<void> {
     const { adapterAddress, wbtcAddress, executor, logger } = this.deps;
     const tokens = Array.from(new Set<Address>([...this.deps.debtTokens(), wbtcAddress]));
 
@@ -69,6 +72,11 @@ export class InventoryFunding implements LiquidationFunding {
    * silent failure would present as "everything is unaffordable" rather than "we could not read".
    */
   async refreshInventory(): Promise<void> {
+    // Before the balances, because an allowance the adapter cannot pull makes them meaningless —
+    // and because this is the first point in the cycle that is downstream of the gate's HALTED
+    // check, so it is the earliest place an approval may legitimately be sent.
+    await this.approveAdapter();
+
     const { publicClient, wbtcAddress, risk, executor } = this.deps;
     const owner = executor.identity.from;
     const tokens = Array.from(new Set<Address>([...this.deps.debtTokens(), wbtcAddress]));

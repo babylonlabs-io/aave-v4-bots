@@ -220,7 +220,8 @@ The service requires two environment configurations:
 
 ```bash
 # Copy template
-cp env.liquidator.example .env.liquidator
+cp env.liquidator.example         .env.liquidator          # the bot: key, risk, submission
+cp env.liquidator.indexer.example .env.liquidator.indexer  # the indexer: indexing variables only
 
 # Create Ponder env (copy relevant vars from .env.liquidator)
 cp .env.liquidator services/ponder/.env.local
@@ -693,6 +694,18 @@ curl http://localhost:42069/positions
 curl http://localhost:42069/liquidatable-positions
 ```
 
+The response's `checked` counts the positions actually probed and `unscanned` the
+ones a failed batch cost. The indexer probes the table in batches
+(`POSITION_PROBE_CHUNK_SIZE`, default 25) so one node-side `eth_call` gas cap
+cannot sink the whole scan; a nonzero `unscanned` means the candidate list is
+incomplete for that request.
+
+The default is measured: ~177k gas per healthy probe against a five-reserve
+spoke, rising ~21k per extra spoke reserve and ~3k per vault on the position,
+with a liquidatable position costing ~247k. Batching does not amortise that, so
+25 keeps a batch near 4.4M gas — inside the 50M cap geth defaults to and the 10M
+some providers enforce. Raise it only against a known node cap.
+
 ## 9. Troubleshooting
 
 ### 9.1. Common Issues
@@ -706,6 +719,7 @@ curl http://localhost:42069/liquidatable-positions
 | "Missing required environment variable" | Configuration error | Check `.env.liquidator` for missing values |
 | "EXECUTION_MODE=MANUAL requires DATABASE_URL" | MANUAL proposals need durable storage | Set `DATABASE_URL` and matching `PERSISTENCE_SCHEMA` |
 | "EXECUTION_MODE=MANUAL is keyless" | A signer or private key is present in MANUAL | Unset signer env and the effective private-key env var |
+| Liquidations missed while positions were unhealthy | A probe batch failed, so the indexer never scanned those positions (`liquidator_errors_total{type="positions_unscanned"}`) | Check the indexer log for "failed as a whole" and the RPC's `eth_call` gas cap; the next cycle retries |
 | "halted (...)" | Risk gate is HALTED | `GET /status` and read `reason` — it is the only record of a halt raised while already HALTED; then `POST /resume` if appropriate (409 means the code-hash guard is holding it) |
 
 ### 9.2. Error Types

@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
 import { BaseError, ContractFunctionRevertedError } from "viem";
 import type { Address, PublicClient } from "viem";
+import { type Probe, probeInChunks, resolveChunkSize } from "../probePositions";
 
 const logger = createLogger();
 
@@ -46,6 +47,15 @@ function isVaultGoneRevert(error: unknown): boolean {
 // readContract so the bot still works (just without the savings).
 const MULTICALL3_ADDRESS = (process.env.MULTICALL3_ADDRESS ||
   "0xcA11bde05977b3631167028862bE2a173976CA11") as Address;
+
+const { chunkSize: probeChunkSize, invalid: probeChunkSizeInvalid } = resolveChunkSize(
+  process.env.POSITION_PROBE_CHUNK_SIZE
+);
+if (probeChunkSizeInvalid) {
+  logger.warn(
+    `POSITION_PROBE_CHUNK_SIZE=${process.env.POSITION_PROBE_CHUNK_SIZE} is not a positive integer; probing in batches of ${probeChunkSize}`
+  );
+}
 
 let multicallSupported: boolean | undefined;
 
@@ -171,52 +181,72 @@ app.get("/liquidatable-positions", async (c) => {
   // approved + balance. We unify both paths to a
   // { status: "success" | "failure", value/error } shape so the loop below
   // doesn't care which one ran.
-  type Probe =
-    | {
-        status: "success";
-        value: readonly [readonly bigint[], bigint, readonly `0x${string}`[]];
-      }
-    | { status: "failure"; error: unknown };
+  type Estimate = readonly [readonly bigint[], bigint, readonly `0x${string}`[]];
 
-  let probes: Probe[];
-
-  if (await isMulticallSupported(publicClient)) {
-    // One eth_call to Multicall3.aggregate3 covering N positions.
-    const results = await publicClient.multicall({
-      contracts: positions.map((p) => ({
-        address: lensAddress,
-        abi: lensAbi,
-        functionName: "estimateLiquidation" as const,
-        args: [p.proxyAddress as Address, false] as const,
-      })),
-      allowFailure: true,
-      multicallAddress: MULTICALL3_ADDRESS,
-      blockNumber: blockRef?.blockNumber,
-    });
-    probes = results.map((r) =>
-      r.status === "success"
-        ? { status: "success", value: r.result }
-        : { status: "failure", error: r.error }
+  // A batch that fails as a whole costs its own positions and nothing more, and `unscanned` says
+  // how many that was — see `probeInChunks`.
+  const onChunkFailure = (offset: number, size: number, error: unknown) =>
+    logger.warn(
+      `estimateLiquidation batch ${offset}-${offset + size} failed as a whole; ${size} position(s) unscanned this cycle:`,
+      error instanceof Error ? error.message : error
     );
-  } else {
-    // Fallback: N parallel readContract calls (the pre-multicall behavior).
-    const settled = await Promise.allSettled(
-      positions.map((p) =>
-        publicClient.readContract({
-          address: lensAddress,
-          abi: lensAbi,
-          functionName: "estimateLiquidation",
-          args: [p.proxyAddress as Address, false],
-          blockNumber: blockRef?.blockNumber,
-        })
+
+  const { probes, unscanned } = (await isMulticallSupported(publicClient))
+    ? // One aggregate over every position would be one `eth_call`: past the node's gas cap the
+      // whole thing reverts, viem throws, and this endpoint 500s while real unhealthy positions
+      // exist. The position table only grows (a row is created on any Supply and removed only when
+      // shares reach zero), so that ceiling is reached by ordinary adoption, not just by someone
+      // trying.
+      await probeInChunks(
+        positions,
+        async (chunk): Promise<Probe<Estimate>[]> => {
+          const results = await publicClient.multicall({
+            contracts: chunk.map((p) => ({
+              address: lensAddress,
+              abi: lensAbi,
+              functionName: "estimateLiquidation" as const,
+              args: [p.proxyAddress as Address, false] as const,
+            })),
+            allowFailure: true,
+            multicallAddress: MULTICALL3_ADDRESS,
+            blockNumber: blockRef?.blockNumber,
+          });
+          return results.map((r) =>
+            r.status === "success"
+              ? { status: "success", value: r.result }
+              : { status: "failure", error: r.error }
+          );
+        },
+        onChunkFailure,
+        probeChunkSize
       )
-    );
-    probes = settled.map((s) =>
-      s.status === "fulfilled"
-        ? { status: "success", value: s.value }
-        : { status: "failure", error: s.reason }
-    );
-  }
+    : // Fallback: per-position `readContract`, in the same batches. Firing all of them at once is a
+      // different flavour of the same exhaustion — thousands of concurrent requests against one
+      // endpoint — so the batching is not just a multicall concern. `allSettled` keeps a single
+      // failed read from costing its batch, which is why this path rarely reports `unscanned`.
+      await probeInChunks(
+        positions,
+        async (chunk): Promise<Probe<Estimate>[]> => {
+          const settled = await Promise.allSettled(
+            chunk.map((p) =>
+              publicClient.readContract({
+                address: lensAddress,
+                abi: lensAbi,
+                functionName: "estimateLiquidation",
+                args: [p.proxyAddress as Address, false],
+                blockNumber: blockRef?.blockNumber,
+              })
+            )
+          );
+          return settled.map((s) =>
+            s.status === "fulfilled"
+              ? { status: "success", value: s.value }
+              : { status: "failure", error: s.reason }
+          );
+        },
+        onChunkFailure,
+        probeChunkSize
+      );
 
   const liquidatable: Array<{
     proxyAddress: string;
@@ -262,7 +292,11 @@ app.get("/liquidatable-positions", async (c) => {
     replaceBigInts({
       liquidatable,
       total: liquidatable.length,
-      checked: positions.length,
+      // `checked` counts the positions actually probed. `unscanned` is what a failed batch cost us:
+      // without it a partial scan is indistinguishable from a quiet market, and "no candidates" is
+      // exactly the answer a liquidator must not infer from a failure.
+      checked: positions.length - unscanned,
+      unscanned,
       dataTimestampMs,
     })
   );

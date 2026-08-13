@@ -1,6 +1,11 @@
 import { findSafeExecutionByHash } from "@repo/chain";
 import type { ProposedTx } from "@repo/execution";
-import { computeSafeTxHash, decodeExecTransaction, hashPayload } from "@repo/execution";
+import {
+  assertZeroGasPolicy,
+  computeSafeTxHash,
+  decodeExecTransaction,
+  hashPayload,
+} from "@repo/execution";
 import type { SafeEnvelope, StateStore, TxIntent } from "@repo/persistence";
 import type { Address, Hex, PublicClient } from "viem";
 import type { OperatorSigner } from "./signer";
@@ -21,7 +26,6 @@ export interface OperatorContext {
   now: () => number;
 }
 
-const ZERO = "0x0000000000000000000000000000000000000000";
 const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** Load one intent by id, or throw an operator-readable error. */
@@ -79,6 +83,13 @@ function assertSafeEnvelopeIntact(
   payload: ProposedTx,
   envelope: SafeEnvelope
 ): void {
+  // Policy before consistency, because consistency is the weaker of the two. Both the params and
+  // the hash live in one record, so anything that can rewrite it can rewrite both and stay
+  // self-consistent — and the refund fields are not covered by `payloadHash` (the inner call only)
+  // nor sent out-of-band, so an operator has nothing to compare the displayed hash against. This
+  // is the check that does not depend on the record being honest.
+  assertZeroGasPolicy(envelope, `intent ${id}`);
+
   const recomputed = computeSafeTxHash({
     inner: payload,
     params: envelope,
@@ -293,19 +304,13 @@ function verifySafeTx(
     throw new Error("execTransaction inner calldata != payload");
   if (decoded.inner.value !== payload.value)
     throw new Error("execTransaction inner value != payload");
-  if (decoded.params.operation !== 0) throw new Error("execTransaction operation is not CALL");
-  // v1 policy: every gas/refund field zero. `gasPrice`/`gasToken`/`refundReceiver` nonzero would drain
-  // the Safe; `safeTxGas`/`baseGas` are checked too, else a tampered value slips past — the hash
-  // recompute below hashes the persisted envelope, not these decoded fields, so it would not catch it.
-  if (
-    decoded.params.safeTxGas !== "0" ||
-    decoded.params.baseGas !== "0" ||
-    decoded.params.gasPrice !== "0" ||
-    !eq(decoded.params.gasToken, ZERO) ||
-    !eq(decoded.params.refundReceiver, ZERO)
-  ) {
-    throw new Error("execTransaction carries nonzero gas/refund fields — refusing");
-  }
+  // The same policy the envelope is held to, applied to what the chain actually carried. Both are
+  // needed and neither implies the other: the hash recompute below hashes the PERSISTED envelope,
+  // so a tampered decoded field would not show up there.
+  assertZeroGasPolicy(
+    { ...decoded.params, safeNonce: envelope.safeNonce },
+    `execTransaction for ${row.id}`
+  );
   // Finally, the SafeTx must be the exact one we fixed at claim: recompute its hash from the persisted
   // envelope + payload and require it to match what we persisted (the hash owners signed).
   assertSafeEnvelopeIntact(ctx, row.id, payload, envelope);
@@ -327,6 +332,12 @@ export async function releaseProposal(ctx: OperatorContext, id: string): Promise
     throw new Error(`only a claimed proposal can be released (${id} is ${row.status})`);
   }
   if (ctx.executorKind === "safe" && row.safeEnvelope) {
+    const { payload } = verifyProposal(ctx, row);
+    // The one path that used to reach for `safeTxHash` without checking the envelope it came from.
+    // A hash that does not match its own params is not a thing to scan for — and the same call
+    // enforces the zero gas/refund policy, so `release` no longer sees an envelope the other
+    // commands would refuse.
+    assertSafeEnvelopeIntact(ctx, id, payload, row.safeEnvelope);
     const executed = await findSafeExecutionByHash(
       ctx.publicClient,
       ctx.executorAddress,

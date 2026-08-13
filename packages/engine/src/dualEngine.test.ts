@@ -113,7 +113,10 @@ function setup(
         }
         // Both engines declare token spend to the gate, which reserves it against this figure.
         if (functionName === "balanceOf") return 10n ** 18n;
-        if (functionName === "allowance") return 10n ** 30n; // skip approvals
+        // Genuinely unlimited: inventory funding asks for `maxUint256 / 2`, so a merely large
+        // number still triggers an approval — and these tests are about nonce sharing and the
+        // breaker, not about the first cycle's approval (which has its own tests).
+        if (functionName === "allowance") return 2n ** 256n - 1n;
         return 0n;
       }
     ),

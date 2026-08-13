@@ -1,5 +1,10 @@
 import type { ProposedTx } from "@repo/execution";
-import { buildSafeExecution, encodeExecTransaction, hashPayload } from "@repo/execution";
+import {
+  buildSafeExecution,
+  computeSafeTxHash,
+  encodeExecTransaction,
+  hashPayload,
+} from "@repo/execution";
 import { type IntentInput, createMemoryStateStore, idempotencyKey } from "@repo/persistence";
 import type { Address, Hex, PublicClient } from "viem";
 import { describe, expect, it } from "vitest";
@@ -112,6 +117,76 @@ describe("verifyProposal (tamper check)", () => {
     };
     const tamperedCtx = { ...c, store: { ...c.store, getIntent: async () => tampered } };
     await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/tampered envelope/);
+  });
+
+  // The harder tamper, and the one a hash cannot catch. Rewriting the refund fields AND recomputing
+  // `safeTxHash` for them leaves the record perfectly self-consistent — the recompute above passes.
+  // Nothing else covers those fields: `payloadHash` commits to the inner call, and the notification
+  // carries only that, so an operator has no out-of-band value to check the displayed hash against.
+  // What catches it is the policy, because a constant in code cannot be rewritten in the database.
+  it("refuses an envelope whose refund fields would pay the Safe out, however consistent", async () => {
+    const c = ctx({ signer: safeSigner(), executorAddress: SAFE, executorKind: "safe" });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const row = await c.store.getIntent(id);
+    if (!row?.safeEnvelope) throw new Error("expected a persisted envelope");
+    const drained = {
+      ...row.safeEnvelope,
+      gasPrice: "1",
+      gasToken: "0x3333333333333333333333333333333333333333" as Address,
+      refundReceiver: "0x4444444444444444444444444444444444444444" as Address,
+    };
+    // Recomputed for the tampered params, so params and hash agree with each other.
+    const envelope = {
+      ...drained,
+      safeTxHash: computeSafeTxHash({
+        inner: p,
+        params: drained,
+        safe: SAFE,
+        chainId: c.chainId,
+      }),
+    };
+    const tamperedCtx = {
+      ...c,
+      store: { ...c.store, getIntent: async () => ({ ...row, safeEnvelope: envelope }) },
+    };
+
+    await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/gas\/refund/);
+  });
+
+  it("names every offending field, so an operator sees what was changed", async () => {
+    const c = ctx({ signer: safeSigner(), executorAddress: SAFE, executorKind: "safe" });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const row = await c.store.getIntent(id);
+    if (!row?.safeEnvelope) throw new Error("expected a persisted envelope");
+    const drained = { ...row.safeEnvelope, gasPrice: "1", baseGas: "21000" };
+    const tamperedCtx = {
+      ...c,
+      store: {
+        ...c.store,
+        getIntent: async () => ({
+          ...row,
+          safeEnvelope: {
+            ...drained,
+            safeTxHash: computeSafeTxHash({
+              inner: p,
+              params: drained,
+              safe: SAFE,
+              chainId: c.chainId,
+            }),
+          },
+        }),
+      },
+    };
+
+    await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/baseGas 21000.*gasPrice 1/);
   });
 });
 
@@ -341,6 +416,64 @@ describe("release + fail (recovery)", () => {
     });
     await expect(ops.releaseProposal(c, id)).rejects.toThrow(/already executed/);
     expect((await c.store.getIntent(id))?.status).toBe("claimed"); // untouched
+  });
+
+  // `claimBlock` is a height read from one endpoint at claim time. A reorg, or a `getLogs` endpoint
+  // trailing the one that recorded it, puts the execution just BELOW it — and starting the scan
+  // exactly there reports a landed SafeTx as never executed. Release then frees the claim, the
+  // subject is re-proposed, and an owner signs the same fund-moving action again under a fresh
+  // nonce. The scan therefore begins below the anchor, not at it.
+  it("release refuses when the SafeTx executed just below the recorded claim height", async () => {
+    const c = ctx({ signer: safeSigner(), executorAddress: SAFE, executorKind: "safe" });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const env = (await c.store.getIntent(id))?.safeEnvelope;
+    if (!env) throw new Error("expected an envelope");
+    // The claim recorded block 100; the execution is visible only from block 95 onward.
+    c.publicClient = {
+      getBlockNumber: async () => 200n,
+      getLogs: async ({ fromBlock }: { fromBlock: bigint }) =>
+        fromBlock <= 95n
+          ? [
+              {
+                eventName: "ExecutionSuccess",
+                args: { txHash: env.safeTxHash },
+                transactionHash: SENT_TX,
+              },
+            ]
+          : [],
+    } as unknown as PublicClient;
+
+    await expect(ops.releaseProposal(c, id)).rejects.toThrow(/already executed/);
+    expect((await c.store.getIntent(id))?.status).toBe("claimed");
+  });
+
+  // `release` used to be the one path that read `safeTxHash` without checking the envelope it came
+  // from — so it would scan for, and act on, a hash the other commands would refuse outright.
+  it("release refuses an envelope whose refund fields would pay the Safe out", async () => {
+    const c = ctx({ signer: safeSigner(), executorAddress: SAFE, executorKind: "safe" });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const row = await c.store.getIntent(id);
+    if (!row?.safeEnvelope) throw new Error("expected an envelope");
+    const drained = { ...row.safeEnvelope, gasPrice: "1" };
+    const tampered = {
+      ...row,
+      safeEnvelope: {
+        ...drained,
+        safeTxHash: computeSafeTxHash({ inner: p, params: drained, safe: SAFE, chainId: CHAIN }),
+      },
+    };
+
+    await expect(
+      ops.releaseProposal({ ...c, store: { ...c.store, getIntent: async () => tampered } }, id)
+    ).rejects.toThrow(/gas\/refund/);
   });
 
   it("release proceeds when only an UNRELATED SafeTx advanced the Safe (no matching hash)", async () => {

@@ -11,6 +11,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   type ProposedTx,
+  assertZeroGasPolicy,
   buildSafeExecution,
   computeSafeTxHash,
   decodeExecTransaction,
@@ -42,6 +43,45 @@ describe("defaultSafeTxParams (v1 zero-gas/refund policy)", () => {
       gasToken: ZERO,
       refundReceiver: ZERO,
     });
+  });
+});
+
+// One field at a time, because the fields are not interchangeable and a check that only fires when
+// several are set at once would let the single-field tamper through — which is the whole attack:
+// one nonzero `refundReceiver` pays the Safe out on every execution while the inner call still
+// reads exactly as proposed.
+describe("assertZeroGasPolicy", () => {
+  const conforming = defaultSafeTxParams(7);
+  const ATTACKER = "0x4444444444444444444444444444444444444444" as const;
+
+  it("passes the params the bot itself builds", () => {
+    expect(() => assertZeroGasPolicy(conforming, "ctx")).not.toThrow();
+  });
+
+  it.each([
+    ["operation", { operation: 1 as const }, /operation 1 is not CALL/],
+    ["safeTxGas", { safeTxGas: "1" }, /safeTxGas 1/],
+    ["baseGas", { baseGas: "21000" }, /baseGas 21000/],
+    ["gasPrice", { gasPrice: "1" }, /gasPrice 1/],
+    ["gasToken", { gasToken: ATTACKER }, /gasToken 0x4444/],
+    ["refundReceiver", { refundReceiver: ATTACKER }, /refundReceiver 0x4444/],
+  ])("refuses a nonzero %s on its own", (_field, override, expected) => {
+    expect(() => assertZeroGasPolicy({ ...conforming, ...override }, "ctx")).toThrow(expected);
+  });
+
+  // Echoed verbatim, in whatever form it was stored: the operator has to recognise the address to
+  // judge it, and a normalised one reads like a different value than the record they are looking at.
+  it("names the offending address exactly as stored", () => {
+    const checksummed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01" as const;
+    expect(() => assertZeroGasPolicy({ ...conforming, gasToken: checksummed }, "ctx")).toThrow(
+      checksummed
+    );
+  });
+
+  it("names the context so an operator knows which intent it is", () => {
+    expect(() => assertZeroGasPolicy({ ...conforming, gasPrice: "1" }, "intent abc")).toThrow(
+      /^intent abc:/
+    );
   });
 });
 

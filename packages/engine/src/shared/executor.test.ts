@@ -693,6 +693,79 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
   });
 });
 
+// The last word before a broadcast. `openSlot` reads the gate once per cycle and a halt can land
+// after it — the kill switch, or a periodic code-hash check finding a target's bytecode changed.
+// Between admission and the send this callback is the only thing left, and it covers approvals too:
+// an approval is a transaction, and the halt that stopped a liquidation has no reason to permit
+// granting an allowance to the contract that caused it.
+describe("createAutoExecutor — the broadcast guard", () => {
+  const refuse = () => {
+    throw new PreBroadcastError("halted");
+  };
+  const crashFor = (publicClient = autoPublicClient()) =>
+    createCrashSafety({
+      nonces: allocator(),
+      reader: createChainReader(publicClient),
+      signer: "0xsigner" as Address,
+      logger: silentLogger,
+    });
+
+  it("stops a commit, and reports it as pre-broadcast so nothing is presumed in flight", async () => {
+    const sender = autoSender();
+    const exec = createAutoExecutor({
+      crash: crashFor(),
+      sender,
+      publicClient: autoPublicClient(),
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      assertCanBroadcast: refuse,
+      logger: silentLogger,
+    });
+
+    const out = await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    expect(sender.send).not.toHaveBeenCalled();
+    // `broadcastAttempted: false` is what settles the slot `abandoned` rather than blaming the
+    // breaker for a transaction that never existed.
+    expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: false });
+  });
+
+  it("stops an approval too", async () => {
+    const sender = autoSender();
+    const exec = createAutoExecutor({
+      crash: crashFor(),
+      sender,
+      publicClient: autoPublicClient({ readContract: vi.fn(async () => 0n) }),
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      assertCanBroadcast: refuse,
+      logger: silentLogger,
+    });
+
+    await expect(
+      exec.ensureAllowance({ token: TARGET, spender: OPERATOR, required: 1n })
+    ).rejects.toThrow(/halted/);
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  it("is out of the way when nothing refuses", async () => {
+    const sender = autoSender();
+    const exec = createAutoExecutor({
+      crash: crashFor(),
+      sender,
+      publicClient: autoPublicClient(),
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      logger: silentLogger,
+    });
+
+    const out = await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    expect(out).toMatchObject({ kind: "broadcast" });
+    expect(sender.send).toHaveBeenCalled();
+  });
+});
+
 // A stuck approval must not pin the engine. Its intent is claimed under `action: "approval"`, which
 // no engine owns — so a reconcile scoped to the caller's action would leave it live forever, and a
 // live approval intent makes every later `ensureAllowance` a duplicate: the bot skips every

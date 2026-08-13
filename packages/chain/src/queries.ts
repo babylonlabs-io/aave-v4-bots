@@ -86,21 +86,44 @@ export function getNonce(
 }
 
 /**
- * Scan `safe`'s `Execution{Success,Failure}` events from `fromBlock` to `latest` for one whose
- * `txHash` equals `safeTxHash`, returning the tx that emitted it (and whether the inner call
- * succeeded) or `null` — i.e. "has the SafeTx with this exact hash executed since it was reserved?".
+ * How far below the recorded anchor the scan starts.
+ *
+ * The anchor is a height read from one endpoint at claim time, and two ordinary things put the
+ * execution *below* it: a reorg can move the block it landed in, and behind a load-balanced RPC pool
+ * the endpoint answering `getLogs` may sit behind the one that answered then. Starting exactly at
+ * the anchor misses those, and a miss here is the dangerous direction — the caller reads "not
+ * executed" for a SafeTx that did execute, releases the claim, and the same fund-moving action can
+ * be signed a second time under a fresh nonce.
+ *
+ * The same reasoning, and the same figure, as the arbitrage router's execution scan.
+ */
+export const SAFE_SCAN_REORG_MARGIN_BLOCKS = 12n;
+
+/**
+ * Scan `safe`'s `Execution{Success,Failure}` events for one whose `txHash` equals `safeTxHash`,
+ * returning the tx that emitted it (and whether the inner call succeeded) or `null` — i.e. "has the
+ * SafeTx with this exact hash executed since it was reserved?".
  *
  * Precise by hash, so — unlike the Safe nonce, which ANY SafeTx advances — an unrelated execution on
  * a shared Safe never trips it. `operator-cli release` uses it to refuse releasing a claim whose
- * SafeTx already landed (that case is a `confirm`). `fromBlock` is the claim-time height the envelope
- * recorded, bounding the scan.
+ * SafeTx already landed (that case is a `confirm`).
+ *
+ * `anchor` is the claim-time height the envelope recorded. It is treated as an approximate starting
+ * point, not a floor: the scan begins `SAFE_SCAN_REORG_MARGIN_BLOCKS` below it, and an anchor above
+ * the current head is clamped to the head — asking for an inverted range is provider-dependent, and
+ * "no logs" from one would read as "never executed". `toBlock` stays `latest` rather than the head
+ * just read, so an execution landing in between widens the answer instead of escaping it.
  */
 export async function findSafeExecutionByHash(
   publicClient: PublicClient,
   safe: Address,
   safeTxHash: Hex,
-  fromBlock: bigint
+  anchor: bigint
 ): Promise<{ txHash: Hex; success: boolean } | null> {
+  const head = await publicClient.getBlockNumber();
+  const bounded = anchor > head ? head : anchor;
+  const fromBlock =
+    bounded > SAFE_SCAN_REORG_MARGIN_BLOCKS ? bounded - SAFE_SCAN_REORG_MARGIN_BLOCKS : 0n;
   const logs = await publicClient.getLogs({
     address: safe,
     events: safeExecutionEvents,

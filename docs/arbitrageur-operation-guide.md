@@ -230,7 +230,8 @@ The service requires two environment configurations:
 
 ```bash
 # Copy template
-cp env.arbitrageur.example .env.arbitrageur
+cp env.arbitrageur.example         .env.arbitrageur          # the bot: key, risk, submission
+cp env.arbitrageur.indexer.example .env.arbitrageur.indexer  # the indexer: indexing variables only
 
 # Create Ponder env (copy relevant vars from .env.arbitrageur)
 cp .env.arbitrageur services/ponder/.env.local

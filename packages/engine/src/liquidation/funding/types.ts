@@ -33,21 +33,30 @@ export interface LiquidationFunding {
   readonly mode: "inventory" | "flash";
 
   /**
-   * Boot-time setup, once per process.
+   * Boot-time setup, once per process. **Must not send a transaction.**
    *
-   * Inventory mode approves the adapter here, because the signer's own tokens are what the adapter
-   * pulls. Flash mode has nothing to approve: the router grants the adapter its allowance out of its
-   * own balance. Running the approvals regardless would grant a spender the signer never uses, and
-   * under MANUAL would put an approval in front of an operator to sign for no reason.
+   * This runs before the poll loop, and the poll loop is where the risk gate's state is read — so
+   * anything broadcast here escapes it. That is not theoretical: the code-hash guard halts the gate
+   * at boot precisely when a pinned target's bytecode has changed, and an approval sent from here
+   * would grant that contract an allowance moments after the guard flagged it. Inventory mode
+   * therefore approves in `refreshInventory` instead, which runs inside the cycle.
+   *
+   * What belongs here is setup that reads: discovery, deployment checks, cached metadata.
    */
   prepare(): Promise<void>;
 
   /**
-   * Per-cycle inventory publication to the risk gate, before any candidate is judged.
+   * Per-cycle funding readiness, before any candidate is judged: publish what the signer holds, and
+   * make sure the spender can pull it.
    *
-   * Inventory mode must: the gate reserves each action's declared `spend` against these balances, and
-   * fails closed on a token it has no figure for. Flash mode declares no spend, so it has nothing
-   * to publish.
+   * Inventory mode must publish: the gate reserves each action's declared `spend` against these
+   * balances, and fails closed on a token it has no figure for. Flash mode declares no spend, so it
+   * has nothing to publish.
+   *
+   * Approvals live here rather than in `prepare` because this runs *inside* the cycle, downstream
+   * of the gate's HALTED check — so a halted bot approves nothing, and a resumed one repairs itself
+   * on its next cycle without a restart. Re-checking every cycle also means an allowance revoked
+   * out of band is restored rather than leaving every later liquidation to fail simulation.
    */
   refreshInventory(): Promise<void>;
 

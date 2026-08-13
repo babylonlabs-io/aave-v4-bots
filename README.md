@@ -134,9 +134,15 @@ is not exposed to the scrape network.
 Each service has its own environment configuration:
 
 ```bash
-# Copy environment templates for clients (loaded from root)
-cp env.liquidator.example .env.liquidator
-cp env.arbitrageur.example .env.arbitrageur
+# The bot's own config — signing key, risk gate, kill switch, submission route
+cp env.liquidator.example   .env.liquidator
+cp env.arbitrageur.example  .env.arbitrageur
+
+# The indexer's, kept separate: it holds only what Ponder indexes with, and none of the
+# secrets above. A process that serves HTTP and only reads the chain should not be handed
+# a signing key. The contract addresses and DATABASE_URL appear in both — keep them in step.
+cp env.liquidator.indexer.example   .env.liquidator.indexer
+cp env.arbitrageur.indexer.example  .env.arbitrageur.indexer
 
 # Edit each with your values
 ```
@@ -154,14 +160,18 @@ pnpm arbitrageur:indexer   # @services/ponder on :42070 (arbitrage mode if VAULT
 pnpm indexer               # @services/ponder on :42069 (both modes when all addresses set)
 ```
 
-So either `cp .env.liquidator services/ponder/.env.local` for a liquidation
-instance, or export the vars before running. (The e2e harness sources the root
-`.env.*` itself before invoking these scripts.)
+So either `cp .env.liquidator.indexer services/ponder/.env.local` for a liquidation
+instance, or export the vars before running. Copy the **indexer** file, not the bot's:
+Ponder reads whatever it is given, and the bot's file carries a signing key it has no
+use for. (The e2e harness sources the root `.env.*` itself before invoking these
+scripts.)
 
 | Component          | Env File Location            | Loaded From      |
 | ------------------ | ---------------------------- | ---------------- |
 | Liquidator Client  | `.env.liquidator`            | Root directory   |
 | Arbitrageur Client | `.env.arbitrageur`           | Root directory   |
+| Liquidator Indexer | `.env.liquidator.indexer`    | Root directory   |
+| Arbitrageur Indexer| `.env.arbitrageur.indexer`   | Root directory   |
 | Ponder (direct)    | `services/ponder/.env.local` | Ponder directory |
 
 ### 2. Install Dependencies
@@ -351,8 +361,10 @@ Assertions and timings are written to `.e2e-stress-report.json`; bot logs land i
 │                                   #   (incl. MANUAL suites: manual-arbitrageur, manual-safe-arbitrageur)
 ├── docker/                         # liquidator / arbitrageur / ponder Dockerfiles
 ├── docker-compose.yml              # all services orchestration
-├── env.liquidator.example          # env templates (copy to .env.liquidator / .env.arbitrageur)
+├── env.liquidator.example          # BOT env templates (key, risk, submission)
 ├── env.arbitrageur.example
+├── env.liquidator.indexer.example  # INDEXER env templates — indexing variables only, no secrets
+├── env.arbitrageur.indexer.example
 ├── package.json                    # root workspace scripts
 ├── pnpm-workspace.yaml             # workspace globs (packages/*, services/*)
 ├── biome.json                      # lint/format config
@@ -373,4 +385,5 @@ Assertions and timings are written to `.e2e-stress-report.json`; bot logs land i
 The operation guides cover both execution modes; for the MANUAL workflow (proposals →
 `operator-cli`) and the shared seams (signer/secrets, crash-safety store, risk gate & kill
 switch), see the corresponding sections above and the env templates
-(`env.liquidator.example`, `env.arbitrageur.example`).
+(`env.liquidator.example`, `env.arbitrageur.example`, and the indexer-only
+`env.liquidator.indexer.example`, `env.arbitrageur.indexer.example`).
