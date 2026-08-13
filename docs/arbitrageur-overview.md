@@ -167,7 +167,7 @@ keeper-registered BTC key inside the same transaction.
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after consecutive failed actions | No | — |
 | `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. Rejected at boot if the liquidation engine is enabled and inventory-funded (#27); allowed when it is off or flash-funded | No | — |
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
-| `RISK_MAX_DATA_STALENESS_MS` | Maximum source data age | No | — |
+| `RISK_MAX_DATA_STALENESS_MS` | Maximum source data age (also blocks a missing, malformed or future-dated timestamp) | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
 | `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=hash,...` | No | — |
 | `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |

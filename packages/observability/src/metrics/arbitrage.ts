@@ -54,6 +54,15 @@ export function createArbitrageMetrics(registry: Registry): ArbitrageMetrics {
     registers: [registry],
   });
 
+  // Not derivable from the two above: an operator watching capacity fall while both balance and
+  // allowance hold steady has no other way to see that signed batches are holding the difference.
+  const fundingAuthorized = new Gauge({
+    name: "arbitrageur_funding_wbtc_authorized",
+    help: "WBTC held back for signed relay batches that are settled but still executable (in satoshis)",
+    labelNames: ["owner"] as const,
+    registers: [registry],
+  });
+
   const fundingAllowance = new Gauge({
     name: "arbitrageur_funding_wbtc_allowance",
     help: "WBTC the payer has approved the router to spend (in satoshis). Absent under inventory funding, where the payer spends directly",
@@ -76,9 +85,10 @@ export function createArbitrageMetrics(registry: Registry): ArbitrageMetrics {
     recordWbtcBalance(balanceSatoshis) {
       wbtcBalance.set(Number(balanceSatoshis));
     },
-    recordFundingCapacity({ owner, balance, allowance }) {
+    recordFundingCapacity({ owner, balance, allowance, authorized }) {
       fundingBalance.set({ owner }, Number(balance));
       if (allowance !== undefined) fundingAllowance.set({ owner }, Number(allowance));
+      if (authorized !== undefined) fundingAuthorized.set({ owner }, Number(authorized));
     },
   };
 }

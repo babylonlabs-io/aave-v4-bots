@@ -9,12 +9,7 @@ import type {
 } from "@repo/persistence";
 import type { Address, Hex } from "viem";
 
-import {
-  type ChainReader,
-  type LivenessCheck,
-  UNKNOWN_TX_GRACE_MS,
-  couldBeInFlight,
-} from "./liveness";
+import { type ChainReader, type LivenessCheck, couldBeInFlight } from "./liveness";
 import { reconcilePending } from "./reconcile";
 
 // The crash-safety collaborator: the intent + shared-nonce-allocator dance both engines run
@@ -43,8 +38,8 @@ export interface CrashSafetyConfig {
    * wrong by construction — our own node cannot see the transaction. See `createRelayAwareReader`.
    */
   reader: ChainReader;
-  /** See `LivenessCheck.maxFenceMs`. Travels with `reader`, which fails closed without it. */
-  maxFenceMs?: number;
+  /** See `LivenessCheck.reclaimMarginBlocks`. Travels with `reader`, which fails closed without it. */
+  reclaimMarginBlocks?: number;
   /** The sending address whose nonce sequence anchors reconcile's "was this broadcast?" checks. */
   signer: Address;
   logger: Logger;
@@ -113,17 +108,13 @@ export interface CrashSafety {
 
 export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
   const { store, nonces, reader, signer, logger, graceMs } = config;
-  // The two bounds are opposite ends of one age window and the reader decides in between. Invert
-  // them and that middle is empty: the reader is never consulted, so a private deployment would
-  // release nonces after the 30s grace instead of its configured horizon.
-  const effectiveGraceMs = graceMs ?? UNKNOWN_TX_GRACE_MS;
-  if (config.maxFenceMs !== undefined && config.maxFenceMs <= effectiveGraceMs) {
-    throw new Error(
-      `maxFenceMs (${config.maxFenceMs}ms) must exceed the unknown-tx grace window (${effectiveGraceMs}ms), or a transaction's liveness is never actually checked`
-    );
-  }
   const now = config.now ?? Date.now;
-  const liveness: LivenessCheck = { reader, now, graceMs, maxFenceMs: config.maxFenceMs };
+  const liveness: LivenessCheck = {
+    reader,
+    now,
+    graceMs,
+    reclaimMarginBlocks: config.reclaimMarginBlocks,
+  };
 
   /**
    * The lowest nonce `resync` may re-seed the lease to: one past the highest nonce held by a tx that
@@ -145,7 +136,7 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
    * Spans **all** actions, not just the caller's: the arbitrageur's two engines share one signer,
    * hence one nonce sequence.
    */
-  async function liveNonces(): Promise<Set<number>> {
+  async function liveNonces(head?: number): Promise<Set<number>> {
     if (!store) return new Set();
 
     const live = await store.reconcile(); // every action — one signer, one nonce sequence
@@ -161,7 +152,14 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
     // blip would drop the fence and let the rewind through.
     const inFlight = await Promise.all(
       candidates.map((intent) =>
-        couldBeInFlight(liveness, { txHash: intent.txHash, updatedAt: intent.updatedAt })
+        couldBeInFlight(
+          { ...liveness, head },
+          {
+            txHash: intent.txHash,
+            updatedAt: intent.updatedAt,
+            relayMaxBlock: intent.relayMaxBlock,
+          }
+        )
       )
     );
     return new Set(candidates.filter((_, i) => inFlight[i]).map((intent) => intent.nonce));
@@ -177,7 +175,7 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
         logger,
         now,
         graceMs,
-        maxFenceMs: config.maxFenceMs,
+        reclaimMarginBlocks: config.reclaimMarginBlocks,
       });
     },
 
@@ -185,10 +183,13 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
       // Runs inside the allocator's lock, so nothing can reserve a nonce between these reads and
       // the SET they produce.
       return nonces.resync(async () => {
-        const [chainPending, live] = await Promise.all([
+        // Head once per pass, so every intent's horizon is judged against the same block, and only
+        // when a horizon can decide anything.
+        const [chainPending, head] = await Promise.all([
           reader.getNonce(signer, "pending"),
-          liveNonces(),
+          config.reclaimMarginBlocks === undefined ? undefined : reader.getBlockNumber(),
         ]);
+        const live = await liveNonces(head);
         const floor = live.size === 0 ? 0 : Math.max(...live) + 1;
         const next = Math.max(chainPending, floor);
 

@@ -32,9 +32,15 @@ const req = (method: string, url: string, token?: string) =>
 const call = (
   method: string,
   pathname: string,
-  opts: { token?: string; reason?: string; rawUrl?: string } = {}
+  opts: {
+    token?: string;
+    reason?: string;
+    rawUrl?: string;
+    /** Drive a gate the caller has already put into some state. */
+    gate?: ReturnType<typeof createRiskGate>;
+  } = {}
 ) => {
-  const gate = createRiskGate();
+  const gate = opts.gate ?? createRiskGate();
   const res = fakeRes();
   const params = new URLSearchParams(opts.reason ? { reason: opts.reason } : {});
   const route = createControlRoutes({ gate, token: TOKEN });
@@ -184,7 +190,45 @@ describe("@repo/risk kill-switch control routes", () => {
       expect(call("GET", "/status", { token: TOKEN }).body).toEqual({
         state: "RUNNING",
         inFlight: 0,
+        reason: "",
+        codeVerified: false,
       });
+    });
+
+    // The halt that lands on an already-HALTED gate raises no alert, so this response is the only
+    // place its reason is ever stated. An operator deciding whether to resume reads it here.
+    it("GET /status reports the reason a halt was recorded, including a silent one", () => {
+      const gate = createRiskGate({ startHalted: true });
+      gate.halt("code hash mismatch at 0xadapter"); // no event: the gate was already HALTED
+
+      const { body } = call("GET", "/status", { token: TOKEN, gate });
+      expect(body).toMatchObject({ state: "HALTED", reason: "code hash mismatch at 0xadapter" });
+    });
+
+    // The whole point of typing the cause: the kill switch clears the kill switch, and nothing
+    // else. An operator who cannot tell the two apart would otherwise clear a guard by hand.
+    it("POST /resume is refused with 409 while the code-hash guard holds the halt", async () => {
+      const gate = createRiskGate({ startHalted: true, expectedCodeHashes: { "0xa": "0xgood" } });
+      await gate.verifyCode(async () => "0xtampered");
+
+      const { res, body } = call("POST", "/resume", { token: TOKEN, gate });
+      expect(res.statusCode).toBe(409);
+      expect(body.state).toBe("HALTED");
+      expect(body.reason).toMatch(/code hash mismatch/);
+      expect(gate.openSlot({ kind: "liquidation", subject: "0xpos" }).allowed).toBe(false);
+    });
+
+    it("POST /resume works again once the pinned code verifies", async () => {
+      const gate = createRiskGate({ startHalted: true, expectedCodeHashes: { "0xa": "0xgood" } });
+      await gate.verifyCode(async () => "0xtampered");
+      // The operator corrected the address, or the upgrade was rolled back: one clean pass is what
+      // retires the cause. The gate stays HALTED — proving it is sound is not deciding to trade.
+      await gate.verifyCode(async () => "0xgood");
+      expect(gate.state()).toBe("HALTED");
+
+      const { res, body } = call("POST", "/resume", { token: TOKEN, gate });
+      expect(res.statusCode).toBe(200);
+      expect(body.state).toBe("RUNNING");
     });
 
     it("emits an audit event for halt, resume and rejection", () => {

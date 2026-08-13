@@ -138,7 +138,8 @@ describe("buildExecutionConfig", () => {
   const submitterDefaults = {
     SUBMITTER: "public",
     FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
-    PRIVATE_RECLAIM_AFTER_MS: "420000",
+    PRIVATE_RELAY_HORIZON_BLOCKS: "25",
+    PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
   } as const;
 
   // A valid MANUAL setup: the broadcasting address + a store, and NO signer configured.

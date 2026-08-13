@@ -33,27 +33,41 @@ export class TokenMetaCache {
   }
 }
 
-/** ERC-20 balance of `owner`. */
-export function readBalance(client: PublicClient, token: Address, owner: Address): Promise<bigint> {
+/**
+ * ERC-20 balance of `owner`.
+ *
+ * `blockNumber` pins the read to one height. Worth doing whenever the answer is combined with
+ * another read — a balance from one block and a log from another describe two different chains, and
+ * the difference between them is money that appears to be spendable twice.
+ */
+export function readBalance(
+  client: PublicClient,
+  token: Address,
+  owner: Address,
+  blockNumber?: bigint
+): Promise<bigint> {
   return client.readContract({
     address: token,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [owner],
+    ...(blockNumber === undefined ? {} : { blockNumber }),
   });
 }
 
-/** ERC-20 allowance `owner → spender`. */
+/** ERC-20 allowance `owner → spender`. `blockNumber` pins it — see `readBalance`. */
 export function readAllowance(
   client: PublicClient,
   token: Address,
   owner: Address,
-  spender: Address
+  spender: Address,
+  blockNumber?: bigint
 ): Promise<bigint> {
   return client.readContract({
     address: token,
     abi: erc20Abi,
     functionName: "allowance",
     args: [owner, spender],
+    ...(blockNumber === undefined ? {} : { blockNumber }),
   });
 }

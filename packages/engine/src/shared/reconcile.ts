@@ -120,7 +120,7 @@ async function resolveBroadcastIntent(
   if (
     nonce !== null &&
     nonces.pending <= nonce &&
-    !(await couldBeInFlight(liveness, { txHash, updatedAt }))
+    !(await couldBeInFlight(liveness, { txHash, updatedAt, relayMaxBlock: intent.relayMaxBlock }))
   ) {
     return failedAs({ txHash, error: "not accepted (reconciled)" });
   }
@@ -185,16 +185,15 @@ export async function reconcilePending(args: {
   /** How long an unknown-to-the-node tx stays presumed-live; defaults to `UNKNOWN_TX_GRACE_MS`. */
   graceMs?: number;
   /**
-   * See `LivenessCheck.maxFenceMs`. Passed through so this and the nonce fence answer "could this
-   * still be on the wire?" the same way — the whole reason `couldBeInFlight` is shared. Without it
-   * a privately-submitted transaction past its horizon is released by the fence but still counted
-   * live here, so its intent never resolves and its subject stays blocked forever.
+   * See `LivenessCheck.reclaimMarginBlocks`. Passed through so this and the nonce fence answer
+   * "could this still be on the wire?" the same way — the whole reason `couldBeInFlight` is shared.
+   * Without it a privately-submitted transaction past its horizon is released by the fence but
+   * still counted live here, so its intent never resolves and its subject stays blocked forever.
    */
-  maxFenceMs?: number;
+  reclaimMarginBlocks?: number;
 }): Promise<ReconcileSummary> {
-  const { store, reader, signer, logger, graceMs, maxFenceMs } = args;
+  const { store, reader, signer, logger, graceMs, reclaimMarginBlocks } = args;
   const now = args.now ?? Date.now;
-  const liveness: LivenessCheck = { reader, now, graceMs, maxFenceMs };
   const inflight = await store.reconcile();
   const summary: ReconcileSummary = {
     examined: inflight.length,
@@ -203,6 +202,16 @@ export async function reconcilePending(args: {
     stillInFlight: 0,
   };
   if (inflight.length === 0) return summary;
+
+  // Head once per pass, and only when something could be judged against it — every intent is
+  // compared with the same value, and an idle bot should not poll the chain for nothing.
+  const liveness: LivenessCheck = {
+    reader,
+    now,
+    graceMs,
+    reclaimMarginBlocks,
+    head: reclaimMarginBlocks === undefined ? undefined : await reader.getBlockNumber(),
+  };
 
   // The signer's nonce counts anchor only the nonce-based branches below, all guarded by
   // `nonce !== null`. A keyless MANUAL bot's in-flight intents are operator-broadcast — every one

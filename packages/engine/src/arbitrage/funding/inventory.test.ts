@@ -72,7 +72,7 @@ describe("InventoryFunding", () => {
   });
 
   it("pays for itself when no keeper is configured", async () => {
-    const call = await build().funding.buildAcquisition({
+    const { call } = await build().funding.buildAcquisition({
       vaultId: VAULT_ID,
       maxWbtcIn: 99n,
     });
@@ -83,7 +83,7 @@ describe("InventoryFunding", () => {
   });
 
   it("redeems to the configured keeper when one is set", async () => {
-    const call = await build({ vaultKeeperAddress: KEEPER }).funding.buildAcquisition({
+    const { call } = await build({ vaultKeeperAddress: KEEPER }).funding.buildAcquisition({
       vaultId: VAULT_ID,
       maxWbtcIn: 99n,
     });

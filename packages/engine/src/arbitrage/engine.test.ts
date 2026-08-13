@@ -669,6 +669,195 @@ describe("ArbitrageEngine", () => {
       expect(risk.reserved(WBTC_ACCOUNT)).toBe(0n);
     });
 
+    // The receipt phase is where most acquisitions end, so an authorization whose identity does not
+    // survive `prepareAndSend` is handed over to nothing at all — every classification would report
+    // `undefined` and the batch would be held by no one. Typecheck cannot see it: the field is
+    // optional, so dropping it compiles.
+    it("carries the authorization's identity from the send phase into settlement", async () => {
+      const clients = createMockClients();
+      fundedWith(clients, balanceFor(1n));
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 10n,
+      });
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+      });
+
+      const settled: Array<string | undefined> = [];
+      const bot = createBot(clients);
+      const funding = (bot as unknown as { funding: Record<string, unknown> }).funding;
+      funding.buildAcquisition = async () => ({
+        call: {
+          address: "0xrouter",
+          abi: [],
+          functionName: "relay",
+          args: [],
+        },
+        authorizationId: "0xauth",
+      });
+      funding.settleAuthorization = (id: string | undefined) => settled.push(id);
+
+      await bot.run();
+
+      expect(settled.length).toBeGreaterThan(0);
+      expect(settled).not.toContain(undefined);
+      expect(settled).toContain("0xauth");
+    });
+
+    // The care taken in `wasVaultTaken` — a failed read must not exempt a real failure — has to
+    // survive the two reads that classify *after* it. Both of these settle through the same
+    // `finally` if they throw, and that backstop used to mark the slot `abandoned`: breaker-exempt,
+    // and with the spend released. A flaky endpoint could therefore silence the breaker entirely.
+    describe("when a classifier read fails", () => {
+      const reverted = (clients: ReturnType<typeof createMockClients>) => {
+        clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+          status: "reverted",
+          blockNumber: 10n,
+        });
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+        });
+      };
+
+      it("counts the revert against the breaker when expiry cannot be checked", async () => {
+        const clients = createMockClients();
+        fundedWith(clients, balanceFor(1n));
+        reverted(clients);
+
+        const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+        const bot = createBot(clients, { risk });
+        const funding = (bot as unknown as { funding: { authorizationExpired: unknown } }).funding;
+        funding.authorizationExpired = async () => {
+          throw new Error("getBlock failed");
+        };
+
+        await bot.run();
+
+        // The revert is real until something proves otherwise, and nothing did.
+        expect(risk.state()).toBe("HALTED");
+      });
+
+      // The money half. The race is established, so this is still not our failure — but whether our
+      // authorization paid for the vault is now unknown, and releasing the reservation on an
+      // unanswered question would let the same balance be committed twice in one cycle.
+      it("keeps the spend counted when the router's event cannot be read", async () => {
+        const clients = createMockClients();
+        fundedWith(clients, balanceFor(2n));
+        reverted(clients);
+        const inner = clients.publicClient.readContract.getMockImplementation();
+        clients.publicClient.readContract.mockImplementation((arg: { functionName: string }) => {
+          if (arg.functionName === "isVaultAcquirable") return Promise.resolve(false); // lost race
+          return inner?.(arg);
+        });
+
+        const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+        const bot = createBot(clients, { risk });
+        const funding = (bot as unknown as { funding: { spentWithoutUs: unknown } }).funding;
+        funding.spentWithoutUs = async () => {
+          throw new Error("getLogs failed");
+        };
+
+        await bot.run();
+
+        // Losing a race is not a failure, however the spend question resolved.
+        expect(risk.state()).toBe("RUNNING");
+        // ...but the WBTC stays counted against the balance the run published, so the whole of it
+        // is no longer spendable. Released instead, this slot would be admitted — which is the
+        // same balance being committed twice. (No `setAvailable` here: a fresh read deliberately
+        // clears what the gate had counted as spent, which would erase what is under test.)
+        expect(
+          risk.openSlot({
+            kind: "vault-acquisition",
+            subject: "0xother",
+            spend: [{ ...WBTC_ACCOUNT, amount: balanceFor(2n) }],
+          }).allowed
+        ).toBe(false);
+      });
+
+      // A throw from somewhere no branch guards — here the escrow check itself — has to leave the
+      // slot settled as what it is, a reverted acquisition, and must not cost the rest of the batch
+      // its classification. Both were true of the old code only by accident: the backstop marked
+      // the slot `abandoned`, and the loop had no per-item catch, so one blip hid N genuine reverts.
+      it("still counts a revert whose classification threw, and classifies the rest of the batch", async () => {
+        const clients = createMockClients();
+        fundedWith(clients, balanceFor(2n));
+        reverted(clients);
+
+        const risk = createRiskGate({ maxConsecutiveFailures: 2 });
+        const bot = createBot(clients, { risk });
+        const inner = bot as unknown as { wasVaultTaken: (id: string) => Promise<boolean> };
+        const original = inner.wasVaultTaken.bind(bot);
+        let call = 0;
+        inner.wasVaultTaken = async (id: string) => {
+          call += 1;
+          if (call === 1) throw new Error("escrow read exploded");
+          return original(id);
+        };
+
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              vaults: [mockVault, { ...mockVault, vaultId: `0x${"9".repeat(64)}` }],
+              total: 2,
+            }),
+        });
+
+        await bot.run();
+
+        // Two reverts, two failures: the first through the backstop, the second classified normally.
+        // Either half missing leaves one failure and a running bot.
+        expect(risk.state()).toBe("HALTED");
+
+        // And the backstop keeps the unclassified one's WBTC counted: the throw came *after* a
+        // receipt, so whether the money moved is exactly what we failed to establish.
+        risk.resume();
+        expect(
+          risk.openSlot({
+            kind: "vault-acquisition",
+            subject: "0xother",
+            spend: [{ ...WBTC_ACCOUNT, amount: balanceFor(2n) }],
+          }).allowed
+        ).toBe(false);
+      });
+
+      // The classification is also what the intent is stored under. Recording an expired
+      // authorization as a plain "reverted" reads, months later, as the chain refusing us.
+      it("persists the classification it settled on, not a generic revert", async () => {
+        const clients = createMockClients();
+        fundedWith(clients, balanceFor(1n));
+        reverted(clients);
+
+        const recordOutcome = vi.fn();
+        const executor = {
+          ...createAutoExecutorWithSender({
+            nonces: passthroughNonces(),
+            sender: clients.sender as unknown as AutoDeps["sender"],
+            publicClient: clients.publicClient as unknown as AutoDeps["publicClient"],
+            walletClient: clients.walletClient as unknown as AutoDeps["walletClient"],
+            txReceiptTimeoutMs: 1000,
+            logger: silentLogger,
+          }),
+          commit: async () => ({ kind: "broadcast", hash: "0xhash", intentId: "intent-1" }),
+          recordOutcome,
+        } as unknown as ArbitrageEngineConfig["executor"];
+
+        const bot = createBot(clients, { executor });
+        const funding = (bot as unknown as { funding: { authorizationExpired: unknown } }).funding;
+        funding.authorizationExpired = async () => true;
+
+        await bot.run();
+
+        expect(recordOutcome).toHaveBeenCalledWith(
+          "intent-1",
+          expect.objectContaining({ kind: "failed", error: "authorization expired" })
+        );
+      });
+    });
+
     // The subtler half of the same hazard: we never broadcast at all — gas estimation failed — but
     // the authorization had already left the process, and estimation is what put it in front of an
     // RPC. "We sent nothing" therefore no longer implies "our money stayed put".

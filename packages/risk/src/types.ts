@@ -16,7 +16,14 @@ export interface RiskAction {
   subject: string;
   /** Expected profit in the profit unit (e.g. WBTC sats) — checked against `minProfit`. */
   expectedProfit?: bigint;
-  /** When the source data was produced (ms epoch) — checked against `maxDataStalenessMs`. */
+  /**
+   * When the source data was produced (ms epoch) — checked against `maxDataStalenessMs`.
+   *
+   * Typed `number`, but it reaches callers from an unauthenticated indexer response that is cast
+   * rather than parsed, so the gate re-establishes that here instead of trusting it: anything that
+   * is not a safe integer, and anything dated more than `MAX_SOURCE_CLOCK_SKEW_MS` in the future,
+   * blocks the action.
+   */
   dataTimestampMs?: number;
   /**
    * Token outflows this action authorizes. Reserved against the paying account's spendable balance
@@ -72,6 +79,19 @@ export interface ActionOutcome {
    * competitor handled the subject but our money is what paid for it.
    */
   spent?: boolean;
+  /**
+   * Whether the declared spend left **could not be determined** — the read that answers it failed.
+   *
+   * Accounted exactly like `spent`, because between "it left" and "it did not" the safe answer is
+   * the first: counting an outflow that never happened costs a cycle of work we could have
+   * afforded, while missing one that did lets the same balance be committed twice.
+   *
+   * Distinct from `unresolved`, which is about the *transaction's* fate and is breaker-exempt for
+   * that reason. Here the transaction's fate is known — it reverted — and only the money is in
+   * doubt, so this flag says nothing about whether the action was a failure. Set it alongside
+   * whichever classification is established.
+   */
+  spendUnknown?: boolean;
 }
 
 /**
@@ -131,10 +151,34 @@ export type CodeHashReader = (address: string) => Promise<string | undefined>;
 export interface RiskGate {
   /** Current safety state; `HALTED` blocks every action until `resume()`. */
   state(): RiskState;
+  /**
+   * Why the gate is HALTED, or `""` while RUNNING.
+   *
+   * Exposed because `halt()` alerts only on the RUNNING → HALTED transition, so a *later* cause is
+   * recorded silently — and an operator deciding whether to resume needs to know which one they are
+   * looking at. `GET /status` serves this for exactly that reason.
+   */
+  haltReason(): string;
   /** Kill-switch — trip to `HALTED` with a reason. */
   halt(reason: string): void;
-  /** Clear `HALTED` and reset the breaker counter. Does *not* clear live in-flight exposure. */
-  resume(): void;
+  /**
+   * Clear `HALTED` and reset the breaker counter. Does *not* clear live in-flight exposure.
+   *
+   * Returns `false` — refusing, and leaving the gate HALTED — while the halt came from the
+   * code-hash guard. A manual halt is an operator's own decision to reverse; "the pinned bytecode
+   * is wrong, or has never been readable" is not, and clearing it by hand is what turns a
+   * configured control into a formality. That cause clears itself the moment a `verifyCode` passes.
+   */
+  resume(): boolean;
+  /**
+   * Has every pinned address passed `verifyCode` at least once in this process?
+   *
+   * `false` until the first clean pass — and also `false` when nothing is pinned, because there is
+   * no verification to have passed. It is the reason a probe failure cannot be shrugged off: the
+   * periodic guard is allowed to fail open only because the target was verified *before* — read
+   * `guard.ts`. Says nothing about freshness; that is what the check interval is for.
+   */
+  everVerified(): boolean;
   /**
    * Judge one action just before it is submitted, reserving an exposure slot if allowed. This is
    * the *only* way to ask the gate: there is no bare `check()` that reserves a slot and leaves

@@ -49,6 +49,7 @@ export {
   type RelayStatusSource,
   createChainReader,
   createRelayAwareReader,
+  createRelayHorizon,
 } from "./shared/liveness";
 // The funding seam's *configuration* surface — what a composition root supplies to pick a mode and
 // describe its venues. The strategies themselves, the factory that chooses between them, and the

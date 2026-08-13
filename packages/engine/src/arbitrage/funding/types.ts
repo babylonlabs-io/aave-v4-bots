@@ -1,4 +1,5 @@
 import type { ContractCall } from "@repo/execution";
+import type { Logger } from "@repo/logger";
 import type { RiskGate, TokenSpend } from "@repo/risk";
 import type { Address, Hex, PublicClient } from "viem";
 import type { AllowanceResult, Executor } from "../../shared/executor";
@@ -65,7 +66,7 @@ export interface ArbitrageFunding {
    * The mode owns the search window: it is the only thing that knows when — and whether — an
    * authorization for this vault ever left the process.
    */
-  spentWithoutUs(vaultId: Hex): Promise<boolean>;
+  spentWithoutUs(authorizationId: Hex | undefined): Promise<boolean>;
 
   /**
    * Did this acquisition's authorization expire before the transaction carrying it mined?
@@ -76,7 +77,23 @@ export interface ArbitrageFunding {
    * stalled nonce longer than the batch was signed for. Counting those as failures would let a
    * queue stall halt a healthy bot.
    */
-  authorizationExpired(vaultId: Hex, minedAtBlock: bigint): Promise<boolean>;
+  authorizationExpired(authorizationId: Hex | undefined, minedAtBlock: bigint): Promise<boolean>;
+
+  /**
+   * Report what became of one authorization, once the risk slot that opened it has been settled.
+   *
+   * Called for **every** settlement, which is the point: while the slot is open the spend is
+   * `reserved` in the gate and this mode is owed nothing. After it closes, a batch that can still
+   * execute is a claim on the treasury that nothing else is counting — see
+   * `RouterFunding.refreshInventory`.
+   *
+   * `consumed` means the money provably moved (our own acquisition confirmed), so the treasury's
+   * balance already reflects it and holding it again would count it twice. Anything else leaves the
+   * authorization live until it expires or is observed executing.
+   *
+   * Idempotent, and a no-op for a mode whose payment cannot outlive its transaction.
+   */
+  settleAuthorization(authorizationId: Hex | undefined, outcome: { consumed: boolean }): void;
 
   /**
    * The call that acquires one vault, bounded by the slippage-adjusted ceiling.
@@ -88,7 +105,20 @@ export interface ArbitrageFunding {
     vaultId: Hex;
     preview: EscrowedVaultPreview;
     maxWbtcIn: bigint;
-  }): Promise<ContractCall>;
+  }): Promise<AcquisitionCall>;
+}
+
+/**
+ * The call to broadcast, plus the identity of any authorization building it created.
+ *
+ * `authorizationId` is present only for a mode that signs a payment separately from the
+ * transaction. It is what the engine hands back to `spentWithoutUs`, `authorizationExpired` and
+ * `settleAuthorization`, so those answer about *this* batch rather than about whatever was last
+ * signed for the same vault — with a permissionless relay, more than one can be live at once.
+ */
+export interface AcquisitionCall {
+  call: ContractCall;
+  authorizationId?: Hex;
 }
 
 /**
@@ -99,6 +129,8 @@ export interface ArbitrageFunding {
 export interface FundingContext {
   publicClient: PublicClient;
   risk: RiskGate;
+  /** Matches the liquidation funding context: a mode's own anomalies need somewhere to surface. */
+  logger: Logger;
   /** Where a mode publishes what it can actually spend — see `recordFundingCapacity`. */
   metrics: Pick<ArbitrageMetrics, "recordFundingCapacity">;
   executor: Executor;

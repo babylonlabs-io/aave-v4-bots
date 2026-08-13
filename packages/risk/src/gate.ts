@@ -10,6 +10,21 @@ import type {
 } from "./types";
 
 /**
+ * How far ahead of this process's clock a source timestamp may sit before it is unusable.
+ *
+ * Not the operator's staleness bound, and deliberately a separate quantity: staleness measures how
+ * old the data is, while this measures whether the two clocks agree enough for that measurement to
+ * mean anything. The source stamp is a *chain block* timestamp, which legitimately runs a few
+ * seconds ahead of a correct local clock, so a small lead is normal and is treated as fresh.
+ * Reusing `maxDataStalenessMs` here would make a tight freshness setting reject a healthy chain.
+ *
+ * Past this, the clocks genuinely disagree and every age derived from them is meaningless — which
+ * matters because the error is silent and one-directional: a source running ahead makes every age
+ * negative, and a guard that only asks "is the age too large" then admits data of *any* age.
+ */
+export const MAX_SOURCE_CLOCK_SKEW_MS = 30_000;
+
+/**
  * Create an in-memory risk gate. With an empty config it is **permissive** — it never blocks and
  * never auto-halts — reproducing the ungated behavior; each threshold enables one guard.
  */
@@ -19,6 +34,11 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   let haltReason = config.startHalted ? "started halted (kill-switch)" : "";
   let consecutiveFailures = 0;
   let inFlight = 0;
+  // The one halt cause an operator may not clear by hand, tracked apart from `haltReason` because
+  // that string is overwritten by whichever halt came last. Without it, a code-hash halt landing on
+  // an already-HALTED gate is indistinguishable from the manual halt it replaced.
+  let codeHashHalt = false;
+  let everVerified = false;
 
   // Token ledger. Spendable capacity for one `(owner, token)` is
   // `available - spentSinceRefresh - reserved`:
@@ -56,20 +76,28 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
     }
   };
 
-  const halt = (reason: string) => {
+  /**
+   * @param fromCodeHash the halt came from the code-hash guard, so `resume` must refuse it. Not
+   *        inferred from the reason string: that would make a safety decision out of prose.
+   */
+  const haltWith = (reason: string, fromCodeHash: boolean) => {
     // Emit on the RUNNING → HALTED *transition* only. The code-hash guard re-halts on every tick
     // while a mismatch persists, and an operator does not need that alert once a minute, forever.
     //
     // Deliberate consequence: a *reason change* while already HALTED is silent — e.g. a code-hash
     // mismatch after a manual kill-switch halt updates `haltReason` but does not re-alert. Trading
     // is already stopped, so this is informational drift, not a safety event; the reason is visible
-    // via `GET /status`. Re-alerting on every reason change would re-introduce the breaker's own
+    // via `GET /status`, and a code-hash cause landing here makes `resume` refuse whether or not
+    // anyone was told. Re-alerting on every reason change would re-introduce the breaker's own
     // per-trip spam (its reason carries an incrementing failure count).
     const wasRunning = state === "RUNNING";
     state = "HALTED";
     haltReason = reason;
+    if (fromCodeHash) codeHashHalt = true;
     if (wasRunning) emit({ kind: "halted", reason });
   };
+
+  const halt = (reason: string) => haltWith(reason, false);
 
   /** A blocked slot reserved nothing, so it starts settled and `settle()` is a no-op. */
   const blockedSlot = (reason: string): RiskSlot => ({ allowed: false, reason, settle: () => {} });
@@ -113,12 +141,28 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
     // Freshness. Fail-closed: opting into a staleness bound and then being unable to evaluate
     // it would mean trading on data of unknown age. A current indexer always supplies the
     // timestamp, so its absence is an anomaly (stale deployment, or a failed block probe).
+    //
+    // The value is judged before it is used, not after. The stamp crosses an unauthenticated wire
+    // — the indexer response is cast to its type, never parsed — and arithmetic launders a bad one
+    // into a pass: `now() - "nonsense"` is `NaN`, and every comparison against `NaN` is false, so
+    // the guard admits exactly what it exists to block. Checking the input rather than the result
+    // is what states the contract in the direction it is meant to hold.
     if (config.maxDataStalenessMs !== undefined) {
-      if (action.dataTimestampMs === undefined) {
+      const stamp = action.dataTimestampMs;
+      if (stamp === undefined) {
         return `missing source timestamp for ${action.subject}`;
       }
-      if (now() - action.dataTimestampMs > config.maxDataStalenessMs) {
+      // One check for every way a wire value can fail to be an instant: a string, an object, NaN,
+      // ±Infinity, a fraction, or a magnitude past 2**53 where ms arithmetic stops being exact.
+      if (!Number.isSafeInteger(stamp)) {
+        return `unusable source timestamp for ${action.subject}: ${JSON.stringify(stamp)}`;
+      }
+      const age = now() - stamp;
+      if (age > config.maxDataStalenessMs) {
         return `stale source data for ${action.subject}`;
+      }
+      if (-age > MAX_SOURCE_CLOCK_SKEW_MS) {
+        return `source timestamp for ${action.subject} is ${-age}ms in the future; its clock and ours disagree, so its age cannot be judged`;
       }
     }
 
@@ -153,7 +197,14 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
 
     halt,
 
+    haltReason: () => haltReason,
+    everVerified: () => everVerified,
+
     resume() {
+      // Refused, not merely ineffective: the caller reports it, so an operator learns their resume
+      // did nothing rather than believing trading restarted. The cause outlives this call — only a
+      // clean `verifyCode` clears it — so the answer is stable until the guard proves otherwise.
+      if (codeHashHalt) return false;
       const wasHalted = state === "HALTED";
       state = "RUNNING";
       haltReason = "";
@@ -164,6 +215,7 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       // liquidation awaits its receipt, and the arbitrage engine sharing this gate could send
       // beyond `maxInFlight`. The engines settle every reserved slot on every exit path — see
       // `RiskSlot` and its `finally` backstop — so the count drains on its own and cannot leak.
+      return true;
     },
 
     setAvailable(account, amount) {
@@ -203,9 +255,14 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
           // spent them. An `unresolved` one may still: counting it as spent under-reports capacity
           // until the next refresh, which merely skips affordable work — the opposite error
           // overdraws the signer and reverts. `spent` says so outright, for a failure whose funds
-          // moved anyway. Anything else (pre-broadcast, or a revert, which transfers nothing)
-          // released the tokens untouched.
-          const spent = outcome.ok || outcome.unresolved === true || outcome.spent === true;
+          // moved anyway, and `spendUnknown` says we could not find out — which is accounted the
+          // same way and for the same reason. Anything else (pre-broadcast, or a revert, which
+          // transfers nothing) released the tokens untouched.
+          const spent =
+            outcome.ok ||
+            outcome.unresolved === true ||
+            outcome.spent === true ||
+            outcome.spendUnknown === true;
           for (const entry of spend) {
             const k = key(entry);
             reserved.set(k, get(reserved, k) - entry.amount);
@@ -236,19 +293,35 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
         const want = expected[address];
         const got = result.value;
         if (got === undefined) {
-          halt(`no code at ${address} (expected ${want})`);
+          haltWith(`no code at ${address} (expected ${want})`, true);
           return;
         }
         if (got.toLowerCase() !== want.toLowerCase()) {
-          halt(`code hash mismatch at ${address}: got ${got}, expected ${want}`);
+          haltWith(`code hash mismatch at ${address}: got ${got}, expected ${want}`, true);
           return;
         }
       }
 
-      // Pass 2: nothing is compromised among the addresses we read. Surface any probe failure so
-      // the caller can decide (fail closed at boot; retry on later ticks).
+      // Pass 2: nothing is compromised among the addresses we read. A probe failure always throws,
+      // so the caller can log it and retry — but whether it also *halts* depends on whether this
+      // gate has ever verified anything. Never having read a target is not a blip: there is no
+      // earlier success to fall back on, so an unreadable target is indistinguishable from an
+      // unverified one and the bot must not trade against it. Once one clean pass exists, a later
+      // blip is exactly that, and halting on it would make the guard an availability bug.
       const failed = results.find((r) => r.status === "rejected");
-      if (failed?.status === "rejected") throw failed.reason;
+      if (failed?.status === "rejected") {
+        if (!everVerified) {
+          haltWith("pinned contract bytecode has never been verified (probe failed)", true);
+        }
+        throw failed.reason;
+      }
+
+      // Every pinned address read cleanly. That is the only evidence that retires a code-hash halt
+      // — an operator cannot assert it, and the state the periodic guard's fail-open rests on is
+      // now actually true. The gate stays HALTED: proving the target is sound is not the same as
+      // deciding to trade again, and that decision stays with the operator.
+      codeHashHalt = false;
+      everVerified = true;
     },
   };
 }

@@ -68,6 +68,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       nonce: null,
       txHash: null,
       error: null,
+      relayMaxBlock: null,
       // Copy on store too: the caller must not be able to mutate the payload after proposing.
       payload: payload === null ? null : { ...payload },
       payloadHash,
@@ -185,6 +186,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
         nonce: meta?.nonce ?? row.nonce,
         txHash: meta?.txHash ?? row.txHash,
         error: meta?.error ?? row.error,
+        relayMaxBlock: meta?.relayMaxBlock ?? row.relayMaxBlock,
         updatedAt: now(),
       });
       return true;

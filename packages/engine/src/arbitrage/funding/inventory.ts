@@ -1,10 +1,9 @@
 import { vaultSwapAbi } from "@repo/abis";
 import { readBalance } from "@repo/chain";
-import type { ContractCall } from "@repo/execution";
 import type { TokenSpend } from "@repo/risk";
 import type { Hex } from "viem";
 import type { AllowanceResult } from "../../shared/executor";
-import type { ArbitrageFunding, FundingContext } from "./types";
+import type { AcquisitionCall, ArbitrageFunding, FundingContext } from "./types";
 
 type Deps = Pick<
   FundingContext,
@@ -75,17 +74,23 @@ export class InventoryFunding implements ArbitrageFunding {
     return false;
   }
 
+  /** Nothing to settle: no authorization exists apart from the transaction itself. */
+  settleAuthorization(): void {}
+
   async buildAcquisition({
     vaultId,
     maxWbtcIn,
-  }: { vaultId: Hex; maxWbtcIn: bigint }): Promise<ContractCall> {
+  }: { vaultId: Hex; maxWbtcIn: bigint }): Promise<AcquisitionCall> {
     const target = { address: this.deps.vaultSwapAddress, abi: vaultSwapAbi };
-    return this.deps.vaultKeeperAddress
-      ? {
-          ...target,
-          functionName: "swapWbtcForVaultOnBehalf",
-          args: [vaultId, maxWbtcIn, this.deps.vaultKeeperAddress],
-        }
-      : { ...target, functionName: "swapWbtcForVault", args: [vaultId, maxWbtcIn] };
+    // No `authorizationId`: the signer pays with the transaction, so nothing outlives it.
+    return {
+      call: this.deps.vaultKeeperAddress
+        ? {
+            ...target,
+            functionName: "swapWbtcForVaultOnBehalf",
+            args: [vaultId, maxWbtcIn, this.deps.vaultKeeperAddress],
+          }
+        : { ...target, functionName: "swapWbtcForVault", args: [vaultId, maxWbtcIn] },
+    };
   }
 }

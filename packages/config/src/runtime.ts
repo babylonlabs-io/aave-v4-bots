@@ -46,11 +46,13 @@ export const runtimeEnvFields = {
    */
   PRIVATE_MIN_PRIORITY_FEE_WEI: positiveIntSchema.optional(),
   /**
-   * How long a privately-submitted transaction may hold its nonce before it is declared gone, in ms.
-   * Must exceed the relay's own retry horizon (Protect: ~25 blocks ≈ 5 min) plus a reorg margin —
-   * below that it could free a nonce the relay may still spend. Default 7 minutes.
+   * The relay's retry window, in blocks — how long it may keep offering a transaction to builders.
+   * Used when the relay does not tell us a transaction's own deadline. Protect's is ~25 blocks;
+   * declare whatever the configured relay actually uses.
    */
-  PRIVATE_RECLAIM_AFTER_MS: positiveIntSchema.optional().default("420000"),
+  PRIVATE_RELAY_HORIZON_BLOCKS: positiveIntSchema.optional().default("25"),
+  /** Blocks past a transaction's horizon before its nonce may be reclaimed — reorg headroom. */
+  PRIVATE_RECLAIM_MARGIN_BLOCKS: positiveIntSchema.optional().default("3"),
 
   /** Enables the Postgres StateStore. Unset ⇒ no persistence (in-memory nonce sequencing). */
   DATABASE_URL: z.string().min(1).optional(),
@@ -182,7 +184,8 @@ export interface SubmitterEnv {
   FLASHBOTS_PROTECT_URL?: string;
   FLASHBOTS_STATUS_URL: string;
   PRIVATE_MIN_PRIORITY_FEE_WEI?: string;
-  PRIVATE_RECLAIM_AFTER_MS: string;
+  PRIVATE_RELAY_HORIZON_BLOCKS: string;
+  PRIVATE_RECLAIM_MARGIN_BLOCKS: string;
   DATABASE_URL?: string;
 }
 
@@ -202,10 +205,13 @@ export type SubmitterSettings =
       /** Floor for the priority fee; a transaction below it is not worth a builder's inclusion. */
       minPriorityFeeWei: bigint;
       /**
-       * How long a transaction may hold its nonce before the fence releases it regardless of what
-       * the relay says. The only thing that frees a private nonce — see `LivenessCheck.maxFenceMs`.
+       * The relay's retry window in blocks, used when it does not report a transaction's own
+       * deadline. Blocks rather than milliseconds because that is the unit the relay's own horizon
+       * is in — a duration has to be guessed against it, and guessing low frees a live nonce.
        */
-      reclaimAfterMs: number;
+      relayHorizonBlocks: number;
+      /** Reorg headroom past a transaction's horizon before its nonce may be reclaimed. */
+      reclaimMarginBlocks: number;
     };
 
 /**
@@ -258,7 +264,8 @@ export function buildSubmitterConfig(env: SubmitterEnv): SubmitterSettings {
     rpcUrl: env.FLASHBOTS_PROTECT_URL as string,
     statusUrl: env.FLASHBOTS_STATUS_URL,
     minPriorityFeeWei: BigInt(env.PRIVATE_MIN_PRIORITY_FEE_WEI as string),
-    reclaimAfterMs: Number.parseInt(env.PRIVATE_RECLAIM_AFTER_MS, 10),
+    relayHorizonBlocks: Number.parseInt(env.PRIVATE_RELAY_HORIZON_BLOCKS, 10),
+    reclaimMarginBlocks: Number.parseInt(env.PRIVATE_RECLAIM_MARGIN_BLOCKS, 10),
   };
 }
 

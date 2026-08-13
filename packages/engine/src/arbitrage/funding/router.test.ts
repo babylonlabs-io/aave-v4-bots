@@ -7,6 +7,8 @@ import { RouterFunding } from "./router";
 
 const SIGNER = "0x1111111111111111111111111111111111111111" as const;
 const PAYER = "0x2222222222222222222222222222222222222222" as const;
+/** A spend against the treasury's WBTC — the account the gate keys the router's capacity under. */
+const SPEND = (amount: bigint) => ({ owner: PAYER, token: WBTC, amount });
 const WBTC = "0x3333333333333333333333333333333333333333" as const;
 const ROUTER = "0x4444444444444444444444444444444444444444" as const;
 const VAULT_SWAP = "0x5555555555555555555555555555555555555555" as const;
@@ -25,6 +27,10 @@ function build(
     allowance?: bigint;
     blockTimestamp?: bigint;
     blockNumber?: bigint;
+    /** Chain head when `spentWithoutUs` scans; defaults to the authorization's own block. */
+    headBlock?: bigint;
+    /** The address transactions come from, when it differs from the account that signs. */
+    txIdentity?: string;
     swapLogs?: unknown[];
   } = {}
 ) {
@@ -48,15 +54,19 @@ function build(
     timestamp: opts.blockTimestamp ?? 1_700_000_000n,
     number: opts.blockNumber ?? 100n,
   });
+  const getBlockNumber = vi.fn().mockResolvedValue(opts.headBlock ?? opts.blockNumber ?? 100n);
+  const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const funding = new RouterFunding({
     publicClient: {
       readContract,
       getBlock,
+      getBlockNumber,
       getChainId: vi.fn().mockResolvedValue(31337),
       getLogs,
     } as unknown as ConstructorParameters<typeof RouterFunding>[0]["publicClient"],
     risk,
     metrics: { recordFundingCapacity },
+    logger,
     wbtcAddress: WBTC,
     vaultSwapAddress: VAULT_SWAP,
     maxSlippageBps: 100,
@@ -64,12 +74,21 @@ function build(
     vaultKeeperAddress: KEEPER,
     executor: {
       mode: "AUTO",
-      identity: { from: SIGNER, chainId: 31337 },
+      identity: { from: opts.txIdentity ?? SIGNER, chainId: 31337 },
       account: { address: SIGNER, signTypedData },
     } as unknown as AutoExecutor,
     deadlineSeconds: 120,
   });
-  return { funding, risk, signTypedData, getLogs, recordFundingCapacity, getBlock };
+  return {
+    funding,
+    risk,
+    signTypedData,
+    getLogs,
+    recordFundingCapacity,
+    getBlock,
+    readContract,
+    logger,
+  };
 }
 
 describe("RouterFunding", () => {
@@ -78,6 +97,24 @@ describe("RouterFunding", () => {
       const { funding } = build();
       await funding.prepare();
       expect(funding.spend(42n)).toEqual({ owner: PAYER, token: WBTC, amount: 42n });
+    });
+
+    // Two reasons, either sufficient. Accounting: this mode publishes the treasury's capacity net
+    // of what signed batches are holding, and `setAvailable` is last-writer-wins — a liquidation
+    // engine in the same process publishes the signer's raw WBTC balance under the same key, so
+    // one shared address erases the subtraction. Design: with one address the mode buys nothing
+    // inventory funding does not.
+    it("refuses a router whose treasury is the bot's own signer", async () => {
+      const { funding } = build({ payer: SIGNER });
+      await expect(funding.prepare()).rejects.toThrow(/this bot's own signer/);
+    });
+
+    // The two can differ — an executor built over a custom sender carries its own transaction
+    // identity — and it is the *signing* account that makes the treasury a hot wallet.
+    it("refuses it when the treasury is the signing account under another tx identity", async () => {
+      const OTHER = "0x9999999999999999999999999999999999999999";
+      const { funding } = build({ payer: SIGNER, txIdentity: OTHER });
+      await expect(funding.prepare()).rejects.toThrow(/this bot's own signer/);
     });
 
     // Naming a payer before the router has been asked would silently reserve against the wrong
@@ -147,6 +184,7 @@ describe("RouterFunding", () => {
         owner: PAYER,
         balance: 1_000n,
         allowance: 300n,
+        authorized: 0n,
       });
     });
 
@@ -170,7 +208,7 @@ describe("RouterFunding", () => {
       const { funding, signTypedData } = build({ blockTimestamp: 1_700_000_000n });
       await funding.prepare();
 
-      const call = await funding.buildAcquisition({
+      const { call } = await funding.buildAcquisition({
         vaultId: VAULT_ID,
         preview: PREVIEW,
         maxWbtcIn: 90n,
@@ -207,7 +245,7 @@ describe("RouterFunding", () => {
       const { funding } = build({ blockTimestamp: 1_700_000_000n });
       await funding.prepare();
 
-      const call = await funding.buildAcquisition({
+      const { call } = await funding.buildAcquisition({
         vaultId: VAULT_ID,
         preview: PREVIEW,
         maxWbtcIn: 90n,
@@ -223,7 +261,7 @@ describe("RouterFunding", () => {
       const { funding } = build();
       await funding.prepare();
 
-      const call = await funding.buildAcquisition({
+      const { call } = await funding.buildAcquisition({
         vaultId: VAULT_ID,
         preview: PREVIEW,
         maxWbtcIn: 90n,
@@ -241,28 +279,32 @@ describe("RouterFunding", () => {
     async function minedAt(timestamp: bigint) {
       const h = build({ blockTimestamp: 1_700_000_000n, blockNumber: 100n });
       await h.funding.prepare();
-      await h.funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
+      const { authorizationId } = await h.funding.buildAcquisition({
+        vaultId: VAULT_ID,
+        preview: PREVIEW,
+        maxWbtcIn: 90n,
+      });
       // The revert block's timestamp, which is what the router compared the deadline against.
       h.getBlock.mockResolvedValue({ timestamp, number: 200n });
-      return h.funding;
+      return { funding: h.funding, authorizationId };
     }
 
     // Deadline is 1_700_000_000 + 120. A batch that mines inside its window and still reverts was
     // refused on its merits, and must keep feeding the breaker.
     it("reports no expiry for a batch that mined inside its window", async () => {
-      expect(await (await minedAt(1_700_000_119n)).authorizationExpired(VAULT_ID, 200n)).toBe(
-        false
-      );
+      const { funding, authorizationId } = await minedAt(1_700_000_119n);
+      expect(await funding.authorizationExpired(authorizationId, 200n)).toBe(false);
     });
 
     it("reports expiry for a batch that mined after its deadline", async () => {
-      expect(await (await minedAt(1_700_000_121n)).authorizationExpired(VAULT_ID, 200n)).toBe(true);
+      const { funding, authorizationId } = await minedAt(1_700_000_121n);
+      expect(await funding.authorizationExpired(authorizationId, 200n)).toBe(true);
     });
 
-    it("reports no expiry for a vault it never authorized", async () => {
+    it("reports no expiry for an authorization it never created", async () => {
       const { funding } = build();
       await funding.prepare();
-      expect(await funding.authorizationExpired(VAULT_ID, 200n)).toBe(false);
+      expect(await funding.authorizationExpired(undefined, 200n)).toBe(false);
     });
   });
 
@@ -271,16 +313,22 @@ describe("RouterFunding", () => {
     async function authorized(opts: Parameters<typeof build>[0] = {}) {
       const h = build(opts);
       await h.funding.prepare();
-      await h.funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
-      return h;
+      const { authorizationId } = await h.funding.buildAcquisition({
+        vaultId: VAULT_ID,
+        preview: PREVIEW,
+        maxWbtcIn: 90n,
+      });
+      return { ...h, authorizationId };
     }
 
     // `relay` is permissionless and the batch is visible before we broadcast — gas estimation puts
     // it in front of an RPC first — so a third party can execute it and leave our own tx reverting.
     it("reports a spend when the router shows our authorization acquired the vault", async () => {
-      const { funding, getLogs } = await authorized({ swapLogs: [{ blockNumber: 99n }] });
+      const { funding, getLogs, authorizationId } = await authorized({
+        swapLogs: [{ blockNumber: 99n }],
+      });
 
-      expect(await funding.spentWithoutUs(VAULT_ID)).toBe(true);
+      expect(await funding.spentWithoutUs(authorizationId)).toBe(true);
       // All three indexed topics: the same vault through another LLP, or to another keeper, is not
       // ours and did not spend our payer's WBTC.
       expect(getLogs).toHaveBeenCalledWith(
@@ -292,30 +340,254 @@ describe("RouterFunding", () => {
     });
 
     it("reports no spend when the vault was taken by someone else's funds", async () => {
-      const { funding } = await authorized({ swapLogs: [] });
-      expect(await funding.spentWithoutUs(VAULT_ID)).toBe(false);
+      const { funding, authorizationId } = await authorized({ swapLogs: [] });
+      expect(await funding.spentWithoutUs(authorizationId)).toBe(false);
     });
 
     // Nothing was ever signed for this vault, so no batch of ours can exist to have been executed —
     // and a log search would be answering a question about someone else's acquisition.
-    it("reports no spend for a vault it never authorized", async () => {
+    // Nothing signed means no batch of ours can be waiting to execute, and a log search would be
+    // answering a question about someone else's acquisition.
+    it("reports no spend for an authorization it never issued", async () => {
       const { funding, getLogs } = build({ swapLogs: [{ blockNumber: 99n }] });
       await funding.prepare();
 
-      expect(await funding.spentWithoutUs(VAULT_ID)).toBe(false);
+      expect(await funding.spentWithoutUs(undefined)).toBe(false);
+      expect(await funding.spentWithoutUs(`0x${"f".repeat(64)}`)).toBe(false);
       expect(getLogs).not.toHaveBeenCalled();
     });
 
     // Bounded by the block the authorization was signed at, not by converting the deadline into
     // blocks — that needs a block time we do not know, and guessing it too fast searches a window
     // narrower than the one the batch was live for.
-    it("searches from the block the authorization was signed at", async () => {
-      const { funding, getLogs } = await authorized({ blockNumber: 500n });
-      await funding.spentWithoutUs(VAULT_ID);
+    it("searches from the block the authorization was signed at, less the reorg margin", async () => {
+      const { funding, getLogs, authorizationId } = await authorized({ blockNumber: 500n });
+      await funding.spentWithoutUs(authorizationId);
 
       expect(getLogs).toHaveBeenCalledWith(
-        expect.objectContaining({ fromBlock: 500n, toBlock: "latest" })
+        expect.objectContaining({ fromBlock: 500n - 12n, toBlock: "latest" })
       );
+    });
+
+    // The margin is the whole point: starting exactly at the recorded height misses an execution
+    // that landed a block or two earlier — a reorg, or a `getLogs` endpoint sitting behind the one
+    // that answered `getBlock`. A miss here reports spent money as never spent, which releases its
+    // reservation and lets the same balance be committed twice.
+    it("still finds an execution that landed just below the recorded height", async () => {
+      const { funding, authorizationId } = await authorized({
+        blockNumber: 500n,
+        swapLogs: [{ blockNumber: 497n }],
+      });
+      expect(await funding.spentWithoutUs(authorizationId)).toBe(true);
+    });
+
+    it("does not reach below block zero near the genesis end of the chain", async () => {
+      const { funding, getLogs, authorizationId } = await authorized({
+        blockNumber: 3n,
+        headBlock: 3n,
+      });
+      await funding.spentWithoutUs(authorizationId);
+
+      expect(getLogs).toHaveBeenCalledWith(expect.objectContaining({ fromBlock: 0n }));
+    });
+
+    // A recorded height above the chain we can see is an anomaly, not a range: asking for it is
+    // provider-dependent (some return nothing, some error), and "nothing" here reads as "our money
+    // never moved". Clamp to the head, scan the recent window, and say so.
+    it("clamps to the head when the recorded height is above it, and warns", async () => {
+      const { funding, getLogs, logger, authorizationId } = await authorized({
+        blockNumber: 900n,
+        headBlock: 400n,
+      });
+      await funding.spentWithoutUs(authorizationId);
+
+      expect(getLogs).toHaveBeenCalledWith(
+        expect.objectContaining({ fromBlock: 400n - 12n, toBlock: "latest" })
+      );
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/above the chain head/));
+    });
+  });
+
+  // The deadline is chain time by design, and that is right — but it is also the entire lifetime of
+  // a bearer authorization anyone who sees it may execute, decided by one unvalidated RPC answer.
+  // A signed batch outlives the transaction that was meant to carry it: `SelfCallRelayer` has no
+  // nonce and no submitter binding, so until its deadline anyone who saw it may execute it. Once
+  // the risk slot closes the gate stops reserving that WBTC, and this is the only thing left
+  // counting it.
+  describe("holding capacity for batches that are settled but still executable", () => {
+    /** Sign a batch, then tell the mode what became of the slot that opened it. */
+    async function authorizedThen(
+      outcome: { consumed: boolean } | undefined,
+      opts: Parameters<typeof build>[0] = {}
+    ) {
+      const h = build({ balance: 1_000n, allowance: 1_000n, ...opts });
+      await h.funding.prepare();
+      const { authorizationId } = await h.funding.buildAcquisition({
+        vaultId: VAULT_ID,
+        preview: PREVIEW,
+        maxWbtcIn: 90n,
+      });
+      if (outcome) h.funding.settleAuthorization(authorizationId, outcome);
+      await h.funding.refreshInventory();
+      return { ...h, authorizationId };
+    }
+
+    /** What the gate was told it may spend. */
+    const published = (h: { recordFundingCapacity: ReturnType<typeof vi.fn> }) =>
+      h.recordFundingCapacity.mock.calls.at(-1)?.[0];
+
+    // While the slot is open the gate is already reserving `maxWbtcIn`. Subtracting here too would
+    // deduct the same acquisition twice and halve what the treasury can actually fund.
+    it("holds nothing while the slot that opened it is still open", async () => {
+      const h = await authorizedThen(undefined);
+      expect(published(h)).toMatchObject({ authorized: 0n });
+    });
+
+    it("holds the batch once its slot settles without proving the money moved", async () => {
+      const h = await authorizedThen({ consumed: false });
+      expect(published(h)).toMatchObject({ authorized: 90n });
+    });
+
+    // The confirmed acquisition's WBTC has already left, so the balance read reports it. Holding it
+    // as well would subtract the same money twice and shrink capacity for no reason.
+    it("holds nothing for a batch whose acquisition confirmed", async () => {
+      const h = await authorizedThen({ consumed: true });
+      expect(published(h)).toMatchObject({ authorized: 0n });
+    });
+
+    it("publishes capacity net of the hold, not the raw balance", async () => {
+      const h = await authorizedThen({ consumed: false }, { balance: 1_000n, allowance: 1_000n });
+      // 1_000 held by the treasury, 90 of it spoken for by a batch anyone may still submit.
+      expect(h.risk.openSlot({ kind: "a", subject: "v", spend: [SPEND(911n)] }).allowed).toBe(
+        false
+      );
+      expect(h.risk.openSlot({ kind: "a", subject: "v", spend: [SPEND(910n)] }).allowed).toBe(true);
+    });
+
+    // A duplicate intent re-signs the same vault every cycle under a fresh deadline, so a fresh
+    // digest. Summing those would let one vault stack holds against itself until they expired —
+    // starving the treasury for a vault that can only ever be bought once.
+    it("holds one acquisition's worth for a vault re-signed many times, not the sum", async () => {
+      const h = build({ balance: 1_000n, allowance: 1_000n });
+      await h.funding.prepare();
+      for (const [i, amount] of [90n, 80n, 70n].entries()) {
+        // A later block each time, so each build produces a distinct digest as a real cycle would.
+        h.getBlock.mockResolvedValue({
+          timestamp: 1_700_000_000n + BigInt(i),
+          number: 100n + BigInt(i),
+        });
+        const { authorizationId } = await h.funding.buildAcquisition({
+          vaultId: VAULT_ID,
+          preview: PREVIEW,
+          maxWbtcIn: amount,
+        });
+        h.funding.settleAuthorization(authorizationId, { consumed: false });
+      }
+      h.getBlock.mockResolvedValue({ timestamp: 1_700_000_002n, number: 102n });
+      await h.funding.refreshInventory();
+
+      // The worst single outcome, not 90 + 80 + 70.
+      expect(published(h)).toMatchObject({ authorized: 90n });
+    });
+
+    // Past its deadline the router refuses the batch, so it can take nothing and must stop being
+    // held — otherwise every abandoned acquisition would shrink the treasury permanently.
+    it("releases the hold once the batch expires", async () => {
+      const h = build({ balance: 1_000n, allowance: 1_000n });
+      await h.funding.prepare();
+      const { authorizationId } = await h.funding.buildAcquisition({
+        vaultId: VAULT_ID,
+        preview: PREVIEW,
+        maxWbtcIn: 90n,
+      });
+      h.funding.settleAuthorization(authorizationId, { consumed: false });
+
+      // One second past the 120s deadline signed at 1_700_000_000.
+      h.getBlock.mockResolvedValue({ timestamp: 1_700_000_121n, number: 200n });
+      await h.funding.refreshInventory();
+      expect(published(h)).toMatchObject({ authorized: 0n });
+    });
+
+    // The other way out: someone submitted it. The vault leaves escrow, so no batch for it can
+    // execute again — and the balance read at this same block already reports the payment.
+    it("releases the hold once the router shows the vault acquired", async () => {
+      const h = await authorizedThen(
+        { consumed: false },
+        { swapLogs: [{ blockNumber: 99n, args: { vaultId: VAULT_ID } }] }
+      );
+      expect(published(h)).toMatchObject({ authorized: 0n });
+    });
+
+    // The reads have to describe one chain. A balance from before the execution and a log from
+    // after it would retire the hold *and* report the money as still there — the same WBTC
+    // spendable twice, which is the error the hold exists to prevent.
+    it("pins the balance, the allowance and the log scan to one block", async () => {
+      const h = await authorizedThen({ consumed: false });
+      const at = (call: unknown[]) => (call[0] as { blockNumber?: bigint }).blockNumber;
+      const reads = h.readContract.mock.calls.filter(
+        (c: unknown[]) => (c[0] as { functionName: string }).functionName !== "signer"
+      );
+      const balanceReads = reads.filter(
+        (c: unknown[]) => (c[0] as { functionName: string }).functionName === "balanceOf"
+      );
+      expect(at(balanceReads.at(-1) as unknown[])).toBe(100n);
+      expect(h.getLogs.mock.calls.at(-1)?.[0]).toMatchObject({ toBlock: 100n });
+    });
+  });
+
+  describe("refusing to sign against implausible block metadata", () => {
+    const nowSeconds = () => BigInt(Math.floor(Date.now() / 1000));
+
+    it("signs normally when the block's timestamp tracks this host's clock", async () => {
+      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() });
+      await funding.prepare();
+      await funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
+
+      expect(signTypedData).toHaveBeenCalled();
+    });
+
+    it("tolerates a lead within the allowance, since chain time is not our clock", async () => {
+      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 299n });
+      await funding.prepare();
+      await funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
+
+      expect(signTypedData).toHaveBeenCalled();
+    });
+
+    // A month-ahead timestamp turns a 120-second authorization into a month-long one. The router
+    // carries no nonce, so that deadline is the only thing standing between the signature and
+    // whoever saw it during gas estimation.
+    it("refuses to sign against a timestamp far ahead of this host's clock", async () => {
+      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 30n * 86_400n });
+      await funding.prepare();
+
+      await expect(
+        funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n })
+      ).rejects.toThrow(/leads this host's clock/);
+      expect(signTypedData).not.toHaveBeenCalled();
+    });
+
+    // And it leaves no trace: nothing was signed, so no authorization exists to go looking for.
+    it("records no authorization for a refused signature", async () => {
+      const { funding, getLogs } = build({ blockTimestamp: nowSeconds() + 30n * 86_400n });
+      await funding.prepare();
+      await funding
+        .buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n })
+        .catch(() => {});
+
+      // Whatever id a caller might hold, no record exists for it.
+      expect(await funding.spentWithoutUs(undefined)).toBe(false);
+      expect(getLogs).not.toHaveBeenCalled();
+    });
+
+    // A stale replica is the ordinary case and must keep working: an old block shortens the window
+    // rather than inflating it, which is safe.
+    it("signs against a block whose timestamp trails this host's clock", async () => {
+      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() - 86_400n });
+      await funding.prepare();
+      await funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
+
+      expect(signTypedData).toHaveBeenCalled();
     });
   });
 });

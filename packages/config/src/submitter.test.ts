@@ -8,7 +8,8 @@ import { type SubmitterEnv, buildExecutionConfig, buildSubmitterConfig } from ".
 const env = (overrides: Partial<SubmitterEnv> = {}): SubmitterEnv => ({
   SUBMITTER: "public",
   FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
-  PRIVATE_RECLAIM_AFTER_MS: "420000",
+  PRIVATE_RELAY_HORIZON_BLOCKS: "25",
+  PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
   ...overrides,
 });
 
@@ -66,7 +67,8 @@ describe("buildSubmitterConfig", () => {
       rpcUrl: "https://rpc.flashbots.net/fast",
       statusUrl: "https://protect.flashbots.net",
       minPriorityFeeWei: 2_000_000_000n,
-      reclaimAfterMs: 420_000,
+      relayHorizonBlocks: 25,
+      reclaimMarginBlocks: 3,
     });
   });
 
@@ -97,7 +99,8 @@ describe("submission is an AUTO-only decision", () => {
       SIGNER_SOURCE: "local",
       SUBMITTER: "public",
       FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
-      PRIVATE_RECLAIM_AFTER_MS: "420000",
+      PRIVATE_RELAY_HORIZON_BLOCKS: "25",
+      PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
       ...overrides,
     }) as Parameters<typeof buildExecutionConfig>[0];
 

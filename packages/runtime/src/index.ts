@@ -13,6 +13,7 @@ import {
   createChainReader,
   createManualExecutor,
   createRelayAwareReader,
+  createRelayHorizon,
 } from "@repo/engine";
 import {
   createFlashbotsProtectSubmitter,
@@ -130,15 +131,12 @@ function buildSubmission(
     statusUrl: settings.statusUrl,
     onResult: metrics.recordSubmit,
   });
+  const node = createChainReader(publicClient);
   return {
     submitter: relay,
-    reader: createRelayAwareReader(
-      createChainReader(publicClient),
-      relay,
-      logger,
-      metrics.recordRelayStatus
-    ),
-    maxFenceMs: settings.reclaimAfterMs,
+    reader: createRelayAwareReader(node, relay, logger, metrics.recordRelayStatus),
+    reclaimMarginBlocks: settings.reclaimMarginBlocks,
+    horizon: createRelayHorizon(node, relay, settings.relayHorizonBlocks),
   };
 }
 

@@ -203,10 +203,19 @@ if [[ -f .e2e-stress-report.json ]]; then
   competitor="$(jq -r '.competitorResult // "skipped"' .e2e-stress-report.json)"
   case "$competitor" in
     won)
-      races="$(metric_value 'arbitrageur_errors_total{type="race_lost"}')"
-      if [[ "${races:-0}" -lt 1 ]]; then
-        flunk "A14 a competitor took a vault with its own funds but the bot never recorded race_lost"
+      # Losing a race requires having been in one. The drive script now waits for the bot to reach
+      # this vault before taking it, and records whether it managed to — so this reads that fact
+      # rather than inferring it. Deliberately NOT from `tx_intents`: an attempt that dies at gas
+      # estimation is exactly the case this assertion is about, and it returns before `commit`
+      # writes any intent, so the table cannot see it.
+      comp_vault="$(jq -r '.competitorVault // ""' .e2e-stress-report.json)"
+      if [[ "$(jq -r '.competitorRaced // 0' .e2e-stress-report.json)" != "1" ]]; then
+        printf "[SKIP] A14 competitor took %s before the bot ever reached it (no race to lose)\n" \
+          "${comp_vault:0:10}…"
+      elif [[ "$(metric_value 'arbitrageur_errors_total{type="race_lost"}')" -lt 1 ]]; then
+        flunk "A14 the bot attempted ${comp_vault:0:10}…, a competitor took it, but no race_lost was recorded"
       else
+        races="$(metric_value 'arbitrageur_errors_total{type="race_lost"}')"
         pass "A14 competitor's own-funded win settled as a lost race (${races} occurrence(s))"
       fi
       ;;

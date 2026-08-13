@@ -154,6 +154,12 @@ wait_for_backlog() {
 # Note which URL changes: `CLIENT_RPC_URL` still points at anvil. That asymmetry IS the hazard —
 # the bot reads the chain from a node that cannot see what it sent.
 RELAY_PID=""
+# The relay's retry window and the reorg headroom past it, in blocks — the two numbers the whole
+# private phase is measured in. The fake relay stamps every transaction with the first, and the bot
+# is told both, so "fenced" and "released" are read off the same deadline rather than a duration
+# that happens to work.
+RELAY_HORIZON_BLOCKS=4
+RECLAIM_MARGIN_BLOCKS=2
 if [[ -n "${STRESS_PRIVATE:-}" ]]; then
   # A relay leaked from an earlier run is worse than none: it answers on the same port with the
   # PREVIOUS run's withheld hashes, so this run reads a transaction that its own fresh database has
@@ -164,7 +170,7 @@ if [[ -n "${STRESS_PRIVATE:-}" ]]; then
   # Reap it however this script exits, including `fail`, so the next run starts clean.
   trap '[[ -n "${RELAY_PID:-}" ]] && kill "$RELAY_PID" 2>/dev/null || true' EXIT
   log "Private submission: starting the fake relay on :8555"
-  FAKE_RELAY_PORT=8555 FAKE_RELAY_UPSTREAM="$RPC" FAKE_RELAY_HORIZON_BLOCKS=10 \
+  FAKE_RELAY_PORT=8555 FAKE_RELAY_UPSTREAM="$RPC" FAKE_RELAY_HORIZON_BLOCKS="$RELAY_HORIZON_BLOCKS" \
     node test/e2e/scripts/fake-relay.mjs >/tmp/fake-relay.log 2>&1 &
   RELAY_PID=$!
   for _ in $(seq 1 30); do
@@ -173,20 +179,22 @@ if [[ -n "${STRESS_PRIVATE:-}" ]]; then
   done
   [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8555/tx/0x00" || echo 000)" == "200" ]] \
     || fail "fake relay never came up — see /tmp/fake-relay.log"
-  # `PRIVATE_RECLAIM_AFTER_MS` must exceed the 30s unknown-tx grace window or `createCrashSafety`
-  # refuses to build (the two bounds would cross and the reader would never be consulted). 45s keeps
-  # the run short while staying the right side of that.
+  # The bot's declared horizon matches the relay's actual one, so the phase observes recovery
+  # *after* the deadline the relay stated rather than before it. Both are compressed far below
+  # Protect's ~25 blocks: at this harness's block time the relay's window plus the reorg margin is
+  # about a minute, which is what keeps the run short without making the assertion a lie.
   #
   # `TX_RECEIPT_TIMEOUT_MS` is cut from its 120s default because a withheld transaction is one whose
   # receipt never arrives: the engine blocks for the whole budget before it can even begin to
   # recover. That is real behaviour rather than a test artifact — it is just far longer than this
   # phase should wait to observe the recovery that follows it.
-  cat >> ./.env.arbitrageur <<'PRIVENV'
+  cat >> ./.env.arbitrageur <<PRIVENV
 SUBMITTER=flashbots-protect
 FLASHBOTS_PROTECT_URL=http://127.0.0.1:8555
 FLASHBOTS_STATUS_URL=http://127.0.0.1:8555
 PRIVATE_MIN_PRIORITY_FEE_WEI=1000000000
-PRIVATE_RECLAIM_AFTER_MS=45000
+PRIVATE_RELAY_HORIZON_BLOCKS=$RELAY_HORIZON_BLOCKS
+PRIVATE_RECLAIM_MARGIN_BLOCKS=$RECLAIM_MARGIN_BLOCKS
 TX_RECEIPT_TIMEOUT_MS=25000
 PRIVENV
   ok "relay up; bot configured for private submission"
@@ -378,7 +386,9 @@ FENCE_RESULT="skipped"; RECOVERY_RESULT="skipped"; DROP_HASH=""; DROP_NONCE=""
 #                       fenced one leaves every later transaction unmineable behind the gap: not a
 #                       degraded bot, a dead one.
 #
-# `PRIVATE_RECLAIM_AFTER_MS=45000` is the line between them.
+# The line between them is the relay's own deadline for THIS transaction (`maxBlockNumber`), which
+# the bot records at submission — so the phase reads both halves off the same number the relay
+# stated, rather than off a duration chosen to fall between them.
 PRIVATE_RESULT="skipped"; PRIVATE_NONCE=""
 if [[ -n "${STRESS_PRIVATE:-}" ]]; then
   log "Private submission: withholding the next transaction at the relay"
@@ -404,16 +414,41 @@ if [[ -n "${STRESS_PRIVATE:-}" ]]; then
     cast tx "$WITHHELD" --rpc-url "$RPC" >/dev/null 2>&1 \
       && fail "the withheld tx reached anvil — the relay forwarded what it should have swallowed"
 
-    # (i) fenced. Sample well inside the horizon; any *other* intent taking this nonce is a reuse.
-    for _ in $(seq 1 25); do
-      dupes="$(sql "SELECT count(*) FROM bot.tx_intents WHERE nonce=$PRIVATE_NONCE AND tx_hash<>'$WITHHELD';")"
-      [[ "$dupes" == "0" ]] || fail "nonce $PRIVATE_NONCE reissued while the relay may still land it ($dupes other intents)"
+    # The relay's stated deadline, and the bot's record of it. Recording it is what makes the fence
+    # releasable at all: the relay-aware reader answers "live" to everything, so a missing horizon
+    # means this nonce is fenced forever. It may exceed the relay's (the bot reads its own head a
+    # moment later) but must never fall short of it, which would free a nonce the relay may spend.
+    RELAY_MAX="$(curl -s "http://127.0.0.1:8555/tx/$WITHHELD" \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)["maxBlockNumber"])')"
+    # Polled, not read once: the horizon is written on the transition that follows the send, so it
+    # can trail the relay's acknowledgement by a moment.
+    PERSISTED_MAX=""
+    for _ in $(seq 1 15); do
+      PERSISTED_MAX="$(sql "SELECT relay_max_block FROM bot.tx_intents WHERE tx_hash='$WITHHELD';")"
+      [[ "$PERSISTED_MAX" =~ ^[0-9]+$ ]] && break
       sleep 1
     done
-    ok "nonce $PRIVATE_NONCE held for 25s while the relay still reported it live"
+    [[ "$PERSISTED_MAX" =~ ^[0-9]+$ ]] \
+      || fail "withheld tx $WITHHELD has no recorded relay horizon — its nonce can never be released"
+    [[ "$PERSISTED_MAX" -ge "$RELAY_MAX" ]] \
+      || fail "recorded horizon $PERSISTED_MAX is shorter than the relay's $RELAY_MAX — the nonce would be freed while the relay can still land it"
+    ok "horizon recorded: block $PERSISTED_MAX (relay stated $RELAY_MAX)"
 
-    # (ii) released. Past the horizon the bot must be able to land transactions again — either by
-    # refilling the gap at this nonce or by moving past it. A stall shows up as neither happening.
+    # (i) fenced. Sample until the chain reaches the relay's stated deadline; any *other* intent
+    # taking this nonce inside that window is a reuse of a nonce the relay may still spend. The
+    # window has to still be open when we get here, or the loop below asserts over nothing.
+    [[ "$(cast block-number --rpc-url "$RPC")" -le "$RELAY_MAX" ]] \
+      || fail "horizon $RELAY_MAX already passed before the fence could be observed — raise RELAY_HORIZON_BLOCKS"
+    while [[ "$(cast block-number --rpc-url "$RPC")" -le "$RELAY_MAX" ]]; do
+      dupes="$(sql "SELECT count(*) FROM bot.tx_intents WHERE nonce=$PRIVATE_NONCE AND tx_hash<>'$WITHHELD';")"
+      [[ "$dupes" == "0" ]] || fail "nonce $PRIVATE_NONCE reissued at block $(cast block-number --rpc-url "$RPC"), before the relay's horizon $RELAY_MAX"
+      sleep 2
+    done
+    ok "nonce $PRIVATE_NONCE held to block $RELAY_MAX while the relay still reported it live"
+
+    # (ii) released. Past the recorded horizon plus its reorg margin the bot must be able to land
+    # transactions again — either by refilling the gap at this nonce or by moving past it. A stall
+    # shows up as neither happening.
     BEFORE_CONFIRMED="$(sql "SELECT count(*) FROM bot.tx_intents WHERE status='confirmed';")"
     PRIVATE_RESULT="stalled"
     for _ in $(seq 1 150); do
@@ -422,7 +457,7 @@ if [[ -n "${STRESS_PRIVATE:-}" ]]; then
       sleep 1
     done
     [[ "$PRIVATE_RESULT" == "recovered" ]] \
-      || fail "no transaction confirmed in 150s after the horizon — the signer is stalled behind nonce $PRIVATE_NONCE"
+      || fail "no transaction confirmed in 150s past horizon $PERSISTED_MAX (+$RECLAIM_MARGIN_BLOCKS) — the signer is stalled behind nonce $PRIVATE_NONCE"
     ok "bot resumed landing transactions after the reclaim horizon"
   fi
 fi
@@ -562,7 +597,7 @@ ok "wave #2 has work"
 # and decisive for the ledger: no `SwapWbtcToVault` came from OUR router, so our treasury paid
 # nothing and the reservation must be released. Reporting a spend here would strand capacity every
 # time we simply lost a race.
-COMPETITOR_RESULT="skipped"; COMPETITOR_VAULT=""
+COMPETITOR_RESULT="skipped"; COMPETITOR_VAULT=""; COMPETITOR_RACED=0
 if [[ -n "${STRESS_ROUTER:-}" ]]; then
   COMP_KEY="$(cast --to-uint256 1001)"
   log "Competitor: buying an escrowed vault with its own WBTC"
@@ -576,6 +611,20 @@ if [[ -n "${STRESS_ROUTER:-}" ]]; then
     printf "! no escrowed vault to contest; competitor phase skipped\n" >&2
   else
     COMPETITOR_VAULT="$COMP_VAULT"
+    # Wait for the bot to actually reach this vault before taking it. Losing a race requires being
+    # in one: with a cascade of vaults the bot works through them in order, and a competitor that
+    # buys one the bot has not got to yet produces no race at all — the bot simply never sees it,
+    # and A14 would then flunk it for behaving correctly. The bot's own log is the witness, because
+    # an attempt that dies at gas estimation (exactly the case A14 is about) never reaches `commit`
+    # and so writes no intent row to query.
+    COMPETITOR_RACED=0
+    for _ in $(seq 1 90); do
+      grep -q "$COMP_VAULT" /tmp/arb-bot.log 2>/dev/null && { COMPETITOR_RACED=1; break; }
+      sleep 1
+    done
+    [[ "$COMPETITOR_RACED" == "1" ]] \
+      || printf "! bot never reached %s in 90s; taking it anyway, but there is no race to lose\n" \
+           "$COMP_VAULT" >&2
     freeze_chain
     COMP_OUT="$(cast send "$VAULT_SWAP" 'swapWbtcForVaultOnBehalf(bytes32,uint256,address)' \
          "$COMP_VAULT" 100000000000 "$SIGNER" --async --gas-limit 3000000 \
@@ -779,6 +828,7 @@ cat > .e2e-stress-report.json <<EOF
   "racing": $RACING_JSON,
   "frontrunResult": "$FRONTRUN_RESULT", "frontrunVault": "${FRONTRUN_VAULT:-}",
   "competitorResult": "$COMPETITOR_RESULT", "competitorVault": "${COMPETITOR_VAULT:-}",
+  "competitorRaced": ${COMPETITOR_RACED:-0},
   "acqGapResult": "$ACQ_GAP_RESULT", "acqGapNonce": "${ACQ_GAP_NONCE:-}",
   "privateResult": "$PRIVATE_RESULT", "privateNonce": "${PRIVATE_NONCE:-}",
   "acqGapStranded": ${ACQ_GAP_STRANDED:-0}, "arbHaltedLogs": ${ARB_HALTED_LOGS:-0},

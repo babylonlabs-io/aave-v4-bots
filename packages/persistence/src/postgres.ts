@@ -44,6 +44,7 @@ const SCHEMA_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 type IntentRow = {
   id: string;
   chain_id: string;
+  relay_max_block: string | null;
   target: string;
   action: string;
   subject: string;
@@ -64,6 +65,7 @@ function mapIntent(row: IntentRow): TxIntent {
   return {
     id: row.id,
     chainId: Number(row.chain_id),
+    relayMaxBlock: row.relay_max_block === null ? null : Number(row.relay_max_block),
     target: row.target as Address,
     action: row.action,
     subject: row.subject,
@@ -80,7 +82,7 @@ function mapIntent(row: IntentRow): TxIntent {
 }
 
 const INTENT_COLUMNS =
-  "id, chain_id, target, action, subject, status, nonce, tx_hash, error, payload, payload_hash, safe_envelope, created_at, updated_at";
+  "id, chain_id, target, action, subject, status, nonce, tx_hash, error, payload, payload_hash, safe_envelope, relay_max_block, created_at, updated_at";
 
 /** A status set rendered as a SQL list literal — the single source is the exported const array. */
 const sqlList = (statuses: readonly string[]) => statuses.map((s) => `'${s}'`).join(", ");
@@ -125,6 +127,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
            ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload JSONB;
            ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS payload_hash TEXT;
            ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS safe_envelope JSONB;
+           ALTER TABLE ${intents} ADD COLUMN IF NOT EXISTS relay_max_block BIGINT;
            CREATE TABLE IF NOT EXISTS ${owner} (
              lock BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (lock),
              chain_id BIGINT NOT NULL,
@@ -184,10 +187,11 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
     const res = await client.query<IntentRow>(
       `INSERT INTO ${intents} AS t
          (${INTENT_COLUMNS})
-       VALUES ($1, $2, $3, $4, $5, $7, NULL, NULL, NULL, $8, $9, NULL, $6, $6)
+       VALUES ($1, $2, $3, $4, $5, $7, NULL, NULL, NULL, $8, $9, NULL, NULL, $6, $6)
        ON CONFLICT (id) DO UPDATE
          SET status = $7, nonce = NULL, tx_hash = NULL, error = NULL,
-             payload = $8, payload_hash = $9, safe_envelope = NULL, updated_at = $6
+             payload = $8, payload_hash = $9, safe_envelope = NULL, relay_max_block = NULL,
+             updated_at = $6
          WHERE t.status IN (${TERMINAL_SQL})
        RETURNING ${INTENT_COLUMNS}`,
       [
@@ -331,6 +335,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
            nonce = COALESCE($3, nonce),
            tx_hash = COALESCE($4, tx_hash),
            error = COALESCE($5, error),
+           relay_max_block = COALESCE($9, relay_max_block),
            updated_at = $6
          WHERE id = $1
            AND ($7::text IS NULL OR tx_hash = $7)
@@ -344,6 +349,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
           Date.now(),
           expect?.txHash ?? null,
           expect?.status ? [...expect.status] : null,
+          meta?.relayMaxBlock ?? null,
         ]
       );
       return (res.rowCount ?? 0) > 0;

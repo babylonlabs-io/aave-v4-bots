@@ -27,6 +27,8 @@ export interface ChainReader {
   getReceiptStatus(hash: Hex): Promise<"success" | "reverted" | null>;
   /** Transaction count for `address` at `latest` (mined) or `pending` (mined + mempool). */
   getNonce(address: Address, tag: "latest" | "pending"): Promise<number>;
+  /** Current chain head — what a recorded relay horizon is compared against. */
+  getBlockNumber(): Promise<number>;
   /**
    * Does the node know this tx at all (mempool **or** mined)? Senders record the hash before
    * broadcasting, so a recorded hash proves only that we signed — this distinguishes "in flight"
@@ -50,6 +52,7 @@ export function createChainReader(publicClient: PublicClient): ChainReader {
   return {
     getReceiptStatus: (hash) => getReceiptStatus(publicClient, hash),
     getNonce: (address, tag) => getNonce(publicClient, address, tag),
+    getBlockNumber: async () => Number(await publicClient.getBlockNumber()),
     isKnown: (hash) => isTxKnown(publicClient, hash),
     async getSafeExecution(txHash, safeAddress, safeTxHash) {
       // No receipt yet ⇒ not mined ⇒ still in flight. viem throws when the receipt is absent.
@@ -98,17 +101,20 @@ export interface LivenessCheck {
   /** Defaults to `UNKNOWN_TX_GRACE_MS`. */
   graceMs?: number;
   /**
-   * Upper bound on how long a recorded tx may hold its nonce, regardless of what the reader says.
-   * Unset ⇒ no bound, which is right for public submission: a public tx can linger in some node's
-   * pool indefinitely, and the node's own answer is authoritative.
+   * Blocks past a transaction's recorded relay horizon before its nonce is released, regardless of
+   * what the reader says. Unset ⇒ no release, which is right for public submission: a public
+   * transaction can linger in a node's pool indefinitely and the node's own answer is authoritative.
    *
-   * Private submission needs the bound, because there the reader deliberately fails closed — an
-   * unreachable relay, or a hash it has forgotten, both read as "still in flight". Without a clock
-   * that always advances, a single dropped transaction would fence its nonce forever and every
-   * later send would queue behind the gap: not a degraded bot, a dead one. Set it past the relay's
-   * own retry horizon so it can only fire once the transaction can no longer be included.
+   * Private submission needs it, because there the reader deliberately fails closed — an unreachable
+   * relay, or a hash it has forgotten, both read as "still in flight". Without something that always
+   * advances, one dropped transaction fences its nonce forever and every later send queues behind
+   * the gap. Block height rather than elapsed time because the horizon it is measured against is the
+   * relay's own, denominated in blocks; a duration has to be guessed against that, and guessing low
+   * frees a nonce the relay may still spend.
    */
-  maxFenceMs?: number;
+  reclaimMarginBlocks?: number;
+  /** Chain head, read once per pass by the caller rather than per intent. */
+  head?: number;
 }
 
 /**
@@ -118,16 +124,26 @@ export interface LivenessCheck {
  * still reserved (or the reverse).
  *
  * A tx recorded within the grace window is taken as live without asking: too young for a "no" to
- * mean anything. Past that, the reader's answer stands — until `maxFenceMs`, beyond which the tx is
- * declared gone whatever the reader claims. See `maxFenceMs` for why that backstop exists.
+ * mean anything. Past that the reader's answer stands, until the chain passes the tx's own recorded
+ * relay horizon — beyond which it is declared gone whatever the reader claims. See
+ * `reclaimMarginBlocks` for why that backstop exists.
  */
 export async function couldBeInFlight(
   check: LivenessCheck,
-  intent: { txHash: Hex; updatedAt: number }
+  intent: { txHash: Hex; updatedAt: number; relayMaxBlock?: number | null }
 ): Promise<boolean> {
   const age = check.now() - intent.updatedAt;
   if (age < (check.graceMs ?? UNKNOWN_TX_GRACE_MS)) return true;
-  if (check.maxFenceMs !== undefined && age > check.maxFenceMs) return false;
+  // Past the relay's own deadline for this transaction (plus reorg headroom) it can no longer be
+  // included, so nothing the reader says should keep its nonce.
+  if (
+    check.reclaimMarginBlocks !== undefined &&
+    check.head !== undefined &&
+    intent.relayMaxBlock != null &&
+    check.head > intent.relayMaxBlock + check.reclaimMarginBlocks
+  ) {
+    return false;
+  }
   return check.reader.isKnown(intent.txHash);
 }
 
@@ -143,6 +159,33 @@ export async function couldBeInFlight(
 /** The subset of the relay adapter this needs — injected so tests script it without a network. */
 export interface RelayStatusSource {
   status(hash: Hex): Promise<RelayTxStatus>;
+}
+
+/**
+ * Resolve a just-submitted transaction's deadline — the block past which it can no longer be
+ * included, recorded on its intent so the nonce fence has something that always advances. The later
+ * of the relay's own `maxBlockNumber` and `head + horizonBlocks`.
+ *
+ * The relay's value is the real one — the block after which it stops offering the transaction to
+ * builders — and asking for it is why the horizon is not a constant copied from docs. It is not
+ * trusted to *shorten* the fence, though: a status probe right after submission can legitimately
+ * answer `UNKNOWN` (not indexed yet) or fail outright, and a relay under-reporting its own window
+ * would free a nonce it may still spend. So the declared window is a floor, and every uncertainty
+ * here resolves toward fencing longer.
+ */
+export function createRelayHorizon(
+  node: ChainReader,
+  relay: RelayStatusSource,
+  horizonBlocks: number
+): (hash: Hex) => Promise<number> {
+  return async (hash) => {
+    const [head, status] = await Promise.all([
+      node.getBlockNumber(),
+      relay.status(hash).catch(() => null),
+    ]);
+    const fallback = head + horizonBlocks;
+    return Math.max(status?.maxBlockNumber ?? 0, fallback);
+  };
 }
 
 /**
@@ -174,8 +217,8 @@ export function createRelayAwareReader(
         // Every status the relay can return fences, including terminal ones. Releasing on a status
         // would put a third party's field in charge of nonce safety, and `UNKNOWN` cannot be told
         // apart from "expired from the index" — so a transaction the relay merely forgot would free
-        // a nonce that might still be spent. `LivenessCheck.maxFenceMs` is what releases instead:
-        // a clock that always advances, set past the relay's own retry horizon.
+        // a nonce that might still be spent. The horizon recorded at submission is what releases
+        // instead: the relay's own deadline for that one transaction, measured in blocks.
         //
         // The call is still made because a reachable relay is the signal worth logging and, later,
         // reporting: `simError` means our transaction is defective rather than out-competed.

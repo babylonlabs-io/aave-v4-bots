@@ -275,18 +275,19 @@ describe("createCrashSafety", () => {
 // the seam: the second one is the acute failure, because it does not merely reuse a nonce, it lets
 // the engine re-drive a liquidation that is still live at the relay.
 describe("resyncNonces — private submission, where the node cannot see our tx", () => {
-  const blindChain = (pending: number) =>
+  const blindChain = (pending: number, head = 100) =>
     ({
       getTransactionCount: vi.fn(async () => pending),
+      getBlockNumber: vi.fn(async () => BigInt(head)),
       // Never knows the hash: that is what "private" means.
       getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => {
         throw new TransactionNotFoundError({ hash });
       }),
     }) as unknown as PublicClient;
 
-  const relayReader = (status: RelayTxStatus["status"] | "throw") =>
+  const relayReader = (status: RelayTxStatus["status"] | "throw", head = 100) =>
     createRelayAwareReader(
-      createChainReader(blindChain(5)),
+      createChainReader(blindChain(5, head)),
       {
         status: async () => {
           if (status === "throw") throw new Error("flashbots status failed: HTTP 503");
@@ -296,11 +297,19 @@ describe("resyncNonces — private submission, where the node cannot see our tx"
       silentLogger
     );
 
-  async function nextNonceWithReader(reader: ChainReader, ageMs?: number, maxFenceMs?: number) {
+  /** Seed one submitted intent at nonce 5 and report the nonce the next send gets. */
+  async function nextNonceWithReader(
+    reader: ChainReader,
+    over: { ageMs?: number; relayMaxBlock?: number; reclaimMarginBlocks?: number } = {}
+  ) {
     const store = createMemoryStateStore();
     const intent = { ...input("pos-1"), action: "liquidation" };
     await store.recordIntent(intent);
-    await store.transition(idempotencyKey(intent), "submitted", { nonce: 5, txHash: HASH });
+    await store.transition(idempotencyKey(intent), "submitted", {
+      nonce: 5,
+      txHash: HASH,
+      relayMaxBlock: over.relayMaxBlock,
+    });
 
     const nonces = createNonceAllocator(createNonceLease(), SIGNER);
     const cs = createCrashSafety({
@@ -309,8 +318,8 @@ describe("resyncNonces — private submission, where the node cannot see our tx"
       signer: SIGNER,
       logger: silentLogger,
       reader,
-      maxFenceMs,
-      now: () => Date.now() + (ageMs ?? UNKNOWN_TX_GRACE_MS + 1),
+      reclaimMarginBlocks: over.reclaimMarginBlocks,
+      now: () => Date.now() + (over.ageMs ?? UNKNOWN_TX_GRACE_MS + 1),
     });
     await cs.resyncNonces();
     return nonces.withNonce(async (n) => n);
@@ -339,55 +348,61 @@ describe("resyncNonces — private submission, where the node cannot see our tx"
   // forgot this hash", so letting any status free a nonce would put a third party's field in charge
   // of whether we sign over a live transaction.
   it("keeps fencing even when the relay reports the tx FAILED", async () => {
-    expect(await nextNonceWithReader(relayReader("FAILED"), undefined, 420_000)).toBe(6);
+    const next = await nextNonceWithReader(relayReader("FAILED"), {
+      relayMaxBlock: 120,
+      reclaimMarginBlocks: 3,
+    });
+    expect(next).toBe(6);
   });
 
-  // …and this is what releases it instead: a clock that always advances, set past the relay's own
-  // retry horizon. Without it the reader — which fails closed by design — would fence forever, and
-  // every later send would queue behind the gap. That is the stall this bound exists to prevent.
-  it("releases the nonce once the fence bound has elapsed, whatever the relay says", async () => {
-    expect(await nextNonceWithReader(relayReader("PENDING"), 420_001, 420_000)).toBe(5);
+  // …and this is what releases it instead: the relay's own deadline for this transaction, recorded
+  // when it was submitted, plus reorg headroom. Without it the reader — which fails closed by
+  // design — fences forever and every later send queues behind the gap.
+  it("releases the nonce once the chain is past the recorded horizon, whatever the relay says", async () => {
+    const next = await nextNonceWithReader(relayReader("PENDING", 104), {
+      relayMaxBlock: 100,
+      reclaimMarginBlocks: 3,
+    });
+    expect(next).toBe(5);
   });
 
-  it("does not release one second early", async () => {
-    expect(await nextNonceWithReader(relayReader("PENDING"), 419_999, 420_000)).toBe(6);
+  it("does not release one block early", async () => {
+    const next = await nextNonceWithReader(relayReader("PENDING", 103), {
+      relayMaxBlock: 100,
+      reclaimMarginBlocks: 3,
+    });
+    expect(next).toBe(6);
   });
 
-  // Public submission keeps its old behaviour exactly: no bound at all. A public transaction can sit
-  // in a node's pool indefinitely, so age says nothing about whether it can still be mined — only
-  // the node does. Applying the private bound here would start reclaiming nonces out from under live
-  // public transactions, which is why it is opt-in rather than a default.
+  // The failure mode the wall clock always had: time passes whether or not blocks do, so a stalled
+  // chain used to free a nonce the relay could still spend the moment it resumed. Height cannot.
+  it("never releases while the chain is stalled, however old the transaction is", async () => {
+    const next = await nextNonceWithReader(relayReader("PENDING", 100), {
+      ageMs: 10_000_000,
+      relayMaxBlock: 100,
+      reclaimMarginBlocks: 3,
+    });
+    expect(next).toBe(6);
+  });
+
+  // A transaction submitted before this column existed, or one whose horizon could not be resolved.
+  // It keeps the old behaviour — fenced by the reader — rather than being released on a guess.
+  it("keeps fencing a tx with no recorded horizon", async () => {
+    const next = await nextNonceWithReader(relayReader("PENDING", 10_000), {
+      reclaimMarginBlocks: 3,
+    });
+    expect(next).toBe(6);
+  });
+
+  // Public submission keeps its old behaviour exactly: no horizon at all. A public transaction can
+  // sit in a node's pool indefinitely, so age says nothing about whether it can still be mined —
+  // only the node does.
   it("leaves a known public tx fenced no matter how old", async () => {
     const knowing = {
       getTransactionCount: vi.fn(async () => 5),
       getTransaction: vi.fn(async () => ({ hash: HASH })),
     } as unknown as PublicClient;
-    expect(await nextNonceWithReader(createChainReader(knowing), 10_000_000)).toBe(6);
-  });
-});
-
-// The two age bounds are opposite ends of one window, and inverting them empties the middle: the
-// reader would never be consulted, so private mode would stop asking the relay entirely and release
-// nonces after the 30s grace rather than its configured horizon. Silent and much too fast.
-describe("the fence's two bounds must not cross", () => {
-  const build = (maxFenceMs: number, graceMs?: number) =>
-    createCrashSafety({
-      nonces: allocator(0),
-      reader: createChainReader(publicClient),
-      signer: SIGNER,
-      logger: silentLogger,
-      maxFenceMs,
-      graceMs,
-    });
-
-  it("refuses a bound at or below the grace window", () => {
-    expect(() => build(UNKNOWN_TX_GRACE_MS)).toThrow(/must exceed the unknown-tx grace window/);
-    expect(() => build(UNKNOWN_TX_GRACE_MS - 1)).toThrow(/must exceed/);
-  });
-
-  it("accounts for an overridden grace window, not just the default", () => {
-    expect(() => build(60_000, 60_000)).toThrow(/must exceed/);
-    expect(() => build(60_001, 60_000)).not.toThrow();
+    expect(await nextNonceWithReader(createChainReader(knowing), { ageMs: 10_000_000 })).toBe(6);
   });
 });
 
@@ -401,6 +416,7 @@ describe("resyncNonces — reissuing a nonce hole", () => {
   const gappedChain = (pending: number, known: Hex[]) =>
     ({
       getTransactionCount: vi.fn(async () => pending),
+      getBlockNumber: vi.fn(async () => 100n),
       getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => {
         if (!known.includes(hash)) throw new TransactionNotFoundError({ hash });
         return { hash };
@@ -411,7 +427,6 @@ describe("resyncNonces — reissuing a nonce hole", () => {
   async function nextNonceWithIntents(args: {
     intents: Array<{ nonce: number; hash: Hex; ageMs?: number }>;
     publicClient: PublicClient;
-    maxFenceMs?: number;
   }) {
     const store = createMemoryStateStore();
     for (const [i, it] of args.intents.entries()) {
@@ -429,7 +444,6 @@ describe("resyncNonces — reissuing a nonce hole", () => {
       reader: createChainReader(args.publicClient),
       signer: SIGNER,
       logger: silentLogger,
-      maxFenceMs: args.maxFenceMs,
       now: () => Date.now() + UNKNOWN_TX_GRACE_MS + 1,
     });
     await cs.resyncNonces();

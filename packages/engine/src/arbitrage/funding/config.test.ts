@@ -67,6 +67,7 @@ describe("createArbitrageFunding", () => {
     publicClient: {} as never,
     risk: {} as never,
     metrics: { recordFundingCapacity: () => {} },
+    logger: { debug() {}, info() {}, warn() {}, error() {} },
     executor: { mode, identity: { from: "0x1", chainId: 1 }, account: {} } as never,
     wbtcAddress: "0x2" as const,
     vaultSwapAddress: "0x3" as const,

@@ -55,6 +55,7 @@ following label values:
 | `ponder_fetch_error` | Failed to fetch `/liquidatable-positions` from Ponder |
 | `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate |
 | `flash_probe_error` | The flash-funding probe threw for a candidate (`LIQUIDATION_FUNDING=flash` only) — a malfunction, not a "not fundable" verdict |
+| `router_balance_read_error` | The router's WBTC balance could not be read, so the whole cycle was skipped (`LIQUIDATION_FUNDING=flash` only) — every quote is measured net of that balance, and guessing it would overstate profit |
 | `risk_blocked` | Risk gate denied the action before execution |
 | `intent_in_flight` | A live persisted intent/proposal already exists for the position |
 | `tx_send_error` | Failed to broadcast the liquidation transaction |

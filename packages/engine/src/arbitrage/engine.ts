@@ -2,7 +2,8 @@ import { type Address, ContractFunctionRevertedError, type Hex, formatUnits } fr
 
 import { vaultSwapAbi } from "@repo/abis";
 import { waitForReceiptWithTimeout } from "@repo/execution";
-import { type RiskSlot, settleUnfinished } from "@repo/risk";
+import type { ActionOutcome } from "@repo/risk";
+import type { RiskSlot } from "@repo/risk";
 import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
 import { maxWbtcInWithSlippage } from "./domain";
 import { type ArbitrageFunding, type FundingParams, createArbitrageFunding } from "./funding";
@@ -27,6 +28,8 @@ interface SentAcquisition {
   /** Fresh on-chain acquisition cost (`amountWbtcToAcquire`), not the indexer's figure. */
   currentDebt: bigint;
   maxWbtcIn: bigint;
+  /** Identity of the authorization this acquisition was built under, if the mode signs one. */
+  authorizationId?: Hex;
 }
 
 /** Result of preparing + broadcasting one acquisition, before any receipt is awaited. */
@@ -49,7 +52,16 @@ export interface ArbitrageMetrics {
    * the *lesser* of the treasury's balance and its allowance to the router, either of which can
    * run out first. An operator watching only a balance would miss an exhausted approval.
    */
-  recordFundingCapacity(capacity: { owner: string; balance: bigint; allowance?: bigint }): void;
+  recordFundingCapacity(capacity: {
+    owner: string;
+    balance: bigint;
+    allowance?: bigint;
+    /**
+     * WBTC held back for signed batches that are settled but still executable — the gap between
+     * what the treasury holds and what the bot may commit. Router funding only.
+     */
+    authorized?: bigint;
+  }): void;
 }
 
 /**
@@ -180,13 +192,21 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     for (let i = 0; i < sent.length; i++) {
       const result = receipts[i];
       if (result.status === "fulfilled") {
-        await this.finishAcquisition(sent[i], result.value);
+        // Per item: classifying one acquisition must not abandon the rest. Without this a single
+        // failed read leaves every later slot to the cycle backstop, which marks them `abandoned`
+        // — turning one blip into N reverts the breaker never sees, and N intents never recorded.
+        try {
+          await this.finishAcquisition(sent[i], result.value);
+        } catch (error) {
+          this.metrics.recordError("classification_error");
+          this.logger.error(`Failed to classify the receipt for ${sent[i].hash}: ${error}`);
+        }
       } else {
         // The receipt lookup itself failed — the tx's fate is unknown, so this is not evidence
         // the chain rejected us. Leave the intent live for reconcile and free the slot without
         // blaming the breaker. `unresolved`, not `abandoned`: the tx IS out there, so its WBTC
         // stays counted as spent until a balance refresh proves otherwise.
-        sent[i].slot.settle({ ok: false, unresolved: true });
+        this.settle(sent[i].slot, { ok: false, unresolved: true }, sent[i].authorizationId);
         this.metrics.recordError("receipt_fetch_error");
         this.logger.error(`Failed to get receipt for ${sent[i].hash}: ${result.reason}`);
       }
@@ -223,13 +243,36 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
    * broadcast — gas estimation puts it in front of an RPC provider first. Releasing the
    * reservation while such a batch is live could admit a later vault against money already spent.
    */
-  private async abandonAfterAuthorizing(slot: RiskSlot, vaultId: Hex): Promise<void> {
-    const spent = await this.funding.spentWithoutUs(vaultId);
-    if (spent) {
+  private async abandonAfterAuthorizing(
+    slot: RiskSlot,
+    vaultId: Hex,
+    authorizationId?: Hex
+  ): Promise<void> {
+    const verdict = await this.spendVerdict(vaultId, authorizationId);
+    if ("spent" in verdict && verdict.spent) {
       this.logger.warn(`Vault ${vaultId} was acquired with our authorization by another submitter`);
       this.metrics.recordError("relay_executed_elsewhere");
     }
-    slot.settle({ ok: false, abandoned: true, spent });
+    this.settle(slot, { ok: false, abandoned: true, ...verdict }, authorizationId);
+  }
+
+  /**
+   * Settle one acquisition's risk slot, and hand its authorization's accounting over in the same
+   * breath.
+   *
+   * Every settlement for an acquisition goes through here, because "the slot closed" is exactly
+   * when the gate stops reserving the spend — and a signed batch that can still execute has to
+   * start being counted somewhere else at that moment. Scattering the hand-off through the
+   * branches is how it was missed on the three paths that settle `unresolved` directly.
+   *
+   * `slot.settle` is idempotent and so is `settleAuthorization`, so a `finally` backstop calling
+   * this after a precise path already did changes nothing.
+   */
+  private settle(slot: RiskSlot, outcome: ActionOutcome, authorizationId?: Hex): void {
+    slot.settle(outcome);
+    // Only a confirmed acquisition proves the money moved; everything else leaves the batch live
+    // until it expires or is observed executing.
+    this.funding.settleAuthorization(authorizationId, { consumed: outcome.ok === true });
   }
 
   /**
@@ -249,6 +292,53 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       return !acquirable;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Did the funding mode's authorization expire before the tx mined?
+   *
+   * A read failure answers `false`, for the same reason `wasVaultTaken` does: the caller reads
+   * "not expired" as "the chain refused this on its merits", which feeds the breaker. Answering
+   * `true` on a failed read would exempt a genuine failure from it, and a breaker that a flaky
+   * endpoint can silence is not one.
+   */
+  private async didAuthorizationExpire(
+    vaultId: Hex,
+    minedAtBlock: bigint,
+    authorizationId?: Hex
+  ): Promise<boolean> {
+    try {
+      return await this.funding.authorizationExpired(authorizationId, minedAtBlock);
+    } catch (error) {
+      this.logger.error(
+        `Could not tell whether the authorization for ${vaultId} expired; treating the revert as a genuine failure: ${error}`
+      );
+      this.metrics.recordError("classification_error");
+      return false;
+    }
+  }
+
+  /**
+   * Whether the funding mode's money paid for this vault without our transaction — as an outcome
+   * fragment, because "we could not find out" is a third answer and the risk ledger needs it.
+   *
+   * `spendUnknown` is not a softer `spent`: both count the outflow. It exists so the flag says why,
+   * rather than a failed read quietly reading as "our money stayed put" — which would release the
+   * reservation and let the same balance be committed twice.
+   */
+  private async spendVerdict(
+    vaultId: Hex,
+    authorizationId?: Hex
+  ): Promise<{ spent: boolean } | { spendUnknown: true }> {
+    try {
+      return { spent: await this.funding.spentWithoutUs(authorizationId) };
+    } catch (error) {
+      this.logger.error(
+        `Could not tell whether our authorization for ${vaultId} paid; keeping its WBTC counted as spent: ${error}`
+      );
+      this.metrics.recordError("spend_check_error");
+      return { spendUnknown: true };
     }
   }
 
@@ -280,8 +370,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       // exposure capacity permanently. The tx's fate is unknown, so free it without blaming the
       // breaker and leave the intent live for reconcile — and keep its WBTC counted as spent,
       // because the tx was broadcast and may still land.
-      prep.entry.slot.settle({ ok: false, unresolved: true });
-      settleUnfinished([prep.entry.slot]);
+      this.settle(prep.entry.slot, { ok: false, unresolved: true }, prep.entry.authorizationId);
       this.metrics.recordError("receipt_fetch_error");
       this.logger.error(`Failed to get receipt for ${prep.entry.hash}: ${error}`);
       return "skipped";
@@ -308,6 +397,10 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     let slot: RiskSlot | undefined;
     // Set once the slot becomes the receipt phase's responsibility; until then this method owns it.
     let handedOff = false;
+    // Set once a batch has been signed for this vault. Declared out here because the exits that
+    // matter most for it are the catch and the `finally` below: an authorization that outlives an
+    // unexpected throw still has to be handed over to the funding mode's own accounting.
+    let authorizationId: Hex | undefined;
 
     this.logger.info("Attempting to acquire vault:");
     this.logger.info(`   Vault ID: ${vaultId}`);
@@ -398,11 +491,13 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
 
       // ONE call description, used for both the estimate below and the commit further down — an
       // estimate of a different call would validate something we never broadcast.
-      const call = await this.funding.buildAcquisition({
+      const built = await this.funding.buildAcquisition({
         vaultId: vaultId as Hex,
         preview,
         maxWbtcIn,
       });
+      const call = built.call;
+      authorizationId = built.authorizationId;
 
       // From here on an authorization for this vault exists and may outlive this transaction, so
       // every exit below settles through `abandonAfterAuthorizing` rather than releasing outright.
@@ -428,7 +523,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           this.metrics.recordError("gas_estimation_failed");
         }
         // Nothing broadcast by us — free the exposure slot without blaming the chain.
-        await this.abandonAfterAuthorizing(slot, vaultId as Hex);
+        await this.abandonAfterAuthorizing(slot, vaultId as Hex, authorizationId);
         return { kind: "skipped" };
       }
 
@@ -448,20 +543,20 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         switch (out.kind) {
           case "duplicate":
             // A live intent for this subject already exists — nothing broadcast; free the slot.
-            await this.abandonAfterAuthorizing(slot, vaultId as Hex);
+            await this.abandonAfterAuthorizing(slot, vaultId as Hex, authorizationId);
             this.metrics.recordError("intent_in_flight");
             return { kind: "skipped" };
           case "proposed":
             // MANUAL — written down for an operator; nothing on chain, no receipt to await.
-            await this.abandonAfterAuthorizing(slot, vaultId as Hex);
+            await this.abandonAfterAuthorizing(slot, vaultId as Hex, authorizationId);
             return { kind: "skipped" };
           case "aborted":
             this.logger.error(`Failed to send swap for vault ${vaultId}: ${out.error}`);
             this.metrics.recordError("swap_send_error");
             // Only a failed *broadcast* is a real failure signal for the breaker; a pre-broadcast
             // failure reached no chain, so an RPC/database blip cannot trip it.
-            if (out.broadcastAttempted) slot.settle({ ok: false });
-            else await this.abandonAfterAuthorizing(slot, vaultId as Hex);
+            if (out.broadcastAttempted) this.settle(slot, { ok: false }, authorizationId);
+            else await this.abandonAfterAuthorizing(slot, vaultId as Hex, authorizationId);
             // The send left a possible nonce gap — stop the cycle; the next resync reclaims it.
             return { kind: "send-error" };
           default:
@@ -482,13 +577,17 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           vaultId,
           currentDebt: acquireCost,
           maxWbtcIn,
+          // Carried to the receipt phase so its settlement can hand this batch's accounting over.
+          // Without it every classification tells the funding mode about `undefined`, and a live
+          // authorization is held by nothing.
+          authorizationId,
         },
       };
     } catch (error) {
       // Only counts against the breaker if the gate had already allowed this acquisition. A
       // throw from the preview read or the Ponder fetch is an infrastructure error, not a failed
       // action — and it holds no exposure slot to release. (Those surface via `metrics`.)
-      slot?.settle({ ok: false });
+      if (slot) this.settle(slot, { ok: false }, authorizationId);
       let errorMsg = "Unknown error";
       if (error instanceof ContractFunctionRevertedError) {
         errorMsg = `${error.data?.errorName || "Contract reverted"}`;
@@ -504,7 +603,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     } finally {
       // Backstop: no path above may leave the slot reserved, EXCEPT the handed-off one the receipt
       // phase now owns. Idempotent, so real outcomes win and this only catches unsettled slots.
-      if (slot && !handedOff) settleUnfinished([slot]);
+      if (slot && !handedOff) this.settle(slot, { ok: false, abandoned: true }, authorizationId);
     }
   }
 
@@ -516,7 +615,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     entry: SentAcquisition,
     receipt: Awaited<ReturnType<typeof waitForReceiptWithTimeout>>
   ): Promise<AcquireOutcome> {
-    const { hash, intentId, slot, vaultId, currentDebt } = entry;
+    const { hash, intentId, slot, vaultId, currentDebt, authorizationId } = entry;
     try {
       if (!receipt) {
         // Timing out is not evidence the chain rejected us — the tx may still be sitting in the
@@ -525,14 +624,14 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         // one shared cause (a gap burned by the liquidation engine sharing this nonce allocator)
         // would otherwise land N failures simultaneously and halt a healthy bot.
         // The intent stays live (submitted) — reconcile resolves it against the chain.
-        slot.settle({ ok: false, unresolved: true });
+        this.settle(slot, { ok: false, unresolved: true }, authorizationId);
         this.logger.warn(`Transaction receipt timeout for vault ${vaultId}`);
         this.metrics.recordError("tx_timeout");
         return "skipped";
       }
 
       if (receipt.status === "success") {
-        slot.settle({ ok: true });
+        this.settle(slot, { ok: true }, authorizationId);
         this.logger.info(`Vault acquired and redeemed in block ${receipt.blockNumber}`);
         this.metrics.recordVaultAcquired(currentDebt);
         if (intentId)
@@ -543,45 +642,61 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       // escrow, another arbitrageur got there first — a lost race, normal competition, which must
       // not feed the breaker (settle `contended`, not `ok:false`).
       const lostRace = await this.wasVaultTaken(vaultId as Hex);
+      // What the chain did, in the words the intent is stored under. Kept as one value so the
+      // persisted reason cannot drift from the branch that settled the slot — an expired
+      // authorization recorded as a plain "reverted" reads, months later, as the chain refusing us.
+      let classification: string;
       if (lostRace) {
         // Losing the race does not always mean keeping the money. Ask the funding mode whether its
         // funds paid for the vault anyway — they can, where the payment is authorized separately
         // from this transaction and anyone may submit that authorization. Releasing the
         // reservation in that case would hand the same balance out twice in one cycle.
-        const spent = await this.funding.spentWithoutUs(vaultId as Hex);
-        slot.settle({ ok: false, contended: true, spent });
-        if (spent) {
+        const verdict = await this.spendVerdict(vaultId as Hex, authorizationId);
+        this.settle(slot, { ok: false, contended: true, ...verdict }, authorizationId);
+        if ("spendUnknown" in verdict) {
+          classification = "lost race (spend unknown)";
+        } else if (verdict.spent) {
           this.logger.warn(
             `Vault ${vaultId} was acquired with our own authorization by another submitter — funds spent, gas theirs`
           );
           this.metrics.recordError("relay_executed_elsewhere");
+          classification = "lost race (our authorization paid)";
         } else {
           this.logger.info(`Vault ${vaultId} acquired by another bot — not counted as a failure`);
           this.metrics.recordError("race_lost");
+          classification = "lost race";
         }
-      } else if (await this.funding.authorizationExpired(vaultId as Hex, receipt.blockNumber)) {
+      } else if (
+        await this.didAuthorizationExpire(vaultId as Hex, receipt.blockNumber, authorizationId)
+      ) {
         // The vault is still in escrow and we did not lose a race — but the router rejected the
         // batch before touching anything, because it sat behind a stalled nonce for longer than it
         // was signed for. Nothing moved and nothing was refused on its merits, so this must not
         // feed the breaker: a queue stall would otherwise halt a perfectly healthy bot.
-        slot.settle({ ok: false, abandoned: true });
+        this.settle(slot, { ok: false, abandoned: true }, authorizationId);
         this.logger.warn(`Authorization for vault ${vaultId} expired before its tx mined`);
         this.metrics.recordError("authorization_expired");
+        classification = "authorization expired";
       } else {
-        slot.settle({ ok: false });
+        this.settle(slot, { ok: false }, authorizationId);
         this.logger.error("Swap transaction reverted");
         this.metrics.recordError("swap_reverted");
+        classification = "reverted";
       }
       if (intentId)
         await this.executor.recordOutcome(intentId, {
           kind: "failed",
           txHash: hash,
-          error: lostRace ? "lost race" : "reverted",
+          error: classification,
         });
       return "skipped";
     } finally {
-      // Backstop: the slot handed over by `prepareAndSend` must not survive this method.
-      settleUnfinished([slot]);
+      // Backstop for a throw no branch above accounted for. Settled as a genuine failure with its
+      // spend still counted, rather than the cycle backstop's `abandoned`: by this point
+      // the receipt is in hand, so "something went wrong while classifying a revert" must not be
+      // the one outcome that exempts it from the breaker. `settle` is idempotent, so every branch
+      // above still wins.
+      this.settle(slot, { ok: false, spendUnknown: true }, authorizationId);
     }
   }
 

@@ -419,7 +419,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
 | `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit. Rejected at boot when the optional liquidation engine is enabled **and inventory-funded**, since that path supplies no expected profit and the floor would cover only half the actions. Allowed when the engine is off or flash-funded | No | — |
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
-| `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old or missing | No | — |
+| `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old, missing, malformed, or dated in the future | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
 | `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` | No | — |
 | `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
@@ -471,7 +471,8 @@ transactions it never sends.
 | `FLASHBOTS_PROTECT_URL` | in private mode | e.g. `https://rpc.flashbots.net/fast` |
 | `FLASHBOTS_STATUS_URL` | no | defaults to `https://protect.flashbots.net` |
 | `PRIVATE_MIN_PRIORITY_FEE_WEI` | in private mode | no default, deliberately — see below |
-| `PRIVATE_RECLAIM_AFTER_MS` | no | default `420000` (7 min) |
+| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | default `25` — the relay's retry window, used when it states no deadline of its own |
+| `PRIVATE_RECLAIM_MARGIN_BLOCKS` | no | default `3` — reorg headroom past that deadline |
 
 Three things fail the boot rather than degrading quietly, because each one
 otherwise produces a bot that looks healthy and lands nothing:
@@ -505,15 +506,22 @@ not from this page:
 set too low, or of a builder fan-out too narrow.
 
 **A stuck private nonce.** If a transaction is dropped by the relay and never
-mined, its nonce is held until `PRIVATE_RECLAIM_AFTER_MS` elapses, then released
-automatically — later transactions queue behind it in the meantime, because nonces
-are consumed in order. That is expected and self-healing. What is *not* expected is
-the queue never draining: if `eth_getTransactionCount` stops advancing while the bot
-keeps recording intents, raise the log level and check for `Relay status probe
-failed` — a status endpoint that is persistently unreachable keeps every nonce
-fenced. Do not lower `PRIVATE_RECLAIM_AFTER_MS` below ~1 minute; it must stay above
-the 30-second unknown-transaction grace window, and the bot refuses to start if it
-does not.
+mined, its nonce is held until the chain passes that transaction's own deadline —
+the `maxBlockNumber` the relay reported when it took it, recorded on the intent —
+plus `PRIVATE_RECLAIM_MARGIN_BLOCKS`, and is then released automatically. Later
+transactions queue behind it in the meantime, because nonces are consumed in
+order. That is expected and self-healing.
+
+The deadline is the relay's, not a duration you configure, so there is nothing to
+tune per relay: `PRIVATE_RELAY_HORIZON_BLOCKS` only covers a transaction whose
+status was never readable, and is never allowed to shorten a deadline the relay
+did state. Blocks rather than elapsed time matters when the chain stalls — a wall
+clock keeps running while a transaction the relay can still land goes nowhere.
+
+What is *not* expected is the queue never draining: if `eth_getTransactionCount`
+stops advancing while the bot keeps recording intents, raise the log level and
+check for `Relay status probe failed` — a status endpoint that is persistently
+unreachable keeps every nonce fenced until its horizon.
 
 ### 5.6. Contract Addresses
 
@@ -732,6 +740,23 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
 curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9095/resume
 ```
 
+`GET /status` answers `{state, inFlight, reason, codeVerified}`. Read `reason`
+before resuming: a halt recorded while the gate was *already* HALTED — a
+code-hash mismatch found under `RISK_START_HALTED=true`, say — raises no alert,
+so this is the only place it is ever stated. `codeVerified` is `true` once every
+address in `RISK_EXPECTED_CODE_HASHES` has passed a bytecode check in this
+process — and `false` both before that and when no hashes are pinned at all,
+since neither is an assurance about the code you are trading against.
+
+`POST /resume` clears the kill switch, and only the kill switch. It answers
+**409** and leaves the bot HALTED when the code-hash guard is what is holding
+the halt — a mismatched, missing or never-readable target is not something to
+wave through by hand. That clears itself: the next successful check retires the
+cause, and the resume then works — so a flaky RPC costs you one check interval,
+not an outage. If the pinned hash is simply *wrong*, correct
+`RISK_EXPECTED_CODE_HASHES` and restart; no amount of resuming will clear a
+mismatch that is really there.
+
 **Query indexer endpoints:**
 
 ```bash
@@ -828,7 +853,7 @@ there.
 | "Insufficient WBTC" | Low balance | Fund wallet with more WBTC |
 | "EXECUTION_MODE=MANUAL requires DATABASE_URL" | MANUAL proposals need durable storage | Set `DATABASE_URL` and matching `PERSISTENCE_SCHEMA` |
 | "EXECUTION_MODE=MANUAL is keyless" | A signer or private key is present in MANUAL | Unset signer env and the effective private-key env var |
-| "halted (...)" | Risk gate is HALTED | Inspect logs or `GET /status`; use `POST /resume` if appropriate |
+| "halted (...)" | Risk gate is HALTED | `GET /status` and read `reason` — it is the only record of a halt raised while already HALTED; then `POST /resume` if appropriate (409 means the code-hash guard is holding it) |
 
 ### 10.2. Error Types
 

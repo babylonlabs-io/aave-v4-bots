@@ -132,6 +132,8 @@ export interface TxIntent extends IntentInput {
   txHash: Hex | null;
   /** Failure detail, if any. */
   error: string | null;
+  /** See `TransitionMeta.relayMaxBlock`. `null` for anything not privately submitted. */
+  relayMaxBlock: number | null;
   /** The proposed transaction, for a MANUAL intent; `null` for an AUTO one. */
   payload: ProposedTx | null;
   /**
@@ -157,6 +159,11 @@ export interface TransitionMeta {
   nonce?: number;
   txHash?: Hex;
   error?: string;
+  /**
+   * Last block the relay may still include this transaction at — its own deadline, or one derived
+   * from the declared relay window. Only this releases a privately-submitted nonce.
+   */
+  relayMaxBlock?: number;
 }
 
 /**

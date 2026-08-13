@@ -48,6 +48,7 @@ function reader(over: {
   latest?: number;
   pending?: number;
   known?: boolean;
+  head?: number;
 }): ChainReader {
   return {
     async getReceiptStatus(hash) {
@@ -55,6 +56,9 @@ function reader(over: {
     },
     async getNonce(_address, tag) {
       return (tag === "latest" ? over.latest : over.pending) ?? 0;
+    },
+    async getBlockNumber() {
+      return over.head ?? 0;
     },
     async isKnown() {
       return over.known ?? true;
@@ -423,6 +427,7 @@ describe("reconcilePending under a chain outage", () => {
         throw new Error("ECONNREFUSED");
       },
       getNonce: async (_a, tag) => (tag === "latest" ? 9 : 9), // chain has moved well past nonce 5
+      getBlockNumber: async () => 0,
       getSafeExecution: async () => null,
       isKnown: async () => true,
     };

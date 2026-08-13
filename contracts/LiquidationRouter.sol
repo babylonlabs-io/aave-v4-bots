@@ -76,15 +76,21 @@ contract LiquidationRouter is VenueManager {
     }
 
     /// @notice Liquidates a borrower and sweeps every reserve balance held by this contract to `owner`.
-    /// @dev Entrypoint of the state machine described on the contract. Reverts unless the WBTC left after all flash
-    ///      venues are repaid is at least `liquidationData.minWbtcProfit`, so a liquidation that turns out unprofitable
-    ///      costs only gas.
+    /// @dev Entrypoint of the state machine described on the contract. Reverts unless this liquidation *increased* the
+    ///      router's WBTC balance by at least `liquidationData.minWbtcProfit` once all flash venues are repaid, so a
+    ///      liquidation that turns out unprofitable costs only gas.
+    ///
+    ///      Measured as a delta, not as the closing balance, because the two differ by whatever WBTC the router already
+    ///      held. This contract is empty between liquidations — the sweep below sees to that — but nothing stops anyone
+    ///      transferring WBTC to it, and against a closing balance such a transfer silently pays for the floor: the
+    ///      guard would pass on a liquidation that earned nothing. The off-chain caller already nets its own baseline
+    ///      out of the quote it derives the floor from, so the delta is also what `minWbtcProfit` has always meant.
     /// @param liquidationData The borrower to liquidate and the minimum acceptable WBTC profit.
     /// @param flashDatas The flash venues to borrow from, one per token needed to repay the borrower's debts. The
     ///        order matters: venues are set up and drawn in this order, and repaid in reverse as the callbacks unwind.
     /// @param swapDatas Dex-aggregator calls executed at the innermost frame to swap the seized WBTC back into the
     ///        borrowed tokens. Built off-chain, typically from a `MIN_PROFIT_REVERT_TAG` simulation.
-    /// @return wbtcProfit The WBTC left over once every flash venue has been repaid.
+    /// @return wbtcProfit The WBTC this liquidation earned, once every flash venue has been repaid.
     function liquidate(
         Types.LiquidationData memory liquidationData,
         Types.FlashData[] memory flashDatas,
@@ -92,6 +98,10 @@ contract LiquidationRouter is VenueManager {
     ) external auth returns (uint256 wbtcProfit) {
         require(liquidationData.borrower != address(0), "LiquidationRouter: Invalid borrower address");
         require(flashDatas.length > 0, "LiquidationRouter: No flash data provided");
+
+        // Before anything is borrowed, liquidated or swapped: the only moment this reads as WBTC that is not ours to
+        // count. Every later inflow — the flash draw, the seized collateral — belongs to the liquidation.
+        uint256 wbtcBefore = IERC20(wbtc).balanceOf(address(this));
 
         (address[] memory reserveTokens, uint256[] memory reserveDebtsToLiquidate, uint256 wbtcPayment) =
             _estLiquidationPayment(liquidationData.borrower);
@@ -110,8 +120,16 @@ contract LiquidationRouter is VenueManager {
         _iterateLiquidation(iteration);
         _clearVenueDebts();
 
-        wbtcProfit = IERC20(wbtc).balanceOf(address(this));
-        require(wbtcProfit >= liquidationData.minWbtcProfit, "LiquidationRouter: Insufficient WBTC profit");
+        uint256 wbtcAfter = IERC20(wbtc).balanceOf(address(this));
+        // Stated as an addition rather than `wbtcAfter - wbtcBefore >= floor`: a liquidation that ends up losing WBTC
+        // is an ordinary outcome and must give the message below, not an arithmetic panic. The first clause keeps a
+        // floor near `type(uint256).max` from overflowing into that same panic.
+        require(
+            liquidationData.minWbtcProfit <= type(uint256).max - wbtcBefore
+                && wbtcAfter >= wbtcBefore + liquidationData.minWbtcProfit,
+            "LiquidationRouter: Insufficient WBTC profit"
+        );
+        wbtcProfit = wbtcAfter - wbtcBefore;
         _transferAllReservesOut(iteration.reserveTokens);
     }
 

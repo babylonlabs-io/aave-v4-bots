@@ -120,7 +120,15 @@ export function createControlRoutes(config: ControlRoutesConfig): ControlRoute {
         json(res, 405, { error: "Method not allowed" });
         return true;
       }
-      json(res, 200, { state: gate.state(), inFlight: gate.inFlight() });
+      // `reason` and `verified` are the two facts an operator needs before deciding to resume, and
+      // neither is available anywhere else: a halt that lands on an already-HALTED gate raises no
+      // alert, so a code-hash mismatch under `RISK_START_HALTED=true` is otherwise entirely silent.
+      json(res, 200, {
+        state: gate.state(),
+        inFlight: gate.inFlight(),
+        reason: gate.haltReason(),
+        codeVerified: gate.everVerified(),
+      });
       return true;
     }
 
@@ -140,7 +148,18 @@ export function createControlRoutes(config: ControlRoutesConfig): ControlRoute {
       return true;
     }
 
-    gate.resume();
+    // A refused resume is reported as a conflict rather than a success with an unchanged state:
+    // the operator asked for trading to restart, and it did not. See `RiskGate.resume`.
+    if (!gate.resume()) {
+      const reason = gate.haltReason();
+      onEvent?.(`Refused RESUME: ${reason}`);
+      json(res, 409, {
+        error: "Resume refused: the code-hash guard is holding this halt, not the kill switch",
+        state: gate.state(),
+        reason,
+      });
+      return true;
+    }
     onEvent?.("RESUMED via control endpoint");
     json(res, 200, { state: gate.state() });
     return true;

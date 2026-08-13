@@ -234,6 +234,37 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
             new LiquidationTypes.SwapData[](0)
         );
         vm.assertEq(IERC20(wbtc).balanceOf(ADMIN), 0, "a rejected liquidation must move nothing");
+
+        // Step 4 — the same rejected liquidation, with WBTC already sitting in the router. Nothing
+        // about what this liquidation earns has changed, so the verdict must not change either.
+        //
+        // Measured against the closing balance it would: the donation alone clears the floor, and a
+        // liquidation earning nothing at all would be accepted. Anyone can send a token to a
+        // contract, so that is a guard that a stranger — or an operator's fat finger — can switch
+        // off. The floor is a delta for this reason.
+        deal(wbtc, address(router), achievable);
+        vm.prank(ADMIN);
+        vm.expectRevert("LiquidationRouter: Insufficient WBTC profit");
+        router.liquidate(
+            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: achievable + 1}),
+            flashDatas,
+            new LiquidationTypes.SwapData[](0)
+        );
+
+        // Step 5 — and a floor the liquidation does clear still passes with that balance present,
+        // reporting only what this liquidation earned. The donation is swept out alongside it: the
+        // router is not a vault, and leaving it there would weaken the next call's fence too.
+        vm.prank(ADMIN);
+        uint256 donatedProfit = router.liquidate(
+            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: floor}),
+            flashDatas,
+            new LiquidationTypes.SwapData[](0)
+        );
+        vm.assertEq(donatedProfit, achievable, "reported profit must be the delta, not the closing balance");
+        vm.assertEq(
+            IERC20(wbtc).balanceOf(ADMIN), achievable * 2, "the donation is swept to owner alongside the profit"
+        );
+        vm.assertEq(IERC20(wbtc).balanceOf(address(router)), 0, "the router must end empty");
     }
 
     /// @notice The `BelovedError` probe: realised WBTC minus everything owed back to the venues.

@@ -616,7 +616,12 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
       walletClient: wallet,
       txReceiptTimeoutMs: 1000,
       logger: silentLogger,
-      submission: { submitter, reader: createChainReader(publicClient), maxFenceMs: 420_000 },
+      submission: {
+        submitter,
+        reader: createChainReader(publicClient),
+        reclaimMarginBlocks: 3,
+        horizon: async () => 125,
+      },
     });
 
     const out = await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
@@ -644,6 +649,48 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
   // A `sender` together with a `submission` is not tested here because it does not compile:
   // `AutoExecutorDeps` is a union, so the two are mutually exclusive at the type level rather than
   // caught by a runtime throw.
+
+  // Under private submission the recorded horizon is the *only* thing that ever frees this nonce —
+  // the reader fails closed by design. An intent submitted without one is fenced forever, and every
+  // later send queues behind it.
+  describe("records the relay horizon on the intent it submits", () => {
+    const submitted = async (over: { submitterSend?: () => Promise<Hex> } = {}) => {
+      const { publicClient } = clients();
+      const store = createMemoryStateStore();
+      const exec = createAutoExecutorFromWallet({
+        store,
+        nonces: allocator(),
+        publicClient,
+        walletClient: wallet,
+        txReceiptTimeoutMs: 1000,
+        logger: silentLogger,
+        submission: {
+          submitter: { send: over.submitterSend ?? (async () => "0xprivate" as Hex) },
+          reader: createChainReader(publicClient),
+          reclaimMarginBlocks: 3,
+          horizon: async () => 125,
+        },
+      });
+      const input = claim("p");
+      await exec.commit(CALL, input).catch(() => {});
+      return store.get(idempotencyKey(input));
+    };
+
+    it("on a clean broadcast", async () => {
+      expect(await submitted()).toMatchObject({ status: "submitted", relayMaxBlock: 125 });
+    });
+
+    // The acute case: the relay may or may not have taken this transaction, so the intent stays
+    // live — which is precisely when something has to be able to expire it.
+    it("on an ambiguous one", async () => {
+      const intent = await submitted({
+        submitterSend: async () => {
+          throw new Error("ECONNRESET");
+        },
+      });
+      expect(intent).toMatchObject({ status: "submitted", relayMaxBlock: 125 });
+    });
+  });
 });
 
 // A stuck approval must not pin the engine. Its intent is claimed under `action: "approval"`, which

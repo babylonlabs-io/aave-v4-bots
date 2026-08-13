@@ -58,7 +58,26 @@ export class FlashFunding implements LiquidationFunding {
     // The operator's absolute floor rides along on-chain, so an action the gate admitted on the
     // quote cannot settle below it (see `minWbtcProfitFloor`).
     const minProfit = risk.minProfit();
-    const routerWbtcBefore = await this.routerWbtcBalance();
+
+    // WBTC already sitting in the router, subtracted from every probe below: `netWbtcBeforePayment`
+    // is a raw `balanceOf`, so anything the router already held would be booked as profit we did not
+    // earn. Normally zero — the router sweeps itself empty — but nothing stops someone transferring
+    // tokens to it.
+    //
+    // A failed read skips the whole cycle rather than assuming zero. Assuming zero is not the
+    // conservative guess it looks like: it *inflates* every quote in this pass by whatever the router
+    // actually holds, so the gate can admit a liquidation on profit that is not there. One skipped
+    // poll costs a cycle; a wrong baseline costs a liquidation.
+    let routerWbtcBefore: bigint;
+    try {
+      routerWbtcBefore = await readBalance(this.deps.publicClient, wbtcAddress, routerAddress);
+    } catch (error) {
+      metrics.recordError("router_balance_read_error");
+      logger.error(
+        `Could not read the router's WBTC balance; skipping this cycle rather than quoting against an unknown baseline: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return [];
+    }
 
     const probed = await Promise.allSettled(
       candidates.map(async (candidate) => {
@@ -143,22 +162,5 @@ export class FlashFunding implements LiquidationFunding {
       viable.push(outcome.value.funded);
     }
     return viable;
-  }
-
-  /**
-   * WBTC sitting in the router before we call it — subtracted from the probe's realised figure.
-   * Normally zero (the router sweeps itself empty), but a donation would otherwise be booked as
-   * profit we did not earn. A read failure is treated as zero, which only ever *understates* profit.
-   */
-  private async routerWbtcBalance(): Promise<bigint> {
-    try {
-      return await readBalance(
-        this.deps.publicClient,
-        this.deps.wbtcAddress,
-        this.deps.routerAddress
-      );
-    } catch {
-      return 0n;
-    }
   }
 }

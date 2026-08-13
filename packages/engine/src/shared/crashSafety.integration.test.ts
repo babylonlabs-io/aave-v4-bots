@@ -53,6 +53,9 @@ const reader = (over: {
   async getNonce(_address, tag) {
     return (tag === "latest" ? over.latest : over.pending) ?? 0;
   },
+  async getBlockNumber() {
+    return 0;
+  },
   async getSafeExecution() {
     return null;
   },
@@ -210,6 +213,7 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
             throw new Error("ECONNREFUSED");
           },
           getNonce: async () => 9, // chain has moved past nonce 5
+          getBlockNumber: async () => 0,
           getSafeExecution: async () => null,
           isKnown: async () => {
             throw new Error("ECONNREFUSED");

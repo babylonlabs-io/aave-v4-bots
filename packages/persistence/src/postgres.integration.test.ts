@@ -86,6 +86,37 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
     TIMEOUT
   );
 
+  // The horizon is a BIGINT read back through `Number`, and it is what releases a privately-sent
+  // nonce — a column that silently returned a string, or that a later transition wiped, would leave
+  // the fence comparing a chain head against nothing.
+  it(
+    "round-trips the relay horizon as a number and keeps it across later transitions",
+    async () => {
+      const id = idempotencyKey(input("horizon-1"));
+      await store.recordIntent(input("horizon-1"));
+      await store.transition(id, "submitted", {
+        nonce: 4,
+        txHash: "0xfeed" as Hex,
+        relayMaxBlock: 23_456_789,
+      });
+
+      const submitted = (await store.reconcile()).find((i) => i.subject === "horizon-1");
+      expect(submitted?.relayMaxBlock).toBe(23_456_789);
+
+      // A transition that states no horizon must not erase the one already recorded.
+      await store.transition(id, "submitted", { error: "receipt timeout" });
+      const after = (await store.reconcile()).find((i) => i.subject === "horizon-1");
+      expect(after?.relayMaxBlock).toBe(23_456_789);
+
+      // A revived row is a new attempt with a new transaction: its predecessor's deadline must go.
+      await store.transition(id, "failed", {});
+      await store.recordIntent(input("horizon-1"));
+      const revived = (await store.reconcile()).find((i) => i.subject === "horizon-1");
+      expect(revived?.relayMaxBlock).toBeNull();
+    },
+    TIMEOUT
+  );
+
   const HASH_A = `0x${"a".repeat(64)}` as Hex;
   const HASH_B = `0x${"b".repeat(64)}` as Hex;
   const TX = `0x${"c".repeat(64)}` as Hex;

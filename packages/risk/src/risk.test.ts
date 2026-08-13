@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createRiskGate } from "./gate";
+import { MAX_SOURCE_CLOCK_SKEW_MS, createRiskGate } from "./gate";
 import type { ActionOutcome, RiskAction, RiskEvent, RiskGate } from "./types";
 
 const action = (over: Partial<RiskAction> = {}): RiskAction => ({
@@ -158,6 +158,73 @@ describe("@repo/risk createRiskGate", () => {
 
     it("ignores a missing dataTimestampMs when the bound is not configured", () => {
       expect(createRiskGate().openSlot(action()).allowed).toBe(true);
+    });
+
+    // The stamp arrives from an indexer response that is cast, never parsed, so the gate cannot
+    // assume its own type holds. Every value below reaches `now() - stamp` as NaN or a negative,
+    // and a guard written as "is the age too large" answers `false` to both — admitting exactly
+    // the data it exists to refuse. These are the shapes a wire value actually arrives in.
+    describe("a source timestamp that is not an instant", () => {
+      const gate = () => createRiskGate({ maxDataStalenessMs: 5_000, now: () => 1_000_000 });
+      const judge = (stamp: unknown) =>
+        gate().openSlot(action({ dataTimestampMs: stamp as number }));
+
+      it.each([
+        ["a non-numeric string", "not-a-number"],
+        ["an object", { x: 1 }],
+        ["an array", [1]],
+        ["NaN", Number.NaN],
+        ["Infinity", Number.POSITIVE_INFINITY],
+        ["-Infinity", Number.NEGATIVE_INFINITY],
+        ["null", null],
+        ["a fraction", 1_000_000.5],
+        ["a magnitude past 2**53, where ms arithmetic stops being exact", 2 ** 53 + 2],
+      ])("blocks %s", (_label, stamp) => {
+        const slot = judge(stamp);
+        expect(slot.allowed).toBe(false);
+        expect(slot.reason).toMatch(/unusable source timestamp/);
+      });
+
+      // A numeric string still measures the right instant, so it is not a safety problem — but it
+      // is not the declared type either, and the gate refuses rather than coercing. Parsing the
+      // wire shape is the boundary's job; the gate only guarantees it cannot be fooled.
+      it("blocks a numeric string rather than coercing it", () => {
+        expect(judge("999000").allowed).toBe(false);
+      });
+    });
+
+    // A source running ahead of us is the silent one: every age goes negative, so a bound written
+    // only as "too old" admits data of any age at all. The stamp is a *chain block* timestamp, so
+    // a small lead is normal and stays allowed — this blocks only a disagreement large enough that
+    // no age computed from it means anything.
+    describe("a source timestamp in the future", () => {
+      const at = (stamp: number) =>
+        createRiskGate({ maxDataStalenessMs: 5_000, now: () => 1_000_000 }).openSlot(
+          action({ dataTimestampMs: stamp })
+        );
+
+      it("allows a lead within the clock-skew allowance", () => {
+        expect(at(1_000_000 + MAX_SOURCE_CLOCK_SKEW_MS).allowed).toBe(true);
+      });
+
+      it("blocks a lead past it", () => {
+        const slot = at(1_000_000 + MAX_SOURCE_CLOCK_SKEW_MS + 1);
+        expect(slot.allowed).toBe(false);
+        expect(slot.reason).toMatch(/in the future/);
+      });
+
+      // The case from the report: a stamp far enough ahead that the staleness comparison can never
+      // fire again, whatever the real age of the data behind it.
+      it("blocks a far-future stamp that would otherwise disable the guard for good", () => {
+        expect(at(4_600_000).allowed).toBe(false);
+      });
+
+      // And the allowance is its own quantity, not the operator's bound: a tight freshness setting
+      // must not start rejecting a healthy chain whose blocks run a few seconds ahead.
+      it("does not tighten the future allowance when the staleness bound is tight", () => {
+        const gate = createRiskGate({ maxDataStalenessMs: 2_000, now: () => 1_000_000 });
+        expect(gate.openSlot(action({ dataTimestampMs: 1_003_000 })).allowed).toBe(true);
+      });
     });
   });
 
@@ -508,14 +575,29 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.state()).toBe("HALTED");
     });
 
-    // An RPC blip is not evidence of compromise: reject so the caller retries, do NOT halt.
-    it("rejects without halting when the probe itself fails", async () => {
+    // An RPC blip is not evidence of compromise: reject so the caller retries, do NOT halt — but
+    // only once there is an earlier success to fall back on. These two are the same call against
+    // the same failure, and the only difference is whether this gate has ever read the target.
+    it("rejects without halting when the probe fails after a successful verification", async () => {
       const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
+      await gate.verifyCode(reader({ "0xadapter": "0xabc" }));
+      expect(gate.everVerified()).toBe(true);
+
       const failing = async () => {
         throw new Error("rpc down");
       };
       await expect(gate.verifyCode(failing)).rejects.toThrow("rpc down");
       expect(gate.state()).toBe("RUNNING");
+    });
+
+    it("halts when the probe fails and nothing has ever been verified", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
+      const failing = async () => {
+        throw new Error("rpc down");
+      };
+      await expect(gate.verifyCode(failing)).rejects.toThrow("rpc down");
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.everVerified()).toBe(false);
     });
 
     // Regression: a detected compromise must not hide behind an unrelated RPC blip. Batching the
@@ -543,7 +625,9 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.state()).toBe("HALTED");
     });
 
-    // The converse: nothing is wrong with what we could read, so the probe error surfaces.
+    // The converse: nothing is wrong with what we could read, so the probe error surfaces. It also
+    // halts here, because one unreadable address means this gate still has not verified everything
+    // it pinned — a partial pass is not a pass.
     it("raises the probe error when every address it could read is intact", async () => {
       const gate = createRiskGate({ expectedCodeHashes: { "0xa": "0xgood", "0xb": "0xgood" } });
       const read = async (address: string) => {
@@ -552,7 +636,7 @@ describe("@repo/risk createRiskGate", () => {
       };
 
       await expect(gate.verifyCode(read)).rejects.toThrow("rpc down");
-      expect(gate.state()).toBe("RUNNING");
+      expect(gate.everVerified()).toBe(false);
     });
   });
 
@@ -561,8 +645,93 @@ describe("@repo/risk createRiskGate", () => {
       const gate = createRiskGate({ startHalted: true });
       expect(gate.state()).toBe("HALTED");
       expect(gate.openSlot(action()).allowed).toBe(false);
-      gate.resume();
+      expect(gate.resume()).toBe(true);
       expect(gate.openSlot(action()).allowed).toBe(true);
+    });
+  });
+
+  // A halt that lands on an already-HALTED gate raises no event, so under `startHalted` a code-hash
+  // failure is invisible: no alert, and this package has no logger to print one. An operator sees a
+  // bot they halted themselves and clears it. What stops that is the *cause* outliving the reason
+  // string — resume refuses regardless of whether anyone was ever told.
+  describe("resume cannot clear a code-hash halt", () => {
+    const pinned = { startHalted: true, expectedCodeHashes: { "0xadapter": "0xgood" } };
+
+    it("refuses after a mismatch recorded silently under startHalted", async () => {
+      const events: RiskEvent[] = [];
+      const gate = createRiskGate({ ...pinned, onEvent: (e) => events.push(e) });
+
+      await gate.verifyCode(async () => "0xtampered");
+      expect(events).toEqual([]); // silent, because the gate was already HALTED
+
+      expect(gate.resume()).toBe(false);
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.openSlot(action()).allowed).toBe(false);
+      expect(gate.haltReason()).toMatch(/code hash mismatch/);
+    });
+
+    // Same cause, different evidence: a self-destructed target or a wrong address reads as no code
+    // at all, which is the compromise this guard exists to catch and not an operator's own halt.
+    it("refuses after the target turns out to have no code", async () => {
+      const gate = createRiskGate(pinned);
+      await gate.verifyCode(async () => undefined);
+
+      expect(gate.resume()).toBe(false);
+      expect(gate.haltReason()).toMatch(/no code at/);
+    });
+
+    it("refuses after a boot probe failure, and keeps refusing while it persists", async () => {
+      const gate = createRiskGate(pinned);
+      const failing = async () => {
+        throw new Error("rpc down");
+      };
+
+      await expect(gate.verifyCode(failing)).rejects.toThrow("rpc down");
+      expect(gate.resume()).toBe(false);
+      // The retry a tick later fails the same way and must not soften the verdict.
+      await expect(gate.verifyCode(failing)).rejects.toThrow("rpc down");
+      expect(gate.resume()).toBe(false);
+      expect(gate.state()).toBe("HALTED");
+    });
+
+    // The hole this closes: the periodic guard fails *open* on a probe failure, which is only
+    // sound because the target was verified before. Resuming a never-verified gate falsified that,
+    // and the bot then traded forever against bytecode it had never once read.
+    it("does not fail open on later probe failures when nothing has ever verified", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xgood" } });
+      const failing = async () => {
+        throw new Error("rpc down");
+      };
+
+      await expect(gate.verifyCode(failing)).rejects.toThrow("rpc down");
+      gate.resume(); // refused, but assume an operator tried
+      await expect(gate.verifyCode(failing)).rejects.toThrow("rpc down");
+
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.openSlot(action()).allowed).toBe(false);
+    });
+
+    it("clears the cause on a clean pass, without resuming trading by itself", async () => {
+      const gate = createRiskGate(pinned);
+      await gate.verifyCode(async () => "0xtampered");
+      expect(gate.resume()).toBe(false);
+
+      await gate.verifyCode(async () => "0xgood");
+      expect(gate.state()).toBe("HALTED"); // proving the target is sound is not a decision to trade
+      expect(gate.everVerified()).toBe(true);
+
+      expect(gate.resume()).toBe(true);
+      expect(gate.openSlot(action()).allowed).toBe(true);
+    });
+
+    // The other direction: a manual halt is the operator's own, and stays theirs to reverse.
+    it("still clears a manual halt on a gate whose code did verify", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xgood" } });
+      await gate.verifyCode(async () => "0xgood");
+      gate.halt("incident");
+
+      expect(gate.resume()).toBe(true);
+      expect(gate.state()).toBe("RUNNING");
     });
   });
 });

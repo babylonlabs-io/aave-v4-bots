@@ -154,10 +154,31 @@ export function createAutoExecutor(deps: {
   walletClient: WalletClient<Transport, Chain, LocalAccount>;
   /** Receipt-wait budget for approvals (matches the engine's action timeout). */
   txReceiptTimeoutMs: number;
+  /**
+   * Private submission only: the block past which the relay can no longer include a transaction,
+   * recorded on its intent at submission. Absent under public submission, where the node's own
+   * answer about a transaction is authoritative and nothing has to expire.
+   */
+  horizon?: (hash: Hex) => Promise<number>;
   logger: Logger;
 }): AutoExecutor {
-  const { crash, sender, publicClient, walletClient, txReceiptTimeoutMs, logger } = deps;
+  const { crash, sender, publicClient, walletClient, txReceiptTimeoutMs, horizon, logger } = deps;
   const identity = sender.identity;
+
+  /**
+   * The horizon to stamp on a submitted intent. Best-effort: a resolver that throws must not turn a
+   * landed transaction into an error, and an intent without a horizon is merely fenced by the reader
+   * as it was before.
+   */
+  const horizonFor = async (hash: Hex): Promise<{ relayMaxBlock?: number }> => {
+    if (!horizon) return {};
+    try {
+      return { relayMaxBlock: await horizon(hash) };
+    } catch (error) {
+      logger.warn(`Could not resolve the relay horizon for ${hash}: ${error}`);
+      return {};
+    }
+  };
 
   return {
     mode: "AUTO",
@@ -206,6 +227,7 @@ export function createAutoExecutor(deps: {
       // Broadcasting it publicly while liquidations went private would put two transactions on one
       // nonce sequence under two different sets of assumptions about who can see them.
       let hash: Hex;
+      let signedHash: Hex | undefined;
       try {
         hash = await crash.send((nonce) =>
           sender.send(
@@ -217,6 +239,7 @@ export function createAutoExecutor(deps: {
               nonce,
             },
             async (signed) => {
+              signedHash = signed.hash;
               if (intentId) await crash.markPending(intentId, signed.nonce, signed.hash);
             }
           )
@@ -224,10 +247,20 @@ export function createAutoExecutor(deps: {
       } catch (error) {
         // Ambiguous — the intent stays LIVE so its nonce keeps its fence and reconcile decides.
         const message = error instanceof Error ? error.message : String(error);
-        if (intentId) await crash.transition(intentId, "submitted", { error: message });
+        if (intentId) {
+          // Stamp the horizon whenever signing got far enough to produce a hash: an ambiguous send
+          // under a fail-closed reader would otherwise fence its nonce with nothing to release it.
+          const meta = signedHash ? await horizonFor(signedHash) : {};
+          await crash.transition(intentId, "submitted", { ...meta, error: message });
+        }
         throw error;
       }
-      if (intentId) await crash.transition(intentId, "submitted", { txHash: hash });
+      if (intentId) {
+        await crash.transition(intentId, "submitted", {
+          txHash: hash,
+          ...(await horizonFor(hash)),
+        });
+      }
 
       const receipt = await publicClient.waitForTransactionReceipt({
         hash,
@@ -249,21 +282,33 @@ export function createAutoExecutor(deps: {
       if (!claimed.claimed) return { kind: "duplicate", existing: claimed.existing as TxIntent };
       const intentId = claimed.intentId;
 
+      let signedHash: Hex | undefined;
       try {
         // The reserved nonce arrives here under the allocator's lock. The sender signs it locally
         // first, so `onSigned` durably records nonce + hash before anything reaches the chain.
         const hash = await crash.send((nonce) =>
           sender.send({ ...call, nonce }, async (signed) => {
+            signedHash = signed.hash;
             if (intentId) await crash.markPending(intentId, signed.nonce, signed.hash);
           })
         );
-        // Status bump only — the hash was persisted pre-broadcast, so losing this write is safe.
-        if (intentId) await crash.transition(intentId, "submitted", { txHash: hash });
+        // The hash was persisted pre-broadcast, so losing this write is safe — except for the
+        // horizon, whose absence only means the reader keeps fencing until reconcile stamps one.
+        if (intentId) {
+          await crash.transition(intentId, "submitted", {
+            txHash: hash,
+            ...(await horizonFor(hash)),
+          });
+        }
         return { kind: "broadcast", hash, intentId };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        // Ambiguous — keep the intent LIVE (never terminal); next-cycle reconcile resolves it.
-        if (intentId) await crash.transition(intentId, "submitted", { error: message });
+        // Ambiguous — keep the intent LIVE (never terminal); next-cycle reconcile resolves it. The
+        // horizon still goes on, so a transaction the relay never forwards can eventually expire.
+        if (intentId) {
+          const meta = signedHash ? await horizonFor(signedHash) : {};
+          await crash.transition(intentId, "submitted", { ...meta, error: message });
+        }
         return {
           kind: "aborted",
           broadcastAttempted: !(error instanceof PreBroadcastError),
@@ -277,16 +322,18 @@ export function createAutoExecutor(deps: {
 /**
  * How this process broadcasts, and how it then judges whether what it broadcast is still live.
  *
- * The three travel together because they come from one decision and are only correct together: a
- * private submitter without its matching `reader` leaves the nonce fence interrogating a node that
- * cannot see our transactions, and a fail-closed reader without `maxFenceMs` never releases a nonce
- * at all. Passing them as one value is what stops a future edit wiring up half of it.
+ * They travel together because they come from one decision and are only correct together: a private
+ * submitter without its matching `reader` leaves the nonce fence interrogating a node that cannot
+ * see our transactions, and a fail-closed reader with no recorded horizon never releases a nonce at
+ * all. Passing them as one value is what stops a future edit wiring up half of it.
  */
 export interface Submission {
   submitter: Submitter;
   reader: ChainReader;
-  /** See `CrashSafetyConfig.maxFenceMs` — the only thing that frees a privately-sent nonce. */
-  maxFenceMs: number;
+  /** See `CrashSafetyConfig.reclaimMarginBlocks` — with the recorded horizon, what frees a nonce. */
+  reclaimMarginBlocks: number;
+  /** Stamps each submitted transaction with the block past which it can no longer be included. */
+  horizon: (hash: Hex) => Promise<number>;
 }
 
 /**
@@ -313,7 +360,7 @@ export interface AutoExecutorDeps {
 }
 
 export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecutor {
-  const { submitter, reader, maxFenceMs } = deps.submission ?? {};
+  const { submitter, reader, reclaimMarginBlocks, horizon } = deps.submission ?? {};
   const sender = createTxSender(
     deps.publicClient,
     deps.walletClient,
@@ -322,7 +369,7 @@ export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecut
   const crash = createCrashSafety({
     store: deps.store,
     reader: reader ?? createChainReader(deps.publicClient),
-    maxFenceMs,
+    reclaimMarginBlocks,
     // The allocator is mandatory (the arbitrageur's two engines share one). A service that runs a
     // single engine off one signer can omit it; we mint a per-signer allocator here.
     nonces: deps.nonces ?? createNonceAllocator(createNonceLease(), sender.identity.from),
@@ -335,6 +382,7 @@ export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecut
     publicClient: deps.publicClient,
     walletClient: deps.walletClient,
     txReceiptTimeoutMs: deps.txReceiptTimeoutMs,
+    horizon,
     logger: deps.logger,
   });
 }

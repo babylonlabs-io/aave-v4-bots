@@ -403,7 +403,7 @@ METRICS_PORT=9090
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
 | `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. **Not usable in this service** — the liquidation engine cannot supply an expected profit, so setting it is rejected at boot rather than silently ignored | must be unset | — |
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions reserved through the risk gate. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
-| `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old or missing | No | — |
+| `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old, missing, malformed, or dated in the future | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
 | `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` | No | — |
 | `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
@@ -441,7 +441,7 @@ pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
 
 Identical to the arbitrageur's, and configured with the same variables —
 `SUBMITTER`, `FLASHBOTS_PROTECT_URL`, `PRIVATE_MIN_PRIORITY_FEE_WEI`,
-`PRIVATE_RECLAIM_AFTER_MS`. Liquidation is the more contested path of the two, so
+`PRIVATE_RELAY_HORIZON_BLOCKS`, `PRIVATE_RECLAIM_MARGIN_BLOCKS`. Liquidation is the more contested path of the two, so
 the reach-versus-protection trade-off matters more here, not less: read
 [§5.5 of the arbitrageur guide](arbitrageur-operation-guide.md#55-mev-protection-private-submission)
 before enabling it, including what a stuck private nonce looks like.
@@ -665,6 +665,23 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
 curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9095/resume
 ```
 
+`GET /status` answers `{state, inFlight, reason, codeVerified}`. Read `reason`
+before resuming: a halt recorded while the gate was *already* HALTED — a
+code-hash mismatch found under `RISK_START_HALTED=true`, say — raises no alert,
+so this is the only place it is ever stated. `codeVerified` is `true` once every
+address in `RISK_EXPECTED_CODE_HASHES` has passed a bytecode check in this
+process — and `false` both before that and when no hashes are pinned at all,
+since neither is an assurance about the code you are trading against.
+
+`POST /resume` clears the kill switch, and only the kill switch. It answers
+**409** and leaves the bot HALTED when the code-hash guard is what is holding
+the halt — a mismatched, missing or never-readable target is not something to
+wave through by hand. That clears itself: the next successful check retires the
+cause, and the resume then works — so a flaky RPC costs you one check interval,
+not an outage. If the pinned hash is simply *wrong*, correct
+`RISK_EXPECTED_CODE_HASHES` and restart; no amount of resuming will clear a
+mismatch that is really there.
+
 **Query indexer endpoints:**
 
 ```bash
@@ -689,7 +706,7 @@ curl http://localhost:42069/liquidatable-positions
 | "Missing required environment variable" | Configuration error | Check `.env.liquidator` for missing values |
 | "EXECUTION_MODE=MANUAL requires DATABASE_URL" | MANUAL proposals need durable storage | Set `DATABASE_URL` and matching `PERSISTENCE_SCHEMA` |
 | "EXECUTION_MODE=MANUAL is keyless" | A signer or private key is present in MANUAL | Unset signer env and the effective private-key env var |
-| "halted (...)" | Risk gate is HALTED | Inspect logs or `GET /status`; use `POST /resume` if appropriate |
+| "halted (...)" | Risk gate is HALTED | `GET /status` and read `reason` — it is the only record of a halt raised while already HALTED; then `POST /resume` if appropriate (409 means the code-hash guard is holding it) |
 
 ### 9.2. Error Types
 

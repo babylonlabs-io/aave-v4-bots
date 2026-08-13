@@ -73,6 +73,10 @@ function harness(
     debt?: bigint;
     probeError?: unknown;
     risk?: ReturnType<typeof createRiskGate>;
+    /** WBTC the router already holds when the cycle starts. */
+    routerBalance?: bigint;
+    /** Make the router's balance read fail, as an RPC outage would. */
+    balanceError?: boolean;
   } = {}
 ) {
   const commit = vi.fn().mockResolvedValue({ kind: "broadcast", hash: "0xtx", intentId: "i" });
@@ -86,7 +90,10 @@ function harness(
     simulateContract,
     readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
       if (functionName === "estimateLiquidation") return [[100n], 50n, []];
-      if (functionName === "balanceOf") return 0n; // router holds nothing
+      if (functionName === "balanceOf") {
+        if (opts.balanceError) throw new Error("connect ECONNREFUSED");
+        return opts.routerBalance ?? 0n; // by default the router holds nothing
+      }
       if (functionName === "getPosition") return { proxyContract: PROXY, totalCollateralBTC: 1n };
       return 0n;
     }),
@@ -105,6 +112,17 @@ function harness(
     }),
   }) as unknown as typeof global.fetch;
 
+  const metrics = {
+    recordError: vi.fn(),
+    recordLiquidationSuccess: vi.fn(),
+    recordLiquidationFailed: vi.fn(),
+    recordSimulationFailed: vi.fn(),
+    recordPollDuration: vi.fn(),
+    recordPositionsChecked: vi.fn(),
+    recordPositionsLiquidatable: vi.fn(),
+    recordTokenBalance: vi.fn(),
+  };
+
   const engine = new LiquidationEngine({
     publicClient: publicClient as unknown as LiquidationEngineConfig["publicClient"],
     adapterAddress: ADAPTER,
@@ -117,16 +135,7 @@ function harness(
     indexer: INDEXER_STUB,
     txReceiptTimeoutMs: 1000,
     funding: { mode: "flash", routerAddress: ROUTER, venues, maxSlippageBps: 2_000 },
-    metrics: {
-      recordError: vi.fn(),
-      recordLiquidationSuccess: vi.fn(),
-      recordLiquidationFailed: vi.fn(),
-      recordSimulationFailed: vi.fn(),
-      recordPollDuration: vi.fn(),
-      recordPositionsChecked: vi.fn(),
-      recordPositionsLiquidatable: vi.fn(),
-      recordTokenBalance: vi.fn(),
-    },
+    metrics,
     logger: silentLogger,
     risk: opts.risk ?? createRiskGate(),
     executor: {
@@ -140,7 +149,7 @@ function harness(
     } as unknown as LiquidationEngineConfig["executor"],
   });
 
-  return { engine, commit, simulateContract };
+  return { engine, commit, simulateContract, metrics };
 }
 
 describe("liquidation engine — flash funding", () => {
@@ -229,6 +238,34 @@ describe("liquidation engine — flash funding", () => {
     await engine.run();
 
     expect(commit).not.toHaveBeenCalled();
+  });
+
+  // The router's WBTC baseline. Both halves of the floor are measured net of it — the quote here,
+  // the delta on chain — so a donation neither inflates the profit we report nor pays for the guard.
+  describe("the router's pre-existing WBTC balance", () => {
+    it("is netted out of the quote and the floor", async () => {
+      // 1_000_000 raw - 250_000 already held = 750_000 realised; less 600_000 owed = 150_000 profit,
+      // floored at 20% slippage to 120_000. Without the subtraction this quotes 400_000/320_000.
+      const { engine, commit } = harness({
+        net: 1_000_000n,
+        debt: 600_000n,
+        routerBalance: 250_000n,
+      });
+      await engine.run();
+
+      const [call] = commit.mock.calls[0];
+      expect(call.args[0].minWbtcProfit).toBe(120_000n);
+    });
+
+    it("skips the cycle when it cannot be read, rather than assuming zero", async () => {
+      // Assuming zero is not the safe guess it looks like: it *overstates* realised profit by
+      // whatever the router holds, so the gate would admit a liquidation on profit that is not there.
+      const { engine, commit, metrics } = harness({ balanceError: true });
+      await engine.run();
+
+      expect(commit).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("router_balance_read_error");
+    });
   });
 
   it("rejects an invalid venue registry at construction", () => {
