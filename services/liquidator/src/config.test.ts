@@ -56,6 +56,10 @@ describe("config validation", () => {
       // Malformed numbers must be rejected, not silently truncated by parseInt.
       ["POLLING_INTERVAL_MS", "1abc"],
       ["METRICS_PORT", "1.5"],
+      // Basis points, not a multiplier: past 10000 the on-chain profit floor this feeds underflows
+      // to zero, which is the permissive direction and looks like nothing at all downstream.
+      ["FLASH_MAX_SLIPPAGE_BPS", "10001"],
+      ["FLASH_MAX_SLIPPAGE_BPS", "100000"],
     ];
 
     for (const [key, value] of badCases) {

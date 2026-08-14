@@ -76,7 +76,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       createdAt: existing?.createdAt ?? ts,
       updatedAt: ts,
     });
-    return { recorded: true, id };
+    return { recorded: true, id, attemptAt: ts };
   }
 
   return {
@@ -178,6 +178,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       const row = rows.get(id);
       if (!row) return false;
       // The row must still be the one the caller observed — see `StateStore.transition`.
+      if (expect?.updatedAt !== undefined && row.updatedAt !== expect.updatedAt) return false;
       if (expect?.txHash !== undefined && row.txHash !== expect.txHash) return false;
       if (expect?.status !== undefined && !expect.status.includes(row.status)) return false;
       rows.set(id, {

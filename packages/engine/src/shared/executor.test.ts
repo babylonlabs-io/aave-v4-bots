@@ -52,6 +52,20 @@ function autoSender(over: { send?: TxSender["send"] } = {}): TxSender {
   };
 }
 
+/**
+ * A store whose clock advances a second per write, so one attempt is distinguishable from the next.
+ * In life they are at least a grace window apart — a row has to be resolved before it can be
+ * revived — but a test does the whole sequence inside one millisecond, where `updatedAt` cannot
+ * tell them apart and a guard bound to it would look like it works whether or not it does.
+ */
+function tickingStore() {
+  let t = 1_700_000_000_000;
+  return createMemoryStateStore(() => {
+    t += 1_000;
+    return t;
+  });
+}
+
 function autoPublicClient(over: Record<string, unknown> = {}) {
   return {
     getTransactionCount: vi.fn(async () => 5),
@@ -125,14 +139,86 @@ describe("createAutoExecutor", () => {
   it("commit `aborted` distinguishes a broadcast failure from a pre-broadcast one", async () => {
     const store = createMemoryStateStore();
     // A plain error = the broadcast was attempted (ambiguous).
+    // Faithful to `TxSender`'s contract: anything up to and including `onSigned` throws a
+    // `PreBroadcastError`, so a *plain* error can only come from the broadcast itself — which means
+    // the durable record already landed.
     const { exec } = autoExecutor(
-      autoSender({ send: vi.fn().mockRejectedValue(new Error("rpc timeout")) }),
+      autoSender({
+        send: vi.fn(async (call, onSigned) => {
+          await onSigned?.({ hash: "0xhash" as Hex, nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new Error("rpc timeout");
+        }),
+      }),
       store
     );
     const out = await exec.commit(CALL, claim("p"));
     expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: true });
     // The intent stays live (submitted), never terminal — reconcile decides later.
     expect(store.get(idempotencyKey(claim("p")))?.status).toBe("submitted");
+  });
+
+  // Ids identify a *subject*, not a try at it: a terminal row is revived in place for the next
+  // attempt. Between claiming and signing — which spans an RPC `prepare` and a KMS round trip — the
+  // other engine's reconcile can resolve this row and a later cycle can re-claim it. Broadcasting
+  // then would put a transaction on chain whose nonce and hash are recorded against someone else's
+  // attempt: invisible to the nonce fence, which only fences rows carrying both.
+  describe("when the claimed attempt is resolved and revived mid-send", () => {
+    /** Resolve and re-claim the row between the claim and `onSigned`, as another engine would. */
+    const revivedDuringSend = (store: ReturnType<typeof createMemoryStateStore>) =>
+      autoSender({
+        send: vi.fn(async (call, onSigned) => {
+          const id = idempotencyKey(claim("p"));
+          await store.transition(id, "failed", { error: "reconciled while we were signing" });
+          await store.recordIntent(claim("p"));
+          try {
+            await onSigned?.({
+              hash: "0xhash" as Hex,
+              nonce: call.nonce ?? 0,
+              serialized: "0xraw",
+            });
+          } catch (error) {
+            // What the real `TxSender` does with anything up to and including `onSigned`: nothing
+            // has been broadcast, and the caller must be able to tell that apart from a failed send.
+            throw new PreBroadcastError(error);
+          }
+          return "0xhash" as Hex;
+        }),
+      });
+
+    it("refuses to broadcast", async () => {
+      const store = tickingStore();
+      const { exec } = autoExecutor(revivedDuringSend(store), store);
+
+      const out = await exec.commit(CALL, claim("p"));
+
+      expect(out).toMatchObject({ kind: "aborted" });
+    });
+
+    // `broadcastAttempted: false` is what keeps this off the consecutive-failure breaker: nothing
+    // reached the chain, so it is not evidence the chain is rejecting us.
+    it("reports it as pre-broadcast, not as a failed send", async () => {
+      const store = tickingStore();
+      const { exec } = autoExecutor(revivedDuringSend(store), store);
+
+      const out = await exec.commit(CALL, claim("p"));
+
+      expect(out).toMatchObject({ broadcastAttempted: false });
+    });
+
+    // The row now belongs to the attempt that revived it, which may be mid-send itself. Stamping
+    // our error onto it would hide a live attempt behind a failure that is not its own.
+    it("leaves the revived attempt untouched", async () => {
+      const store = tickingStore();
+      const { exec } = autoExecutor(revivedDuringSend(store), store);
+
+      await exec.commit(CALL, claim("p"));
+
+      const row = store.get(idempotencyKey(claim("p")));
+      expect(row?.status).toBe("pending");
+      expect(row?.nonce).toBeNull();
+      expect(row?.txHash).toBeNull();
+      expect(row?.error).toBeNull();
+    });
   });
 
   it("a PreBroadcastError raised AFTER the durable record still leaves the intent live", async () => {
@@ -149,7 +235,7 @@ describe("createAutoExecutor", () => {
     //
     // The cost is that a refused send holds its nonce for the unknown-tx grace window. That is
     // deliberate, and this test exists to make changing it a conscious act.
-    const store = createMemoryStateStore();
+    const store = tickingStore();
     const { exec } = autoExecutor(
       autoSender({
         send: vi.fn(async (call, onSigned) => {
@@ -274,6 +360,75 @@ describe("createAutoExecutor", () => {
       const result = await exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n });
 
       expect(result.kind).toBe("duplicate");
+    });
+
+    // Approvals are the intents the two engines genuinely share, so this is where a revived attempt
+    // is most reachable: both call `ensureAllowance` for the same token and spender.
+    it("leaves a revived approval attempt untouched when its send fails", async () => {
+      const store = tickingStore();
+      const id = idempotencyKey({
+        chainId: 31337,
+        target: WBTC,
+        action: "approval",
+        subject: SPENDER,
+      });
+      const pc = autoPublicClient(allowanceReader(0n));
+      const { exec } = autoExecutor(
+        autoSender({
+          send: vi.fn(async () => {
+            // Another engine resolves this attempt and a later cycle re-claims the subject.
+            await store.transition(id, "failed", { error: "resolved by the other engine" });
+            await store.recordIntent({
+              chainId: 31337,
+              target: WBTC,
+              action: "approval",
+              subject: SPENDER,
+            });
+            throw new Error("rpc timeout");
+          }),
+        }),
+        store,
+        pc
+      );
+
+      await expect(
+        exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n })
+      ).rejects.toThrow("rpc timeout");
+
+      const row = store.get(id);
+      expect(row?.status).toBe("pending");
+      expect(row?.error).toBeNull();
+    });
+
+    // The mirror of the case above: here the record *did* land, so the row is provably this
+    // attempt's and the ambiguous send must be written onto it — under private submission that
+    // write is what carries the relay horizon, and without one the nonce is fenced forever.
+    it("marks its own attempt submitted when the broadcast fails after signing", async () => {
+      const store = tickingStore();
+      const pc = autoPublicClient(allowanceReader(0n));
+      const { exec } = autoExecutor(
+        autoSender({
+          send: vi.fn(async (call, onSigned) => {
+            await onSigned?.({
+              hash: "0xhash" as Hex,
+              nonce: call.nonce ?? 0,
+              serialized: "0xraw",
+            });
+            throw new Error("ECONNRESET");
+          }),
+        }),
+        store,
+        pc
+      );
+
+      await expect(
+        exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n })
+      ).rejects.toThrow("ECONNRESET");
+
+      const row = store.get(
+        idempotencyKey({ chainId: 31337, target: WBTC, action: "approval", subject: SPENDER })
+      );
+      expect(row).toMatchObject({ status: "submitted", txHash: "0xhash", error: "ECONNRESET" });
     });
 
     it("throws when the approval reverts (as the engine's boot approval always did)", async () => {

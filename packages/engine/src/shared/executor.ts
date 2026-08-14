@@ -256,8 +256,11 @@ export function createAutoExecutor(deps: {
               nonce,
             },
             async (signed) => {
+              if (intentId && claimed.attemptAt !== undefined) {
+                await crash.markPending(intentId, signed.nonce, claimed.attemptAt, signed.hash);
+              }
+              // Set last: it is what tells the paths below the row under this id is still ours.
               signedHash = signed.hash;
-              if (intentId) await crash.markPending(intentId, signed.nonce, signed.hash);
             }
           )
         );
@@ -268,7 +271,16 @@ export function createAutoExecutor(deps: {
           // Stamp the horizon whenever signing got far enough to produce a hash: an ambiguous send
           // under a fail-closed reader would otherwise fence its nonce with nothing to release it.
           const meta = signedHash ? await horizonFor(signedHash) : {};
-          await crash.transition(intentId, "submitted", { ...meta, error: message });
+          // With no hash the pre-broadcast record never landed, so this may be writing to a row
+          // that is no longer this attempt's — bind it to the claim, and let the write be refused
+          // if another engine has since resolved and re-claimed the subject. With a hash the row is
+          // provably ours (`markPending` proved it) and its stamp has moved on, so nothing to bind.
+          await crash.transition(
+            intentId,
+            "submitted",
+            { ...meta, error: message },
+            signedHash ? undefined : { updatedAt: claimed.attemptAt }
+          );
         }
         throw error;
       }
@@ -299,6 +311,10 @@ export function createAutoExecutor(deps: {
       if (!claimed.claimed) return { kind: "duplicate", existing: claimed.existing as TxIntent };
       const intentId = claimed.intentId;
 
+      // Set only once the pre-broadcast record has landed on the attempt we claimed, so it doubles
+      // as "this intent is ours to write to". Between the claim and here another engine's reconcile
+      // can resolve the row and a later cycle revive it under the same id — `markPending` refuses
+      // that, and everything downstream must then keep its hands off the row it now points at.
       let signedHash: Hex | undefined;
       try {
         assertCanBroadcast(claim.action);
@@ -306,8 +322,10 @@ export function createAutoExecutor(deps: {
         // first, so `onSigned` durably records nonce + hash before anything reaches the chain.
         const hash = await crash.send((nonce) =>
           sender.send({ ...call, nonce }, async (signed) => {
+            if (intentId && claimed.attemptAt !== undefined) {
+              await crash.markPending(intentId, signed.nonce, claimed.attemptAt, signed.hash);
+            }
             signedHash = signed.hash;
-            if (intentId) await crash.markPending(intentId, signed.nonce, signed.hash);
           })
         );
         // The hash was persisted pre-broadcast, so losing this write is safe — except for the
@@ -325,7 +343,14 @@ export function createAutoExecutor(deps: {
         // horizon still goes on, so a transaction the relay never forwards can eventually expire.
         if (intentId) {
           const meta = signedHash ? await horizonFor(signedHash) : {};
-          await crash.transition(intentId, "submitted", { ...meta, error: message });
+          // See the approval path: without a durable record this write is bound to the claim, so
+          // it lands on our own untouched row and is refused on one that was revived under us.
+          await crash.transition(
+            intentId,
+            "submitted",
+            { ...meta, error: message },
+            signedHash ? undefined : { updatedAt: claimed.attemptAt }
+          );
         }
         return {
           kind: "aborted",

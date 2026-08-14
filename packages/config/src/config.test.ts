@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   addressListSchema,
   addressSchema,
+  bpsSchema,
   buildExecutionConfig,
   buildNotifierConfig,
   bytes32Schema,
@@ -46,6 +47,23 @@ describe("@repo/config schemas", () => {
     it("rejects zero and negatives", () => {
       expect(positiveIntSchema.safeParse("0").success).toBe(false);
       expect(positiveIntSchema.safeParse("-1").success).toBe(false); // '-' fails the digit regex
+    });
+  });
+
+  describe("bpsSchema", () => {
+    it.each(["0", "100", "2000", "10000"])("accepts %s — a proportion in basis points", (bps) => {
+      expect(bpsSchema.safeParse(bps).success).toBe(true);
+    });
+
+    // The whole point of the schema. These parse cleanly as integers and are not proportions: used
+    // as `x * bps / 10_000` they inflate a spend ceiling without limit, or underflow a profit floor
+    // to zero. Both are the permissive direction, and neither looks wrong further down.
+    it.each(["10001", "20000", "1000000"])("rejects %s — past 100%%", (bps) => {
+      expect(bpsSchema.safeParse(bps).success).toBe(false);
+    });
+
+    it.each(["1abc", "1.5", "-1", " 100", ""])("rejects %j, which is not an integer", (bad) => {
+      expect(bpsSchema.safeParse(bad).success).toBe(false);
     });
   });
 
@@ -140,6 +158,8 @@ describe("buildExecutionConfig", () => {
     FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
     PRIVATE_RELAY_HORIZON_BLOCKS: "25",
     PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
+    PRIVATE_SUBMIT_TIMEOUT_MS: "8000",
+    PRIVATE_STATUS_TIMEOUT_MS: "2000",
   } as const;
 
   // A valid MANUAL setup: the broadcasting address + a store, and NO signer configured.

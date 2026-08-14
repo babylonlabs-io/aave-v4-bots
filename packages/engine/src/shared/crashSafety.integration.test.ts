@@ -56,6 +56,9 @@ const reader = (over: {
   async getBlockNumber() {
     return 0;
   },
+  async findSafeExecution() {
+    return null;
+  },
   async getSafeExecution() {
     return null;
   },
@@ -108,7 +111,11 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
     "refuses a duplicate live intent across two CrashSafety instances",
     async () => {
       const first = await crashSafety(store).claim(intent("pos-1"));
-      expect(first).toEqual({ claimed: true, intentId: idempotencyKey(intent("pos-1")) });
+      expect(first).toEqual({
+        claimed: true,
+        intentId: idempotencyKey(intent("pos-1")),
+        attemptAt: expect.any(Number),
+      });
 
       // A fresh process over the same durable store — the restart case.
       const second = await crashSafety(store).claim(intent("pos-1"));
@@ -138,10 +145,10 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
     "markPending durably records the reserved nonce before broadcast",
     async () => {
       const cs = crashSafety(store);
-      const { intentId } = await cs.claim(intent("pos-1"));
-      if (!intentId) throw new Error("expected an intent id");
+      const { intentId, attemptAt } = await cs.claim(intent("pos-1"));
+      if (!intentId || attemptAt === undefined) throw new Error("expected an intent id");
 
-      await cs.markPending(intentId, 7);
+      await cs.markPending(intentId, 7, attemptAt);
 
       const [live] = await store.reconcile();
       expect(live).toMatchObject({ subject: "pos-1", nonce: 7, status: "pending" });
@@ -154,9 +161,9 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
       "confirms an intent whose tx mined successfully",
       async () => {
         const cs = crashSafety(store);
-        const { intentId } = await cs.claim(intent("pos-1"));
-        if (!intentId) throw new Error("expected an intent id");
-        await cs.markPending(intentId, 5);
+        const { intentId, attemptAt } = await cs.claim(intent("pos-1"));
+        if (!intentId || attemptAt === undefined) throw new Error("expected an intent id");
+        await cs.markPending(intentId, 5, attemptAt);
         await cs.transition(intentId, "submitted", { txHash: TX });
         // …process dies here…
 
@@ -181,8 +188,8 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
         const a = await cs.claim(intent("never-sent"));
         const b = await cs.claim(intent("in-mempool"));
         if (!a.intentId || !b.intentId) throw new Error("expected intent ids");
-        await cs.markPending(a.intentId, 9); // reserved nonce 9, chain never saw it
-        await cs.markPending(b.intentId, 7); // reserved nonce 7, sitting in the mempool
+        await cs.markPending(a.intentId, 9, a.attemptAt as number); // nonce 9, chain never saw it
+        await cs.markPending(b.intentId, 7, b.attemptAt as number); // nonce 7, in the mempool
 
         const summary = await reconcilePending({
           store,
@@ -203,9 +210,9 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
       "leaves everything untouched when the chain is unreachable (fail closed)",
       async () => {
         const cs = crashSafety(store);
-        const { intentId } = await cs.claim(intent("pos-1"));
-        if (!intentId) throw new Error("expected an intent id");
-        await cs.markPending(intentId, 5);
+        const { intentId, attemptAt } = await cs.claim(intent("pos-1"));
+        if (!intentId || attemptAt === undefined) throw new Error("expected an intent id");
+        await cs.markPending(intentId, 5, attemptAt);
         await cs.transition(intentId, "submitted", { txHash: TX });
 
         const outage: ChainReader = {
@@ -215,6 +222,7 @@ describe.skipIf(!DATABASE_URL)("crash-safety over a real Postgres StateStore", (
           getNonce: async () => 9, // chain has moved past nonce 5
           getBlockNumber: async () => 0,
           getSafeExecution: async () => null,
+          findSafeExecution: async () => null,
           isKnown: async () => {
             throw new Error("ECONNREFUSED");
           },

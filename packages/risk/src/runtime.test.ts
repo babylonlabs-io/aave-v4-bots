@@ -26,6 +26,23 @@ describe("startRiskRuntime", () => {
     vi.clearAllMocks();
   });
 
+  // The kill switch is opt-in, and asking for one is a statement about how this deployment expects
+  // to be stopped. Booting without the endpoint it asked for would leave the operator believing
+  // they can halt trading remotely when they cannot — so the boot fails instead.
+  it("fails the boot when the kill switch it was told to mount cannot bind", async () => {
+    await expect(
+      start({ controlTokenRef: "env:TOKEN", controlHost: "203.0.113.7" })
+    ).rejects.toThrow(/kill switch could not bind/);
+  });
+
+  // The counterpart: no token means no endpoint was asked for, which is a configuration the code
+  // already announces rather than refuses. An unbindable host must not turn that into a failure.
+  it("still boots with no token configured, whatever the control host says", async () => {
+    const { gate, stop } = await start({ controlHost: "203.0.113.7" });
+    expect(gate.state()).toBe("RUNNING");
+    stop();
+  });
+
   it("builds a permissive gate and starts no server when nothing is configured", async () => {
     const { gate, stop } = await start();
     expect(gate.state()).toBe("RUNNING");

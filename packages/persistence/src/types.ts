@@ -154,6 +154,51 @@ export interface TxIntent extends IntentInput {
   updatedAt: number;
 }
 
+// ── What an intent carries ──────────────────────────────────────────────────────────────────────
+//
+// `TxIntent`'s `nonce`, `txHash` and `safeEnvelope` are nullable because they are filled in as an
+// action progresses, so a consumer that needs one has to null-check it. These name the combinations
+// that mean something, so a function can say in its signature what it requires instead of taking
+// the fields again as arguments its caller has already checked.
+//
+// Predicates rather than methods: a `TxIntent` is a row, reconstructed from SQL or from a Map, and
+// keeping it plain data is what lets both stores hand back the same shape.
+
+/** An intent that got as far as a recorded transaction hash — something exists to look up on chain. */
+export type BroadcastIntent = TxIntent & { txHash: Hex };
+/** …whose hash is an outer `execTransaction`, with the envelope naming the SafeTx it carried. */
+export type SafeIntent = BroadcastIntent & { safeEnvelope: SafeEnvelope };
+/** …and one we signed ourselves: a nonce of the bot's own sequence is spoken for by that hash. */
+export type SignedIntent = BroadcastIntent & { nonce: number };
+
+export const isBroadcast = (intent: TxIntent): intent is BroadcastIntent => intent.txHash !== null;
+export const isSafe = (intent: TxIntent): intent is SafeIntent =>
+  isBroadcast(intent) && intent.safeEnvelope !== null;
+export const isSigned = (intent: TxIntent): intent is SignedIntent =>
+  isBroadcast(intent) && intent.nonce !== null;
+
+/**
+ * What a writer believed the row was when it decided — see `StateStore.transition`.
+ *
+ * Both fields are optional and an absent one is no precondition at all, in either store. That is
+ * what lets a caller guard on whichever half it observed: the hash where its evidence is about one
+ * specific transaction, the status where it is about the row's place in its lifecycle.
+ */
+export interface TransitionExpectation {
+  /**
+   * Only write if the row is still the exact attempt observed, identified by its `updatedAt`.
+   *
+   * The strictest of the three, and the only one that survives id reuse: status and hash are both
+   * null-and-`pending` on a fresh attempt *and* on the revived attempt that replaced it, so a
+   * writer holding a stale read cannot tell them apart by anything else.
+   */
+  updatedAt?: number;
+  /** Only write if the row still carries this hash — i.e. it is still the attempt observed. */
+  txHash?: Hex;
+  /** Only write if the row is still in one of these statuses. */
+  status?: readonly IntentStatus[];
+}
+
 /** Optional fields attached as an intent moves through its lifecycle. */
 export interface TransitionMeta {
   nonce?: number;
@@ -170,7 +215,23 @@ export interface TransitionMeta {
  * Outcome of `recordIntent`. `recorded: false` means a **live** intent (pending/submitted)
  * already exists for this key — the caller must not submit a second time.
  */
-export type RecordResult = { recorded: true; id: string } | { recorded: false; existing: TxIntent };
+export type RecordResult =
+  | {
+      recorded: true;
+      id: string;
+      /**
+       * This attempt's `updatedAt` — the version token that tells it apart from the next one.
+       *
+       * Ids are reused: a terminal row is revived in place for the next attempt on the same
+       * subject, so the id alone identifies a *subject*, not a try at it. A revived row is
+       * byte-identical to a fresh one in every field a writer could check — same status, `nonce`
+       * and `txHash` both null — which leaves the stamp as the only thing that differs. Pass it
+       * back as `TransitionExpectation.updatedAt` to make a write land on the attempt that claimed
+       * it or not at all.
+       */
+      attemptAt: number;
+    }
+  | { recorded: false; existing: TxIntent };
 
 export interface StateStore {
   /**
@@ -273,12 +334,7 @@ export interface StateStore {
     id: string,
     to: IntentStatus,
     meta?: TransitionMeta,
-    expect?: {
-      /** Only write if the row still carries this hash — i.e. it is still the attempt observed. */
-      txHash?: Hex;
-      /** Only write if the row is still in one of these statuses. */
-      status?: readonly IntentStatus[];
-    }
+    expect?: TransitionExpectation
   ): Promise<boolean>;
   /**
    * Every in-flight (`IN_FLIGHT_ON_CHAIN`) intent — the reconcile work list. Excludes `proposed`

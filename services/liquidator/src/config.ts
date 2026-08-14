@@ -7,6 +7,7 @@ import {
   addressListSchema,
   addressSchema,
   assertProfitFloorEnforceable,
+  bpsSchema,
   buildExecutionConfig,
   buildIndexerConfig,
   buildNotifierConfig,
@@ -136,7 +137,7 @@ const envSchema = z.object({
    * off-chain before sending; this one is relative and enforced on-chain at execution. When both
    * are set the on-chain floor is whichever binds harder.
    */
-  FLASH_MAX_SLIPPAGE_BPS: positiveIntSchema.optional().default("2000"),
+  FLASH_MAX_SLIPPAGE_BPS: bpsSchema.optional().default("2000"),
 });
 
 export function loadConfig(): Config {

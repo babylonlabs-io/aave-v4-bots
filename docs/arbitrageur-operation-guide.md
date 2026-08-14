@@ -418,7 +418,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
 | `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the chain reverts; derives the on-chain `minWbtcProfit`. Distinct from `RISK_MIN_PROFIT`, which is absolute and checked off-chain | No | `2000` |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit. Rejected at boot when the optional liquidation engine is enabled **and inventory-funded**, since that path supplies no expected profit and the floor would cover only half the actions. Allowed when the engine is off or flash-funded | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit. Rejected at boot when the optional liquidation engine is enabled **and inventory-funded**, since that path supplies no expected profit and the floor would cover only half the actions. Allowed when the engine is off or flash-funded. **Unset is not neutral** — see below | No | — |
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old, missing, malformed, or dated in the future | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
@@ -431,6 +431,24 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `RETRY_INITIAL_DELAY_MS` | Initial retry delay | No | `1000` |
 | `RETRY_MAX_DELAY_MS` | Maximum retry delay | No | `30000` |
 | `TX_RECEIPT_TIMEOUT_MS` | Transaction receipt timeout | No | `120000` |
+
+#### What leaving `RISK_MIN_PROFIT` unset actually means
+
+Not "the same behaviour without a floor". An acquisition is skipped only when the
+on-chain preview says the vault is worth exactly nothing, and the number the
+floor would have tested is not that preview — it is the **worst case the
+transaction authorizes**: the vault's BTC minus `maxWbtcIn`, which carries the
+whole `MAX_SLIPPAGE_BPS` buffer on top of the acquisition cost.
+
+Those two can disagree. A vault previews profitably, the ceiling the bot signs
+for sits above what the vault is worth, and the swap is free to charge anywhere
+up to it. With no floor set, that acquisition is signed, and the size of the
+worst case is bounded by `MAX_SLIPPAGE_BPS` and nothing else.
+
+`RISK_MIN_PROFIT=0` is what makes the worst case non-negative. It is deliberately
+not the default: a floor of zero is a policy, and a bot that quietly adopted one
+would be making that choice for an operator who never stated it. Set it
+explicitly if that is the policy you want.
 
 ### 5.4. Execution Modes
 

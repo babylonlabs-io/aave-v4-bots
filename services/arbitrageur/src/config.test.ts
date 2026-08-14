@@ -126,6 +126,39 @@ describe("config validation", () => {
       expect(config.retryConfig).toMatchObject({ maxAttempts: 5 });
       expect(config.txReceiptTimeoutMs).toBe(60000);
     });
+
+    // The value is a proportion of the vault's debt and it sets the WBTC ceiling the signer
+    // authorizes. Above 100% it is a multiplier, not a tolerance — 20000 bps turns a 1 WBTC preview
+    // into a 3 WBTC ceiling — and nothing downstream reads as wrong, so it has to be refused here.
+    it.each(["10001", "20000", "1000000"])(
+      "refuses MAX_SLIPPAGE_BPS=%s, which is past 100%%",
+      async (bps) => {
+        process.env = { ...validEnv, MAX_SLIPPAGE_BPS: bps };
+
+        const { loadConfig } = await import("./config");
+
+        expect(() => loadConfig()).toThrow("process.exit called");
+      }
+    );
+
+    it("accepts the bounds themselves", async () => {
+      for (const bps of ["0", "10000"]) {
+        vi.resetModules();
+        process.env = { ...validEnv, MAX_SLIPPAGE_BPS: bps };
+        const { loadConfig } = await import("./config");
+        expect(loadConfig().maxSlippageBps).toBe(Number(bps));
+      }
+    });
+
+    // Same bound, same reason, on the flash-funding path: it feeds the on-chain profit floor, where
+    // a figure past 10000 underflows the floor to zero instead of inflating a ceiling.
+    it("refuses a FLASH_MAX_SLIPPAGE_BPS past 100%", async () => {
+      process.env = { ...validEnv, FLASH_MAX_SLIPPAGE_BPS: "10001" };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow("process.exit called");
+    });
   });
 
   describe("signer / secrets source selection", () => {

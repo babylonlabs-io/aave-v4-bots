@@ -1,5 +1,5 @@
 import { safeAbi } from "@repo/abis";
-import { getNonce, getReceiptStatus, isTxKnown } from "@repo/chain";
+import { findSafeExecutionByHash, getNonce, getReceiptStatus, isTxKnown } from "@repo/chain";
 import type { RelayTxStatus } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type Address, type Hex, type PublicClient, parseEventLogs } from "viem";
@@ -45,6 +45,21 @@ export interface ChainReader {
     safeAddress: Address,
     safeTxHash: Hex
   ): Promise<SafeExecutionOutcome>;
+  /**
+   * Has this exact SafeTx executed *in any transaction*, and in which one? Scans `safeAddress`'s
+   * `Execution{Success,Failure}` events from `anchor` (the claim-time height) for `safeTxHash`.
+   *
+   * The counterpart to `getSafeExecution`, which can only answer for a transaction hash we recorded.
+   * A SafeTx's calldata carries its owner signatures, so the transaction that executes it need not
+   * be the one we know about: a replacement, or anyone who copied the calldata, executes the same
+   * SafeTx under a different hash. Matching by `safeTxHash` rather than the Safe's nonce is what
+   * keeps this precise on a Safe with other traffic.
+   */
+  findSafeExecution(
+    safeAddress: Address,
+    safeTxHash: Hex,
+    anchor: number
+  ): Promise<{ txHash: Hex; success: boolean } | null>;
 }
 
 /** Bind the `ChainReader` port to a viem `PublicClient`. */
@@ -54,6 +69,8 @@ export function createChainReader(publicClient: PublicClient): ChainReader {
     getNonce: (address, tag) => getNonce(publicClient, address, tag),
     getBlockNumber: async () => Number(await publicClient.getBlockNumber()),
     isKnown: (hash) => isTxKnown(publicClient, hash),
+    findSafeExecution: (safeAddress, safeTxHash, anchor) =>
+      findSafeExecutionByHash(publicClient, safeAddress, safeTxHash, BigInt(anchor)),
     async getSafeExecution(txHash, safeAddress, safeTxHash) {
       // No receipt yet ⇒ not mined ⇒ still in flight. viem throws when the receipt is absent.
       const receipt = await publicClient.getTransactionReceipt({ hash: txHash }).catch(() => null);

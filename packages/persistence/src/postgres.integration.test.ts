@@ -247,6 +247,40 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
     TIMEOUT
   );
 
+  // The version predicate is the one guard whose whole point is telling two *identical* rows apart,
+  // so an in-memory adapter cannot stand in for it: `updated_at` is a BIGINT column compared against
+  // a JS number through `$10::bigint`, and the stamp `recordIntent` hands back has to be the one the
+  // row actually carries. If those diverge, every pre-broadcast record in AUTO mode throws.
+  it(
+    "binds a write to the exact attempt that claimed the row",
+    async () => {
+      const first = await store.recordIntent(input("pos-attempt"));
+      if (!first.recorded) throw new Error("expected a fresh claim");
+      const key = first.id;
+
+      expect((await store.getIntent(key))?.updatedAt).toBe(first.attemptAt);
+
+      // Resolve it and claim the subject again — a new attempt under the same id, identical in
+      // every field a writer could check.
+      await store.transition(key, "failed", { error: "resolved" });
+      const second = await store.recordIntent(input("pos-attempt"));
+      if (!second.recorded) throw new Error("expected the revived claim");
+
+      // The first attempt's write finds a row it never saw.
+      expect(
+        await store.transition(key, "pending", { nonce: 4 }, { updatedAt: first.attemptAt })
+      ).toBe(false);
+      expect((await store.getIntent(key))?.nonce).toBeNull();
+
+      // The attempt that owns the row now can still write to it.
+      expect(
+        await store.transition(key, "pending", { nonce: 7 }, { updatedAt: second.attemptAt })
+      ).toBe(true);
+      expect((await store.getIntent(key))?.nonce).toBe(7);
+    },
+    TIMEOUT
+  );
+
   it(
     "applies a guarded transition only to the row the caller observed",
     async () => {

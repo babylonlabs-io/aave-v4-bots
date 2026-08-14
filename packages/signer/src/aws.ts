@@ -59,13 +59,31 @@ export interface AwsSignerConfig {
   client?: KmsSend;
 }
 
+/** Bounds establishing the connection to KMS. */
+const CONNECT_TIMEOUT_MS = 3_000;
+/**
+ * Bounds one KMS request.
+ *
+ * Signing happens inside the nonce allocator's lock, so a hung `Sign` holds it and every later send
+ * and resync — from both engines — waits behind it. The SDK's default is no timeout at all, which
+ * turns a black-holed connection into a bot that is up and doing nothing. Generous enough that a
+ * slow-but-answering KMS still signs.
+ */
+const SIGN_TIMEOUT_MS = 5_000;
+
 /**
  * Build a `Signer` backed by AWS KMS. Async because the address is derived from the KMS
  * public key (a `GetPublicKey` call) at construction time.
  */
 export async function createAwsSigner(config: AwsSignerConfig): Promise<Signer> {
   const client: KmsSend =
-    config.client ?? new KMSClient(config.region ? { region: config.region } : {});
+    config.client ??
+    new KMSClient({
+      ...(config.region ? { region: config.region } : {}),
+      // KMS signs inside the nonce allocator's lock, so a request that never returns holds the lock
+      // and stops both engines. The SDK waits forever by default; these bound the fault.
+      requestHandler: { connectionTimeout: CONNECT_TIMEOUT_MS, requestTimeout: SIGN_TIMEOUT_MS },
+    });
 
   const address = await deriveAddress(client, config.keyId);
   if (config.address && !isAddressEqual(config.address, address)) {

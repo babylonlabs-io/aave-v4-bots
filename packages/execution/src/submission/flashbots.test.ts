@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createFlashbotsProtectSubmitter } from "./flashbots";
+import { type FetchLike, createFlashbotsProtectSubmitter } from "./flashbots";
 import { SubmitRejectedError } from "./index";
 
 // The relay is scripted, never reached. The response bodies here are the shapes the live API
@@ -24,6 +24,16 @@ const badJson = (status = 200): Response =>
       throw new SyntaxError("Unexpected token");
     },
   }) as unknown as Response;
+
+/**
+ * A relay that accepts the connection and then answers nothing — the failure the deadlines exist
+ * for. It honours `init.signal`, exactly as a real `fetch` does; a fake that ignored it would hang
+ * whatever the adapter passed, and would pass this test suite while proving nothing.
+ */
+const neverAnswers: FetchLike = (_url, init) =>
+  new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject((init.signal as AbortSignal).reason));
+  });
 
 const submitter = (respond: () => Response | Promise<Response>) =>
   createFlashbotsProtectSubmitter({
@@ -183,5 +193,74 @@ describe("createFlashbotsProtectSubmitter — reports how each broadcast was ans
     const { s, seen } = withReporter(respond as () => Response);
     await s.send(TX).catch(() => {});
     expect(seen).toEqual(["ambiguous"]);
+  });
+});
+
+// A submit is awaited inside the nonce allocator's lock, so an unbounded one does not merely lose a
+// transaction: every later send and resync, from both engines, queues behind it and the bot stops
+// trading while looking healthy.
+describe("createFlashbotsProtectSubmitter — deadlines", () => {
+  const hanging = (overrides: Partial<Parameters<typeof createFlashbotsProtectSubmitter>[0]>) => {
+    const seen: string[] = [];
+    const s = createFlashbotsProtectSubmitter({
+      rpcUrl: "https://rpc.example/fast",
+      statusUrl: "https://status.example",
+      fetch: neverAnswers,
+      onResult: (r) => seen.push(r),
+      ...overrides,
+    });
+    return { s, seen };
+  };
+
+  it("gives up on a submit the relay never answers", async () => {
+    const { s } = hanging({ submitTimeoutMs: 10 });
+    await expect(s.send(TX)).rejects.toThrow(/submit timed out after 10ms/);
+  });
+
+  // Ambiguous, never clean: the relay may have taken the transaction, so its nonce must stay
+  // fenced and the intent must stay live. A "rejected" here would free both.
+  it("counts an abandoned submit as ambiguous, exactly once", async () => {
+    const { s, seen } = hanging({ submitTimeoutMs: 10 });
+    await s.send(TX).catch(() => {});
+    expect(seen).toEqual(["ambiguous"]);
+  });
+
+  it("gives up on a status probe the relay never answers", async () => {
+    const { s } = hanging({ statusTimeoutMs: 10 });
+    await expect(s.status(HASH)).rejects.toThrow(/status timed out after 10ms/);
+  });
+
+  // The classified paths report through `reject`; the catch-all reports what never reached one.
+  // Both firing would double-count every rejection the relay actually sent us.
+  it("does not double-count an answer the relay did give", async () => {
+    const seen: string[] = [];
+    const s = createFlashbotsProtectSubmitter({
+      rpcUrl: "https://rpc.example/fast",
+      statusUrl: "https://status.example",
+      fetch: async () => reply({ error: { message: "invalid transaction" } }),
+      onResult: (r) => seen.push(r),
+    });
+    await s.send(TX).catch(() => {});
+    expect(seen).toEqual(["rejected"]);
+  });
+
+  // Without this, an adapter built by a caller that passes no deadline — which is every caller
+  // that forgets — would be exactly as unbounded as before.
+  it("attaches a deadline to both endpoints without being told one", async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const s = createFlashbotsProtectSubmitter({
+      rpcUrl: "https://rpc.example/fast",
+      statusUrl: "https://status.example",
+      fetch: async (_url, init) => {
+        signals.push(init?.signal);
+        return reply({ result: HASH });
+      },
+    });
+
+    await s.send(TX);
+    await s.status(HASH);
+
+    expect(signals).toHaveLength(2);
+    for (const signal of signals) expect(signal).toBeInstanceOf(AbortSignal);
   });
 });

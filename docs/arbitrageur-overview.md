@@ -165,7 +165,7 @@ keeper-registered BTC key inside the same transaction.
 | `LIQUIDATION_POLLING_INTERVAL_MS` | Poll interval for the optional liquidation engine | No | `12000` |
 | `LIQUIDATION_FUNDING` | Funding mode for the optional liquidation engine: `inventory` or `flash`. See the [liquidator overview](./liquidator-overview.md#funding-modes) | No | `inventory` |
 | `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. Rejected at boot if the liquidation engine is enabled and inventory-funded (#27); allowed when it is off or flash-funded | No | — |
+| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats. Rejected at boot if the liquidation engine is enabled and inventory-funded (#27); allowed when it is off or flash-funded. Unset leaves the worst case an acquisition authorizes bounded only by `MAX_SLIPPAGE_BPS` — see the [operation guide](./arbitrageur-operation-guide.md#what-leaving-risk_min_profit-unset-actually-means) | No | — |
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Maximum source data age (also blocks a missing, malformed or future-dated timestamp) | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |

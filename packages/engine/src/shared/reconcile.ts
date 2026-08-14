@@ -1,9 +1,14 @@
-import type {
-  IntentStatus,
-  SafeEnvelope,
-  StateStore,
-  TransitionMeta,
-  TxIntent,
+import {
+  type BroadcastIntent,
+  type IntentStatus,
+  type SafeEnvelope,
+  type SafeIntent,
+  type StateStore,
+  type TransitionExpectation,
+  type TransitionMeta,
+  type TxIntent,
+  isBroadcast,
+  isSafe,
 } from "@repo/persistence";
 import type { Address, Hex } from "viem";
 
@@ -60,25 +65,95 @@ const failedAs = (meta: TransitionMeta): Resolution => ({
 const stillInFlight: Resolution = { bucket: "stillInFlight" };
 
 /**
+ * How far ahead of this process's clock a row's `updatedAt` may sit before it is worth saying so.
+ *
+ * `updatedAt` is written from the writer's own `Date.now()` — this bot's, a previous run's on
+ * another host, or `operator-cli`'s on a laptop — so every age derived from it is a comparison of
+ * two independent wall clocks. A row stamped in the future has a *negative* age, and every guard
+ * here asks whether an age is small: an intent being signed right now is protected by a grace
+ * window, and one stamped ahead stays inside that window until real time catches up. The subject
+ * stays blocked for the whole lead.
+ *
+ * Twice the grace window, because a lead of the same order as the window itself can at most hold a
+ * row for about as long as the window was going to anyway, and a laptop's ordinary drift should not
+ * page anyone. Past this the two clocks genuinely disagree, and no age computed from the row means
+ * what it says.
+ *
+ * Deliberately not `MAX_SOURCE_CLOCK_SKEW_MS` from `@repo/risk`: that bounds how far a *chain
+ * block's* timestamp may lead ours, where a few seconds is normal and expected. Another machine's
+ * clock has no such licence — same shape of problem, different quantity.
+ */
+export const INTENT_CLOCK_SKEW_WARN_MS = 2 * UNKNOWN_TX_GRACE_MS;
+
+/**
+ * Did this SafeTx execute in some *other* transaction than the one we recorded?
+ *
+ * A SafeTx's calldata carries its owner signatures, so the transaction that executes it need not be
+ * the one we know about — a replacement the operator sent, or anyone who copied the calldata. The
+ * recorded outer hash is then a hash that will never have a receipt, or one that reverts because the
+ * Safe nonce is already spent, while the action itself is on chain.
+ *
+ * A failed scan is swallowed. It is additive evidence: without it every branch falls back to the
+ * answer it gave before this existed, and the alternative is worse — the scan's range grows with the
+ * intent's age, so a provider's `eth_getLogs` limit would eventually stop the whole reconcile pass,
+ * and one stuck intent would take the bot down with it.
+ */
+async function findElsewhere(
+  liveness: LivenessCheck,
+  safe: Address,
+  envelope: SafeEnvelope,
+  logger?: Pick<Logger, "warn">
+): Promise<{ txHash: Hex; success: boolean } | null> {
+  try {
+    return await liveness.reader.findSafeExecution(safe, envelope.safeTxHash, envelope.claimBlock);
+  } catch (error) {
+    logger?.warn(
+      `Reconcile: could not scan ${safe} for SafeTx ${envelope.safeTxHash} — ${error instanceof Error ? error.message : error}`
+    );
+    return null;
+  }
+}
+
+/** Resolve from an `Execution*` event found by scan, recording the hash that actually carried it. */
+const resolveFound = (found: { txHash: Hex; success: boolean }): Resolution =>
+  found.success
+    ? confirmedAs({ txHash: found.txHash })
+    : failedAs({ txHash: found.txHash, error: "Safe inner call reverted (ExecutionFailure)" });
+
+/**
  * MANUAL + `safe`: the outer `execTransaction` receipt lies about the inner call (a Safe catches an
  * inner revert and still succeeds), so judge by the Safe's `Execution{Success,Failure}` event — see
  * the ladder in `SafeExecutionOutcome`.
+ *
+ * Two of those answers are about the recorded transaction rather than the SafeTx, and for those the
+ * Safe's own logs get the last word — see `findElsewhere`.
  */
 async function resolveSafeIntent(
-  reader: ChainReader,
+  liveness: LivenessCheck,
   safe: Address,
-  intent: TxIntent,
-  txHash: Hex,
-  envelope: SafeEnvelope
+  intent: SafeIntent,
+  logger?: Pick<Logger, "warn">
 ): Promise<Resolution> {
-  const outcome = await reader.getSafeExecution(txHash, safe, envelope.safeTxHash);
+  const { txHash, safeEnvelope: envelope } = intent;
+  const outcome = await liveness.reader.getSafeExecution(txHash, safe, envelope.safeTxHash);
   switch (outcome) {
     case "success":
       return confirmedAs({ txHash });
     case "failure":
       return failedAs({ txHash, error: "Safe inner call reverted (ExecutionFailure)" });
-    case "reverted":
+    case "reverted": {
+      // The outer call failed, which is what a transaction executing a SafeTx whose nonce is
+      // already spent looks like — so this is the shape of *losing a duplicate*, and the winner
+      // carries our action. Nothing is pending here, so there is nothing to wait for before asking.
+      const found = await findElsewhere(liveness, safe, envelope, logger);
+      if (found) {
+        return {
+          ...resolveFound(found),
+          warn: `Reconcile: ${intent.action} ${intent.subject} — recorded Safe tx ${txHash} reverted, but SafeTx ${envelope.safeTxHash} executed in ${found.txHash}`,
+        };
+      }
       return failedAs({ txHash, error: "Safe execTransaction reverted" });
+    }
     case "no-event":
       // Mined, status 1, yet no matching Execution event — anomalous. Fail (safe: the engine's fresh
       // simulation guards against re-executing an action that did land) and warn loudly, rather than
@@ -87,8 +162,22 @@ async function resolveSafeIntent(
         ...failedAs({ txHash, error: "Safe tx mined without a matching Execution event" }),
         warn: `Reconcile: ${intent.action} ${intent.subject} — Safe tx ${txHash} carries no Execution event for ${envelope.safeTxHash}`,
       };
-    default:
-      return stillInFlight;
+    default: {
+      // No receipt. Ordinarily that means "not mined yet", and the grace window is there because a
+      // young absence means nothing. Past it, an absence that persists is the wedge this scan
+      // exists for: the recorded hash may have been replaced, and without asking the Safe directly
+      // this intent stays in flight forever — MANUAL intents carry no nonce, so no later transaction
+      // will ever move past it and release the subject.
+      if (liveness.now() - intent.updatedAt < (liveness.graceMs ?? UNKNOWN_TX_GRACE_MS)) {
+        return stillInFlight;
+      }
+      const found = await findElsewhere(liveness, safe, envelope, logger);
+      if (!found) return stillInFlight;
+      return {
+        ...resolveFound(found),
+        warn: `Reconcile: ${intent.action} ${intent.subject} — recorded Safe tx ${txHash} never mined, but SafeTx ${envelope.safeTxHash} executed in ${found.txHash}`,
+      };
+    }
   }
 }
 
@@ -100,16 +189,18 @@ async function resolveSafeIntent(
 async function resolveBroadcastIntent(
   liveness: LivenessCheck,
   nonces: { latest: number; pending: number },
-  intent: TxIntent,
-  txHash: Hex
+  intent: BroadcastIntent
 ): Promise<Resolution> {
-  const { nonce, updatedAt } = intent;
+  const { nonce, updatedAt, txHash } = intent;
   const status = await liveness.reader.getReceiptStatus(txHash);
   if (status === "success") return confirmedAs({ txHash });
   if (status === "reverted") return failedAs({ txHash, error: "reverted (reconciled)" });
+  // Everything below reasons from the signer's nonce sequence, so an intent without one — a MANUAL
+  // action broadcast from the operator's own wallet — has no further evidence to offer here.
+  if (nonce === null) return stillInFlight;
   // No receipt, but the signer's mined nonce has passed this one → the tx was dropped/replaced (or
   // signed-but-never-broadcast and something else took the slot).
-  if (nonce !== null && nonces.latest > nonce) {
+  if (nonces.latest > nonce) {
     return failedAs({ txHash, error: "dropped/replaced (reconciled)" });
   }
   // The nonce slot is still free and the node has not heard of this tx for long enough that
@@ -118,7 +209,6 @@ async function resolveBroadcastIntent(
   // intent would pin live forever: a rejection that blocks one send blocks them all, so no later tx
   // would ever mine past the nonce to release it.
   if (
-    nonce !== null &&
     nonces.pending <= nonce &&
     !(await couldBeInFlight(liveness, { txHash, updatedAt, relayMaxBlock: intent.relayMaxBlock }))
   ) {
@@ -224,24 +314,50 @@ export async function reconcilePending(args: {
     ? await Promise.all([reader.getNonce(signer, "latest"), reader.getNonce(signer, "pending")])
     : [0, 0];
 
+  /**
+   * Bind a transition to the snapshot this pass read: the row may since have advanced, or been
+   * revived as a fresh attempt under the same id, and a stale resolution must not land on it.
+   *
+   * `updatedAt` is what makes that true rather than aspirational. Status and hash cannot tell a
+   * revived attempt from the one this pass read — both are `pending` with a null hash — so a
+   * resolution decided against a row another engine has since resolved and re-claimed would
+   * otherwise fail *its* attempt, mid-signing. The other two stay because they say what the
+   * resolution is actually about, and cost nothing.
+   *
+   * Local because the pairing is this caller's: `recordOutcome` guards a receipt's verdict on the
+   * hash alone, deliberately saying nothing about the row's status. What `TransitionExpectation`
+   * *means* belongs to the store; which half of it to use is the writer's decision.
+   */
+  const asRead = (intent: TxIntent): TransitionExpectation => ({
+    updatedAt: intent.updatedAt,
+    status: [intent.status],
+    ...(intent.txHash ? { txHash: intent.txHash } : {}),
+  });
+
   const nonces = { latest, pending };
   for (const intent of inflight) {
+    // Reported, not acted on. Which answer a disagreeing clock should get is genuinely unknown:
+    // holding the row costs its subject the lead, freeing it risks re-driving an action a live
+    // process is still signing. So the row is resolved exactly as it would have been, and a human
+    // is told the ages behind that decision cannot be trusted.
+    const lead = intent.updatedAt - now();
+    if (lead > INTENT_CLOCK_SKEW_WARN_MS) {
+      logger?.warn(
+        `Reconcile: ${intent.action} ${intent.subject} (${intent.id}, ${intent.status}) is stamped ${Math.round(lead / 1000)}s in the future — the clock that wrote it and this one disagree, or the row was altered. Every age judged from it is wrong by that much, and it stays blocked until the lead elapses. Check NTP on every host that writes intents, including wherever operator-cli runs.`
+      );
+    }
+
     // Route by what the intent carries: a Safe envelope (MANUAL `safe`), a plain tx hash
     // (AUTO/EOA), or neither (a send whose durable record never completed). `safeEnvelope` is set
     // only by the Safe claim path, so AUTO/EOA intents are never routed through the Safe resolver.
-    const resolution = intent.txHash
-      ? intent.safeEnvelope
-        ? await resolveSafeIntent(reader, signer, intent, intent.txHash, intent.safeEnvelope)
-        : await resolveBroadcastIntent(liveness, nonces, intent, intent.txHash)
-      : resolveUnbroadcastIntent(liveness, nonces, intent);
+    const resolution = isSafe(intent)
+      ? await resolveSafeIntent(liveness, signer, intent, logger)
+      : isBroadcast(intent)
+        ? await resolveBroadcastIntent(liveness, nonces, intent)
+        : resolveUnbroadcastIntent(liveness, nonces, intent);
 
-    // Bound to the snapshot this pass read: the row may since have advanced, or been revived as a
-    // fresh attempt under the same id, and a stale resolution must not land on it.
     if (resolution.status) {
-      await store.transition(intent.id, resolution.status, resolution.meta, {
-        status: [intent.status],
-        ...(intent.txHash ? { txHash: intent.txHash } : {}),
-      });
+      await store.transition(intent.id, resolution.status, resolution.meta, asRead(intent));
     }
     if (resolution.warn) logger?.warn(resolution.warn);
     summary[resolution.bucket]++;

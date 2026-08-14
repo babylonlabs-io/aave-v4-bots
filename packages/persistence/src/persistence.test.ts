@@ -3,6 +3,7 @@ import type { Address, Hex } from "viem";
 import { describe, expect, it } from "vitest";
 import { type IntentInput, type SafeEnvelope, idempotencyKey } from "./index";
 import { createMemoryStateStore } from "./memory";
+import { DEFAULT_POOL_TIMEOUTS } from "./postgres";
 
 // `reconcilePending` moved to `@repo/engine` (it orchestrates this store *and* chain queries);
 // its tests live there, in `reconcile.test.ts`.
@@ -512,5 +513,24 @@ describe("transition — bound to the row the caller observed", () => {
       store.transition(id, "failed", { error: "stale" }, { status: ["submitted"] })
     ).resolves.toBe(false);
     expect(store.get(id)?.status).toBe("confirmed");
+  });
+});
+
+// A store write runs inside the nonce allocator's lock — `markPending` is awaited there — so a
+// query that never returns holds the lock and stops both engines. `pg` waits forever by default.
+describe("the default pool's deadlines", () => {
+  it("bounds every way a query can fail to return", () => {
+    for (const [name, ms] of Object.entries(DEFAULT_POOL_TIMEOUTS)) {
+      expect(ms, name).toBeGreaterThan(0);
+    }
+  });
+
+  // The client-side budget must outlast the server-side one. Inverted, `pg` gives up first and the
+  // server-side timeout — the half that bounds lock waits and cleans up abandoned work — never
+  // applies to anything.
+  it("lets the server-side budget expire before the client stops waiting", () => {
+    expect(DEFAULT_POOL_TIMEOUTS.query_timeout).toBeGreaterThan(
+      DEFAULT_POOL_TIMEOUTS.statement_timeout
+    );
   });
 });

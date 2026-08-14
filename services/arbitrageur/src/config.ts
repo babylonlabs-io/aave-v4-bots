@@ -7,6 +7,7 @@ import {
   addressListSchema,
   addressSchema,
   assertProfitFloorEnforceable,
+  bpsSchema,
   buildExecutionConfig,
   buildIndexerConfig,
   buildNotifierConfig,
@@ -80,7 +81,7 @@ const envSchema = z.object({
   // 0 = off. Acquisitions are batched (send-all, then batch-wait), so this is now an opt-in
   // throttle between broadcasts for rate-limited RPCs — not a per-acquisition pause.
   VAULT_PROCESSING_DELAY_MS: nonNegativeIntSchema.optional().default("0"),
-  MAX_SLIPPAGE_BPS: nonNegativeIntSchema.optional().default("100"),
+  MAX_SLIPPAGE_BPS: bpsSchema.optional().default("100"),
   METRICS_PORT: positiveIntSchema.optional().default("9091"),
 
   // Retry configuration (optional)
@@ -111,7 +112,7 @@ const envSchema = z.object({
   FLASH_SWAP_POOLS: z.string().optional(),
   WBTC_FLASH_LOAN_ADDRESS: addressSchema.optional(),
   WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional().default("morpho"),
-  FLASH_MAX_SLIPPAGE_BPS: positiveIntSchema.optional().default("2000"),
+  FLASH_MAX_SLIPPAGE_BPS: bpsSchema.optional().default("2000"),
 });
 
 /** The liquidation engine's params plus its own poll interval — present iff enabled. */

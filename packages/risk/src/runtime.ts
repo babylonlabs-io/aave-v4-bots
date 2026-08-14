@@ -83,7 +83,7 @@ export async function startRiskRuntime(config: RiskRuntimeConfig): Promise<RiskR
     return { gate, stop: stopCodeHashGuard };
   }
 
-  const server = startControlServer({
+  const server = await startControlServer({
     port: config.controlPort,
     host: config.controlHost,
     handle: createControlRoutes({ gate, token, onEvent: (m) => logger.warn(`[Control] ${m}`) }),

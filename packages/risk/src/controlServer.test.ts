@@ -23,9 +23,8 @@ const haltRoute: ControlRoute = (_req, res, pathname, searchParams) => {
 };
 
 async function start(handle: ControlRoute, host = "127.0.0.1"): Promise<string> {
-  const server = startControlServer({ port: 0, host, handle, logger });
+  const server = await startControlServer({ port: 0, host, handle, logger });
   servers.push(server);
-  await new Promise((resolve) => server.once("listening", resolve));
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
@@ -72,5 +71,65 @@ describe("startControlServer", () => {
   it("warns when bound to 0.0.0.0", async () => {
     await start(haltRoute, "0.0.0.0");
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("0.0.0.0"));
+  });
+});
+
+// A kill switch that is configured but not listening is worse than one that is absent: the operator
+// asked for it, the boot logs say nothing that stands out, and the bot trades believing `/halt` is
+// there. Binding is therefore part of starting, and a failure to bind fails the boot.
+describe("startControlServer — when it cannot bind", () => {
+  it("rejects rather than handing back a server that never listens", async () => {
+    // An address on no interface of this machine: EADDRNOTAVAIL, the ordinary container mistake of
+    // pointing RISK_CONTROL_HOST at an address that is not in this network namespace.
+    await expect(
+      startControlServer({ port: 0, host: "203.0.113.7", handle: haltRoute, logger })
+    ).rejects.toThrow(/could not bind 203\.0\.113\.7/);
+  });
+
+  // The failure has to say which setting produced it. A bare "listen failed" sends an operator
+  // looking at the bot before the two environment variables that actually caused it.
+  it("names the settings to fix and keeps the original error as its cause", async () => {
+    const error = await startControlServer({
+      port: 0,
+      host: "203.0.113.7",
+      handle: haltRoute,
+      logger,
+    }).then(
+      () => new Error("expected the bind to fail"),
+      (e: Error) => e
+    );
+
+    expect(error.message).toMatch(/RISK_CONTROL_HOST/);
+    expect(error.message).toMatch(/RISK_CONTROL_PORT/);
+    expect((error.cause as NodeJS.ErrnoException).code).toBeDefined();
+  });
+
+  // The one bind failure that was already fatal — it must stay fatal, and now as a rejection the
+  // caller can act on rather than a `process.exit` from inside a library.
+  it("rejects on an address already in use", async () => {
+    const first = await startControlServer({
+      port: 0,
+      host: "127.0.0.1",
+      handle: haltRoute,
+      logger,
+    });
+    servers.push(first);
+    const { port } = first.address() as AddressInfo;
+
+    await expect(
+      startControlServer({ port, host: "127.0.0.1", handle: haltRoute, logger })
+    ).rejects.toThrow(/EADDRINUSE/);
+  });
+
+  // The same event on a live server means a socket fault, not a missing kill switch. Exiting there
+  // would let anyone who can reach the port stop the bot with a connection reset.
+  it("logs, and keeps serving, an error raised after it is listening", async () => {
+    const base = await start(haltRoute);
+    const server = servers[servers.length - 1] as unknown as import("node:http").Server;
+
+    server.emit("error", Object.assign(new Error("ECONNRESET"), { code: "ECONNRESET" }));
+
+    expect(logger.warn).toHaveBeenCalledWith("[Control] Server error:", expect.any(Error));
+    expect((await fetch(`${base}/halt`, { method: "POST" })).status).toBe(200);
   });
 });

@@ -7,6 +7,7 @@
 export {
   addressSchema,
   addressListSchema,
+  bpsSchema,
   bytes32Schema,
   nonNegativeIntSchema,
   parseEnv,

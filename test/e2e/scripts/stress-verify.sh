@@ -223,6 +223,24 @@ if [[ -f .e2e-stress-report.json ]]; then
   esac
 fi
 
+# ── A16: a send refused because its claim was no longer its own ──────────────
+# Ids are reused, so a pre-broadcast record written against the wrong attempt would leave the
+# transaction it described with no row carrying its nonce — invisible to the fence, which walks the
+# store, and to the node, which never saw it under private submission. Neither A1 nor A5 can see
+# that: the orphan has no row to collide with and nothing is confirmed twice.
+#
+# The drive script makes one claim differ from the attempt its sender holds, so the only correct
+# behaviour is to abandon that send. The recovery half is asserted by A10 (every position still
+# liquidated) and A9 (nothing left in flight) — the guard must cost a cycle, not the subject.
+if [[ -f .e2e-stress-report.json ]]; then
+  revived="$(jq -r '.revivedAttempt // "skipped"' .e2e-stress-report.json)"
+  case "$revived" in
+    refused)   pass "A16 sender refused to broadcast against a claim it no longer owned" ;;
+    unguarded) flunk "A16 a claim was altered under its sender and the send went ahead — its nonce and hash would be recorded against another attempt" ;;
+    *)         printf "[SKIP] A16 revived-claim guard not exercised (%s)\n" "$revived" ;;
+  esac
+fi
+
 # ── A6/A7: fence + recovery, as observed by the drive script ─────────────────
 if [[ -f .e2e-stress-report.json ]]; then
   fence="$(jq -r .fence .e2e-stress-report.json)"

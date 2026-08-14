@@ -577,6 +577,56 @@ read -r W1_DONE W1_SECS <<< "$(wait_for_count "liquidations" liquidations_done "
 for _ in $(seq 1 30); do [[ "$(live_intents || echo 0)" == "0" ]] && break; sleep 1; done
 ok "wave #1 settled in ${W1_SECS}s (${W1_DONE}/${COHORT_A_N} liquidated, live intents: $(live_intents))"
 
+# ── 5c(i). arm: the next liquidation claim will differ from the attempt its sender holds ──
+# Intent ids identify a *subject*, not one try at it: a terminal row is revived in place for the next
+# attempt. Between claiming a subject and recording the signed nonce, the two engines poll
+# independently and `reconcile()` is not held under the nonce lock — so the other engine can resolve
+# this row and a later cycle re-claim it. The revived row is indistinguishable from the one the
+# sender claimed (same id, `pending`, nonce and hash both null), which is why the pre-broadcast
+# record is bound to the claim's `updated_at`.
+#
+# Racing for that window would be flaky — it is milliseconds wide when the RPC is healthy. The window
+# is not the point; the *state* it produces is, and Postgres can produce that on demand: a one-shot
+# trigger bumps `updated_at` on the next fresh liquidation claim, so the stored row differs from the
+# stamp its sender holds by exactly what a revival would have changed. The bot must then refuse to
+# broadcast — that transaction's nonce and hash would be recorded against an attempt that is not its
+# own, and under private submission nothing else can see it.
+#
+# Armed BEFORE the price drop that creates the work: cohort B is claimed within a poll or two of
+# becoming liquidatable, and a trigger installed after that has nothing left to catch.
+#
+# Runs in every variant, unlike the chaos phases. Under private submission an orphaned broadcast is
+# invisible to the node *and* to the fence that walks the store, which is the sharp end of this
+# guard — skipping it there would leave the worst case uncovered. Nothing here touches the chain, so
+# it composes with whatever else the variant is doing.
+#
+# One-shot through a marker row rather than by dropping the trigger inside its own firing — that
+# would take an ACCESS EXCLUSIVE lock on the table mid-transaction while the other engine is writing
+# to it. Every later claim goes through untouched, so the run still liquidates the whole cohort.
+REVIVED_RESULT="skipped"
+log "Phase 5c: arming — the next liquidation claim will not match the attempt its sender holds"
+ddl="$($PG "CREATE TABLE IF NOT EXISTS bot.e2e_revive_once (fired int NOT NULL);
+     DELETE FROM bot.e2e_revive_once;
+     INSERT INTO bot.e2e_revive_once VALUES (0);
+     CREATE OR REPLACE FUNCTION bot.e2e_revive_attempt() RETURNS trigger AS \$fn\$
+     BEGIN
+       IF NEW.status = 'pending' AND NEW.nonce IS NULL AND NEW.action = 'liquidation'
+          AND (SELECT fired FROM bot.e2e_revive_once) = 0 THEN
+         UPDATE bot.e2e_revive_once SET fired = 1;
+         NEW.updated_at := NEW.updated_at + 1;
+       END IF;
+       RETURN NEW;
+     END \$fn\$ LANGUAGE plpgsql;
+     DROP TRIGGER IF EXISTS e2e_revive_attempt ON bot.tx_intents;
+     CREATE TRIGGER e2e_revive_attempt BEFORE INSERT OR UPDATE ON bot.tx_intents
+       FOR EACH ROW EXECUTE FUNCTION bot.e2e_revive_attempt();" 2>&1)"
+# A fixture that fails to install must say so. Silently skipping would report "not exercised" and
+# look like a tolerable gap rather than a broken test.
+case "$ddl" in
+  *ERROR*) fail "phase 5c could not install its trigger: $ddl" ;;
+  *) ok "trigger armed" ;;
+esac
+
 # ── 5. wave #2 ───────────────────────────────────────────────────────────────
 log "Wave #2: price drop -35% (cohort B becomes liquidatable)"
 drop_price 35
@@ -587,6 +637,43 @@ ok "drop applied"
 # would read as "healthy", making a late check useless.
 cohort_check 2 || fail "cohort B not liquidatable after drop #2 — wave #2 has no work"
 ok "wave #2 has work"
+
+# ── 5c(ii). observe: the sender must refuse a claim it no longer owns ────────
+log "Phase 5c: waiting for the sender to refuse the altered claim"
+# Two clocks: the long one waits for a claim to happen at all, the short one starts once the
+# trigger has fired. A send that is going to be refused is refused within a cycle of the claim, so
+# once `fired` is set, continuing to wait the full budget only delays the verdict this exists to
+# report.
+fired=0; since_fired=0
+for _ in $(seq 1 90); do
+  if grep -q "no longer the attempt this send claimed" /tmp/arb-bot.log 2>/dev/null; then
+    REVIVED_RESULT="refused"; break
+  fi
+  [[ "$fired" == "1" ]] || fired="$(sql "SELECT fired FROM bot.e2e_revive_once;")"
+  if [[ "${fired:-0}" == "1" ]]; then
+    # `&& break` would abort the run under `set -e` on the iterations where it does not fire.
+    since_fired=$(( since_fired + 1 ))
+    if [[ "$since_fired" -ge 20 ]]; then break; fi
+  fi
+  sleep 1
+done
+
+# Always, whatever happened: a trigger left installed would refuse every later claim and the run
+# would fail for a reason that has nothing to do with what it tests.
+$PG "DROP TRIGGER IF EXISTS e2e_revive_attempt ON bot.tx_intents;
+     DROP FUNCTION IF EXISTS bot.e2e_revive_attempt();
+     DROP TABLE IF EXISTS bot.e2e_revive_once;" >/dev/null 2>&1
+
+if [[ "$REVIVED_RESULT" == "refused" ]]; then
+  ok "sender refused to broadcast against a claim it no longer owned"
+elif [[ "${fired:-0}" == "1" ]]; then
+  REVIVED_RESULT="unguarded"
+  printf "✗ a claim was altered under its sender and nothing refused the send\n" >&2
+else
+  REVIVED_RESULT="not-triggered"
+  printf "! no fresh liquidation claim occurred while armed; 5c not exercised\n" >&2
+fi
+
 
 # ── 5b. a competitor buys a vault out from under us (STRESS_ROUTER) ──────────
 # The other side of the same classification, and the one that must NOT report a spend.
@@ -831,6 +918,7 @@ cat > .e2e-stress-report.json <<EOF
   "competitorRaced": ${COMPETITOR_RACED:-0},
   "acqGapResult": "$ACQ_GAP_RESULT", "acqGapNonce": "${ACQ_GAP_NONCE:-}",
   "privateResult": "$PRIVATE_RESULT", "privateNonce": "${PRIVATE_NONCE:-}",
+  "revivedAttempt": "$REVIVED_RESULT",
   "acqGapStranded": ${ACQ_GAP_STRANDED:-0}, "arbHaltedLogs": ${ARB_HALTED_LOGS:-0},
   "cohortA": $COHORT_A_N, "cohortB": $COHORT_B_N, "positionsTotal": $LIQ_TOTAL_N,
   "liquidatedWave1": $W1_DONE, "liquidatedWave2": $W2_DONE,

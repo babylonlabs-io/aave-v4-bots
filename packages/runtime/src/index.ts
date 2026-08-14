@@ -130,6 +130,8 @@ function buildSubmission(
   const relay = createFlashbotsProtectSubmitter({
     rpcUrl: settings.rpcUrl,
     statusUrl: settings.statusUrl,
+    submitTimeoutMs: settings.submitTimeoutMs,
+    statusTimeoutMs: settings.statusTimeoutMs,
     onResult: metrics.recordSubmit,
   });
   const node = createChainReader(publicClient);

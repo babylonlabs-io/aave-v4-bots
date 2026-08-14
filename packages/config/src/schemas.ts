@@ -34,6 +34,23 @@ export const nonNegativeIntSchema = z
   .refine((v) => Number.parseInt(v, 10) >= 0, "must be a non-negative integer");
 
 /**
+ * A string that parses to a proportion in basis points — an integer in [0, 10000].
+ *
+ * Bounded at both ends because the values are used as `x * bps / 10_000`, where a figure above
+ * 10000 stops being a proportion: on a slippage ceiling it inflates the spend the bot will
+ * authorize without limit, and on a profit floor it underflows to zero. Both directions are the
+ * *permissive* one, and neither shows up as a wrong number anywhere — the transaction is simply
+ * signed against a bound nobody meant.
+ */
+export const bpsSchema = z
+  .string()
+  .regex(/^\d+$/, "must be a valid integer")
+  .refine(
+    (v) => Number.parseInt(v, 10) <= 10_000,
+    "must be at most 10000 (100%) — basis points, not a multiplier"
+  );
+
+/**
  * Comma-separated list of addresses → `string[]`. Empty entries are dropped; an
  * empty list parses to `[]`. Each remaining entry must be a valid address.
  */

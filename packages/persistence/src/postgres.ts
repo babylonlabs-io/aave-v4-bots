@@ -38,6 +38,32 @@ export interface PostgresStoreConfig extends PersistenceConfig {
   client?: PgClientLike;
 }
 
+/**
+ * Deadlines on the default pool, because a store write runs inside the nonce allocator's lock.
+ *
+ * `crashSafety`'s pre-broadcast `markPending` is awaited inside `withNonce`, so a query that never
+ * returns holds the per-signer lock and every later send and resync — from both engines — queues
+ * behind it. `pg` waits forever by default, and a black-holed TCP connection is the ordinary way to
+ * get there: nothing errors, the socket simply never answers.
+ *
+ * The three cover different halves of that and are deliberately ordered:
+ * - `connectionTimeoutMillis` bounds getting a connection at all.
+ * - `statement_timeout` is server-side. It bounds execution and lock waiting, and lets Postgres
+ *   clean up work whose client has walked away.
+ * - `query_timeout` is client-side and is the only one that helps when the server never answers.
+ *   It sits **above** `statement_timeout` on purpose: below it, the client would give up first and
+ *   the server-side budget would never apply to anything.
+ *
+ * Generous rather than tight. Every query here is a point read, a CAS update or an indexed scan, so
+ * these bound a fault, not normal contention — and a spurious failure inside `markPending` aborts
+ * the action before broadcast, which is safe but costs the opportunity.
+ */
+export const DEFAULT_POOL_TIMEOUTS = {
+  connectionTimeoutMillis: 5_000,
+  statement_timeout: 10_000,
+  query_timeout: 12_000,
+} as const;
+
 /** A Postgres identifier we interpolate (schema name) must be a plain, safe identifier. */
 const SCHEMA_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -102,7 +128,11 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
   const owner = `${schema}.execution_owner`;
 
   const client: PgClientLike =
-    config.client ?? (new pg.Pool({ connectionString: config.connectionString }) as PgClientLike);
+    config.client ??
+    (new pg.Pool({
+      connectionString: config.connectionString,
+      ...DEFAULT_POOL_TIMEOUTS,
+    }) as PgClientLike);
 
   // Lazy, once-only schema creation — memoized so every op can `await ready` cheaply.
   const initDdl = `CREATE SCHEMA IF NOT EXISTS ${schema};
@@ -206,7 +236,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
         payloadHash,
       ]
     );
-    if (res.rows.length > 0) return { recorded: true, id };
+    if (res.rows.length > 0) return { recorded: true, id, attemptAt: now };
 
     const existing = await client.query<IntentRow>(
       `SELECT ${INTENT_COLUMNS} FROM ${intents} WHERE id = $1`,
@@ -339,7 +369,8 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
            updated_at = $6
          WHERE id = $1
            AND ($7::text IS NULL OR tx_hash = $7)
-           AND ($8::text[] IS NULL OR status = ANY($8))`,
+           AND ($8::text[] IS NULL OR status = ANY($8))
+           AND ($10::bigint IS NULL OR updated_at = $10)`,
         [
           id,
           to,
@@ -350,6 +381,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
           expect?.txHash ?? null,
           expect?.status ? [...expect.status] : null,
           meta?.relayMaxBlock ?? null,
+          expect?.updatedAt ?? null,
         ]
       );
       return (res.rowCount ?? 0) > 0;

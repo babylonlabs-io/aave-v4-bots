@@ -1,11 +1,13 @@
 import type { NonceAllocator } from "@repo/execution";
 import type { Logger } from "@repo/logger";
-import type {
-  IntentInput,
-  IntentStatus,
-  StateStore,
-  TransitionMeta,
-  TxIntent,
+import {
+  type IntentInput,
+  type IntentStatus,
+  type StateStore,
+  type TransitionExpectation,
+  type TransitionMeta,
+  type TxIntent,
+  isSigned,
 } from "@repo/persistence";
 import type { Address, Hex } from "viem";
 
@@ -80,7 +82,13 @@ export interface CrashSafety {
    *
    * Without a store there is no idempotency to enforce: the claim succeeds with no intent id.
    */
-  claim(input: IntentInput): Promise<{ claimed: boolean; intentId?: string; existing?: TxIntent }>;
+  claim(input: IntentInput): Promise<{
+    claimed: boolean;
+    intentId?: string;
+    /** This attempt's version token — hand it to `markPending`. See `RecordResult.attemptAt`. */
+    attemptAt?: number;
+    existing?: TxIntent;
+  }>;
 
   /**
    * Persist the reserved `nonce` — and, when the tx was signed locally, its `txHash` — on an
@@ -89,9 +97,13 @@ export interface CrashSafety {
    * can only infer from the nonce, which is why senders sign first (see `TxSender`).
    *
    * Unlike `transition`, this deliberately **propagates** a failure: if we cannot record the
-   * nonce we must not broadcast against it. No-op without a store.
+   * nonce we must not broadcast against it. That includes the write being *refused*: `attemptAt`
+   * binds it to the attempt that was claimed, and a refusal means the row has since been resolved
+   * and revived as someone else's attempt. Broadcasting then would put this transaction on chain
+   * with its nonce and hash recorded against a different try — invisible to the nonce fence, which
+   * only fences rows carrying both. No-op without a store.
    */
-  markPending(id: string, nonce: number, txHash?: Hex): Promise<void>;
+  markPending(id: string, nonce: number, attemptAt: number, txHash?: Hex): Promise<void>;
 
   /**
    * Intent transition that must not throw — a bookkeeping failure is logged, never propagated
@@ -102,7 +114,7 @@ export interface CrashSafety {
     to: IntentStatus,
     meta?: TransitionMeta,
     /** Bind the write to the row the caller observed — see `StateStore.transition`. */
-    expect?: Parameters<StateStore["transition"]>[3]
+    expect?: TransitionExpectation
   ): Promise<void>;
 }
 
@@ -140,10 +152,7 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
     if (!store) return new Set();
 
     const live = await store.reconcile(); // every action — one signer, one nonce sequence
-    const candidates = live.filter(
-      (intent): intent is typeof intent & { nonce: number; txHash: Hex } =>
-        intent.nonce !== null && intent.txHash !== null
-    );
+    const candidates = live.filter(isSigned);
     // An intent with a nonce but no hash needs no fence: reconcile only leaves it live when
     // `pending > nonce`, so the chain's own count already sits above it.
     if (candidates.length === 0) return new Set();
@@ -220,12 +229,22 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
         logger.warn(`Skipping ${input.subject}: intent already ${record.existing.status}`);
         return { claimed: false, existing: record.existing };
       }
-      return { claimed: true, intentId: record.id };
+      return { claimed: true, intentId: record.id, attemptAt: record.attemptAt };
     },
 
-    async markPending(id, nonce, txHash) {
+    async markPending(id, nonce, attemptAt, txHash) {
       if (!store) return;
-      await store.transition(id, "pending", { nonce, ...(txHash ? { txHash } : {}) });
+      const applied = await store.transition(
+        id,
+        "pending",
+        { nonce, ...(txHash ? { txHash } : {}) },
+        { updatedAt: attemptAt }
+      );
+      if (!applied) {
+        throw new Error(
+          `intent ${id} is no longer the attempt this send claimed — refusing to broadcast at nonce ${nonce}. Another reconcile resolved it and the row was revived for a new attempt; this transaction's nonce and hash would be recorded against that one.`
+        );
+      }
     },
 
     async transition(id, to, meta, expect) {

@@ -22,7 +22,25 @@ export interface ControlServerConfig {
   logger: { info(msg: string): void; warn(msg: string, ...rest: unknown[]): void };
 }
 
-export function startControlServer(config: ControlServerConfig): Server {
+/**
+ * Start the kill switch, resolving only once it is actually listening.
+ *
+ * Asynchronous because "configured" has to mean "reachable". A bind that fails arrives on the
+ * `error` event *after* `listen` returns, so a synchronous start hands back a server that may never
+ * accept a connection — and the caller, having asked for a kill switch and received one, boots and
+ * trades. The operator's only warning would be the absence of one log line among the boot noise.
+ *
+ * So a pre-`listening` error rejects, and boot fails with it. That is the same stance the rest of
+ * the configuration takes: a safety control the operator asked for and cannot have is a reason not
+ * to start, not a reason to warn. `EADDRINUSE` is the common one, but `EACCES` (a privileged port
+ * as an unprivileged user) and `EADDRNOTAVAIL` (a host that is not on this machine — an ordinary
+ * container mistake) fail exactly as silently and matter exactly as much.
+ *
+ * After a successful bind the same event means something else entirely — a socket-level fault on a
+ * live server — and is logged, never fatal. Taking the process down there would let anyone who can
+ * reach the port stop the bot by resetting a connection.
+ */
+export function startControlServer(config: ControlServerConfig): Promise<Server> {
   const { port, host, handle, logger } = config;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -40,24 +58,35 @@ export function startControlServer(config: ControlServerConfig): Server {
     }
   });
 
-  server.listen(port, host, () => {
-    logger.info(`[Control] Kill switch listening on ${host}:${port}`);
-    for (const name of CONTROL_ROUTE_NAMES) logger.info(`[Control]   ${name}`);
-    if (host === "0.0.0.0") {
-      logger.warn(
-        "[Control] Bound to 0.0.0.0 — the kill switch is reachable from every network this " +
-          "process can see. Restrict it with RISK_CONTROL_HOST unless a network policy covers it."
+  return new Promise<Server>((resolve, reject) => {
+    let bound = false;
+
+    server.listen(port, host, () => {
+      bound = true;
+      logger.info(`[Control] Kill switch listening on ${host}:${port}`);
+      for (const name of CONTROL_ROUTE_NAMES) logger.info(`[Control]   ${name}`);
+      if (host === "0.0.0.0") {
+        logger.warn(
+          "[Control] Bound to 0.0.0.0 — the kill switch is reachable from every network this " +
+            "process can see. Restrict it with RISK_CONTROL_HOST unless a network policy covers it."
+        );
+      }
+      resolve(server);
+    });
+
+    server.on("error", (error: NodeJS.ErrnoException) => {
+      if (bound) {
+        // A live server's socket fault. Log it: the switch is still listening, and exiting here
+        // would hand anyone who can reach the port a way to stop the bot with a connection reset.
+        logger.warn("[Control] Server error:", error);
+        return;
+      }
+      reject(
+        new Error(
+          `the kill switch could not bind ${host}:${port} (${error.code ?? error.message}) — refusing to trade without the control endpoint RISK_CONTROL_TOKEN_REF asked for. Check RISK_CONTROL_HOST is an address on this machine and RISK_CONTROL_PORT is free and unprivileged.`,
+          { cause: error }
+        )
       );
-    }
+    });
   });
-
-  server.on("error", (error: NodeJS.ErrnoException) => {
-    if (error.code === "EADDRINUSE") {
-      logger.warn(`[Control] Failed to bind ${host}:${port}: address already in use.`);
-      process.exit(1);
-    }
-    logger.warn("[Control] Server error:", error);
-  });
-
-  return server;
 }

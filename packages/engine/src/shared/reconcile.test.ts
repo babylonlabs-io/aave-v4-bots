@@ -49,6 +49,9 @@ function reader(over: {
   pending?: number;
   known?: boolean;
   head?: number;
+  /** What a scan of the Safe's own logs for this SafeTx turns up. */
+  found?: { txHash: Hex; success: boolean } | null;
+  scanThrows?: boolean;
 }): ChainReader {
   return {
     async getReceiptStatus(hash) {
@@ -65,6 +68,10 @@ function reader(over: {
     },
     async getSafeExecution(txHash) {
       return over.safeExec?.[txHash] ?? null;
+    },
+    async findSafeExecution() {
+      if (over.scanThrows) throw new Error("query returned more than 10000 results");
+      return over.found ?? null;
     },
   };
 }
@@ -396,6 +403,172 @@ describe("reconcilePending — Safe custody (resolves by the Execution event, no
     expect(store.get(id)?.status).toBe("submitted");
   });
 
+  // A SafeTx's calldata carries its owner signatures, so the transaction that executes it need not
+  // be the one we recorded — a replacement the operator sent, or anyone who copied the calldata.
+  // Judging only by the recorded hash then reads a landed action as pending forever (MANUAL intents
+  // carry no nonce, so nothing else will ever release the subject) or as failed.
+  describe("when the SafeTx executed in a different transaction", () => {
+    const ELSEWHERE = "0xe15ewhere" as Hex;
+    /** A clock past the grace window, so the recorded hash's absence is old enough to mean something. */
+    const AGED = { now: () => Date.now() + 60_000, graceMs: 1_000 };
+
+    it("confirms from the Safe's own logs when the recorded tx never mined", async () => {
+      const store = createMemoryStateStore();
+      const id = await submittedSafeIntent(store);
+
+      const summary = await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: reader({ found: { txHash: ELSEWHERE, success: true } }),
+        ...AGED,
+      });
+
+      expect(summary).toMatchObject({ confirmed: 1, stillInFlight: 0 });
+      expect(store.get(id)?.status).toBe("confirmed");
+    });
+
+    // The whole point of recording it: the hash on the row has to be the one an operator can look
+    // up, not one that was never mined.
+    it("records the transaction that actually carried it", async () => {
+      const store = createMemoryStateStore();
+      const id = await submittedSafeIntent(store);
+
+      await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: reader({ found: { txHash: ELSEWHERE, success: true } }),
+        ...AGED,
+      });
+
+      expect(store.get(id)?.txHash).toBe(ELSEWHERE);
+    });
+
+    // A recorded tx that reverted is what losing a duplicate looks like: the winner spent the Safe
+    // nonce, so ours could not execute. The action still happened.
+    it("confirms when the recorded tx reverted but the SafeTx landed elsewhere", async () => {
+      const store = createMemoryStateStore();
+      const id = await submittedSafeIntent(store);
+
+      const summary = await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: reader({
+          safeExec: { [EXEC_TX]: "reverted" },
+          found: { txHash: ELSEWHERE, success: true },
+        }),
+      });
+
+      expect(summary).toMatchObject({ confirmed: 1, failed: 0 });
+      expect(store.get(id)?.txHash).toBe(ELSEWHERE);
+    });
+
+    it("fails when the scan finds the SafeTx executed and its inner call reverted", async () => {
+      const store = createMemoryStateStore();
+      const id = await submittedSafeIntent(store);
+
+      const summary = await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: reader({ found: { txHash: ELSEWHERE, success: false } }),
+        ...AGED,
+      });
+
+      expect(summary).toMatchObject({ failed: 1, confirmed: 0 });
+      expect(store.get(id)?.status).toBe("failed");
+    });
+
+    // An absence this young means nothing — the recorded transaction is simply not mined yet — and
+    // scanning on every cycle from the moment of broadcast is a growing `eth_getLogs` for nothing.
+    it("waits out the grace window before asking", async () => {
+      const store = createMemoryStateStore();
+      const findSafeExecution = vi.fn(async () => null);
+
+      await submittedSafeIntent(store);
+      await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: { ...reader({}), findSafeExecution },
+        now: () => Date.now(),
+      });
+
+      expect(findSafeExecution).not.toHaveBeenCalled();
+    });
+
+    it("leaves the intent in flight when the SafeTx is genuinely nowhere", async () => {
+      const store = createMemoryStateStore();
+      const id = await submittedSafeIntent(store);
+
+      const summary = await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: reader({ found: null }),
+        ...AGED,
+      });
+
+      expect(summary).toMatchObject({ stillInFlight: 1, confirmed: 0, failed: 0 });
+      expect(store.get(id)?.status).toBe("submitted");
+    });
+
+    // The scan's range grows with the intent's age, so a provider's log-range cap is a matter of
+    // time. It must cost this intent its answer for one cycle, not take the whole pass down with it
+    // — every other in-flight intent still needs resolving.
+    it("survives a scan the provider refuses", async () => {
+      const store = createMemoryStateStore();
+      const id = await submittedSafeIntent(store);
+
+      const summary = await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: reader({ scanThrows: true }),
+        ...AGED,
+      });
+
+      expect(summary).toMatchObject({ stillInFlight: 1 });
+      expect(store.get(id)?.status).toBe("submitted");
+    });
+
+    // `no-event` means the recorded tx mined and carried no Execution event for this SafeTx — so the
+    // hash on the row is not the transaction we think it is. Resolving that from a scan would paper
+    // over a mis-recorded hash with an unrelated execution; it stays anomalous.
+    it("does not paper over a mined tx that carries no Execution event", async () => {
+      const store = createMemoryStateStore();
+      const findSafeExecution = vi.fn(async () => ({ txHash: ELSEWHERE, success: true }));
+
+      const id = await submittedSafeIntent(store);
+      const summary = await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: { ...reader({ safeExec: { [EXEC_TX]: "no-event" } }), findSafeExecution },
+      });
+
+      expect(summary).toMatchObject({ failed: 1, confirmed: 0 });
+      expect(store.get(id)?.txHash).toBe(EXEC_TX);
+      expect(findSafeExecution).not.toHaveBeenCalled();
+    });
+  });
+
+  // An envelope alone does not make an intent judgeable by the Safe resolver: with no recorded
+  // outer hash there is nothing to fetch a receipt for. It belongs to the hashless path, which
+  // reasons from the reserved nonce instead.
+  it("routes an envelope with no recorded hash away from the Safe resolver", async () => {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.propose(input("p"), proposedTx, HASH);
+    await store.claimProposal(id, HASH, safeEnvelope);
+    await store.transition(id, "submitted", {});
+    const getSafeExecution = vi.fn(async () => null);
+
+    await reconcilePending({
+      store,
+      signer: SAFE,
+      reader: { ...reader({}), getSafeExecution },
+      now: () => Date.now() + 60_000,
+    });
+
+    expect(getSafeExecution).not.toHaveBeenCalled();
+    expect(store.get(id)?.status).toBe("failed");
+  });
+
   it("never reads the signer nonce for a Safe intent (nonce is null)", async () => {
     const store = createMemoryStateStore();
     await submittedSafeIntent(store);
@@ -408,6 +581,196 @@ describe("reconcilePending — Safe custody (resolves by the Execution event, no
     });
 
     expect(getNonce).not.toHaveBeenCalled();
+  });
+});
+
+// MANUAL + `eoa`: the operator broadcasts from their own wallet, so `markBroadcast` records a hash
+// and no nonce. Every branch below the receipt check reasons from the *bot's* nonce sequence, which
+// says nothing about a transaction the bot never signed.
+describe("an operator-broadcast intent with no nonce of ours", () => {
+  const payloadHash = `0x${"a".repeat(64)}` as Hex;
+  const tx = { chainId: 31337, to: TARGET, data: "0x" as Hex, value: "0" };
+
+  const operatorBroadcast = async (store: ReturnType<typeof createMemoryStateStore>) => {
+    const id = idempotencyKey(input("p"));
+    await store.propose(input("p"), tx, payloadHash);
+    await store.claimProposal(id, payloadHash);
+    await store.markBroadcast(id, "0xopertx" as Hex, payloadHash);
+    return id;
+  };
+
+  it("is not read as dropped just because our own nonce has moved on", async () => {
+    const store = createMemoryStateStore();
+    const id = await operatorBroadcast(store);
+
+    const summary = await reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: reader({ latest: 9, pending: 9 }),
+    });
+
+    expect(summary).toMatchObject({ stillInFlight: 1, failed: 0 });
+    expect(store.get(id)?.status).toBe("submitted");
+  });
+
+  // The nonce counts are only read when some intent carries one, so the branch above is reachable
+  // exactly when a bot has both kinds in flight — a deployment switched between AUTO and MANUAL
+  // with the previous mode's intents still unresolved.
+  it("is not read as dropped even when a signed intent is in flight beside it", async () => {
+    const store = createMemoryStateStore();
+    const operatorId = await operatorBroadcast(store);
+    const signed = { ...input("pos-2"), action: "liquidation" };
+    await store.recordIntent(signed);
+    await store.transition(idempotencyKey(signed), "submitted", {
+      nonce: 4,
+      txHash: "0xsigned" as Hex,
+    });
+
+    await reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: reader({ latest: 9, pending: 9 }),
+    });
+
+    expect(store.get(operatorId)?.status).toBe("submitted");
+  });
+
+  it("still resolves from its receipt", async () => {
+    const store = createMemoryStateStore();
+    const id = await operatorBroadcast(store);
+
+    await reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: reader({ receipts: { "0xopertx": "success" }, latest: 9, pending: 9 }),
+    });
+
+    expect(store.get(id)?.status).toBe("confirmed");
+  });
+});
+
+// `updatedAt` comes from whichever process wrote the row — this bot, a previous run on another
+// host, or operator-cli on a laptop — so a row can be stamped ahead of the clock reading it. Every
+// guard here asks whether an age is *small*, and a future stamp makes it negative, so the row sits
+// inside a grace window until real time catches up while its subject stays blocked.
+describe("a row stamped ahead of this process's clock", () => {
+  const pendingUnsent = async (store: ReturnType<typeof createMemoryStateStore>) => {
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    await store.transition(id, "pending", {});
+    return id;
+  };
+
+  const warnings = () => {
+    const lines: string[] = [];
+    return { logger: { info: () => {}, warn: (m: string) => lines.push(m) }, lines };
+  };
+
+  it("says so, naming the intent and how far ahead it is", async () => {
+    const store = createMemoryStateStore();
+    await pendingUnsent(store);
+    const { logger, lines } = warnings();
+
+    await reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: reader({}),
+      logger,
+      now: () => Date.now() - 10 * 60_000, // the row was written by a clock 10 minutes ahead
+    });
+
+    expect(lines.some((l) => l.includes("600s in the future"))).toBe(true);
+  });
+
+  // Two clocks tens of seconds apart are ordinary — operator-cli stamps rows from whatever laptop
+  // it runs on — and a lead of the same order as the grace window can only hold a row for about as
+  // long as the window was going to anyway. Waking someone for that trains them to ignore it.
+  it("stays quiet about a lead too small to distort anything", async () => {
+    const store = createMemoryStateStore();
+    await pendingUnsent(store);
+    const { logger, lines } = warnings();
+
+    await reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: reader({}),
+      logger,
+      now: () => Date.now() - 45_000,
+    });
+
+    expect(lines.filter((l) => l.includes("in the future"))).toEqual([]);
+  });
+
+  // The contract of this guard: it reports, it does not decide. Which answer a disagreeing clock
+  // deserves is genuinely unknown, so the row must resolve exactly as it would have without it.
+  it("changes nothing about how the row resolves", async () => {
+    const skewed = createMemoryStateStore();
+    const normal = createMemoryStateStore();
+    const id = await pendingUnsent(skewed);
+    await pendingUnsent(normal);
+    const aged = Date.now() + UNKNOWN_TX_GRACE_MS + 1;
+
+    // Same row, same age past the grace window — one stamped by a clock far ahead, one not.
+    const skewedSummary = await reconcilePending({
+      store: skewed,
+      signer: SIGNER,
+      reader: reader({}),
+      now: () => aged - 10 * 60_000,
+    });
+    const normalSummary = await reconcilePending({
+      store: normal,
+      signer: SIGNER,
+      reader: reader({}),
+      now: () => aged,
+    });
+
+    // Held live — the row is left untouched, which is the whole cost of the skew.
+    expect(skewed.get(id)?.status).toBe("pending");
+    expect(normal.get(id)?.status).toBe("failed");
+    expect(skewedSummary).toMatchObject({ stillInFlight: 1 });
+    expect(normalSummary).toMatchObject({ failed: 1 });
+  });
+});
+
+// Ids identify a subject, not a try at it: a terminal row is revived in place for the next attempt.
+// Two engines poll independently in the dual-engine service and `reconcile()` is not taken under the
+// nonce lock, so a pass can decide against a row that is re-claimed before it writes — and a revived
+// row is indistinguishable from the one it read, both `pending` with a null nonce and hash.
+describe("a resolution racing a revived attempt", () => {
+  it("does not land on the attempt that replaced the one it read", async () => {
+    let clock = 1_700_000_000_000;
+    const store = createMemoryStateStore(() => {
+      clock += 1_000;
+      return clock;
+    });
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    await store.transition(id, "pending", {});
+
+    // The pass reads the row, and between that read and its write another engine resolves it and a
+    // new cycle claims the subject again.
+    const racing = {
+      ...store,
+      reconcile: async () => {
+        const rows = await store.reconcile();
+        await store.transition(id, "failed", { error: "resolved by the other engine" });
+        await store.recordIntent(input("p"));
+        return rows;
+      },
+    };
+
+    const summary = await reconcilePending({
+      store: racing,
+      signer: SIGNER,
+      reader: reader({}),
+      now: () => clock + UNKNOWN_TX_GRACE_MS + 1,
+    });
+
+    // The pass still decided `failed` — it had no way to know — but the write found a row it had
+    // never seen and was refused. The revived attempt keeps its own state.
+    expect(summary).toMatchObject({ failed: 1 });
+    expect(store.get(id)?.status).toBe("pending");
+    expect(store.get(id)?.error).toBeNull();
   });
 });
 
@@ -429,6 +792,7 @@ describe("reconcilePending under a chain outage", () => {
       getNonce: async (_a, tag) => (tag === "latest" ? 9 : 9), // chain has moved well past nonce 5
       getBlockNumber: async () => 0,
       getSafeExecution: async () => null,
+      findSafeExecution: async () => null,
       isKnown: async () => true,
     };
 
@@ -481,6 +845,36 @@ describe("createChainReader", () => {
     expect(await chain.getReceiptStatus("0xhash")).toBe("reverted");
     expect(await chain.getNonce(SIGNER, "pending")).toBe(42);
     expect(tags).toEqual(["pending"]);
+  });
+
+  // The resolver's scan is only as good as this wiring: it hands the port a `claimBlock` number and
+  // the query wants a bigint anchor, and a transposed argument or a lost conversion would make the
+  // scan look for the right thing in the wrong place — and answer "never executed" for something
+  // that did.
+  it("scans the Safe for a SafeTx from its claim block", async () => {
+    const safe = "0x3333333333333333333333333333333333333333" as Address;
+    const safeTxHash = `0x${"e".repeat(64)}` as Hex;
+    const found = `0x${"b".repeat(64)}` as Hex;
+    const seen: Array<{ address: Address; fromBlock: bigint }> = [];
+    const publicClient = {
+      getBlockNumber: async () => 500n,
+      getLogs: async (args: { address: Address; fromBlock: bigint }) => {
+        seen.push(args);
+        return [
+          { eventName: "ExecutionSuccess", args: { txHash: safeTxHash }, transactionHash: found },
+        ];
+      },
+    } as unknown as PublicClient;
+
+    const result = await createChainReader(publicClient).findSafeExecution(safe, safeTxHash, 400);
+
+    expect(result).toEqual({ txHash: found, success: true });
+    expect(seen[0].address).toBe(safe);
+    // The claim block less the query's reorg margin — a number in, a bigint out. The margin's own
+    // value is `findSafeExecutionByHash`'s business and is tested there; what matters here is that
+    // the anchor arrived as a block height at all, rather than as `0n` or `NaN`.
+    expect(seen[0].fromBlock).toBeLessThan(400n);
+    expect(seen[0].fromBlock).toBeGreaterThan(300n);
   });
 
   describe("isKnown", () => {

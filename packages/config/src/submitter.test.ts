@@ -10,6 +10,8 @@ const env = (overrides: Partial<SubmitterEnv> = {}): SubmitterEnv => ({
   FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
   PRIVATE_RELAY_HORIZON_BLOCKS: "25",
   PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
+  PRIVATE_SUBMIT_TIMEOUT_MS: "8000",
+  PRIVATE_STATUS_TIMEOUT_MS: "2000",
   ...overrides,
 });
 
@@ -69,6 +71,26 @@ describe("buildSubmitterConfig", () => {
       minPriorityFeeWei: 2_000_000_000n,
       relayHorizonBlocks: 25,
       reclaimMarginBlocks: 3,
+      submitTimeoutMs: 8_000,
+      statusTimeoutMs: 2_000,
+    });
+  });
+
+  it("takes the operator's deadlines when they set them", () => {
+    expect(
+      buildSubmitterConfig(
+        privateEnv({ PRIVATE_SUBMIT_TIMEOUT_MS: "4000", PRIVATE_STATUS_TIMEOUT_MS: "500" })
+      )
+    ).toMatchObject({ submitTimeoutMs: 4_000, statusTimeoutMs: 500 });
+  });
+
+  // The deadlines carry defaults, so they are always present in the env — unlike the URL and the
+  // fee floor, whose presence is what proves the operator meant to submit privately. Listing them
+  // as relay-only would make every public deployment fail to boot.
+  it("does not read its own defaulted deadlines as a misconfigured public setup", () => {
+    expect(buildSubmitterConfig(env())).toEqual({ mode: "public" });
+    expect(buildSubmitterConfig(env({ PRIVATE_SUBMIT_TIMEOUT_MS: "4000" }))).toEqual({
+      mode: "public",
     });
   });
 
@@ -101,6 +123,8 @@ describe("submission is an AUTO-only decision", () => {
       FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
       PRIVATE_RELAY_HORIZON_BLOCKS: "25",
       PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
+      PRIVATE_SUBMIT_TIMEOUT_MS: "8000",
+      PRIVATE_STATUS_TIMEOUT_MS: "2000",
       ...overrides,
     }) as Parameters<typeof buildExecutionConfig>[0];
 

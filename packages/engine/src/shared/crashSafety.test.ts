@@ -71,7 +71,7 @@ describe("createCrashSafety", () => {
     it("markPending propagates a store failure", async () => {
       const store = createMemoryStateStore();
       vi.spyOn(store, "transition").mockRejectedValueOnce(new Error("db down"));
-      await expect(crash({ store }).markPending("id", 4)).rejects.toThrow("db down");
+      await expect(crash({ store }).markPending("id", 4, 1)).rejects.toThrow("db down");
     });
 
     // Post-broadcast: the tx is on chain. A bookkeeping failure is logged; reconcile fixes drift.
@@ -85,7 +85,7 @@ describe("createCrashSafety", () => {
     });
 
     it("both no-op without a store", async () => {
-      await expect(crash().markPending("id", 4)).resolves.toBeUndefined();
+      await expect(crash().markPending("id", 4, 1)).resolves.toBeUndefined();
       await expect(crash().transition("id", "confirmed")).resolves.toBeUndefined();
     });
   });
@@ -95,7 +95,12 @@ describe("createCrashSafety", () => {
       const store = createMemoryStateStore();
       const result = await crash({ store }).claim(input("p"));
 
-      expect(result).toEqual({ claimed: true, intentId: idempotencyKey(input("p")) });
+      expect(result).toEqual({
+        claimed: true,
+        intentId: idempotencyKey(input("p")),
+        // The version token that tells this attempt from the next revival of the same id.
+        attemptAt: expect.any(Number),
+      });
     });
 
     // Claim does NOT settle the slot — settling exposure is the engine's job on every path. On
@@ -179,6 +184,46 @@ describe("createCrashSafety", () => {
       await cs.resyncNonces();
       return nonces.withNonce(async (n) => n);
     }
+
+    // The fence's input filter. Both halves matter and neither is decorative: an intent with no
+    // hash was never broadcast, so nothing on the wire holds its nonce; an intent with no nonce of
+    // ours (a MANUAL action the operator broadcast from their own wallet) never occupied our
+    // sequence at all, and reading `null` as a nonce would pin the lease at 1.
+    it("fences only intents that hold one of our nonces", async () => {
+      const store = createMemoryStateStore();
+      const hashOnly = { ...input("pos-operator"), action: "liquidation" };
+      const nonceOnly = { ...input("pos-unsent"), action: "liquidation" };
+      await store.recordIntent(hashOnly);
+      await store.recordIntent(nonceOnly);
+      // An operator-broadcast intent: a hash, but none of our nonces.
+      await store.transition(idempotencyKey(hashOnly), "submitted", { txHash: HASH });
+      // Reserved and recorded, but the send never got as far as a hash.
+      await store.transition(idempotencyKey(nonceOnly), "submitted", { nonce: 7 });
+
+      const nonces = createNonceAllocator(createNonceLease(), SIGNER);
+      const cs = createCrashSafety({
+        store,
+        nonces,
+        // A node that knows every transaction it is asked about, and a signer that has sent none:
+        // both intents would read as live if they were fenced at all, and the empty sequence is
+        // what makes either one's floor visible.
+        reader: createChainReader({
+          getTransactionCount: vi.fn(async () => 0),
+          getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => ({ hash })),
+        } as unknown as PublicClient),
+        signer: SIGNER,
+        logger: silentLogger,
+        now: () => Date.now() + UNKNOWN_TX_GRACE_MS + 1,
+      });
+      await cs.resyncNonces();
+
+      // Neither raises a floor: the operator's hash holds no nonce of ours, and an unbroadcast
+      // nonce has nothing on the wire to protect. Two nonces rather than one because a lease pushed
+      // above the chain also reports the gap it left as a reclaimable hole, so the first hand-out
+      // can be that hole — the second is where the lease actually sits.
+      expect(await nonces.withNonce(async (n) => n)).toBe(0);
+      expect(await nonces.withNonce(async (n) => n)).toBe(1);
+    });
 
     it("does NOT rewind onto a live tx the node knows about", async () => {
       // The dangerous case: our tx is in the mempool at nonce 5, but this provider still reports

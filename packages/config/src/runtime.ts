@@ -53,6 +53,15 @@ export const runtimeEnvFields = {
   PRIVATE_RELAY_HORIZON_BLOCKS: positiveIntSchema.optional().default("25"),
   /** Blocks past a transaction's horizon before its nonce may be reclaimed — reorg headroom. */
   PRIVATE_RECLAIM_MARGIN_BLOCKS: positiveIntSchema.optional().default("3"),
+  /**
+   * How long a submit to the relay may take before it is abandoned as ambiguous.
+   *
+   * Lower it if you run a faster loop than the default `POLLING_INTERVAL_MS`: the submit is awaited
+   * under the nonce lock, so it has to finish inside a cycle with room to spare for the rest of it.
+   */
+  PRIVATE_SUBMIT_TIMEOUT_MS: positiveIntSchema.optional().default("8000"),
+  /** How long a relay status probe may take before it is treated as a failed probe. */
+  PRIVATE_STATUS_TIMEOUT_MS: positiveIntSchema.optional().default("2000"),
 
   /** Enables the Postgres StateStore. Unset ⇒ no persistence (in-memory nonce sequencing). */
   DATABASE_URL: z.string().min(1).optional(),
@@ -186,6 +195,8 @@ export interface SubmitterEnv {
   PRIVATE_MIN_PRIORITY_FEE_WEI?: string;
   PRIVATE_RELAY_HORIZON_BLOCKS: string;
   PRIVATE_RECLAIM_MARGIN_BLOCKS: string;
+  PRIVATE_SUBMIT_TIMEOUT_MS: string;
+  PRIVATE_STATUS_TIMEOUT_MS: string;
   DATABASE_URL?: string;
 }
 
@@ -212,6 +223,13 @@ export type SubmitterSettings =
       relayHorizonBlocks: number;
       /** Reorg headroom past a transaction's horizon before its nonce may be reclaimed. */
       reclaimMarginBlocks: number;
+      /**
+       * Deadline for a submit. It is awaited under the nonce allocator's lock, so an unbounded one
+       * does not merely lose a transaction — it stops every later send and resync in the process.
+       */
+      submitTimeoutMs: number;
+      /** Deadline for a status probe. A probe that fails fences the nonce, so failing fast is safe. */
+      statusTimeoutMs: number;
     };
 
 /**
@@ -266,6 +284,8 @@ export function buildSubmitterConfig(env: SubmitterEnv): SubmitterSettings {
     minPriorityFeeWei: BigInt(env.PRIVATE_MIN_PRIORITY_FEE_WEI as string),
     relayHorizonBlocks: Number.parseInt(env.PRIVATE_RELAY_HORIZON_BLOCKS, 10),
     reclaimMarginBlocks: Number.parseInt(env.PRIVATE_RECLAIM_MARGIN_BLOCKS, 10),
+    submitTimeoutMs: Number.parseInt(env.PRIVATE_SUBMIT_TIMEOUT_MS, 10),
+    statusTimeoutMs: Number.parseInt(env.PRIVATE_STATUS_TIMEOUT_MS, 10),
   };
 }
 
