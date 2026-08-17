@@ -29,7 +29,11 @@ export async function resolveControlToken(
   if (!tokenRef) return undefined;
   const token = await getSecret(tokenRef);
   // Fail closed: a blank token would authenticate every request.
-  if (!token) throw new Error(`[risk] control secret "${tokenRef}" resolved to an empty token`);
+  // The ref is deliberately not echoed. A ref that is really the secret is refused by the provider
+  // before it gets here, but that is the *caller's* provider — and this package takes `getSecret` as
+  // a port, so it cannot assume one that validates. Naming the setting is enough to act on, and
+  // `@repo/risk` has no dependencies to borrow a redaction helper from.
+  if (!token) throw new Error("[risk] RISK_CONTROL_TOKEN_REF resolved to an empty token");
   return token;
 }
 

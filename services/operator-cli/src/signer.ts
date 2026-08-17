@@ -79,28 +79,71 @@ export function createSafeOperatorSigner(deps: {
   chain: Chain;
   transport: Transport;
   chainId: number;
-  safeVersion: string;
 }): OperatorSigner {
   return {
     address: deps.safe,
 
     async buildEnvelope(inner) {
-      // Read the nonce (reserved for this SafeTx) and the current block (bounds `release`'s later
-      // "did our SafeTx execute?" log scan) together — both fix claim-time chain state.
-      const [safeNonce, claimBlock] = await Promise.all([
+      // Read the nonce (reserved for this SafeTx), the current block (bounds `release`'s later
+      // "did our SafeTx execute?" log scan) and the Safe's own version together — all three fix
+      // claim-time chain state.
+      const [safeNonce, claimBlock, safeVersion] = await Promise.all([
         deps.publicClient.readContract({ address: deps.safe, abi: safeAbi, functionName: "nonce" }),
         deps.publicClient.getBlockNumber(),
+        // Recorded for whoever reads this proposal later, never trusted for anything: the hash
+        // check below is what actually establishes compatibility, and a contract free to report
+        // any version is free to report a compatible one.
+        deps.publicClient
+          .readContract({ address: deps.safe, abi: safeAbi, functionName: "VERSION" })
+          .catch(() => "unknown"),
       ]);
-      return {
-        ...buildSafeExecution({
-          inner,
-          safe: deps.safe,
-          chainId: deps.chainId,
-          safeNonce: Number(safeNonce),
-          safeVersion: deps.safeVersion,
-        }),
-        claimBlock: Number(claimBlock),
-      };
+      const execution = buildSafeExecution({
+        inner,
+        safe: deps.safe,
+        chainId: deps.chainId,
+        safeNonce: Number(safeNonce),
+        safeVersion,
+      });
+
+      // Ask the Safe for the hash we just computed for it.
+      //
+      // `computeSafeTxHash` builds the v1.3.0+ EIP-712 domain — `{ chainId, verifyingContract }`.
+      // A Safe older than that leaves `chainId` out of its domain entirely and therefore hashes the
+      // same transaction differently, and nothing in the custody checks would notice: it has code,
+      // it answers `getThreshold` and `nonce`, it just disagrees about what the owners are signing.
+      //
+      // The consequence is not a failed broadcast — that direction is safe, the signatures simply
+      // do not verify. It is an execution through the Safe UI, which uses the contract's hash: the
+      // action lands, and every later "did this already execute?" scan looks for a hash that no
+      // event will ever carry. `release` then frees the claim and the same fund-moving action can
+      // be proposed and executed a second time.
+      //
+      // Asked rather than inferred from `VERSION`, because the contract's answer is the thing we
+      // actually depend on, and a version string is a claim about it.
+      const onChain = await deps.publicClient.readContract({
+        address: deps.safe,
+        abi: safeAbi,
+        functionName: "getTransactionHash",
+        args: [
+          inner.to,
+          BigInt(inner.value),
+          inner.data,
+          execution.operation,
+          BigInt(execution.safeTxGas),
+          BigInt(execution.baseGas),
+          BigInt(execution.gasPrice),
+          execution.gasToken,
+          execution.refundReceiver,
+          BigInt(execution.safeNonce),
+        ],
+      });
+      if (onChain.toLowerCase() !== execution.safeTxHash.toLowerCase()) {
+        throw new Error(
+          `${deps.safe} hashes this SafeTx as ${onChain}, not ${execution.safeTxHash} (reported version ${safeVersion}). This bot signs the v1.3.0+ EIP-712 domain; a Safe older than that hashes differently, and an envelope recorded under the wrong hash cannot be found again on chain — which is what stops the same action executing twice. Point MANUAL_EXECUTOR_ADDRESS at a Safe v1.3.0 or later.`
+        );
+      }
+
+      return { ...execution, claimBlock: Number(claimBlock) };
     },
 
     async send(inner, envelope) {

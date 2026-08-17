@@ -90,6 +90,13 @@ contract LiquidationRouter is VenueManager {
     ///        order matters: venues are set up and drawn in this order, and repaid in reverse as the callbacks unwind.
     /// @param swapDatas Dex-aggregator calls executed at the innermost frame to swap the seized WBTC back into the
     ///        borrowed tokens. Built off-chain, typically from a `MIN_PROFIT_REVERT_TAG` simulation.
+    ///
+    ///        Each entry is executed as-is, with this contract as `msg.sender` and an unlimited WBTC allowance
+    ///        granted to its target — so whoever chooses the pair chooses what this router does with its own
+    ///        balances. A target that is a token turns the calldata into a `transfer` or `approve` made by the
+    ///        router, and `minWbtcProfit` does not bound that: it bounds what the liquidation nets, not what the
+    ///        call may do. The trust boundary is the source of this calldata, not only the `auth` address passing
+    ///        it in. See `SPEC.md`, "Phase 3".
     /// @return wbtcProfit The WBTC this liquidation earned, once every flash venue has been repaid.
     function liquidate(
         Types.LiquidationData memory liquidationData,
@@ -162,6 +169,10 @@ contract LiquidationRouter is VenueManager {
             revert BelovedError(IERC20(wbtc).balanceOf(address(this)), _getAllDebts());
         }
 
+        // Unvalidated by design: the caller supplies both the target and its calldata, and this executes them with
+        // the router as `msg.sender`. The revoke below clears the allowance granted here and nothing else — an
+        // approval the calldata caused the router to make belongs to a different (token, spender) pair and outlives
+        // this transaction. See the `swapDatas` param docs.
         for (uint256 i = 0; i < iteration.swapDatas.length; i++) {
             IERC20(wbtc).forceApprove(iteration.swapDatas[i].dexAggRouter, type(uint256).max);
             (bool success, bytes memory err) = iteration.swapDatas[i].dexAggRouter.call(iteration.swapDatas[i].callData);

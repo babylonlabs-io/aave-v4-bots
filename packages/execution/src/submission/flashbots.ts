@@ -39,6 +39,75 @@ export interface RelayTxStatus {
   seenInMempool: boolean;
 }
 
+/** The statuses Protect answers with. Anything else is not a status we can act on. */
+const RELAY_STATUSES = ["PENDING", "INCLUDED", "FAILED", "CANCELLED", "UNKNOWN"] as const;
+
+/** How much of a relay-supplied `simError` is worth keeping. It ends up in logs. */
+const SIM_ERROR_MAX_CHARS = 300;
+
+/**
+ * Turn the status endpoint's JSON into a `RelayTxStatus`, or throw.
+ *
+ * A cast is not a check. This body is a third party's, and TypeScript's union constrains nothing at
+ * runtime, so every field arrives as whatever the relay felt like sending — including a relay that
+ * has been compromised, or one that simply changed its API. Two of these fields are load-bearing
+ * enough that a wrong value is worse than no answer:
+ *
+ * - `status` becomes a Prometheus label. An unconstrained string means a fresh time series per
+ *   probe, and a long one means every scrape carries it.
+ * - `maxBlockNumber` becomes the intent's relay horizon, and under private submission that is the
+ *   *only* thing that ever frees the nonce. A wrong-typed value yields `NaN` and a wedged sequence.
+ *
+ * Throwing is the right failure: both consumers already treat a failed probe as the cautious
+ * answer — the reader reports the transaction as in flight under a fixed `probe_error` label, and
+ * `createRelayHorizon` falls back to its configured window. Coercing to `UNKNOWN` instead would be
+ * worse than either, because `UNKNOWN` is a real answer and the coercion would hide the breakage.
+ *
+ * Strict about the fields we read, indifferent to any the relay adds.
+ */
+export function parseRelayStatus(body: unknown): RelayTxStatus {
+  if (typeof body !== "object" || body === null) {
+    throw new Error(
+      `flashbots status returned ${body === null ? "null" : typeof body}, not an object`
+    );
+  }
+  const raw = body as Record<string, unknown>;
+
+  const status = raw.status;
+  if (typeof status !== "string" || !RELAY_STATUSES.includes(status as RelayTxStatus["status"])) {
+    throw new Error(`flashbots status returned an unknown status: ${JSON.stringify(status)}`);
+  }
+
+  // Absent is legitimate — Protect answers `UNKNOWN` for a transaction it is not holding, and has
+  // no deadline to report for it. Zero means the same thing to `createRelayHorizon`: no deadline of
+  // the relay's own, so the configured window stands.
+  let maxBlockNumber = 0;
+  if (raw.maxBlockNumber !== undefined && raw.maxBlockNumber !== null) {
+    if (
+      typeof raw.maxBlockNumber !== "number" ||
+      !Number.isSafeInteger(raw.maxBlockNumber) ||
+      raw.maxBlockNumber < 0
+    ) {
+      throw new Error(
+        `flashbots status returned an unusable maxBlockNumber: ${JSON.stringify(raw.maxBlockNumber)}`
+      );
+    }
+    maxBlockNumber = raw.maxBlockNumber;
+  }
+
+  // Not worth failing a probe over: neither is consulted for a decision, and rejecting the response
+  // because a boolean arrived as a string would fence every nonce over a cosmetic API change.
+  return {
+    status: status as RelayTxStatus["status"],
+    maxBlockNumber,
+    ...(typeof raw.simError === "string"
+      ? { simError: raw.simError.slice(0, SIM_ERROR_MAX_CHARS) }
+      : {}),
+    isRevert: raw.isRevert === true,
+    seenInMempool: raw.seenInMempool === true,
+  };
+}
+
 /** Injected so tests script the relay without a network. Matches the global `fetch`. */
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -206,7 +275,7 @@ export function createFlashbotsProtectSubmitter(
       if (!response.ok) {
         throw new Error(`flashbots status failed: HTTP ${response.status}`);
       }
-      return (await response.json()) as RelayTxStatus;
+      return parseRelayStatus(await response.json());
     },
   };
 }

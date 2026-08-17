@@ -55,7 +55,10 @@ async function buildSigner(
   transport: Transport,
   chainId: number
 ): Promise<OperatorSigner> {
-  const account = async (ref: string) => privateKeyToAccount((await secrets.get(ref)) as Hex);
+  // Both key settings resolve through here, so each caller names its own — an error that cannot say
+  // which setting produced it sends the operator looking through both.
+  const account = async (ref: string, label: string) =>
+    privateKeyToAccount((await secrets.get(ref, label)) as Hex);
 
   if (config.executorKind === "eoa") {
     // Keyless (the production/confirm flow): no key here, so `send`/`broadcast` is unavailable — the
@@ -73,14 +76,16 @@ async function buildSigner(
       };
     }
     return createEoaOperatorSigner({
-      account: await account(config.operatorKeyRef),
+      account: await account(config.operatorKeyRef, "OPERATOR_KEY_REF"),
       chain,
       transport,
     });
   }
 
   // Safe: owner keys are optional — claim/confirm are keyless; only broadcast needs them.
-  const owners = await Promise.all(config.safeOwnerKeyRefs.map(account));
+  const owners = await Promise.all(
+    config.safeOwnerKeyRefs.map((ref) => account(ref, "SAFE_OWNER_KEY_REFS"))
+  );
   return createSafeOperatorSigner({
     safe: config.executorAddress,
     owners,
@@ -89,7 +94,6 @@ async function buildSigner(
     chain,
     transport,
     chainId,
-    safeVersion: config.safeVersion,
   });
 }
 

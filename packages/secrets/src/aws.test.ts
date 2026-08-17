@@ -10,13 +10,13 @@ describe("createAwsSecrets", () => {
       return { SecretString: "0xabc123" };
     });
     const secrets = createAwsSecrets({ client: { send } });
-    await expect(secrets.get("prod/liquidator/key")).resolves.toBe("0xabc123");
+    await expect(secrets.get("prod/liquidator/key", "TEST_REF")).resolves.toBe("0xabc123");
   });
 
   it("decodes a SecretBinary when there is no SecretString", async () => {
     const send = vi.fn(async () => ({ SecretBinary: Buffer.from("hunter2", "utf8") }));
     const secrets = createAwsSecrets({ client: { send } });
-    await expect(secrets.get("bin/secret")).resolves.toBe("hunter2");
+    await expect(secrets.get("bin/secret", "TEST_REF")).resolves.toBe("hunter2");
   });
 
   it("wraps client errors with the ref (never the value)", async () => {
@@ -26,7 +26,7 @@ describe("createAwsSecrets", () => {
       );
     });
     const secrets = createAwsSecrets({ client: { send } });
-    await expect(secrets.get("missing/ref")).rejects.toThrow(
+    await expect(secrets.get("missing/ref", "TEST_REF")).rejects.toThrow(
       /failed to fetch secret "missing\/ref".*ResourceNotFound/
     );
   });
@@ -34,7 +34,7 @@ describe("createAwsSecrets", () => {
   it("throws when the secret has neither string nor binary value", async () => {
     const send: SecretsSend["send"] = vi.fn(async () => ({}));
     const secrets = createAwsSecrets({ client: { send } });
-    await expect(secrets.get("empty/ref")).rejects.toThrow(/has no value/);
+    await expect(secrets.get("empty/ref", "TEST_REF")).rejects.toThrow(/has no value/);
   });
 
   describe("#jsonKey selector (JSON secret)", () => {
@@ -52,19 +52,21 @@ describe("createAwsSecrets", () => {
 
     it("extracts a string field from a JSON secret", async () => {
       const secrets = createAwsSecrets({ client: { send: jsonSecret() } });
-      await expect(secrets.get("prod/liquidator/config#LIQUIDATOR_PRIVATE_KEY")).resolves.toBe(
-        "0xdeadbeef"
-      );
+      await expect(
+        secrets.get("prod/liquidator/config#LIQUIDATOR_PRIVATE_KEY", "TEST_REF")
+      ).resolves.toBe("0xdeadbeef");
     });
 
     it("stringifies a non-string field", async () => {
       const secrets = createAwsSecrets({ client: { send: jsonSecret() } });
-      await expect(secrets.get("prod/liquidator/config#METRICS_PORT")).resolves.toBe("9090");
+      await expect(secrets.get("prod/liquidator/config#METRICS_PORT", "TEST_REF")).resolves.toBe(
+        "9090"
+      );
     });
 
     it("throws when the JSON key is absent", async () => {
       const secrets = createAwsSecrets({ client: { send: jsonSecret() } });
-      await expect(secrets.get("prod/liquidator/config#NOPE")).rejects.toThrow(
+      await expect(secrets.get("prod/liquidator/config#NOPE", "TEST_REF")).rejects.toThrow(
         /has no JSON key "NOPE"/
       );
     });
@@ -72,7 +74,9 @@ describe("createAwsSecrets", () => {
     it("throws when the secret is not valid JSON", async () => {
       const send = vi.fn(async () => ({ SecretString: "not-json" }));
       const secrets = createAwsSecrets({ client: { send } });
-      await expect(secrets.get("plain/secret#KEY")).rejects.toThrow(/is not valid JSON/);
+      await expect(secrets.get("plain/secret#KEY", "TEST_REF")).rejects.toThrow(
+        /is not valid JSON/
+      );
     });
   });
 });

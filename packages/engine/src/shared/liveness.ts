@@ -179,6 +179,21 @@ export interface RelayStatusSource {
 }
 
 /**
+ * How far past the configured window a relay's own deadline is still believed, as a multiple of it.
+ *
+ * The relay is authoritative about how long it will keep offering a transaction, so a deadline
+ * *longer* than ours is normally the truth and fencing to it is the safe direction. That stops
+ * being true without a ceiling: this number is the only thing that ever frees a privately-submitted
+ * nonce, so one response claiming a deadline a million blocks out fences that nonce for good and
+ * every later send queues behind it. Well-formed, in range, and permanent.
+ *
+ * A multiple rather than an absolute cap, because the quantity it bounds is the operator's declared
+ * window — whatever `PRIVATE_RELAY_HORIZON_BLOCKS` says the relay's retry window is, this says we
+ * will believe up to ten of them and no further.
+ */
+export const RELAY_HORIZON_TRUST_MULTIPLE = 10;
+
+/**
  * Resolve a just-submitted transaction's deadline — the block past which it can no longer be
  * included, recorded on its intent so the nonce fence has something that always advances. The later
  * of the relay's own `maxBlockNumber` and `head + horizonBlocks`.
@@ -193,7 +208,8 @@ export interface RelayStatusSource {
 export function createRelayHorizon(
   node: ChainReader,
   relay: RelayStatusSource,
-  horizonBlocks: number
+  horizonBlocks: number,
+  logger?: Pick<Logger, "warn">
 ): (hash: Hex) => Promise<number> {
   return async (hash) => {
     const [head, status] = await Promise.all([
@@ -201,7 +217,18 @@ export function createRelayHorizon(
       relay.status(hash).catch(() => null),
     ]);
     const fallback = head + horizonBlocks;
-    return Math.max(status?.maxBlockNumber ?? 0, fallback);
+    const declared = status?.maxBlockNumber ?? 0;
+    const ceiling = head + horizonBlocks * RELAY_HORIZON_TRUST_MULTIPLE;
+    if (declared > ceiling) {
+      // Said rather than silently clamped: a relay claiming a window this far past the one it
+      // documents is either broken or not the relay we think we are talking to, and the operator
+      // cannot infer either from a nonce that simply takes longer to come back.
+      logger?.warn(
+        `Relay declared a deadline of block ${declared} for ${hash}, beyond the ${RELAY_HORIZON_TRUST_MULTIPLE}x window this bot will honour — fencing to ${ceiling} instead.`
+      );
+      return ceiling;
+    }
+    return Math.max(declared, fallback);
   };
 }
 

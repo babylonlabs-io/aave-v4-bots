@@ -22,7 +22,7 @@ describe.runIf(!!SECRET_ID)("createAwsSecrets (integration — real AWS Secrets 
     "resolves the secret to a non-empty value",
     async () => {
       const secrets = createAwsSecrets({ region: REGION });
-      const value = await secrets.get(SECRET_ID as string);
+      const value = await secrets.get(SECRET_ID as string, "SECRETS_E2E_SECRET_ID");
 
       expect(value.length).toBeGreaterThan(0);
       if (EXPECTED !== undefined) expect(value).toBe(EXPECTED);
@@ -35,7 +35,7 @@ describe.runIf(!!SECRET_ID)("createAwsSecrets (integration — real AWS Secrets 
     async () => {
       const secrets = createAwsSecrets({ region: REGION });
       const missing = `does-not-exist-${Date.now()}`;
-      await expect(secrets.get(missing)).rejects.toThrow(
+      await expect(secrets.get(missing, "SECRETS_E2E_SECRET_ID")).rejects.toThrow(
         new RegExp(`failed to fetch secret "${missing}"`)
       );
     },

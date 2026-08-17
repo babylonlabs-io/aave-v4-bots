@@ -139,7 +139,7 @@ function buildSubmission(
     submitter: relay,
     reader: createRelayAwareReader(node, relay, logger, metrics.recordRelayStatus),
     reclaimMarginBlocks: settings.reclaimMarginBlocks,
-    horizon: createRelayHorizon(node, relay, settings.relayHorizonBlocks),
+    horizon: createRelayHorizon(node, relay, settings.relayHorizonBlocks, logger),
   };
 }
 
@@ -192,7 +192,9 @@ export async function bootstrapService(config: BootConfig, deps: BootDeps): Prom
   // Outbound alerts. The Slack webhook is a credential, resolved from its secret ref like the signing
   // key; `none` (default) logs only. Delivery is best-effort, so a dropped alert never breaks a poll
   // cycle. In MANUAL it also carries the operator's sign-me alerts.
-  const notifier = await buildNotifier(config.notifier, logger, (ref) => secrets.get(ref));
+  const notifier = await buildNotifier(config.notifier, logger, (ref) =>
+    secrets.get(ref, "SLACK_WEBHOOK_REF")
+  );
 
   // Exactly ONE risk gate per process, injected into every engine — a kill-switch or tripped breaker
   // must halt everything this process drives. Also verifies the pinned target bytecode before any tx
@@ -205,7 +207,7 @@ export async function bootstrapService(config: BootConfig, deps: BootDeps): Prom
     controlPort: config.controlPort,
     controlHost: config.controlHost,
     read: (address) => readCodeHash(publicClient, address),
-    getSecret: (ref) => secrets.get(ref),
+    getSecret: (ref) => secrets.get(ref, "RISK_CONTROL_TOKEN_REF"),
     onEvent: riskEventSink(notifier),
     logger,
   });
@@ -355,7 +357,7 @@ async function buildExecutor(
 
   // AUTO — one signer, its wallet, and ONE nonce authority shared by every engine (so their
   // concurrent sends never collide).
-  const signer = await resolveSigner(config.signer, (ref) => secrets.get(ref));
+  const signer = await resolveSigner(config.signer, (ref) => secrets.get(ref, "SIGNER_KEY_REF"));
   logger.info(`Execution mode: AUTO — signer ${config.signer.source} (${signer.account.address})`);
   // Before anything reads or writes the store. `resyncNonces` below already reasons over every
   // in-flight intent as one nonce sequence, so a schema shared with another signer would fence on

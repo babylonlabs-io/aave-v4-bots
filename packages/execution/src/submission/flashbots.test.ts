@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type FetchLike, createFlashbotsProtectSubmitter } from "./flashbots";
+import { type FetchLike, createFlashbotsProtectSubmitter, parseRelayStatus } from "./flashbots";
 import { SubmitRejectedError } from "./index";
 
 // The relay is scripted, never reached. The response bodies here are the shapes the live API
@@ -137,6 +137,13 @@ describe("createFlashbotsProtectSubmitter — status", () => {
     });
   });
 
+  // The wiring, not the parser: without this the endpoint could go back to casting the body and
+  // every `parseRelayStatus` test would still pass.
+  it("refuses a body that is not a relay status, rather than casting it", async () => {
+    const s = submitter(() => reply({ status: "PENDING-1", maxBlockNumber: 1 }));
+    await expect(s.status(HASH)).rejects.toThrow(/unknown status/);
+  });
+
   it("queries {statusUrl}/tx/{hash}", async () => {
     const seen: string[] = [];
     const s = createFlashbotsProtectSubmitter({
@@ -251,9 +258,10 @@ describe("createFlashbotsProtectSubmitter — deadlines", () => {
     const s = createFlashbotsProtectSubmitter({
       rpcUrl: "https://rpc.example/fast",
       statusUrl: "https://status.example",
+      // One body that satisfies both endpoints: `send` reads `result`, `status` parses the rest.
       fetch: async (_url, init) => {
         signals.push(init?.signal);
-        return reply({ result: HASH });
+        return reply({ result: HASH, status: "PENDING", maxBlockNumber: 0 });
       },
     });
 
@@ -262,5 +270,82 @@ describe("createFlashbotsProtectSubmitter — deadlines", () => {
 
     expect(signals).toHaveLength(2);
     for (const signal of signals) expect(signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+// The response is a third party's, and a cast checks nothing at run time. Two fields decide things:
+// `status` becomes a Prometheus label, and `maxBlockNumber` becomes the only value that ever frees
+// a privately-submitted nonce.
+describe("parseRelayStatus", () => {
+  const valid = {
+    status: "PENDING",
+    maxBlockNumber: 25_725_873,
+    isRevert: false,
+    seenInMempool: false,
+  };
+
+  it("keeps a well-formed answer, extra fields and all", () => {
+    expect(parseRelayStatus({ ...valid, fastMode: true, hash: HASH })).toEqual({
+      status: "PENDING",
+      maxBlockNumber: 25_725_873,
+      isRevert: false,
+      seenInMempool: false,
+    });
+  });
+
+  // The reported bug: an unconstrained status is a fresh Prometheus time series per probe, and a
+  // long one rides along in every scrape. Rejecting it here is what keeps the label set finite —
+  // the caller turns a throw into its own fixed `probe_error`.
+  it.each(["PENDING-1", "pending", "", "A".repeat(10_000)])(
+    "refuses a status the relay invented (%#)",
+    (status) => {
+      expect(() => parseRelayStatus({ ...valid, status })).toThrow(/unknown status/);
+    }
+  );
+
+  it.each([null, undefined, 42, "PENDING", []])(
+    "refuses a body that is not an object (%p)",
+    (body) => {
+      expect(() => parseRelayStatus(body)).toThrow();
+    }
+  );
+
+  // A wrong-typed deadline yields NaN, and NaN never elapses: the nonce is fenced for good, and no
+  // attacker is needed — an API change does it.
+  it.each(["25725873", Number.NaN, Number.POSITIVE_INFINITY, 1.5, -1, {}])(
+    "refuses a maxBlockNumber that is not a block height (%p)",
+    (maxBlockNumber) => {
+      expect(() => parseRelayStatus({ ...valid, maxBlockNumber })).toThrow(
+        /unusable maxBlockNumber/
+      );
+    }
+  );
+
+  // Protect answers UNKNOWN for a transaction it is not holding, and has no deadline to report for
+  // it. Rejecting that would fence every nonce of a perfectly healthy deployment.
+  it.each([{}, { maxBlockNumber: null }])("accepts UNKNOWN with no deadline (%p)", (over) => {
+    expect(parseRelayStatus({ status: "UNKNOWN", ...over })).toMatchObject({
+      status: "UNKNOWN",
+      maxBlockNumber: 0,
+    });
+  });
+
+  // It reaches a log line, so its length is the relay's choice unless bounded here.
+  it("truncates a simError rather than logging whatever arrives", () => {
+    const parsed = parseRelayStatus({ ...valid, simError: "x".repeat(5_000) });
+    expect(parsed.simError?.length).toBe(300);
+  });
+
+  it("omits simError when the relay sends something that is not one", () => {
+    expect(parseRelayStatus({ ...valid, simError: { code: 1 } })).not.toHaveProperty("simError");
+  });
+
+  // Neither is consulted for a decision, so a cosmetic API change must not fence every nonce.
+  it("defaults the advisory booleans instead of failing the probe", () => {
+    expect(parseRelayStatus({ status: "INCLUDED" })).toMatchObject({
+      isRevert: false,
+      seenInMempool: false,
+    });
+    expect(parseRelayStatus({ ...valid, isRevert: "yes" })).toMatchObject({ isRevert: false });
   });
 });

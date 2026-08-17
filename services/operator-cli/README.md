@@ -48,7 +48,7 @@ Secrets Manager id.
 | `MANUAL_EXECUTOR_KIND` | yes | `eoa` or `safe` (must match the bot) |
 | `OPERATOR_KEY_REF` | for `broadcast` | ref to the EOA / Safe-owner key; omit for the keyless `confirm` flow |
 | `SAFE_OWNER_KEY_REFS` | `safe` broadcast | comma-separated owner key refs |
-| `SAFE_VERSION` | no | Safe contract version (default `1.4.1`) |
+
 | `SECRETS_PROVIDER` | no | `env` (default) or `aws` |
 | `AWS_REGION` | no | region for AWS Secrets Manager |
 

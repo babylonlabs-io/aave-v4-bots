@@ -23,7 +23,6 @@ export interface Config {
   operatorKeyRef?: string;
   safeOwnerKeyRefs: string[];
   /** Safe contract version for the EIP-712 domain (v1.3.0+). */
-  safeVersion: string;
 }
 
 const envSchema = z.object({
@@ -40,7 +39,6 @@ const envSchema = z.object({
   OPERATOR_KEY_REF: z.string().min(1).optional(),
   // safe custody — the owner key refs (comma-separated), used by the automatable `broadcast` path.
   SAFE_OWNER_KEY_REFS: z.string().optional(),
-  SAFE_VERSION: z.string().min(1).optional().default("1.4.1"),
 });
 
 /** Split a comma-separated secret-ref list, trimming blanks. */
@@ -69,6 +67,5 @@ export function loadConfig(): Config {
     executorKind: kind,
     operatorKeyRef: env.OPERATOR_KEY_REF,
     safeOwnerKeyRefs: refList(env.SAFE_OWNER_KEY_REFS),
-    safeVersion: env.SAFE_VERSION,
   };
 }

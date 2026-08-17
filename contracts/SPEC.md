@@ -39,11 +39,19 @@ At each flash loan/swap callback, `VenueManager` approves the debt token to the 
 
 In phase 3, `LiquidationRouter` performs the liquidation and swaps the earned `WBTC` into the debt tokens required for repayment. All swap calls are specified off-chain and passed into `LiquidationRouter` as parameters. `LiquidationRouter` executes these swap calls blindly, without validation — it is the responsibility of the off-chain system to ensure they are valid and will not revert.
 
+"Valid" means more than "will not revert". Each entry is a `(dexAggRouter, callData)` pair: the router grants `dexAggRouter` an unlimited `WBTC` allowance, then calls that address with that calldata. The call executes with `msg.sender == LiquidationRouter`, so whoever chose the pair chooses what the router does with its own balances — including naming a token as the target, where the calldata is a `transfer` or an `approve` made *by* the router. `minWbtcProfit` bounds what a swap may cost the liquidation; it does not bound what the call may do.
+
+The trust boundary is therefore the source of the swap calldata, not just the `auth` address that submits it: an operator faithfully forwarding a route from a compromised aggregator is passing that aggregator the router's authority for the duration of the call.
+
+**This bot never uses it.** Venue selection refuses to build a liquidation that would need a swap — if a debt token has no flash-swap venue, `buildFlashDatas` raises `I1` rather than fall back to a flash loan that would have to be repaid in that token. Every liquidation it sends carries an empty `swapDatas`, so the paragraph above describes the contract's API, not a path the automated system takes.
+
 ### Post-Liquidation
 
 After all phases have completed, `LiquidationRouter`:
 
-- Revokes the approvals granted to `aaveAdapter` and `dexAggRouter`.
+- Revokes the approvals *it* granted: `aaveAdapter`, and each `dexAggRouter`. An approval created by
+  swap calldata — the router calling `approve` on a token because the calldata told it to — is not
+  one of these and survives the transaction, as does any balance that calldata moved.
 - Transfers any remaining token profit to the `auth` address.
 
 ## Engineering notes

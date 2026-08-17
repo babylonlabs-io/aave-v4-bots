@@ -13,7 +13,8 @@ const secrets = CONFIG_SECRET_ID ? createAwsSecrets({ region: process.env.AWS_RE
 async function resolveSecret(name: string): Promise<string | undefined> {
   const fromEnv = process.env[name];
   if (fromEnv) return fromEnv;
-  if (secrets && CONFIG_SECRET_ID) return secrets.get(`${CONFIG_SECRET_ID}#${name}`);
+  if (secrets && CONFIG_SECRET_ID)
+    return secrets.get(`${CONFIG_SECRET_ID}#${name}`, "CONFIG_SECRET_ID");
   return undefined;
 }
 

@@ -1,4 +1,5 @@
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { assertUsableRef, describeRef } from "./ref";
 import type { SecretsProvider } from "./types";
 
 // `@repo/secrets` `./aws` adapter. Resolves a ref via `GetSecretValue`. A ref is a Secrets
@@ -29,27 +30,31 @@ export function createAwsSecrets(config: AwsSecretsConfig = {}): SecretsProvider
     config.client ?? new SecretsManagerClient(config.region ? { region: config.region } : {});
 
   return {
-    async get(ref) {
+    async get(ref, label) {
       // Split an optional `#jsonKey` selector off the secret id. Secret names and ARNs
       // never contain `#`, so the first `#` is an unambiguous delimiter.
       const hashIndex = ref.indexOf("#");
       const secretId = hashIndex === -1 ? ref : ref.slice(0, hashIndex);
       const jsonKey = hashIndex === -1 ? undefined : ref.slice(hashIndex + 1);
+      // Checked on the id rather than the whole ref: `#jsonKey` is part of the ref's syntax, and
+      // checked BEFORE the fetch, because this id becomes the `SecretId` of a `GetSecretValue`
+      // request — which AWS records in CloudTrail, where nothing this process does can redact it.
+      assertUsableRef(secretId, label);
 
       let out: { SecretString?: string; SecretBinary?: Uint8Array };
       try {
         out = await client.send(new GetSecretValueCommand({ SecretId: secretId }));
       } catch (error) {
-        // `secretId` is the secret's name/ARN, not its value — safe to surface.
+        // `assertUsableRef` above has established that this is a name, not a value.
         throw new Error(
-          `failed to fetch secret "${secretId}" from AWS Secrets Manager: ${(error as Error).message}`
+          `${label}: failed to fetch secret ${describeRef(secretId)} from AWS Secrets Manager: ${(error as Error).message}`
         );
       }
 
       const raw =
         out.SecretString ??
         (out.SecretBinary ? Buffer.from(out.SecretBinary).toString("utf8") : undefined);
-      if (raw === undefined) throw new Error(`secret "${secretId}" has no value`);
+      if (raw === undefined) throw new Error(`${label}: secret "${secretId}" has no value`);
 
       // No selector → return the whole secret value verbatim (a plain-string secret).
       if (jsonKey === undefined) return raw;
@@ -60,16 +65,18 @@ export function createAwsSecrets(config: AwsSecretsConfig = {}): SecretsProvider
       try {
         parsed = JSON.parse(raw);
       } catch {
-        throw new Error(`secret "${secretId}" is not valid JSON (needed to read key "${jsonKey}")`);
+        throw new Error(
+          `${label}: secret "${secretId}" is not valid JSON (needed to read key "${jsonKey}")`
+        );
       }
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error(
-          `secret "${secretId}" is not a JSON object (needed to read key "${jsonKey}")`
+          `${label}: secret "${secretId}" is not a JSON object (needed to read key "${jsonKey}")`
         );
       }
       const value = (parsed as Record<string, unknown>)[jsonKey];
       if (value === undefined) {
-        throw new Error(`secret "${secretId}" has no JSON key "${jsonKey}"`);
+        throw new Error(`${label}: secret "${secretId}" has no JSON key "${jsonKey}"`);
       }
       return typeof value === "string" ? value : JSON.stringify(value);
     },

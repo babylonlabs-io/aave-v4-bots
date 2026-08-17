@@ -2,7 +2,10 @@
 // + selector below, and the `./aws` adapter. See `./types` for the seam's rationale.
 
 import { type AwsSecretsConfig, type SecretsSend, createAwsSecrets } from "./aws";
+import { assertUsableRef, describeRef } from "./ref";
 import type { SecretsProvider } from "./types";
+
+export { assertUsableRef, describeRef, isSafeToEcho } from "./ref";
 
 export type { SecretsProvider } from "./types";
 // `./aws` adapter — resolves refs from AWS Secrets Manager (implemented in `./aws.ts`).
@@ -14,10 +17,11 @@ export { type AwsSecretsConfig, type SecretsSend, createAwsSecrets };
  */
 export function createEnvSecrets(env: NodeJS.ProcessEnv = process.env): SecretsProvider {
   return {
-    async get(ref) {
+    async get(ref, label) {
+      assertUsableRef(ref, label);
       const value = env[ref];
       if (value === undefined || value === "") {
-        throw new Error(`secret "${ref}" is not set`);
+        throw new Error(`${label}: no environment variable named ${describeRef(ref)} is set`);
       }
       return value;
     },
