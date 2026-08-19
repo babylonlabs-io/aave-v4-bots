@@ -1,4 +1,4 @@
-import { positiveIntSchema } from "./schemas";
+import { positiveBigIntSchema, positiveIntSchema } from "./schemas";
 
 /**
  * Indexer-liveness thresholds. Unset ⇒ the guard is off, so a deployment that sets none of these
@@ -12,7 +12,7 @@ export const indexerEnvFields = {
    * chain that has stopped producing, which is a different incident and already covered by
    * `RISK_MAX_DATA_STALENESS_MS`.
    */
-  INDEXER_MAX_LAG_BLOCKS: positiveIntSchema.optional(),
+  INDEXER_MAX_LAG_BLOCKS: positiveBigIntSchema.optional(),
   /**
    * How long the indexer may stay continuously unusable before the risk gate halts.
    *

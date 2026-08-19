@@ -3,7 +3,13 @@ import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { z } from "zod";
 
-import { addressSchema, nonNegativeIntSchema, positiveIntSchema, urlSchema } from "./schemas";
+import {
+  addressSchema,
+  intInRangeSchema,
+  nonNegativeIntSchema,
+  positiveBigIntSchema,
+  urlSchema,
+} from "./schemas";
 
 /** A 0x-prefixed address. `@repo/config` avoids a `viem` dependency, so it names the shape itself. */
 type Hex40 = `0x${string}`;
@@ -18,6 +24,27 @@ type Hex40 = `0x${string}`;
 // Everything this module imports from a sibling package is `import type`, erased at compile time,
 // so `@repo/{persistence,secrets,risk}` are **devDependencies** of `@repo/config`: they name the
 // shapes these builders return without putting those packages in any consumer's runtime graph.
+
+/**
+ * Ceiling on the two block counts that make up the private-submission nonce fence.
+ *
+ * Roughly a day of Ethereum blocks — orders of magnitude above any real relay retry window (Protect
+ * offers a transaction for ~25 blocks) and still finite. The fence is the *only* thing that ever
+ * frees the nonce of a privately-submitted transaction the relay has dropped, so a horizon set to a
+ * number nobody meant does not read as a big number anywhere downstream: it reads as a nonce that
+ * never comes back, with every later send from either engine queued behind it. `liveness.ts` bounds
+ * the relay's *declared* deadline for the same reason (`RELAY_HORIZON_TRUST_MULTIPLE`); this bounds
+ * the operator's declared one.
+ */
+const MAX_HORIZON_BLOCKS = 7200;
+
+/**
+ * Ceiling on the relay's two network deadlines. Both are per-call timeouts inside a poll cycle, and
+ * the submit one is awaited under the nonce allocator's lock — so an over-long value does not slow
+ * one request, it stalls every later send and resync in the process. Two minutes is far past any
+ * healthy relay round-trip.
+ */
+const MAX_RELAY_TIMEOUT_MS = 120_000;
 
 export const runtimeEnvFields = {
   // Signer + secrets source selection. Defaults preserve today's behavior: a local signer whose
@@ -44,24 +71,38 @@ export const runtimeEnvFields = {
    * Floor for the priority fee on a privately-submitted transaction, in wei. Required in private
    * mode and deliberately has no default — see `buildSubmitterConfig`.
    */
-  PRIVATE_MIN_PRIORITY_FEE_WEI: positiveIntSchema.optional(),
+  PRIVATE_MIN_PRIORITY_FEE_WEI: positiveBigIntSchema.optional(),
   /**
    * The relay's retry window, in blocks — how long it may keep offering a transaction to builders.
    * Used when the relay does not tell us a transaction's own deadline. Protect's is ~25 blocks;
    * declare whatever the configured relay actually uses.
    */
-  PRIVATE_RELAY_HORIZON_BLOCKS: positiveIntSchema.optional().default("25"),
+  PRIVATE_RELAY_HORIZON_BLOCKS: intInRangeSchema(
+    1,
+    MAX_HORIZON_BLOCKS,
+    "the relay's retry window, not an open-ended fence"
+  )
+    .optional()
+    .default("25"),
   /** Blocks past a transaction's horizon before its nonce may be reclaimed — reorg headroom. */
-  PRIVATE_RECLAIM_MARGIN_BLOCKS: positiveIntSchema.optional().default("3"),
+  PRIVATE_RECLAIM_MARGIN_BLOCKS: intInRangeSchema(1, MAX_HORIZON_BLOCKS, "reorg headroom")
+    .optional()
+    .default("3"),
   /**
    * How long a submit to the relay may take before it is abandoned as ambiguous.
    *
    * Lower it if you run a faster loop than the default `POLLING_INTERVAL_MS`: the submit is awaited
    * under the nonce lock, so it has to finish inside a cycle with room to spare for the rest of it.
    */
-  PRIVATE_SUBMIT_TIMEOUT_MS: positiveIntSchema.optional().default("8000"),
+  PRIVATE_SUBMIT_TIMEOUT_MS: intInRangeSchema(
+    1,
+    MAX_RELAY_TIMEOUT_MS,
+    "it is awaited under the nonce lock"
+  )
+    .optional()
+    .default("8000"),
   /** How long a relay status probe may take before it is treated as a failed probe. */
-  PRIVATE_STATUS_TIMEOUT_MS: positiveIntSchema.optional().default("2000"),
+  PRIVATE_STATUS_TIMEOUT_MS: intInRangeSchema(1, MAX_RELAY_TIMEOUT_MS).optional().default("2000"),
 
   /** Enables the Postgres StateStore. Unset ⇒ no persistence (in-memory nonce sequencing). */
   DATABASE_URL: z.string().min(1).optional(),
@@ -233,6 +274,21 @@ export type SubmitterSettings =
     };
 
 /**
+ * The variables that mean nothing unless the bot broadcasts privately, paired with their values.
+ *
+ * Named once because two builders reject them, for the same reason from opposite directions:
+ * `buildSubmitterConfig` when the mode is `public`, and `buildExecutionConfig` when the mode is
+ * MANUAL — where no submitter is built at all, so `SUBMITTER` itself is not what gives the mistake
+ * away. Only the variables an operator sets by hand belong here: a defaulted field is present in
+ * every deployment and says nothing about intent.
+ */
+const relayOnlyVars = (env: SubmitterEnv) =>
+  [
+    ["FLASHBOTS_PROTECT_URL", env.FLASHBOTS_PROTECT_URL],
+    ["PRIVATE_MIN_PRIORITY_FEE_WEI", env.PRIVATE_MIN_PRIORITY_FEE_WEI],
+  ] as const;
+
+/**
  * Project the submission env into a service's boot plan, refusing every combination that would
  * broadcast differently from what the operator wrote.
  *
@@ -252,10 +308,7 @@ export type SubmitterSettings =
  *   competitive is a market condition on the day, and a wrong guess here fails quietly.
  */
 export function buildSubmitterConfig(env: SubmitterEnv): SubmitterSettings {
-  const relayOnly = [
-    ["FLASHBOTS_PROTECT_URL", env.FLASHBOTS_PROTECT_URL],
-    ["PRIVATE_MIN_PRIORITY_FEE_WEI", env.PRIVATE_MIN_PRIORITY_FEE_WEI],
-  ] as const;
+  const relayOnly = relayOnlyVars(env);
 
   if (env.SUBMITTER !== "flashbots-protect") {
     const stray = relayOnly.filter(([, v]) => v !== undefined).map(([name]) => name);
@@ -323,9 +376,20 @@ export function buildExecutionConfig(
   // Relay variables under MANUAL are the same category of mistake as signer variables below: the
   // process would boot, the operator would believe their transactions were protected, and in fact
   // this bot broadcasts nothing at all — their own wallet does, in public.
-  if (env.SUBMITTER === "flashbots-protect") {
+  //
+  // Checked on the variables themselves and not only on `SUBMITTER`, because MANUAL never reaches
+  // `buildSubmitterConfig`, which is what rejects a stray relay variable everywhere else. Left to
+  // that check alone, a relay URL and a fee floor beside `EXECUTION_MODE=MANUAL` would boot in
+  // silence — the one arrangement where nothing downstream ever touches them again.
+  const strayRelay = [
+    env.SUBMITTER === "flashbots-protect" ? "SUBMITTER=flashbots-protect" : undefined,
+    ...relayOnlyVars(env)
+      .filter(([, v]) => v !== undefined)
+      .map(([name]) => name),
+  ].filter((v): v is string => v !== undefined);
+  if (strayRelay.length > 0) {
     throw new Error(
-      "EXECUTION_MODE=MANUAL does not broadcast — an operator signs and sends with their own wallet, so SUBMITTER=flashbots-protect would protect nothing. Unset it, or run AUTO."
+      `EXECUTION_MODE=MANUAL does not broadcast — an operator signs and sends with their own wallet, so ${strayRelay.join(", ")} protects nothing and this bot cannot enforce it. Unset ${strayRelay.length === 1 ? "it" : "them"}, or run AUTO.`
     );
   }
 

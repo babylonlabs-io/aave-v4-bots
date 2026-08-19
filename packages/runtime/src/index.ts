@@ -140,6 +140,7 @@ function buildSubmission(
     reader: createRelayAwareReader(node, relay, logger, metrics.recordRelayStatus),
     reclaimMarginBlocks: settings.reclaimMarginBlocks,
     horizon: createRelayHorizon(node, relay, settings.relayHorizonBlocks, logger),
+    minPriorityFeeWei: settings.minPriorityFeeWei,
   };
 }
 

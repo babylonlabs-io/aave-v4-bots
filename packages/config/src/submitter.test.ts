@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { type SubmitterEnv, buildExecutionConfig, buildSubmitterConfig } from "./runtime";
+import { z } from "zod";
+import {
+  type SubmitterEnv,
+  buildExecutionConfig,
+  buildSubmitterConfig,
+  runtimeEnvFields,
+} from "./runtime";
 
 // Guards on `SUBMITTER`. Every case here is one where a bot that *booted* would do something the
 // operator did not ask for — which is the whole point of validating at config time rather than
@@ -140,6 +146,20 @@ describe("submission is an AUTO-only decision", () => {
     ).toThrow(/does not broadcast/);
   });
 
+  // The quiet direction, and the one an operator actually reaches: `SUBMITTER` left at its default
+  // while the relay variables beside it are set. MANUAL never builds a submitter, so nothing else in
+  // the process ever looks at those variables again — boot is the last chance to say so.
+  it.each([
+    ["FLASHBOTS_PROTECT_URL", "https://rpc.flashbots.net/fast"],
+    ["PRIVATE_MIN_PRIORITY_FEE_WEI", "2000000000"],
+  ])("refuses %s under MANUAL even with SUBMITTER left public", (key, value) => {
+    expect(() => buildExecutionConfig(execEnv({ [key]: value }))).toThrow(/does not broadcast/);
+    expect(() => buildExecutionConfig(execEnv({ [key]: value }))).toThrow(new RegExp(key));
+    expect(() => buildExecutionConfig(execEnv({ [key]: value, SUBMITTER: undefined }))).toThrow(
+      /does not broadcast/
+    );
+  });
+
   it("still accepts a MANUAL setup that configures no relay", () => {
     expect(buildExecutionConfig(execEnv())).toMatchObject({ mode: "MANUAL" });
   });
@@ -161,5 +181,53 @@ describe("submission is an AUTO-only decision", () => {
       mode: "AUTO",
       submitter: { mode: "flashbots-protect", minPriorityFeeWei: 2_000_000_000n },
     });
+  });
+});
+
+// The nonce fence is the only thing that ever frees the nonce of a privately-submitted transaction
+// the relay has dropped, so every input to it is bounded at the env layer — where an unbounded one
+// reads as a plain large number, and everywhere after as a nonce that never comes back.
+describe("private-submission fence bounds", () => {
+  const parse = (env: Record<string, string>) => z.object(runtimeEnvFields).safeParse(env);
+
+  it.each([
+    ["PRIVATE_RELAY_HORIZON_BLOCKS", "25"],
+    ["PRIVATE_RECLAIM_MARGIN_BLOCKS", "3"],
+    ["PRIVATE_SUBMIT_TIMEOUT_MS", "8000"],
+    ["PRIVATE_STATUS_TIMEOUT_MS", "2000"],
+  ])("accepts a realistic %s", (key, value) => {
+    expect(parse({ [key]: value }).success).toBe(true);
+  });
+
+  it.each([
+    ["PRIVATE_RELAY_HORIZON_BLOCKS", "7201"],
+    ["PRIVATE_RECLAIM_MARGIN_BLOCKS", "7201"],
+    ["PRIVATE_SUBMIT_TIMEOUT_MS", "120001"],
+    ["PRIVATE_STATUS_TIMEOUT_MS", "120001"],
+  ])("rejects an out-of-range %s", (key, value) => {
+    expect(parse({ [key]: value }).success).toBe(false);
+  });
+
+  // `Number.parseInt` turns this into `Infinity`: a fence that never expires and a timeout that
+  // never fires, both of which boot cleanly and look like nothing at all.
+  it.each([
+    "PRIVATE_RELAY_HORIZON_BLOCKS",
+    "PRIVATE_RECLAIM_MARGIN_BLOCKS",
+    "PRIVATE_SUBMIT_TIMEOUT_MS",
+    "PRIVATE_STATUS_TIMEOUT_MS",
+    "MANUAL_INTENT_TTL_MS",
+    "MANUAL_INTENT_STUCK_MS",
+  ])("rejects a several-hundred-digit %s", (key) => {
+    expect(parse({ [key]: "9".repeat(400) }).success).toBe(false);
+    expect(parse({ [key]: "9007199254740993" }).success).toBe(false);
+  });
+
+  // The fee floor is the exception, and the reason the integer schemas are split by destination:
+  // it lands in a `bigint`, and any wei amount above ~0.009 ETH is past MAX_SAFE_INTEGER already.
+  it("accepts a wei fee floor beyond Number.MAX_SAFE_INTEGER", () => {
+    expect(parse({ PRIVATE_MIN_PRIORITY_FEE_WEI: "20000000000000000000" }).success).toBe(true);
+    expect(
+      buildSubmitterConfig(privateEnv({ PRIVATE_MIN_PRIORITY_FEE_WEI: "20000000000000000000" }))
+    ).toMatchObject({ minPriorityFeeWei: 20_000_000_000_000_000_000n });
   });
 });

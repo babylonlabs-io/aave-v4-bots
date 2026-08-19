@@ -281,8 +281,20 @@ export async function reconcilePending(args: {
    * still counted live here, so its intent never resolves and its subject stays blocked forever.
    */
   reclaimMarginBlocks?: number;
+  /**
+   * Is this intent one **this process** is sending right now — claimed, not yet resolved?
+   *
+   * Such an intent is not evidence of anything: the sender holding it is in this address space, so
+   * its liveness is known rather than inferred, and every judgement below is inference. Consulted
+   * before the resolvers so a row we are actively sending is never read against the chain at all.
+   *
+   * It is deliberately *not* a substitute for the age checks. Those answer the question this cannot
+   * — whether a row belongs to a process that no longer exists — and a restarted bot's set is
+   * empty, so nothing here keeps a crash leftover alive.
+   */
+  isSending?: (id: string) => boolean;
 }): Promise<ReconcileSummary> {
-  const { store, reader, signer, logger, graceMs, reclaimMarginBlocks } = args;
+  const { store, reader, signer, logger, graceMs, reclaimMarginBlocks, isSending } = args;
   const now = args.now ?? Date.now;
   const inflight = await store.reconcile();
   const summary: ReconcileSummary = {
@@ -336,6 +348,14 @@ export async function reconcilePending(args: {
 
   const nonces = { latest, pending };
   for (const intent of inflight) {
+    // A send this process is still running. Skipped before anything is read or judged: it is live
+    // by construction, and the alternative is failing a sibling engine's claim out from under it
+    // while it queues for the shared nonce lock. See `isSending`.
+    if (isSending?.(intent.id)) {
+      summary.stillInFlight += 1;
+      continue;
+    }
+
     // Reported, not acted on. Which answer a disagreeing clock should get is genuinely unknown:
     // holding the row costs its subject the lead, freeing it risks re-driving an action a live
     // process is still signing. So the row is resolved exactly as it would have been, and a human

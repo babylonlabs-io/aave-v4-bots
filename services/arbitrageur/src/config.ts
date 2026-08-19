@@ -18,6 +18,7 @@ import {
   indexerEnvFields,
   nonNegativeIntSchema,
   parseEnv,
+  portSchema,
   positiveIntSchema,
   riskEnvFields,
   runtimeEnvFields,
@@ -82,7 +83,18 @@ const envSchema = z.object({
   // throttle between broadcasts for rate-limited RPCs — not a per-acquisition pause.
   VAULT_PROCESSING_DELAY_MS: nonNegativeIntSchema.optional().default("0"),
   MAX_SLIPPAGE_BPS: bpsSchema.optional().default("100"),
-  METRICS_PORT: positiveIntSchema.optional().default("9091"),
+  METRICS_PORT: portSchema.optional().default("9091"),
+  /**
+   * Interface the metrics/health server binds. Unset ⇒ every interface, which is what a container
+   * publishing this port to a scrape network needs — and what this has always done.
+   *
+   * Worth setting on a host where the port is not already behind a network policy: `/metrics` is
+   * unauthenticated, and its gauges carry the signer and treasury addresses, their live balances,
+   * and the allowance standing to the router. Each is on chain, but the endpoint hands over the
+   * process-to-address linkage in one place, to a caller who needed to know no addresses first.
+   * `RISK_CONTROL_HOST` is the same knob for the kill switch, which defaults to loopback instead.
+   */
+  METRICS_HOST: z.string().min(1).optional(),
 
   // Retry configuration (optional)
   RETRY_MAX_ATTEMPTS: positiveIntSchema.optional().default("3"),
@@ -135,6 +147,8 @@ export interface Config extends ArbitrageEngineParams, RiskSettings, IndexerSett
 
   // Metrics/health HTTP server port
   metricsPort: number;
+  /** Interface the metrics/health server binds; unset ⇒ every interface. */
+  metricsHost?: string;
 
   // How the bot retries the indexer. Both engines this process may run take it as-is.
   retryConfig: RetryConfig;
@@ -237,6 +251,7 @@ export function loadConfig(): Config {
     vaultProcessingDelayMs: Number.parseInt(env.VAULT_PROCESSING_DELAY_MS, 10),
     maxSlippageBps: Number.parseInt(env.MAX_SLIPPAGE_BPS, 10),
     metricsPort: Number.parseInt(env.METRICS_PORT, 10),
+    metricsHost: env.METRICS_HOST,
     retryConfig,
     txReceiptTimeoutMs,
     secrets: buildSecretsConfig(env),

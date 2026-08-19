@@ -94,6 +94,19 @@ interface BaseExecutor {
   commit(call: ContractCall, claim: IntentClaim): Promise<CommitResult>;
 
   /**
+   * Transactions of this signer's that are still in flight, as of the last `reconcile()`.
+   *
+   * `undefined` when this process keeps no store: with nothing recording what was broadcast, "still
+   * in flight" is a question that has no answer here — which is not the same as an empty set, and a
+   * caller must not read it as one.
+   *
+   * It exists for the risk gate's outflow holds. A held outflow whose transaction never mines has
+   * no receipt to retire it, and only the intent record can say the chain has moved past it. See
+   * `retireSettledOutflows`.
+   */
+  inFlightTxHashes(): Promise<ReadonlySet<Hex> | undefined>;
+
+  /**
    * Record a committed intent's on-chain outcome from the engine's receipt phase. Best-effort and
    * never throws — the chain is the source of truth and reconcile resolves any drift. No-op without
    * a store.
@@ -206,6 +219,7 @@ export function createAutoExecutor(deps: {
     // makes every later `ensureAllowance` a duplicate.
     reconcile: () => crash.reconcile(),
     resyncNonces: () => crash.resyncNonces(),
+    inFlightTxHashes: () => crash.inFlightTxHashes(),
     // Guarded on the hash the receipt is for: intent ids are reused when a row is revived, so a late
     // outcome would otherwise stamp the old attempt's verdict onto the new transaction.
     recordOutcome: (id, outcome) =>
@@ -244,6 +258,8 @@ export function createAutoExecutor(deps: {
       // nonce sequence under two different sets of assumptions about who can see them.
       let hash: Hex;
       let signedHash: Hex | undefined;
+      // See `commit`: this process's own reconcile must not judge a row it is still sending.
+      if (intentId) crash.beginSend(intentId);
       try {
         assertCanBroadcast("approval");
         hash = await crash.send((nonce) =>
@@ -283,6 +299,12 @@ export function createAutoExecutor(deps: {
           );
         }
         throw error;
+      } finally {
+        // The send is over either way, and the row now carries what reconcile needs to judge it on
+        // its own. Releasing here rather than after the receipt keeps the set to the one window it
+        // is for: a claimed row with no nonce and no hash, which nothing else can tell apart from a
+        // dead process's leftover.
+        if (intentId) crash.endSend(intentId);
       }
       if (intentId) {
         await crash.transition(intentId, "submitted", {
@@ -316,6 +338,10 @@ export function createAutoExecutor(deps: {
       // can resolve the row and a later cycle revive it under the same id — `markPending` refuses
       // that, and everything downstream must then keep its hands off the row it now points at.
       let signedHash: Hex | undefined;
+      // Held for the whole send, so this process's own reconcile — the sibling engine's, in the
+      // arbitrageur — does not judge a row we are still sending. Released in `finally`, because a
+      // leaked id would be skipped by every later reconcile and its subject blocked for good.
+      if (intentId) crash.beginSend(intentId);
       try {
         assertCanBroadcast(claim.action);
         // The reserved nonce arrives here under the allocator's lock. The sender signs it locally
@@ -357,6 +383,8 @@ export function createAutoExecutor(deps: {
           broadcastAttempted: !(error instanceof PreBroadcastError),
           error: message,
         };
+      } finally {
+        if (intentId) crash.endSend(intentId);
       }
     },
   };
@@ -377,6 +405,13 @@ export interface Submission {
   reclaimMarginBlocks: number;
   /** Stamps each submitted transaction with the block past which it can no longer be included. */
   horizon: (hash: Hex) => Promise<number>;
+  /**
+   * Floor for the tip on every transaction this executor signs. Travels with the relay route for
+   * the same reason the reader does: a private transaction the node priced for the public mempool
+   * is one the relay accepts and no builder includes, which the fence then reclaims and the engine
+   * re-drives at the same price. See `applyPriorityFeeFloor` in `@repo/execution`.
+   */
+  minPriorityFeeWei: bigint;
 }
 
 /**
@@ -405,11 +440,13 @@ export interface AutoExecutorDeps {
 }
 
 export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecutor {
-  const { submitter, reader, reclaimMarginBlocks, horizon } = deps.submission ?? {};
+  const { submitter, reader, reclaimMarginBlocks, horizon, minPriorityFeeWei } =
+    deps.submission ?? {};
   const sender = createTxSender(
     deps.publicClient,
     deps.walletClient,
-    submitter?.send.bind(submitter)
+    submitter?.send.bind(submitter),
+    { minPriorityFeeWei }
   );
   const crash = createCrashSafety({
     store: deps.store,
@@ -566,6 +603,10 @@ export function createManualExecutor(deps: {
       await emitStuck();
     },
     resyncNonces: () => Promise.resolve(),
+    // MANUAL always has a store (`buildExecutionConfig` requires it), so this can always answer.
+    async inFlightTxHashes() {
+      return new Set((await store.reconcile()).map((i) => i.txHash).filter((h) => h !== null));
+    },
     async recordOutcome(id, outcome) {
       // Best-effort, mirroring `CrashSafety.transition`. Rarely reached in MANUAL (proposals resolve
       // via reconcile / markBroadcast, not a receipt phase), but correct when it is.

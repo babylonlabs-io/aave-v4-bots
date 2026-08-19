@@ -349,6 +349,161 @@ describe("@repo/risk createRiskGate", () => {
       spend: [{ owner: SIGNER, token, amount }],
     });
 
+    const TX = "0xdeadbeef";
+
+    // The regression this whole mechanism exists for. A tx that was broadcast and never resolved is
+    // still owed by this balance, and a read taken while it sits un-mined reports the money as
+    // though it were there. Clearing the count on that read hands the same balance out twice — and
+    // in the arbitrageur the second spender is the *other* engine, against the same signer.
+    describe("an outflow whose transaction has not settled", () => {
+      const held = () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 100n, 10n);
+        gate.openSlot(spending(60n)).settle({ ok: false, unresolved: true, txHash: TX });
+        return gate;
+      };
+
+      it("survives a refresh whose read cannot yet reflect it", () => {
+        const gate = held();
+        // The read still says 100 precisely because the tx has not mined.
+        gate.setAvailable(acct(), 100n, 11n);
+
+        expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+        expect(gate.openSlot(spending(40n)).allowed).toBe(true);
+        expect(gate.outflows()).toEqual([{ txHash: TX }]);
+      });
+
+      it("is released only on evidence, and then the balance stands on its own", () => {
+        const gate = held();
+        // The tx mined: the read is taken at a height that includes it, and the hold retired in the
+        // same step — capacity must never sit between the two, holding neither.
+        gate.retireOutflow(TX);
+        gate.setAvailable(acct(), 40n, 12n);
+
+        expect(gate.openSlot(spending(40n)).allowed).toBe(true);
+        expect(gate.outflows()).toEqual([]);
+      });
+
+      // The failure the naive fix (subtract the balance delta) gets wrong: an inflow arriving while
+      // the spend is still pending makes the balance look unchanged, or higher.
+      it("is not masked by an inflow that arrives before it lands", () => {
+        const gate = held();
+        gate.setAvailable(acct(), 150n, 11n); // +50 in, the 60 still un-mined
+
+        expect(gate.openSlot(spending(90n)).allowed).toBe(true);
+        expect(gate.openSlot(spending(91n)).allowed).toBe(false);
+      });
+
+      // A receipt proves the tx mined; it does not prove the next read comes from a node that has
+      // that block. So a confirmed spend is held too, on the same evidence rule.
+      it("holds a confirmed spend until a read that covers its block", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 100n, 10n);
+        gate.openSlot(spending(60n)).settle({ ok: true, txHash: TX, minedAtBlock: 11n });
+
+        expect(gate.outflows()).toEqual([{ txHash: TX, minedAtBlock: 11n }]);
+        gate.setAvailable(acct(), 100n, 10n); // a lagging endpoint, still pre-spend
+        expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+      });
+
+      it("holds every token one transaction owes", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 100n, 10n);
+        gate.setAvailable(acct("0xUSDC"), 100n, 10n);
+        gate
+          .openSlot({
+            kind: "liquidation",
+            subject: "0xpos",
+            spend: [
+              { owner: SIGNER, token: WBTC, amount: 60n },
+              { owner: SIGNER, token: "0xUSDC", amount: 70n },
+            ],
+          })
+          .settle({ ok: false, unresolved: true, txHash: TX });
+
+        gate.setAvailable(acct(), 100n, 11n);
+        gate.setAvailable(acct("0xUSDC"), 100n, 11n);
+        expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+        expect(gate.openSlot(spending(70n, "0xUSDC")).allowed).toBe(false);
+
+        // One hash, one retirement, both tokens freed.
+        gate.retireOutflow(TX);
+        expect(gate.openSlot(spending(100n)).allowed).toBe(true);
+      });
+
+      // `settle` is idempotent by design (the precise path plus a `finally` backstop), and the
+      // arbitrage engine settles the same slot from more than one place.
+      it("counts one transaction once, however often its slot is settled", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 100n, 10n);
+        const slot = gate.openSlot(spending(60n));
+        slot.settle({ ok: false, unresolved: true, txHash: TX });
+        slot.settle({ ok: false, unresolved: true, txHash: TX });
+
+        gate.setAvailable(acct(), 100n, 11n);
+        expect(gate.openSlot(spending(40n)).allowed).toBe(true);
+      });
+
+      // Router funding keeps its own account of a signed authorization, which outlives the
+      // transaction: a relay can still execute it after ours resolves. Two ledgers, one amount.
+      it("does not hold a spend the funding mode accounts for itself", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 100n, 10n);
+        gate
+          .openSlot({
+            kind: "vault-acquisition",
+            subject: "0xvault",
+            spend: [{ owner: SIGNER, token: WBTC, amount: 60n, accounting: "caller" as const }],
+          })
+          .settle({ ok: false, unresolved: true, txHash: TX });
+
+        expect(gate.outflows()).toEqual([]);
+        // The published figure is already net of it, so the gate must not subtract it again.
+        gate.setAvailable(acct(), 40n, 11n);
+        expect(gate.openSlot(spending(40n)).allowed).toBe(true);
+      });
+
+      // Without a transaction there is nothing evidence could ever be about, so this one keeps the
+      // old behaviour: counted until the next read, which is authoritative.
+      it("falls back to clearing on refresh when there is no transaction to hold by", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 100n, 10n);
+        gate.openSlot(spending(60n)).settle({ ok: false, unresolved: true });
+
+        expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+        gate.setAvailable(acct(), 100n, 11n);
+        expect(gate.openSlot(spending(100n)).allowed).toBe(true);
+      });
+    });
+
+    // Both engines publish the same signer balance, and this is last-writer-wins.
+    describe("snapshot ordering", () => {
+      it("ignores a read older than one already accepted", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 40n, 11n);
+        gate.setAvailable(acct(), 100n, 10n); // started earlier, landed later
+
+        expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+        expect(gate.openSlot(spending(40n)).allowed).toBe(true);
+      });
+
+      it("accepts a read at the same height, which is the same state", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 100n, 11n);
+        gate.setAvailable(acct(), 40n, 11n);
+
+        expect(gate.openSlot(spending(60n)).allowed).toBe(false);
+      });
+
+      it("still accepts reads that carry no height — the ordering guard is opt-in", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 40n, 11n);
+        gate.setAvailable(acct(), 100n);
+
+        expect(gate.openSlot(spending(100n)).allowed).toBe(true);
+      });
+    });
+
     it("blocks an action the signer cannot afford, and frees the reservation on settle", () => {
       const gate = createRiskGate();
       gate.setAvailable(acct(), 100n);

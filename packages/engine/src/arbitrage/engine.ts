@@ -1,4 +1,10 @@
-import { type Address, ContractFunctionRevertedError, type Hex, formatUnits } from "viem";
+import {
+  type Address,
+  BaseError,
+  ContractFunctionRevertedError,
+  type Hex,
+  formatUnits,
+} from "viem";
 
 import { vaultSwapAbi } from "@repo/abis";
 import { waitForReceiptWithTimeout } from "@repo/execution";
@@ -205,8 +211,12 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         // The receipt lookup itself failed — the tx's fate is unknown, so this is not evidence
         // the chain rejected us. Leave the intent live for reconcile and free the slot without
         // blaming the breaker. `unresolved`, not `abandoned`: the tx IS out there, so its WBTC
-        // stays counted as spent until a balance refresh proves otherwise.
-        this.settle(sent[i].slot, { ok: false, unresolved: true }, sent[i].authorizationId);
+        // stays counted as spent — held by its hash until the chain says what became of it.
+        this.settle(
+          sent[i].slot,
+          { ok: false, unresolved: true, txHash: sent[i].hash },
+          sent[i].authorizationId
+        );
         this.metrics.recordError("receipt_fetch_error");
         this.logger.error(`Failed to get receipt for ${sent[i].hash}: ${result.reason}`);
       }
@@ -369,8 +379,12 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       // slot belongs to us from `sent` onward, so this must not escape unsettled — that would leak
       // exposure capacity permanently. The tx's fate is unknown, so free it without blaming the
       // breaker and leave the intent live for reconcile — and keep its WBTC counted as spent,
-      // because the tx was broadcast and may still land.
-      this.settle(prep.entry.slot, { ok: false, unresolved: true }, prep.entry.authorizationId);
+      // held by its hash, because the tx was broadcast and may still land.
+      this.settle(
+        prep.entry.slot,
+        { ok: false, unresolved: true, txHash: prep.entry.hash },
+        prep.entry.authorizationId
+      );
       this.metrics.recordError("receipt_fetch_error");
       this.logger.error(`Failed to get receipt for ${prep.entry.hash}: ${error}`);
       return "skipped";
@@ -589,8 +603,16 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       // action — and it holds no exposure slot to release. (Those surface via `metrics`.)
       if (slot) this.settle(slot, { ok: false }, authorizationId);
       let errorMsg = "Unknown error";
-      if (error instanceof ContractFunctionRevertedError) {
-        errorMsg = `${error.data?.errorName || "Contract reverted"}`;
+      // viem wraps an on-chain revert in ContractFunctionExecutionError and hangs the
+      // ContractFunctionRevertedError off its cause chain, so testing what was thrown directly
+      // never matches — every revert would be miscounted as an infrastructure error and logged
+      // without its name. Walk the chain instead.
+      const revert =
+        error instanceof BaseError
+          ? error.walk((e) => e instanceof ContractFunctionRevertedError)
+          : null;
+      if (revert instanceof ContractFunctionRevertedError) {
+        errorMsg = revert.data?.errorName || revert.shortMessage;
         this.metrics.recordError("contract_revert");
       } else if (error instanceof Error) {
         errorMsg = error.message;
@@ -624,14 +646,23 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         // one shared cause (a gap burned by the liquidation engine sharing this nonce allocator)
         // would otherwise land N failures simultaneously and halt a healthy bot.
         // The intent stays live (submitted) — reconcile resolves it against the chain.
-        this.settle(slot, { ok: false, unresolved: true }, authorizationId);
+        // With the hash: the gate holds this outflow by the transaction that owes it, and releases
+        // it only on chain evidence — not on the next refresh, whose read this tx may still be
+        // un-mined behind. (Inventory funding only; router funding accounts for its own batch.)
+        this.settle(slot, { ok: false, unresolved: true, txHash: hash }, authorizationId);
         this.logger.warn(`Transaction receipt timeout for vault ${vaultId}`);
         this.metrics.recordError("tx_timeout");
         return "skipped";
       }
 
       if (receipt.status === "success") {
-        this.settle(slot, { ok: true }, authorizationId);
+        // The height it mined at travels too, so the hold is retired by the first balance read that
+        // can actually report it rather than by the next one to arrive.
+        this.settle(
+          slot,
+          { ok: true, txHash: hash, minedAtBlock: receipt.blockNumber },
+          authorizationId
+        );
         this.logger.info(`Vault acquired and redeemed in block ${receipt.blockNumber}`);
         this.metrics.recordVaultAcquired(currentDebt);
         if (intentId)
@@ -652,7 +683,17 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         // from this transaction and anyone may submit that authorization. Releasing the
         // reservation in that case would hand the same balance out twice in one cycle.
         const verdict = await this.spendVerdict(vaultId as Hex, authorizationId);
-        this.settle(slot, { ok: false, contended: true, ...verdict }, authorizationId);
+        this.settle(
+          slot,
+          {
+            ok: false,
+            contended: true,
+            txHash: hash,
+            minedAtBlock: receipt.blockNumber,
+            ...verdict,
+          },
+          authorizationId
+        );
         if ("spendUnknown" in verdict) {
           classification = "lost race (spend unknown)";
         } else if (verdict.spent) {

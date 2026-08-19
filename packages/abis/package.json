@@ -8,6 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "gen:errors": "node scripts/gen-protocol-errors.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

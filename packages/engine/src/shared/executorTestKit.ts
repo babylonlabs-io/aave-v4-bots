@@ -14,7 +14,13 @@ import { createChainReader } from "./liveness";
 // production factory keeps a single honest input shape.
 
 /** The production wiring, minus the submission it replaces, plus the sender it brings instead. */
-export type TestExecutorDeps = Omit<AutoExecutorDeps, "submission"> & { sender: TxSender };
+export type TestExecutorDeps = Omit<AutoExecutorDeps, "submission"> & {
+  sender: TxSender;
+  /** Injectable clock, so a test can age an intent past a reconcile window without waiting. */
+  now?: () => number;
+  /** See `CrashSafetyConfig.graceMs`. */
+  graceMs?: number;
+};
 
 export function createAutoExecutorWithSender(deps: TestExecutorDeps): AutoExecutor {
   const crash = createCrashSafety({
@@ -23,6 +29,8 @@ export function createAutoExecutorWithSender(deps: TestExecutorDeps): AutoExecut
     reader: createChainReader(deps.publicClient),
     signer: deps.sender.identity.from,
     logger: deps.logger,
+    now: deps.now,
+    graceMs: deps.graceMs,
   });
   return createAutoExecutor({
     crash,

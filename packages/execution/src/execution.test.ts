@@ -44,13 +44,20 @@ const CALL: ContractCall = {
 };
 
 /** Wallet/public client stubs recording the assemble → sign → broadcast sequence. */
-function txClients(over: { sendRawTransaction?: () => Promise<`0x${string}`> } = {}) {
+function txClients(
+  over: {
+    sendRawTransaction?: () => Promise<`0x${string}`>;
+    /** What the node prices the transaction at. Omitted ⇒ an EIP-1559 pair with a 1 wei tip. */
+    fees?: Record<string, bigint>;
+  } = {}
+) {
   const walletClient = {
     account: { address: SIGNER },
     chain: { id: 31337 },
     prepareTransactionRequest: vi.fn(async (req: { nonce?: number }) => ({
       ...req,
       nonce: req.nonce ?? 42, // viem fills it from the chain when the caller left it out
+      ...(over.fees ?? { maxFeePerGas: 101n, maxPriorityFeePerGas: 1n }),
     })),
     signTransaction: vi.fn().mockResolvedValue(SERIALIZED),
   };
@@ -253,6 +260,80 @@ describe("@repo/execution", () => {
 
       await alloc.resync(() => Promise.resolve(10)); // chain shows 10 free (e.g. a dropped tx)
       expect(await alloc.withNonce(async (n) => n)).toBe(10);
+    });
+  });
+
+  // The node prices a transaction for the public mempool. A privately-submitted one is not in that
+  // market at all: it is offered to builders, never pooled, and never re-priced — so an under-tipped
+  // one is not slow, it never lands, and the fence re-drives it at the same price. The floor is the
+  // operator's only lever on that, and it has to bite before signing, because the relay is handed
+  // bytes that are already signed.
+  describe("priority-fee floor", () => {
+    const signed = (walletClient: { signTransaction: { mock: { calls: unknown[][] } } }) =>
+      walletClient.signTransaction.mock.calls[0][0] as {
+        maxFeePerGas: bigint;
+        maxPriorityFeePerGas: bigint;
+      };
+
+    it("raises a tip the node priced below the floor, and the fee cap with it", async () => {
+      const { walletClient, publicClient } = txClients();
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg,
+        undefined,
+        { minPriorityFeeWei: 5n }
+      );
+
+      await sender.send(CALL);
+
+      // Both move by the same delta, so the 100 wei of base-fee headroom the node left survives the
+      // bump. Raising the tip alone would eat it — and at a high base fee, exceed the cap outright.
+      expect(signed(walletClient)).toMatchObject({ maxPriorityFeePerGas: 5n, maxFeePerGas: 105n });
+    });
+
+    it("leaves a tip that already clears the floor alone", async () => {
+      const { walletClient, publicClient } = txClients({
+        fees: { maxFeePerGas: 200n, maxPriorityFeePerGas: 9n },
+      });
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg,
+        undefined,
+        { minPriorityFeeWei: 5n }
+      );
+
+      await sender.send(CALL);
+
+      expect(signed(walletClient)).toMatchObject({ maxPriorityFeePerGas: 9n, maxFeePerGas: 200n });
+    });
+
+    it("does not touch the node's price when no floor is configured", async () => {
+      const { walletClient, publicClient } = txClients();
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg
+      );
+
+      await sender.send(CALL);
+
+      expect(signed(walletClient)).toMatchObject({ maxPriorityFeePerGas: 1n, maxFeePerGas: 101n });
+    });
+
+    // Refused rather than sent at whatever the node said: a floor was configured because the
+    // operator judged an un-floored private submission would not land, and honouring it silently
+    // in name only reproduces exactly the failure it was set to prevent.
+    it("refuses to sign a legacy-priced transaction under a floor, without broadcasting", async () => {
+      const { walletClient, publicClient } = txClients({ fees: { gasPrice: 100n } });
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg,
+        undefined,
+        { minPriorityFeeWei: 5n }
+      );
+
+      await expect(sender.send(CALL)).rejects.toThrow(PreBroadcastError);
+      expect(walletClient.signTransaction).not.toHaveBeenCalled();
+      expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
     });
   });
 

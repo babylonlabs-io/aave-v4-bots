@@ -92,6 +92,23 @@ export interface ActionOutcome {
    * whichever classification is established.
    */
   spendUnknown?: boolean;
+  /**
+   * The transaction that carries this action's declared spend, once one has been broadcast.
+   *
+   * It is what the gate holds an unconfirmed outflow *by*, and it has to be the transaction hash
+   * rather than the intent id: an intent id names a **subject**, and its row is revived in place
+   * for the next attempt (see `StateStore.recordIntent`), so the same id can denote two different
+   * transactions and a hold retired for one would free the other's money.
+   */
+  txHash?: string;
+  /**
+   * The block the transaction was mined in, when a receipt said so.
+   *
+   * Lets the hold be retired without asking the chain again: any balance read at or after this
+   * height already reports whatever the transaction moved. Absent means "we do not know it mined",
+   * which is not the same as "it did not" — an `unresolved` outcome is exactly that state.
+   */
+  minedAtBlock?: bigint;
 }
 
 /**
@@ -112,6 +129,19 @@ export interface TokenAccount {
 export interface TokenSpend extends TokenAccount {
   /** WORST CASE the tx may transfer — the slippage ceiling, or the buffered repay amount. */
   amount: bigint;
+  /**
+   * Who keeps counting this outflow once the slot settles — see `RiskGate.setAvailable`.
+   *
+   * `gate` (default) is the ordinary case: the transaction *is* the authorization, so once it is
+   * broadcast the gate holds the amount until the chain says what became of it.
+   *
+   * `caller` says the funding mode has its own accounting and the gate must not hold the amount a
+   * second time. Router funding signs a bearer authorization a permissionless relay can execute:
+   * it stays live after our transaction resolves — until it is observed executing or its deadline
+   * passes — so it outlives the transaction the gate can see, and `RouterFunding.refreshInventory`
+   * publishes a balance already net of it. Holding it here as well would subtract it twice.
+   */
+  accounting?: "gate" | "caller";
 }
 
 /**
@@ -199,11 +229,42 @@ export interface RiskGate {
   minProfit(): bigint | undefined;
   /**
    * Tell the gate `owner`'s spendable balance of `token`, from a fresh chain read. Authoritative:
-   * it replaces the previous figure and clears what the gate had counted as spent since the last
-   * one, so drift from inflows (liquidation payouts, redemptions, transfers in) self-corrects every
-   * time it is called. Engines call it once per cycle for each account/token pair they spend.
+   * it replaces the previous figure, so drift from inflows (liquidation payouts, redemptions,
+   * transfers in) self-corrects every time it is called. Engines call it once per cycle for each
+   * account/token pair they spend.
+   *
+   * What it does **not** clear is a hold: an outflow whose transaction is broadcast but whose fate
+   * the chain has not yet settled is still owed by this balance, and a read taken while that
+   * transaction is un-mined reports the money as if it were still there. Those are released by
+   * `retireOutflow`, on evidence, never by the passage of a refresh.
+   *
+   * `block` is the height the read was taken at. Supply it: two engines refresh the same account
+   * concurrently and the last writer wins, so without it a read taken earlier can overwrite a
+   * later one and raise capacity with no inflow behind it. A snapshot older than the newest one
+   * already accepted for that account is ignored.
    */
-  setAvailable(account: TokenAccount, amount: bigint): void;
+  setAvailable(account: TokenAccount, amount: bigint, block?: bigint): void;
+  /**
+   * Outflows the gate is still holding — broadcast transactions whose effect on the balance is not
+   * yet proven. The caller is the only party that can settle them: the gate is synchronous and
+   * reads no chain.
+   *
+   * `minedAtBlock` is set when a receipt already told us the height, so a refresh at or past it can
+   * retire the hold with no further RPC.
+   */
+  outflows(): readonly { txHash: string; minedAtBlock?: bigint }[];
+  /**
+   * Release a held outflow, because a balance read that accounts for it is about to be published.
+   *
+   * Only two things are evidence: a receipt at or below the height of that read (the money moved,
+   * or the transaction reverted and it did not — either way the read is the truth), or a transaction
+   * the chain no longer has any way to include. Elapsed time is not evidence, and never retires a
+   * hold: a claim on this balance does not expire because a timer did.
+   *
+   * Call it in the same synchronous step as the `setAvailable` it belongs to, so no action can be
+   * judged against a balance that has dropped the hold but not yet gained the fresh read.
+   */
+  retireOutflow(txHash: string): void;
   /** Declared spend currently reserved by in-flight actions, per account/token — logs and metrics. */
   reserved(account: TokenAccount): bigint;
   /**

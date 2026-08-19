@@ -1,5 +1,7 @@
 // Spoke ABI - used by liquidator for reserve discovery
 
+import { protocolErrorsAbi } from "./protocolErrors";
+
 export const spokeAbi = [
   {
     type: "function",
@@ -80,4 +82,7 @@ export const spokeAbi = [
       { name: "collateralSharesToLiquidator", type: "uint256", indexed: false },
     ],
   },
+  // See `protocolErrors.ts`. The spoke's own errors are the bulk of these, but a read through it
+  // can still surface one raised further in.
+  ...protocolErrorsAbi,
 ] as const;

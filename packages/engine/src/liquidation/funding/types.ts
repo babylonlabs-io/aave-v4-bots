@@ -126,7 +126,7 @@ export interface FundingMetrics {
  * `ensureAllowance` and nothing else: committing is the engine's job, and a strategy that could
  * commit would be able to bypass the risk slot.
  */
-export type FundingExecutor = Pick<Executor, "identity" | "ensureAllowance">;
+export type FundingExecutor = Pick<Executor, "identity" | "ensureAllowance" | "inFlightTxHashes">;
 
 /**
  * Everything a funding strategy draws on.

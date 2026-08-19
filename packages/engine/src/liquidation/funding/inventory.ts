@@ -1,7 +1,14 @@
 import { adapterAbi } from "@repo/abis";
 import { readBalance } from "@repo/chain";
 import type { ContractCall } from "@repo/execution";
-import { type Address, ContractFunctionRevertedError, type PublicClient, maxUint256 } from "viem";
+import {
+  type Address,
+  BaseError,
+  ContractFunctionRevertedError,
+  type PublicClient,
+  maxUint256,
+} from "viem";
+import { retireSettledOutflows } from "../../shared/outflows";
 import { sequentialPriorityOrder } from "../domain";
 import type {
   FundedCandidate,
@@ -81,11 +88,21 @@ export class InventoryFunding implements LiquidationFunding {
     const owner = executor.identity.from;
     const tokens = Array.from(new Set<Address>([...this.deps.debtTokens(), wbtcAddress]));
 
+    // Every balance in this refresh is read at one height, and that height is what the gate's
+    // outflow holds are judged against: a hold is only retired by evidence that this read already
+    // accounts for it. Unpinned reads could not support that comparison — each would be "latest"
+    // at a different moment, and two engines publishing the same account would race.
+    const block = await publicClient.getBlockNumber();
     const balances = await Promise.all(
-      tokens.map((token) => readBalance(publicClient, token, owner))
+      tokens.map((token) => readBalance(publicClient, token, owner, block))
     );
+    await retireSettledOutflows({ publicClient, risk, executor, block });
+
+    // Synchronous from here: retiring a hold and publishing the read that covers it must not be
+    // separated by an await, or the other engine can be judged in between — against a balance that
+    // has dropped the hold and not yet gained the spend it was holding.
     for (let i = 0; i < tokens.length; i++) {
-      risk.setAvailable({ owner, token: tokens[i] }, balances[i]);
+      risk.setAvailable({ owner, token: tokens[i] }, balances[i], block);
     }
   }
 
@@ -112,8 +129,15 @@ export class InventoryFunding implements LiquidationFunding {
         metrics.recordSimulationFailed();
         const reason = result.reason;
         let errorMsg = "Unknown error";
-        if (reason instanceof ContractFunctionRevertedError) {
-          errorMsg = reason.data?.errorName || reason.message;
+        // The rejection is viem's ContractFunctionExecutionError, which carries the
+        // ContractFunctionRevertedError on its cause chain rather than being one — so this has to
+        // walk to reach the decoded name instead of testing `reason` itself.
+        const revert =
+          reason instanceof BaseError
+            ? reason.walk((e) => e instanceof ContractFunctionRevertedError)
+            : null;
+        if (revert instanceof ContractFunctionRevertedError) {
+          errorMsg = revert.data?.errorName || revert.shortMessage;
         } else if (reason instanceof Error) {
           errorMsg = reason.message;
         }

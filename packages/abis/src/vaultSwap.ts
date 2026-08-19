@@ -1,5 +1,7 @@
 // VaultSwap ABI - methods used by arbitrageur bot
 
+import { protocolErrorsAbi } from "./protocolErrors";
+
 export const vaultSwapAbi = [
   // Acquire vault (redemption happens atomically inside). `msg.sender` must be a
   // registered vault keeper — the vault is redeemed to its registered BTC key.
@@ -92,64 +94,11 @@ export const vaultSwapAbi = [
     name: "RemovedVault",
     inputs: [{ name: "vaultId", type: "bytes32", indexed: true }],
   },
-  // Custom errors reachable from the acquisition path (`swapWbtcForVault`,
-  // `swapWbtcForVaultOnBehalf`) and from `previewEscrowedVaults`, which validates every vault in
-  // the batch. Without these viem cannot decode a revert and logs the raw 4-byte selector plus
-  // "not found on the provided ABI" — so the routine case, losing a race, reads like an ABI bug.
-  // Names and argument types must match `AdapterErrors`; the selector is what decoding keys on.
-  {
-    type: "error",
-    name: "VaultNotAcquirable",
-    inputs: [],
-  },
-  {
-    type: "error",
-    name: "SlippageExceeded",
-    inputs: [
-      { name: "minOut", type: "uint256" },
-      { name: "actualOut", type: "uint256" },
-    ],
-  },
-  {
-    type: "error",
-    name: "InvalidEscrowedVaultStatus",
-    inputs: [],
-  },
-  {
-    type: "error",
-    name: "ProfitLowerboundNotReached",
-    inputs: [],
-  },
-  {
-    type: "error",
-    name: "ZeroAmount",
-    inputs: [],
-  },
-  {
-    type: "error",
-    name: "ZeroAddress",
-    inputs: [],
-  },
-  // BTCVaultSwap uses its own pause/authorisation errors (TBV_*), not OpenZeppelin's Pausable.
-  // `TBV_Paused` is what a halted protocol looks like to the bot; `TBV_Unauthorized` is what an
-  // unregistered vault keeper looks like — both are operator problems, not chain problems, and
-  // both are worth reading in the log rather than as a bare selector.
-  {
-    type: "error",
-    name: "TBV_Paused",
-    inputs: [],
-  },
-  {
-    type: "error",
-    name: "TBV_Unauthorized",
-    inputs: [],
-  },
-  // A failed WBTC pull (allowance or balance short at execution time).
-  {
-    type: "error",
-    name: "SafeERC20FailedOperation",
-    inputs: [{ name: "token", type: "address" }],
-  },
+  // Every custom error in the call graph, not just BTCVaultSwap's own. The acquisition path
+  // (`swapWbtcForVault`, `swapWbtcForVaultOnBehalf`) reverts from inside the registries at least
+  // as often as it does from this contract — `UnauthorizedVaultKeeper()` is an ApplicationRegistry
+  // error — and viem can only name a selector the call's own ABI declares. See `protocolErrors.ts`.
+  ...protocolErrorsAbi,
 ] as const;
 
 /** Every custom error `vaultSwapAbi` can decode, as a union of their names. */

@@ -7,6 +7,8 @@
 
 import type { ContractErrorArgs, ContractFunctionArgs } from "viem";
 
+import { protocolErrorsAbi } from "./protocolErrors";
+
 export const liquidationRouterAbi = [
   // The entry point. `flashDatas` order is load-bearing: venues are set up and drawn in this order
   // and repaid in reverse as the callbacks unwind.
@@ -81,6 +83,12 @@ export const liquidationRouterAbi = [
       },
     ],
   },
+  // Everything the adapter, registries and spoke this router calls can raise. `BelovedError` is
+  // restated above rather than left to this union alone, because the probe depends on it and the
+  // union is regenerated from whichever contracts the generator is pointed at. Re-declaring an
+  // entry the union also carries is harmless — decoding matches on selector and takes the first.
+  // See `protocolErrors.ts`.
+  ...protocolErrorsAbi,
 ] as const;
 
 // The argument structs, derived from the ABI above rather than restated. Hand-writing them would

@@ -12,9 +12,10 @@ afterEach(() => {
   for (const s of servers.splice(0)) s.close();
 });
 
-async function metricsServer(): Promise<string> {
+async function listening(host?: string) {
   const server = startObservabilityServer({
     port: 0, // ephemeral — never collide with a real metrics port in CI
+    ...(host === undefined ? {} : { host }),
     ponderUrl: "http://127.0.0.1:1",
     ponderHealthEndpoint: "/positions",
     getMetrics: async () => "bot_up 1",
@@ -22,7 +23,11 @@ async function metricsServer(): Promise<string> {
   });
   servers.push(server);
   await new Promise((resolve) => server.once("listening", resolve));
-  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return server.address() as AddressInfo;
+}
+
+async function metricsServer(): Promise<string> {
+  return `http://127.0.0.1:${(await listening()).port}`;
 }
 
 describe("startObservabilityServer", () => {
@@ -34,6 +39,24 @@ describe("startObservabilityServer", () => {
 
   it("serves /metrics with a query string", async () => {
     expect((await fetch(`${await metricsServer()}/metrics?foo=1`)).status).toBe(200);
+  });
+
+  // Which interfaces can reach an unauthenticated `/metrics` is a deployment decision, and the
+  // gauges it serves carry the signer and treasury addresses with their live balances — so the
+  // host has to be something an operator can actually set, not just something we log.
+  describe("bind host", () => {
+    it("binds every interface when none is configured — what it has always done", async () => {
+      expect((await listening()).address).toBe("::");
+    });
+
+    it("binds only the configured interface", async () => {
+      expect((await listening("127.0.0.1")).address).toBe("127.0.0.1");
+    });
+
+    it("still serves metrics there", async () => {
+      const { port } = await listening("127.0.0.1");
+      expect((await fetch(`http://127.0.0.1:${port}/metrics`)).status).toBe(200);
+    });
   });
 
   // No configuration of this server can expose a route that stops trading.

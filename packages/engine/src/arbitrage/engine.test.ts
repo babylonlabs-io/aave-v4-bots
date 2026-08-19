@@ -116,6 +116,10 @@ function createMockClients() {
       waitForTransactionReceipt: vi
         .fn()
         .mockResolvedValue({ status: "success", blockNumber: 123n }),
+      // Inventory refresh pins every balance to one height, and the gate's outflow holds are
+      // retired against it — see `retireSettledOutflows`.
+      getBlockNumber: vi.fn().mockResolvedValue(200n),
+      getTransactionReceipt: vi.fn().mockResolvedValue({ status: "success", blockNumber: 123n }),
     },
   };
 }

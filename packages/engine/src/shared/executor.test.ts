@@ -221,6 +221,133 @@ describe("createAutoExecutor", () => {
     });
   });
 
+  // The dual-engine case end to end. Both engines share ONE executor (hence one `CrashSafety`), and
+  // engine B's cycle opens with `reconcile()` while engine A's send is mid-flight — queued behind B
+  // on the shared nonce lock, or waiting on a slow relay. A is claimed but not yet signed, so its
+  // row is `pending` with a null nonce and hash, indistinguishable from what a *dead* process
+  // leaves; only age separates them, and the queue wait is charged to that age.
+  describe("a send this process is still running is not judged by its own reconcile", () => {
+    const midSend = () => {
+      let clock = 1_700_000_000_000;
+      let release!: () => void;
+      const reached = new Promise<void>((r) => {
+        release = r;
+      });
+      const store = createMemoryStateStore(() => clock);
+      const exec = createAutoExecutorWithSender({
+        sender: autoSender({
+          // Blocks between the claim and `onSigned` — the window where the row carries no evidence.
+          send: vi.fn(async (call, onSigned) => {
+            await reached;
+            await onSigned?.({
+              hash: "0xhash" as Hex,
+              nonce: call.nonce ?? 0,
+              serialized: "0xraw",
+            });
+            return "0xhash" as Hex;
+          }),
+        }),
+        store,
+        nonces: allocator(),
+        publicClient: autoPublicClient({
+          // Reconcile resolves a broadcast row by receipt — mocked so a *judged* row is visibly
+          // judged, which is what tells a released hold from a leaked one.
+          getTransactionReceipt: vi.fn(async () => ({ status: "success", blockNumber: 1n })),
+        }),
+        walletClient: autoWallet,
+        txReceiptTimeoutMs: 1000,
+        logger: silentLogger,
+        now: () => clock,
+      });
+      return {
+        exec,
+        store,
+        release,
+        /** Push the claim past the grace window, as a queued send would. */
+        age: () => {
+          clock += 10 * 60_000;
+        },
+      };
+    };
+
+    it("leaves the claim in flight, and the send goes on to broadcast", async () => {
+      const { exec, store, release, age } = midSend();
+      const sending = exec.commit(CALL, claim("p"));
+      await Promise.resolve(); // let commit reach the blocked send
+      age();
+
+      await exec.reconcile();
+
+      // Untouched mid-send: the row is live by construction, not by inference.
+      expect(store.get(idempotencyKey(claim("p")))).toMatchObject({ status: "pending" });
+
+      release();
+      await expect(sending).resolves.toMatchObject({ kind: "broadcast" });
+      expect(store.get(idempotencyKey(claim("p")))).toMatchObject({ status: "submitted" });
+    });
+
+    // The hold is released on every path out of `commit`, including the failing ones — a leaked id
+    // would be skipped by every later reconcile, and skipping happens before anything is read, so
+    // the row would sit in flight for the life of the process whatever the chain says about it.
+    it("releases the hold once the send is over, so a later reconcile judges the row", async () => {
+      const { exec, store, release } = midSend();
+      const sending = exec.commit(CALL, claim("p"));
+      await Promise.resolve();
+      release();
+      await sending;
+
+      await exec.reconcile();
+
+      // Judged against the chain (the receipt says success), which a held id never would be.
+      expect(store.get(idempotencyKey(claim("p")))).toMatchObject({ status: "confirmed" });
+    });
+  });
+
+  // The same guard, against a row that is resolved and *not* revived — an operator giving up on an
+  // action, or a reconcile that settled it. Kept apart from the revival case above because it is the
+  // one where a missing compare-and-set would be invisible: with nobody else holding the row, an
+  // unguarded write lands cleanly, the transaction goes out against a decision to stop it, and the
+  // record reads `pending → submitted` as though nothing happened.
+  describe("when the claimed attempt is resolved terminally mid-send", () => {
+    const resolvedDuringSend = (store: ReturnType<typeof createMemoryStateStore>) =>
+      autoSender({
+        send: vi.fn(async (call, onSigned) => {
+          await store.fail(idempotencyKey(claim("p")), "given up on while we were signing");
+          try {
+            await onSigned?.({
+              hash: "0xhash" as Hex,
+              nonce: call.nonce ?? 0,
+              serialized: "0xraw",
+            });
+          } catch (error) {
+            throw new PreBroadcastError(error);
+          }
+          // Reached only if `onSigned` did not throw — i.e. the guard is gone. The assertions below
+          // then fail on the result rather than on nothing having been sent, which is the point.
+          return "0xhash" as Hex;
+        }),
+      });
+
+    it("refuses to broadcast, without marching the failure breaker", async () => {
+      const store = tickingStore();
+      const { exec } = autoExecutor(resolvedDuringSend(store), store);
+
+      const out = await exec.commit(CALL, claim("p"));
+
+      expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: false });
+    });
+
+    it("leaves the terminal decision standing, with no nonce or hash written back to it", async () => {
+      const store = tickingStore();
+      const { exec } = autoExecutor(resolvedDuringSend(store), store);
+
+      await exec.commit(CALL, claim("p"));
+
+      const row = store.get(idempotencyKey(claim("p")));
+      expect(row).toMatchObject({ status: "failed", nonce: null, txHash: null });
+    });
+  });
+
   it("a PreBroadcastError raised AFTER the durable record still leaves the intent live", async () => {
     // The insufficient-funds case: a lenient node prices the tx, so it is signed and `onSigned`
     // persists nonce + hash, and only then does the broadcast get refused. Two things must hold at
@@ -747,9 +874,13 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
   const wallet = {
     account: { address: "0xsigner" },
     chain: { id: 31337 },
+    // Priced the way a node prices for the public mempool: a 1 wei tip, which is what the relay
+    // floor below has to raise.
     prepareTransactionRequest: vi.fn(async (r: { nonce?: number }) => ({
       ...r,
       nonce: r.nonce ?? 1,
+      maxFeePerGas: 101n,
+      maxPriorityFeePerGas: 1n,
     })),
     signTransaction: vi.fn(async () => "0xraw" as Hex),
   } as unknown as Parameters<typeof createAutoExecutorFromWallet>[0]["walletClient"];
@@ -776,6 +907,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
         reader: createChainReader(publicClient),
         reclaimMarginBlocks: 3,
         horizon: async () => 125,
+        minPriorityFeeWei: 5n,
       },
     });
 
@@ -801,6 +933,53 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
     expect(publicClient.sendRawTransaction).toHaveBeenCalled();
   });
 
+  // The floor is the operator's one inclusion control under private submission, and it is required
+  // with no default because there is no sensible guess. Wired through only here: if this drops the
+  // field, every private transaction is priced by the node for a mempool it will never enter, the
+  // relay accepts it, no builder includes it, and the fence re-drives it at the same price forever.
+  it("prices private transactions at the configured priority-fee floor", async () => {
+    const { publicClient } = clients();
+    const exec = createAutoExecutorFromWallet({
+      nonces: allocator(),
+      publicClient,
+      walletClient: wallet,
+      txReceiptTimeoutMs: 1000,
+      logger: silentLogger,
+      submission: {
+        submitter: { send: async () => "0xprivate" as Hex },
+        reader: createChainReader(publicClient),
+        reclaimMarginBlocks: 3,
+        horizon: async () => 125,
+        minPriorityFeeWei: 5n,
+      },
+    });
+
+    await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    // The tip is raised to the floor, and the fee cap with it — so the headroom the node left for
+    // the base fee (101 - 1) survives the bump rather than being eaten by it.
+    expect(wallet.signTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ maxPriorityFeePerGas: 5n, maxFeePerGas: 105n })
+    );
+  });
+
+  it("leaves the node's price alone in the public mempool", async () => {
+    const { publicClient } = clients();
+    const exec = createAutoExecutorFromWallet({
+      nonces: allocator(),
+      publicClient,
+      walletClient: wallet,
+      txReceiptTimeoutMs: 1000,
+      logger: silentLogger,
+    });
+
+    await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    expect(wallet.signTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ maxPriorityFeePerGas: 1n, maxFeePerGas: 101n })
+    );
+  });
+
   // A `sender` together with a `submission` is not tested here because it does not compile:
   // `AutoExecutorDeps` is a union, so the two are mutually exclusive at the type level rather than
   // caught by a runtime throw.
@@ -824,6 +1003,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
           reader: createChainReader(publicClient),
           reclaimMarginBlocks: 3,
           horizon: async () => 125,
+          minPriorityFeeWei: 5n,
         },
       });
       const input = claim("p");

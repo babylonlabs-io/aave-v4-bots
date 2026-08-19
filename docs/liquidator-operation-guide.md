@@ -406,7 +406,7 @@ METRICS_PORT=9090
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions reserved through the risk gate. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old, missing, malformed, or dated in the future | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
-| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` | No | — |
+| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` — must name at least one contract when set, since an empty map would run the checker against nothing | No | — |
 | `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
 | `RISK_CONTROL_TOKEN_REF` | Secret reference enabling authenticated `/halt`, `/resume`, `/status` | if `RISK_START_HALTED=true` | — |
 | `RISK_CONTROL_PORT` | Kill-switch server port, separate from `METRICS_PORT` | No | `9095` |
@@ -414,6 +414,7 @@ METRICS_PORT=9090
 | `POLLING_INTERVAL_MS` | How often to check positions | No | `12000` |
 | `TX_RECEIPT_TIMEOUT_MS` | How long to wait for each tx receipt | No | `120000` |
 | `METRICS_PORT` | HTTP server port for metrics/health | No | `9090` |
+| `METRICS_HOST` | Interface that server binds. Unset ⇒ every interface. `/metrics` is unauthenticated and labels carry the signer/treasury addresses and their balances, so restrict it where no network policy does | No | all interfaces |
 
 ### 5.4. Execution Modes
 
@@ -694,11 +695,19 @@ curl http://localhost:42069/positions
 curl http://localhost:42069/liquidatable-positions
 ```
 
-The response's `checked` counts the positions actually probed and `unscanned` the
-ones a failed batch cost. The indexer probes the table in batches
-(`POSITION_PROBE_CHUNK_SIZE`, default 25) so one node-side `eth_call` gas cap
-cannot sink the whole scan; a nonzero `unscanned` means the candidate list is
-incomplete for that request.
+The response's `checked` counts the positions the scan has an answer for and
+`unscanned` the ones it does not: a batch that failed as a whole, plus any probe
+that reverted for a reason other than the position being healthy. The indexer
+probes the table in batches (`POSITION_PROBE_CHUNK_SIZE`, default 25) so one
+node-side `eth_call` gas cap cannot sink the whole scan; a nonzero `unscanned`
+means the candidate list is incomplete for that request.
+
+A healthy position reverts by design — that is how the lens reports one — and is
+counted as checked. Everything else that reverts is a deployment that cannot
+answer the question rather than an answer: a reserve whose oracle reads zero, a
+paused dependency, a `LENS_ADDRESS` pointing at the wrong contract. The indexer
+logs one line per cycle naming the causes and their counts, and the positions go
+to `unscanned`, so a fault of that kind can never present as a quiet market.
 
 The default is measured: ~177k gas per healthy probe against a five-reserve
 spoke, rising ~21k per extra spoke reserve and ~3k per vault on the position,
@@ -719,7 +728,7 @@ some providers enforce. Raise it only against a known node cap.
 | "Missing required environment variable" | Configuration error | Check `.env.liquidator` for missing values |
 | "EXECUTION_MODE=MANUAL requires DATABASE_URL" | MANUAL proposals need durable storage | Set `DATABASE_URL` and matching `PERSISTENCE_SCHEMA` |
 | "EXECUTION_MODE=MANUAL is keyless" | A signer or private key is present in MANUAL | Unset signer env and the effective private-key env var |
-| Liquidations missed while positions were unhealthy | A probe batch failed, so the indexer never scanned those positions (`liquidator_errors_total{type="positions_unscanned"}`) | Check the indexer log for "failed as a whole" and the RPC's `eth_call` gas cap; the next cycle retries |
+| Liquidations missed while positions were unhealthy | The indexer had no answer for those positions — a probe batch failed, or the probes reverted for a reason other than "healthy" (`liquidator_errors_total{type="positions_unscanned"}`) | Check the indexer log for "failed as a whole" (RPC `eth_call` gas cap) or "for a reason other than the position being healthy", which names the revert — an oracle at zero or a wrong `LENS_ADDRESS` reverts every probe. The next cycle retries |
 | "halted (...)" | Risk gate is HALTED | `GET /status` and read `reason` — it is the only record of a halt raised while already HALTED; then `POST /resume` if appropriate (409 means the code-hash guard is holding it) |
 
 ### 9.2. Error Types

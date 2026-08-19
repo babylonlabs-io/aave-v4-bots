@@ -69,6 +69,13 @@ export interface CrashSafety {
   resyncNonces(): Promise<void>;
 
   /**
+   * Transactions of this signer's still in flight — the same rows `reconcile` judges, after it has
+   * judged them. `undefined` without a store: nothing here recorded what was broadcast, so the
+   * question has no answer, which a caller must not confuse with "none".
+   */
+  inFlightTxHashes(): Promise<ReadonlySet<Hex> | undefined>;
+
+  /**
    * Broadcast under the shared nonce lock, so the two engines never collide on a nonce. `send`
    * receives the reserved nonce.
    */
@@ -89,6 +96,16 @@ export interface CrashSafety {
     attemptAt?: number;
     existing?: TxIntent;
   }>;
+
+  /**
+   * Mark `id` as being sent by **this process**, from the claim until the send resolves. Reconcile
+   * refuses to judge such an intent — see `sending` — so it must be paired with `endSend` on every
+   * path out, including the failing ones.
+   */
+  beginSend(id: string): void;
+
+  /** Release a `beginSend`. Idempotent; safe to call for an id that was never begun. */
+  endSend(id: string): void;
 
   /**
    * Persist the reserved `nonce` — and, when the tx was signed locally, its `txHash` — on an
@@ -120,6 +137,26 @@ export interface CrashSafety {
 
 export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
   const { store, nonces, reader, signer, logger, graceMs } = config;
+  /**
+   * Intents this process is between claiming and finishing the send of. Reconcile skips them.
+   *
+   * The window the set closes is the one no stored evidence covers. A freshly claimed intent is
+   * `pending` with a null nonce and hash — indistinguishable, in the row, from one a dead process
+   * left behind — and `reconcilePending` separates the two by age, because between two *processes*
+   * age is the only thing there is. Inside one process there is something better: the sender is
+   * still there, holding the claim.
+   *
+   * That distinction is not academic for the arbitrageur, which runs both engines off one signer,
+   * one store, and one nonce allocator. A claim is taken *before* the send queues for that
+   * allocator's lock, so a slow relay ahead of it in the queue is charged against the intent's age;
+   * past the grace window the sibling engine's reconcile fails a row that is seconds from being
+   * broadcast. Nothing unsafe follows — `markPending` refuses the resurrected row and the send
+   * aborts pre-broadcast — but a ready liquidation is thrown away for no reason.
+   *
+   * Memory-only on purpose, so it cannot outlive the process holding the claims: a crash leaves an
+   * empty set, and the survivor resolves those rows by age exactly as it does today.
+   */
+  const sending = new Set<string>();
   const now = config.now ?? Date.now;
   const liveness: LivenessCheck = {
     reader,
@@ -175,6 +212,14 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
   }
 
   return {
+    beginSend(id) {
+      sending.add(id);
+    },
+
+    endSend(id) {
+      sending.delete(id);
+    },
+
     async reconcile() {
       if (!store) return;
       await reconcilePending({
@@ -185,7 +230,16 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
         now,
         graceMs,
         reclaimMarginBlocks: config.reclaimMarginBlocks,
+        isSending: (id) => sending.has(id),
       });
+    },
+
+    async inFlightTxHashes() {
+      if (!store) return undefined;
+      // Every action, like `liveNonces` and `reconcile`: one signer, one set of live transactions,
+      // and a hold created by either engine is retired against all of them.
+      const live = await store.reconcile();
+      return new Set(live.map((intent) => intent.txHash).filter((hash) => hash !== null));
     },
 
     resyncNonces() {

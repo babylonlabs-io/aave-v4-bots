@@ -1,5 +1,7 @@
 // AaveAdapter ABI - methods used by liquidator and arbitrageur bots
 
+import { protocolErrorsAbi } from "./protocolErrors";
+
 export const adapterAbi = [
   // Liquidator
   {
@@ -81,4 +83,8 @@ export const adapterAbi = [
     ],
     stateMutability: "view",
   },
+  // Reverts from anywhere in the liquidation call graph — the adapter delegates into the
+  // registries, the position account, and the Aave spoke, and any of them can be the one that
+  // actually reverted. See `protocolErrors.ts`.
+  ...protocolErrorsAbi,
 ] as const;

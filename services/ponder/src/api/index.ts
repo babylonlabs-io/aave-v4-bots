@@ -1,44 +1,17 @@
 import { db, publicClients } from "ponder:api";
 import schema from "ponder:schema";
-import { VAULT_GONE_ERRORS, lensAbi, vaultSwapAbi } from "@repo/abis";
+import { lensAbi, vaultSwapAbi } from "@repo/abis";
 import { createLogger } from "@repo/logger";
 import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
-import { BaseError, ContractFunctionRevertedError } from "viem";
 import type { Address, PublicClient } from "viem";
+import { FaultTally, isHealthyPositionRevert, isVaultGoneRevert } from "../probeFaults";
 import { type Probe, probeInChunks, resolveChunkSize } from "../probePositions";
 
 const logger = createLogger();
 
 function replaceBigInts<T>(value: T) {
   return replaceBigIntsBase(value, (x) => String(x));
-}
-
-// viem wraps on-chain reverts as ContractFunctionExecutionError whose `.cause` is
-// ContractFunctionRevertedError, so a bare instanceof check on the top-level error
-// always fails. Walk the cause chain instead.
-function isExpectedContractRevert(error: unknown): boolean {
-  if (error instanceof BaseError) {
-    return error.walk((e) => e instanceof ContractFunctionRevertedError) !== null;
-  }
-  return false;
-}
-
-// `previewEscrowedVaults` validates every vault it is given and reverts the whole call if any one
-// of them has left escrow. The indexer lags the chain, so it routinely still lists vaults that were
-// just acquired — those are gone, not broken, and must not be reported as fetch failures. Decoding
-// this relies on the error entries in `vaultSwapAbi`; without them viem yields no `errorName` and
-// every acquired vault would look like an infrastructure fault again.
-const vaultGoneErrors: ReadonlySet<string> = new Set(VAULT_GONE_ERRORS);
-
-function isVaultGoneRevert(error: unknown): boolean {
-  if (!(error instanceof BaseError)) return false;
-  const revert = error.walk((e) => e instanceof ContractFunctionRevertedError);
-  return (
-    revert instanceof ContractFunctionRevertedError &&
-    revert.data?.errorName !== undefined &&
-    vaultGoneErrors.has(revert.data.errorName)
-  );
 }
 
 // Multicall3 is canonically deployed at this address on most public chains, but
@@ -256,18 +229,20 @@ app.get("/liquidatable-positions", async (c) => {
     suppliedShares: string;
   }> = [];
 
+  // Probes that came back with something other than the healthy-position revert. They are reported
+  // with the batch failures rather than counted as checked: in both cases this cycle has no answer
+  // for those positions, and the difference between "probed and could not tell" and "never probed"
+  // is not one a liquidator can act on differently.
+  const faults = new FaultTally();
+
   for (let i = 0; i < probes.length; i++) {
     const probe = probes[i];
     const p = positions[i];
 
     if (probe.status === "failure") {
-      // Healthy positions revert by design; anything else is a real RPC error.
-      if (!isExpectedContractRevert(probe.error)) {
-        logger.warn(
-          `estimateLiquidation error for ${p.proxyAddress} (not a contract revert):`,
-          probe.error instanceof Error ? probe.error.message : probe.error
-        );
-      }
+      // A healthy position is the lens answering the question, and it is most of the table on every
+      // cycle — skipped in silence. Every other revert is the deployment failing to answer it.
+      if (!isHealthyPositionRevert(probe.error)) faults.record(probe.error);
       continue;
     }
 
@@ -288,15 +263,24 @@ app.get("/liquidatable-positions", async (c) => {
     });
   }
 
+  if (faults.count > 0) {
+    logger.warn(
+      `estimateLiquidation failed for ${faults.count} position(s) for a reason other than the position being healthy; reporting them as unscanned: ${faults.summary()}`
+    );
+  }
+
+  const unknown = unscanned + faults.count;
+
   return c.json(
     replaceBigInts({
       liquidatable,
       total: liquidatable.length,
-      // `checked` counts the positions actually probed. `unscanned` is what a failed batch cost us:
-      // without it a partial scan is indistinguishable from a quiet market, and "no candidates" is
-      // exactly the answer a liquidator must not infer from a failure.
-      checked: positions.length - unscanned,
-      unscanned,
+      // `checked` counts the positions this cycle actually has an answer for. `unscanned` is
+      // everything else — a batch that failed as a whole, or a probe that reverted for a reason
+      // that is not "healthy". Without it a partial scan is indistinguishable from a quiet market,
+      // and "no candidates" is exactly the answer a liquidator must not infer from a failure.
+      checked: positions.length - unknown,
+      unscanned: unknown,
       dataTimestampMs,
     })
   );

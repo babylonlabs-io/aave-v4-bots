@@ -117,6 +117,7 @@ function createMockClients() {
         return Promise.resolve(BigInt("1000000000000000000"));
       }),
       getTransactionCount: vi.fn().mockResolvedValue(0),
+      getBlockNumber: vi.fn().mockResolvedValue(1n),
       // Reconcile asks for receipts. The default answer is viem's "not mined yet" signal — a
       // *typed* error, not a bare throw: `getReceiptStatus` only reads this one as "no receipt",
       // and propagates anything else (an RPC outage must never look like "not mined").

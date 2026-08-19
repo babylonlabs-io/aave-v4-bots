@@ -95,6 +95,7 @@ function setup(
   };
   const publicClient = {
     getTransactionCount: vi.fn(async () => chainNonce),
+    getBlockNumber: vi.fn(async () => 1n),
     readContract: vi.fn(
       async ({ functionName, args }: { functionName: string; args: unknown[] }) => {
         if (functionName === "estimateLiquidation") return [[1000000n], 0n, ["0xvault1"]];

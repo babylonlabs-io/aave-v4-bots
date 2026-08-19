@@ -130,7 +130,17 @@ export class RouterFunding implements ArbitrageFunding {
   constructor(private deps: RouterFundingDeps) {}
 
   spend(maxWbtcIn: bigint): TokenSpend {
-    return { owner: this.payerOrThrow(), token: this.deps.wbtcAddress, amount: maxWbtcIn };
+    return {
+      owner: this.payerOrThrow(),
+      token: this.deps.wbtcAddress,
+      amount: maxWbtcIn,
+      // This mode keeps its own account of the money once the slot closes: `settleAuthorization`
+      // hands the batch over to `authorizations`, and `refreshInventory` publishes a balance
+      // already net of it. A gate hold on top would subtract the same WBTC twice — and would
+      // release on the wrong evidence besides, since a signed batch outlives the transaction that
+      // carried it and stays executable by any relay until it expires.
+      accounting: "caller",
+    };
   }
 
   /** The router's `payer`, or a clear error if `prepare()` has not read it yet. */
@@ -262,7 +272,11 @@ export class RouterFunding implements ArbitrageFunding {
     }
     const held = [...worst.values()].reduce((sum, amount) => sum + amount, 0n);
     const capacity = balance < allowance ? balance : allowance;
-    risk.setAvailable({ owner: payer, token: wbtcAddress }, capacity > held ? capacity - held : 0n);
+    risk.setAvailable(
+      { owner: payer, token: wbtcAddress },
+      capacity > held ? capacity - held : 0n,
+      block.number
+    );
     // Both legs, not the minimum the gate gets: an operator needs to see which one is about to
     // bind, and only one of them can be topped up without a new approval. `authorized` is the third
     // subtrahend, and without it a capacity below both legs has no visible cause.

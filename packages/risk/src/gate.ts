@@ -41,9 +41,10 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   let everVerified = false;
 
   // Token ledger. Spendable capacity for one `(owner, token)` is
-  // `available - spentSinceRefresh - reserved`:
+  // `available - held - spentSinceRefresh - reserved`:
   //   available          last balance the gate was told, from a chain read (authoritative)
-  //   spentSinceRefresh   outflows counted against it since then, not yet visible in that figure
+  //   held               broadcast outflows the chain has not yet settled (see `holds`)
+  //   spentSinceRefresh   outflows counted since that read that carry no transaction to hold by
   //   reserved            declared spend of actions currently in flight
   //
   // Keyed by the paying account as well as the token, because two engines in one process do not
@@ -57,9 +58,51 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   const available = new Map<string, bigint>();
   const spentSinceRefresh = new Map<string, bigint>();
   const reserved = new Map<string, bigint>();
+  /** Height of the newest read accepted per key, so an older one cannot overwrite it. */
+  const snapshotBlock = new Map<string, bigint>();
+
+  /**
+   * Outflows that have been broadcast and not yet settled by the chain, by transaction hash.
+   *
+   * This is the difference between an outflow the balance already reports and one it does not. A
+   * settled slot stops being *reserved* — the action is over as far as exposure goes — but a
+   * transaction sitting un-mined in a mempool still owes this balance its money, and a `balanceOf`
+   * read taken meanwhile reports it as if it did not. Clearing that on refresh, on the reasoning
+   * that a fresh read reflects everything that has landed, is precisely wrong for the one case that
+   * matters: it has not landed, which is why we are holding it.
+   *
+   * Held until `retireOutflow` is given evidence — a receipt at or below the height of the read
+   * being published, or a transaction the chain can no longer include. Never on a timer.
+   *
+   * Keyed by transaction hash rather than intent id because an intent id names a subject and is
+   * revived in place for the next attempt, so it can denote two different transactions; retiring
+   * one would free the other's money. One transaction can owe several tokens (a liquidation repays
+   * every reserve it touches), so a hold carries a list of entries.
+   *
+   * **Memory-only, so a restart forgets them** — and a bot that restarts while one of its
+   * transactions is un-mined publishes a balance that still contains the money it owes, exactly as
+   * it did before these existed. Closing that needs the declared spend persisted per attempt, which
+   * the intents table does not carry today; `RouterFunding.authorizations` has the same property
+   * for the same reason. Both are bounded by the crash-safety reconcile that runs first at boot:
+   * the subject of an un-mined transaction stays claimed, so what is at risk is another subject's
+   * spend, not a second attempt at that one.
+   */
+  const holds = new Map<
+    string,
+    { entries: { k: string; amount: bigint }[]; minedAtBlock?: bigint }
+  >();
+
   const key = ({ owner, token }: TokenAccount) => `${owner.toLowerCase()}|${token.toLowerCase()}`;
   const get = (m: Map<string, bigint>, k: string) => m.get(k) ?? 0n;
-  const capacity = (k: string) => get(available, k) - get(spentSinceRefresh, k) - get(reserved, k);
+  const heldFor = (k: string) => {
+    let sum = 0n;
+    for (const hold of holds.values()) {
+      for (const entry of hold.entries) if (entry.k === k) sum += entry.amount;
+    }
+    return sum;
+  };
+  const capacity = (k: string) =>
+    get(available, k) - heldFor(k) - get(spentSinceRefresh, k) - get(reserved, k);
 
   /**
    * Alerting is advisory: a throwing sink must never be able to stop the kill-switch from halting,
@@ -218,13 +261,33 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       return true;
     },
 
-    setAvailable(account, amount) {
+    setAvailable(account, amount, block) {
       const k = key(account);
+      if (block !== undefined) {
+        const newest = snapshotBlock.get(k);
+        // Two engines refresh the same account concurrently, and this is last-writer-wins. A read
+        // that started earlier and finished later would otherwise raise capacity to a balance the
+        // account no longer has — an over-report with no inflow behind it, and one nothing later
+        // corrects except another refresh.
+        if (newest !== undefined && block < newest) return;
+        snapshotBlock.set(k, block);
+      }
       available.set(k, amount);
-      // The fresh read already reflects everything that has landed, so what we had been counting
-      // separately is now double-counting. Reservations survive: those are still in flight and are
-      // by definition not yet in that balance.
+      // Anything counted here landed or did not while this read was being taken, and the read is
+      // authoritative about both. Holds are NOT dropped: a held outflow is one the chain has not
+      // settled, so this read cannot be reporting it. Reservations survive too — those are still in
+      // flight and by definition not yet in that balance.
       spentSinceRefresh.set(k, 0n);
+    },
+
+    outflows: () =>
+      [...holds.entries()].map(([txHash, hold]) => ({
+        txHash,
+        ...(hold.minedAtBlock === undefined ? {} : { minedAtBlock: hold.minedAtBlock }),
+      })),
+
+    retireOutflow(txHash) {
+      holds.delete(txHash);
     },
 
     reserved: (account) => get(reserved, key(account)),
@@ -263,10 +326,43 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
             outcome.unresolved === true ||
             outcome.spent === true ||
             outcome.spendUnknown === true;
+
+          // Where a counted outflow goes next. A transaction to name it by makes it a *hold*, kept
+          // until the chain settles it — including for a confirmed one, whose receipt proves it
+          // mined but not that the next balance read is taken from a node that has that block yet.
+          // Only an outflow with no transaction to point at falls back to the aggregate, which the
+          // next refresh clears: nothing could ever retire it on evidence.
+          const hold = spent && outcome.txHash !== undefined ? outcome.txHash : undefined;
+          const entries: { k: string; amount: bigint }[] = [];
+
           for (const entry of spend) {
             const k = key(entry);
             reserved.set(k, get(reserved, k) - entry.amount);
-            if (spent) spentSinceRefresh.set(k, get(spentSinceRefresh, k) + entry.amount);
+            if (!spent) continue;
+            // The funding mode said it keeps counting this one itself — see `TokenSpend.accounting`.
+            // Holding it here as well would subtract the same money twice.
+            if (entry.accounting === "caller") continue;
+            if (hold === undefined) {
+              spentSinceRefresh.set(k, get(spentSinceRefresh, k) + entry.amount);
+            } else {
+              entries.push({ k, amount: entry.amount });
+            }
+          }
+
+          if (hold !== undefined && entries.length > 0) {
+            const existing = holds.get(hold);
+            // One transaction, one hold: a settle repeated for the same hash (the idempotent
+            // `finally` backstops, or a retried classification) must not stack its spend twice.
+            if (existing === undefined) {
+              holds.set(hold, {
+                entries,
+                ...(outcome.minedAtBlock === undefined
+                  ? {}
+                  : { minedAtBlock: outcome.minedAtBlock }),
+              });
+            } else if (existing.minedAtBlock === undefined && outcome.minedAtBlock !== undefined) {
+              existing.minedAtBlock = outcome.minedAtBlock;
+            }
           }
 
           release(outcome);

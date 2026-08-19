@@ -1,6 +1,8 @@
 // ArbitrageRouter — acquires escrowed vaults with a treasury's WBTC, authorized by a signer that
 // holds no funds. See `contracts/ArbitrageRouter.sol` and `contracts/base/SelfCallRelayer.sol`.
 
+import { protocolErrorsAbi } from "./protocolErrors";
+
 export const arbitrageRouterAbi = [
   // The only way to reach `swapWbtcToVault`, which is `onlySelf`. Permissionless: anyone holding a
   // valid (message, signature) pair may submit it and pay the gas.
@@ -81,6 +83,9 @@ export const arbitrageRouterAbi = [
     ],
     anonymous: false,
   },
+  // Router-funded acquisitions forward into BTCVaultSwap, so the whole protocol error surface is
+  // reachable through this ABI too. See `protocolErrors.ts`.
+  ...protocolErrorsAbi,
 ] as const;
 
 /** EIP-712 domain name, from `ArbitrageRouter.NAME`. */

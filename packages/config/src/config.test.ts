@@ -7,8 +7,11 @@ import {
   buildExecutionConfig,
   buildNotifierConfig,
   bytes32Schema,
+  nonNegativeBigIntSchema,
   nonNegativeIntSchema,
   parseEnv,
+  portSchema,
+  positiveBigIntSchema,
   positiveIntSchema,
   urlSchema,
 } from "./index";
@@ -47,6 +50,54 @@ describe("@repo/config schemas", () => {
     it("rejects zero and negatives", () => {
       expect(positiveIntSchema.safeParse("0").success).toBe(false);
       expect(positiveIntSchema.safeParse("-1").success).toBe(false); // '-' fails the digit regex
+    });
+
+    // These parse as clean integers and are not the numbers written. A few hundred digits become
+    // `Infinity` — and a timeout, an interval or a nonce fence of `Infinity` is not a long wait,
+    // it is a guard that never fires, with nothing downstream able to tell.
+    it.each([
+      "1".repeat(400),
+      "9007199254740992", // MAX_SAFE_INTEGER + 1
+      "9007199254740993", // parses to ...992: not the value configured
+      "99999999999999999999",
+    ])("rejects %j — it does not survive as a JS number", (huge) => {
+      expect(positiveIntSchema.safeParse(huge).success).toBe(false);
+      expect(nonNegativeIntSchema.safeParse(huge).success).toBe(false);
+    });
+
+    it("accepts MAX_SAFE_INTEGER itself, the last exact value", () => {
+      expect(positiveIntSchema.safeParse("9007199254740991").success).toBe(true);
+    });
+  });
+
+  // The other half of the split: values whose destination is a `bigint` are *meant* to run past
+  // `MAX_SAFE_INTEGER` — any wei amount above ~0.009 ETH does — so the ceiling above would reject
+  // ordinary configuration. They are never read into a `number`, which is what makes that safe.
+  describe("positiveBigIntSchema / nonNegativeBigIntSchema", () => {
+    it.each(["2000000000", "1".repeat(40), "9007199254740993"])("accepts %j", (v) => {
+      expect(positiveBigIntSchema.safeParse(v).success).toBe(true);
+      expect(nonNegativeBigIntSchema.safeParse(v).success).toBe(true);
+    });
+
+    it("still rejects non-integers and zero where zero is meaningless", () => {
+      expect(positiveBigIntSchema.safeParse("0").success).toBe(false);
+      expect(nonNegativeBigIntSchema.safeParse("0").success).toBe(true);
+      for (const bad of ["1abc", "1.5", "-1", " 1", ""]) {
+        expect(positiveBigIntSchema.safeParse(bad).success).toBe(false);
+        expect(nonNegativeBigIntSchema.safeParse(bad).success).toBe(false);
+      }
+    });
+  });
+
+  describe("portSchema", () => {
+    it.each(["1", "9090", "65535"])("accepts %s", (p) => {
+      expect(portSchema.safeParse(p).success).toBe(true);
+    });
+
+    // Rejected at boot rather than at `listen()`, where the failure surfaces after the bot has
+    // already started trading with no metrics or kill-switch endpoint behind it.
+    it.each(["0", "65536", "1".repeat(400)])("rejects %j — not a bindable port", (p) => {
+      expect(portSchema.safeParse(p).success).toBe(false);
     });
   });
 

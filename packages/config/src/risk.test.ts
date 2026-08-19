@@ -29,6 +29,29 @@ describe("@repo/config risk env", () => {
     expect(controlTokenRef).toBeUndefined();
   });
 
+  // `RISK_MIN_PROFIT` is denominated in 8-decimal sats and lands in a `bigint`, so it is one of the
+  // few knobs for which a value past `Number.MAX_SAFE_INTEGER` is a number and not a typo.
+  it("carries a profit floor larger than Number.MAX_SAFE_INTEGER exactly", () => {
+    const huge = "9007199254740993";
+    const { risk } = buildRiskConfig(parse({ RISK_MIN_PROFIT: huge }));
+    expect(risk.minProfit).toBe(BigInt(huge));
+  });
+
+  // Every one of these lands in a `number`. At this size `Number.parseInt` yields `Infinity` or a
+  // rounded neighbour, so a failure counter never trips, a staleness bound never bites, and an
+  // in-flight cap never fills — each one a guard the operator believes is armed.
+  it.each([
+    "RISK_MAX_CONSECUTIVE_FAILURES",
+    "RISK_MAX_DATA_STALENESS_MS",
+    "RISK_MAX_IN_FLIGHT",
+    "RISK_CODE_CHECK_INTERVAL_MS",
+    "RISK_CONTROL_PORT",
+  ])("rejects a %s that does not survive as a JS number", (key) => {
+    const check = (v: string) => z.object(riskEnvFields).safeParse({ [key]: v }).success;
+    expect(check("9".repeat(400))).toBe(false);
+    expect(check("9007199254740993")).toBe(false);
+  });
+
   it("projects the numeric thresholds", () => {
     const { risk, codeCheckIntervalMs } = buildRiskConfig(
       parse({
@@ -107,6 +130,12 @@ describe("@repo/config risk env", () => {
 
     it("rejects a hash that is not 32 bytes", () => {
       expect(() => codeHashMapSchema.parse(`${ADAPTER}=0xabc`)).toThrow();
+    });
+
+    // A set variable that pins nothing looks, from every angle an operator can see, exactly like a
+    // working guard: boot succeeds, the checker runs on its interval, and it compares no contracts.
+    it.each([",", " ", " , , "])("rejects %j — set, but names no contract", (raw) => {
+      expect(() => codeHashMapSchema.parse(raw)).toThrow(/at least one address=hash/);
     });
   });
 

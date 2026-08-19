@@ -23,6 +23,7 @@ async function createBot(config: Config): Promise<LiquidationBot> {
     logger,
     observability: {
       port: config.metricsPort,
+      host: config.metricsHost,
       ponderUrl: config.ponderUrl,
       // Ponder's own readiness, not a data route: a wedged indexer still answers `/positions`
       // with a stale 200, which is exactly the state this probe must not call healthy.

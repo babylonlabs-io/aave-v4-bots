@@ -148,13 +148,50 @@ export interface TxSender {
 }
 
 /**
+ * Raise a prepared request's tip to `floor`, carrying `maxFeePerGas` up with it.
+ *
+ * `prepareTransactionRequest` prices a transaction from the node: `eth_maxPriorityFeePerGas`, or
+ * recent blocks. That answer is about the *public mempool* — what it takes to be ordered ahead of
+ * the transactions the node can see. A privately-submitted transaction is not competing there; it
+ * competes to be worth a builder's block space, and it is never in a pool to be re-priced from, so
+ * an under-tipped one is not slow, it simply never lands. The node has no view of that price, which
+ * is why the floor is an operator input and why it has to be applied here, before signing: the
+ * relay is handed bytes that are already signed.
+ *
+ * `maxFeePerGas` rises by the same delta, so the headroom the node left for the base fee survives
+ * the bump — moving the tip alone would either shrink that headroom or, at a high base fee, exceed
+ * the cap outright (which viem refuses).
+ */
+function applyPriorityFeeFloor(
+  request: { maxFeePerGas?: bigint; maxPriorityFeePerGas?: bigint; gasPrice?: bigint },
+  floor: bigint
+): void {
+  if (request.maxPriorityFeePerGas === undefined || request.maxFeePerGas === undefined) {
+    // A legacy (`gasPrice`) transaction has no tip to raise. Refused rather than sent under-priced:
+    // the floor exists because the operator judged that an un-floored private submission does not
+    // land, and quietly ignoring it would reproduce exactly the failure it was set to prevent.
+    throw new Error(
+      "a priority-fee floor is configured, but the node priced this transaction as legacy (gasPrice) — private submission requires an EIP-1559 fee market"
+    );
+  }
+  if (request.maxPriorityFeePerGas >= floor) return;
+  request.maxFeePerGas += floor - request.maxPriorityFeePerGas;
+  request.maxPriorityFeePerGas = floor;
+}
+
+/**
  * Sign `call` without broadcasting it. The hash is derived from the signed payload (keccak256
  * of the serialized tx) — the same hash the node will report — so it is durable-recordable
  * before the tx exists on chain.
+ *
+ * `minPriorityFeeWei` is the floor the tip is raised to when the node prices it lower; see
+ * `applyPriorityFeeFloor`. Omitted ⇒ the node's estimate stands, which is right for the public
+ * mempool.
  */
 export async function signContractCall(
   walletClient: WalletClient<Transport, Chain, Account>,
-  call: ContractCall
+  call: ContractCall,
+  minPriorityFeeWei?: bigint
 ): Promise<SignedTx> {
   const request = await walletClient.prepareTransactionRequest({
     to: call.address,
@@ -167,6 +204,7 @@ export async function signContractCall(
     account: walletClient.account,
     chain: walletClient.chain,
   });
+  if (minPriorityFeeWei !== undefined) applyPriorityFeeFloor(request, minPriorityFeeWei);
   const serialized = await walletClient.signTransaction(
     request as Parameters<typeof walletClient.signTransaction>[0]
   );
@@ -204,6 +242,16 @@ function isInsufficientFunds(error: unknown): boolean {
   );
 }
 
+/** Policy that applies to how a transaction is *priced*, as opposed to where it is sent. */
+export interface TxSenderOptions {
+  /**
+   * Raise the tip to at least this many wei when the node prices it lower. Belongs with `submit`:
+   * both describe one deployment's private submission, and a relay route without the floor sends
+   * transactions the relay accepts and no builder has a reason to include.
+   */
+  minPriorityFeeWei?: bigint;
+}
+
 /**
  * The default `TxSender`: local signing + public-mempool broadcast. `submit` overrides where
  * the signed tx goes (e.g. a private relay — `./submission`'s `Submitter.send` fits as-is).
@@ -211,7 +259,8 @@ function isInsufficientFunds(error: unknown): boolean {
 export function createTxSender(
   publicClient: PublicClient,
   walletClient: WalletClient<Transport, Chain, Account>,
-  submit?: (serializedTransaction: Hex) => Promise<Hex>
+  submit?: (serializedTransaction: Hex) => Promise<Hex>,
+  options: TxSenderOptions = {}
 ): TxSender {
   const broadcast =
     submit ??
@@ -223,7 +272,7 @@ export function createTxSender(
     async send(call, onSigned) {
       let signed: SignedTx;
       try {
-        signed = await signContractCall(walletClient, call);
+        signed = await signContractCall(walletClient, call, options.minPriorityFeeWei);
         // Durable BEFORE the tx can exist on chain.
         await onSigned?.(signed);
       } catch (error) {

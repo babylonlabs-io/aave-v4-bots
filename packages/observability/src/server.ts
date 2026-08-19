@@ -11,6 +11,18 @@ const logger = createLogger();
 
 export interface ObservabilityServerConfig {
   port: number;
+  /**
+   * Interface to bind. Omitted ⇒ every interface, which is what a container publishing this port to
+   * a scrape network needs and what this server has always done.
+   *
+   * Unlike the kill switch — which defaults to loopback because a route that stops trading has no
+   * business being reachable off-box — a metrics endpoint exists to be scraped, so where it is
+   * reachable from is a deployment decision rather than one this process can make. It is a knob
+   * because `/metrics` is unauthenticated and its gauges carry label values an operator may not
+   * want on an open interface: the signer and treasury addresses, their live balances, and the
+   * allowance standing to the router.
+   */
+  host?: string;
   ponderUrl: string;
   ponderHealthEndpoint: string;
   getMetrics: () => Promise<string>;
@@ -77,8 +89,20 @@ export function startObservabilityServer(config: ObservabilityServerConfig): Ser
     }
   });
 
-  server.listen(config.port, () => {
-    logger.info(`[Observability] Listening on port ${config.port}`);
+  const bind = (onListening: () => void) =>
+    config.host === undefined
+      ? server.listen(config.port, onListening)
+      : server.listen(config.port, config.host, onListening);
+
+  bind(() => {
+    // Read back off the socket rather than echoing the config: "which networks can reach this" is
+    // the one thing about this server an operator has to be able to check, an unset host is not
+    // visibly "all of them" anywhere else, and it resolves to `::` (dual-stack) rather than the
+    // `0.0.0.0` the config would have implied.
+    const bound = server.address();
+    const where =
+      typeof bound === "object" && bound ? `${bound.address}:${bound.port}` : config.port;
+    logger.info(`[Observability] Listening on ${where}`);
     logger.info("[Observability]   /health  - Health check endpoint");
     logger.info("[Observability]   /metrics - Prometheus metrics");
     logger.info("[Observability]   /ready   - Readiness probe");

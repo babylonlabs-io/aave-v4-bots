@@ -1,7 +1,7 @@
 import type { RiskConfig } from "@repo/risk";
 import { z } from "zod";
 
-import { addressSchema, nonNegativeIntSchema, positiveIntSchema } from "./schemas";
+import { addressSchema, nonNegativeBigIntSchema, portSchema, positiveIntSchema } from "./schemas";
 
 // Env → `RiskConfig`, shared by every bot service so the risk knobs are spelled the same way
 // everywhere. Every field is optional and **absent by default**: an unconfigured deployment gets
@@ -30,6 +30,19 @@ export const codeHashMapSchema = z
       }
       entries.push([pair.slice(0, eq).trim(), pair.slice(eq + 1).trim()]);
     }
+    // A set variable that pins nothing is the failure this guard exists to prevent, wearing the
+    // guard's own clothes: `","` and `"  "` survive the loop above as an empty map, the runtime
+    // starts the checker, and `verifyCode` compares a list of no contracts on a schedule. Every
+    // signal an operator has — the variable is set, the checker is running, nothing is failing —
+    // reads exactly as it would with the bytecode genuinely pinned.
+    if (entries.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "is set but names no contract — it must list at least one address=hash pair, or be unset",
+      });
+      return z.NEVER;
+    }
     return Object.fromEntries(entries);
   })
   .pipe(z.record(addressSchema, codeHashSchema));
@@ -42,7 +55,7 @@ export const riskEnvFields = {
   /** Auto-halt after this many consecutive failed actions. */
   RISK_MAX_CONSECUTIVE_FAILURES: positiveIntSchema.optional(),
   /** Profit floor in 8-decimal sats. `0` blocks only strictly-negative expected profit. */
-  RISK_MIN_PROFIT: nonNegativeIntSchema.optional(),
+  RISK_MIN_PROFIT: nonNegativeBigIntSchema.optional(),
   /** Block actions whose source data is older than this. */
   RISK_MAX_DATA_STALENESS_MS: positiveIntSchema.optional(),
   /** Exposure cap: max actions in flight at once. */
@@ -63,7 +76,7 @@ export const riskEnvFields = {
    */
   RISK_CONTROL_TOKEN_REF: z.string().min(1).optional(),
   /** Port for the kill-switch server. Separate from METRICS_PORT, which is scrapeable. */
-  RISK_CONTROL_PORT: positiveIntSchema.optional().default("9095"),
+  RISK_CONTROL_PORT: portSchema.optional().default("9095"),
   /**
    * Interface the kill-switch server binds. Loopback by default: an endpoint that can stop
    * production trading should not be reachable off-box unless you say so.

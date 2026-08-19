@@ -395,6 +395,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `POLLING_INTERVAL_MS` | How often to check for vaults | No | `30000` |
 | `VAULT_PROCESSING_DELAY_MS` | Throttle between acquisition broadcasts. Acquisitions are batched, so not a per-acquisition pause. `0` disables | No | `0` |
 | `METRICS_PORT` | HTTP server port for metrics/health | No | `9091` |
+| `METRICS_HOST` | Interface that server binds. Unset ⇒ every interface. `/metrics` is unauthenticated and labels carry the signer/treasury addresses and their balances, so restrict it where no network policy does | No | all interfaces |
 | `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
 | `MANUAL_EXECUTOR_ADDRESS` | Address the operator signs/broadcasts from; Safe address in `safe` custody | MANUAL only | — |
 | `MANUAL_EXECUTOR_KIND` | Operator custody model: `eoa` or `safe` | MANUAL only | — |
@@ -422,7 +423,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
 | `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old, missing, malformed, or dated in the future | No | — |
 | `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
-| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` | No | — |
+| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` — must name at least one contract when set, since an empty map would run the checker against nothing | No | — |
 | `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
 | `RISK_CONTROL_TOKEN_REF` | Secret reference enabling authenticated `/halt`, `/resume`, `/status` | if `RISK_START_HALTED=true` | — |
 | `RISK_CONTROL_PORT` | Kill-switch server port, separate from `METRICS_PORT` | No | `9095` |
@@ -490,10 +491,10 @@ transactions it never sends.
 | `FLASHBOTS_PROTECT_URL` | in private mode | e.g. `https://rpc.flashbots.net/fast` |
 | `FLASHBOTS_STATUS_URL` | no | defaults to `https://protect.flashbots.net` |
 | `PRIVATE_MIN_PRIORITY_FEE_WEI` | in private mode | no default, deliberately — see below |
-| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | default `25` — the relay's retry window, used when it states no deadline of its own |
-| `PRIVATE_RECLAIM_MARGIN_BLOCKS` | no | default `3` — reorg headroom past that deadline |
+| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | default `25` — the relay's retry window, used when it states no deadline of its own; capped at `7200` (~a day of blocks) |
+| `PRIVATE_RECLAIM_MARGIN_BLOCKS` | no | default `3` — reorg headroom past that deadline; same cap |
 
-Three things fail the boot rather than degrading quietly, because each one
+Four things fail the boot rather than degrading quietly, because each one
 otherwise produces a bot that looks healthy and lands nothing:
 
 - **`DATABASE_URL` is mandatory.** A privately-submitted transaction is invisible
@@ -502,8 +503,18 @@ otherwise produces a bot that looks healthy and lands nothing:
 - **A priority-fee floor is mandatory.** Flashbots drops transactions builders
   have no reason to include. There is no sensible default: what is competitive is
   a market condition on the day, and guessing low fails silently.
-- **Relay variables under `SUBMITTER=public` are rejected**, so a half-applied
-  configuration cannot leave you broadcasting publicly while believing otherwise.
+  `PRIVATE_MIN_PRIORITY_FEE_WEI` is applied to every transaction the bot signs in
+  private mode — the tip is raised to it when the node prices lower, and the fee
+  cap rises with it. The node's own estimate is about being ordered ahead of the
+  transactions it can see, which is not the market a private transaction is in.
+- **Relay variables outside private submission are rejected** — under
+  `SUBMITTER=public` and under `EXECUTION_MODE=MANUAL`, where the bot does not
+  broadcast at all — so a half-applied configuration cannot leave you sending in
+  public while believing otherwise.
+- **The two block counts above are bounded.** They are the only things that ever
+  release the nonce of a private transaction the relay has dropped, and a fence
+  set to an implausible number is indistinguishable, from the outside, from a
+  nonce that never comes back.
 
 **The trade-off is yours to make, and it is real.** Private submission reduces
 front-running, but it also narrows who can include you (Protect's default forwards

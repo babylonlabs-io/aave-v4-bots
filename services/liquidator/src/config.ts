@@ -17,6 +17,7 @@ import {
   bytes32Schema,
   indexerEnvFields,
   parseEnv,
+  portSchema,
   positiveIntSchema,
   riskEnvFields,
   runtimeEnvFields,
@@ -51,6 +52,8 @@ export interface Config extends LiquidationEngineParams, RiskSettings, IndexerSe
 
   // Metrics/health HTTP server port
   metricsPort: number;
+  /** Interface the metrics/health server binds; unset ⇒ every interface. */
+  metricsHost?: string;
 
   // Where secrets are resolved from, and how the signer is obtained. Resolved into a
   // `SecretsProvider` + `Signer` at boot (index.ts); no key material lives in `Config`.
@@ -109,7 +112,18 @@ const envSchema = z.object({
   RETRY_MAX_ATTEMPTS: positiveIntSchema.optional().default("3"),
   RETRY_INITIAL_DELAY_MS: positiveIntSchema.optional().default("1000"),
   RETRY_MAX_DELAY_MS: positiveIntSchema.optional().default("5000"),
-  METRICS_PORT: positiveIntSchema.optional().default("9090"),
+  METRICS_PORT: portSchema.optional().default("9090"),
+  /**
+   * Interface the metrics/health server binds. Unset ⇒ every interface, which is what a container
+   * publishing this port to a scrape network needs — and what this has always done.
+   *
+   * Worth setting on a host where the port is not already behind a network policy: `/metrics` is
+   * unauthenticated, and its gauges carry the signer and treasury addresses, their live balances,
+   * and the allowance standing to the router. Each is on chain, but the endpoint hands over the
+   * process-to-address linkage in one place, to a caller who needed to know no addresses first.
+   * `RISK_CONTROL_HOST` is the same knob for the kill switch, which defaults to loopback instead.
+   */
+  METRICS_HOST: z.string().min(1).optional(),
   TX_RECEIPT_TIMEOUT_MS: positiveIntSchema.optional().default("120000"),
 
   // ── Flash funding ──────────────────────────────────────────────────────────────────────
@@ -178,6 +192,7 @@ export function loadConfig(): Config {
     isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
     llpAddress: env.LLP_ADDRESS as Address,
     metricsPort: Number.parseInt(env.METRICS_PORT, 10),
+    metricsHost: env.METRICS_HOST,
     txReceiptTimeoutMs: Number.parseInt(env.TX_RECEIPT_TIMEOUT_MS, 10),
     secrets: buildSecretsConfig(env),
     persistence: buildPersistenceConfig(env),

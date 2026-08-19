@@ -62,6 +62,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
     logger,
     observability: {
       port: config.metricsPort,
+      host: config.metricsHost,
       ponderUrl: config.ponderUrl,
       // Ponder's own readiness, not a data route: a wedged indexer still answers
       // `/escrowed-vaults` with a stale 200, which is exactly what this probe must not call healthy.

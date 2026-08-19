@@ -319,7 +319,10 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
-            slot.settle({ ok: true });
+            // The hash and the height it mined at travel with the outcome: the gate holds this
+            // outflow until a balance read at or past that height can report it, rather than
+            // assuming the next read comes from a node that already has the block.
+            slot.settle({ ok: true, txHash: hash, minedAtBlock: receipt.blockNumber });
             this.metrics.recordLiquidationSuccess();
             this.logger.info(`Liquidation confirmed in block ${receipt.blockNumber}: ${hash}`);
             if (intentId)
@@ -355,7 +358,10 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
           // shared cause would otherwise land N failures at once and halt a healthy bot) while
           // still counting its declared spend, since the tx may yet land.
           // The intent stays 'submitted' — boot reconcile resolves it against the chain.
-          slot.settle({ ok: false, unresolved: true });
+          // With the hash, so the gate can hold this outflow by the transaction that owes it and
+          // release it only when the chain says what became of it — not on the next refresh, which
+          // is a read this transaction may still be un-mined behind.
+          slot.settle({ ok: false, unresolved: true, txHash: hash });
           this.metrics.recordError("receipt_fetch_error");
           this.logger.error(`Failed to get receipt for ${hash}: ${result.reason}`);
         }

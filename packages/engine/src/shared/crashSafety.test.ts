@@ -88,6 +88,101 @@ describe("createCrashSafety", () => {
       await expect(crash().markPending("id", 4, 1)).resolves.toBeUndefined();
       await expect(crash().transition("id", "confirmed")).resolves.toBeUndefined();
     });
+
+    // The pre-broadcast record is a compare-and-set against the attempt this send claimed, and
+    // `markPending` throwing is the ONLY thing that can call off a broadcast: `TxSender` aborts on
+    // an `onSigned` that throws, and nothing else between signing and the wire looks at the row.
+    // So a lost CAS must not be recoverable-looking — an applied-anyway write would resurrect a row
+    // somebody else resolved and put a transaction on chain against their decision, and the record
+    // would read `pending → submitted` with no trace that anything was refused.
+    it("refuses to broadcast, and leaves the row alone, when the attempt it claimed was resolved", async () => {
+      let clock = 1_700_000_000_000;
+      const store = createMemoryStateStore(() => {
+        clock += 1_000;
+        return clock;
+      });
+      const cs = crash({ store });
+      const { intentId, attemptAt } = await cs.claim(input("p"));
+      if (!intentId || attemptAt === undefined) throw new Error("expected a claimed intent");
+
+      // Resolved terminally while the signer was busy — a reconcile verdict, or an operator.
+      expect(await store.fail(intentId, "given up on")).toBe(true);
+
+      await expect(cs.markPending(intentId, 4, attemptAt, HASH)).rejects.toThrow(
+        /no longer the attempt this send claimed/
+      );
+
+      // Not resurrected: the terminal decision stands, and this send's nonce and hash are not
+      // recorded against it.
+      expect(await store.getIntent(intentId)).toMatchObject({
+        status: "failed",
+        nonce: null,
+        txHash: null,
+      });
+    });
+  });
+
+  // The arbitrageur runs both engines off ONE executor, so one `CrashSafety` — and a claim is taken
+  // *before* the send queues for the shared nonce lock. A slow relay ahead of it in that queue is
+  // charged against the intent's age, so the sibling engine's reconcile can find a row that is
+  // seconds from broadcast and older than the grace window. Nothing unsafe follows (`markPending`
+  // refuses the resurrected row), but a ready action is thrown away for nothing.
+  describe("reconcile and a send this process is still running", () => {
+    const held = async () => {
+      let clock = 1_700_000_000_000;
+      const store = createMemoryStateStore(() => clock);
+      const cs = crash({ store, now: () => clock });
+      const { intentId } = await cs.claim(input("p"));
+      if (!intentId) throw new Error("expected a claimed intent");
+      cs.beginSend(intentId);
+      // Far past any grace window: the point is that duration is not what decides this.
+      clock += 10 * 60_000;
+      return {
+        cs,
+        store,
+        intentId,
+        advance: () => {
+          clock += 60_000;
+        },
+      };
+    };
+
+    it("leaves it alone however long the send has taken", async () => {
+      const { cs, store, intentId } = await held();
+
+      await cs.reconcile();
+
+      expect(await store.getIntent(intentId)).toMatchObject({
+        status: "pending",
+        nonce: null,
+        txHash: null,
+      });
+    });
+
+    // The other half, and the reason this is a held-claim set rather than a longer window: the age
+    // check still has to resolve the row a *dead* process left behind, which is the same row. A
+    // restarted bot holds no claims, so its set is empty and this is exactly what it sees.
+    it("resolves the same row once nothing is holding it", async () => {
+      const { cs, store, intentId, advance } = await held();
+      cs.endSend(intentId);
+      advance();
+
+      await cs.reconcile();
+
+      expect(await store.getIntent(intentId)).toMatchObject({
+        status: "failed",
+        error: "not broadcast (reconciled)",
+      });
+    });
+
+    it("endSend is idempotent and tolerates an id that was never begun", async () => {
+      const { cs, intentId } = await held();
+      expect(() => {
+        cs.endSend(intentId);
+        cs.endSend(intentId);
+        cs.endSend("never-begun");
+      }).not.toThrow();
+    });
   });
 
   describe("claim", () => {

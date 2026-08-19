@@ -96,7 +96,14 @@ describe("RouterFunding", () => {
     it("adopts the router's payer as the account it spends from", async () => {
       const { funding } = build();
       await funding.prepare();
-      expect(funding.spend(42n)).toEqual({ owner: PAYER, token: WBTC, amount: 42n });
+      // `accounting: "caller"` is load-bearing, not decoration: this mode keeps counting the batch
+      // after the slot closes, and the gate must not hold the same WBTC a second time.
+      expect(funding.spend(42n)).toEqual({
+        owner: PAYER,
+        token: WBTC,
+        amount: 42n,
+        accounting: "caller",
+      });
     });
 
     // Two reasons, either sufficient. Accounting: this mode publishes the treasury's capacity net
