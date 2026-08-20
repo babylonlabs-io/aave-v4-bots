@@ -193,9 +193,9 @@ The bot automates monitoring and execution.
 
 ### Bot Operation
 
-1. **Discover debt tokens** — at boot, either reads
-   `DEBT_TOKEN_ADDRESSES` or enumerates Spoke reserves and selects
-   those flagged borrowable.
+1. **Discover reserves** — at boot, enumerates the Spoke's reserves in id
+   order. A repay amount is charged to the token of the reserve it is indexed
+   by; those flagged borrowable are what the signer holds and approves.
 2. **Approve** — under `inventory` funding, ensures `MAX_UINT256`
    allowance on every debt token and on WBTC for the AaveAdapter. WBTC
    approval is required because the adapter pulls the fairness payment
@@ -231,7 +231,6 @@ The bot automates monitoring and execution.
 | `ADAPTER_ADDRESS` | AaveAdapter address | Yes | — |
 | `LENS_ADDRESS` | AaveAdapterLens address | Yes | — |
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
-| `DEBT_TOKEN_ADDRESSES` | Comma-separated; auto-discovered if unset | No | — |
 | `LIQUIDATION_FUNDING` | `inventory` (repay from own balances) or `flash` (repay via `LiquidationRouter`). The only thing that selects the mode — the flash variables below are never inferred from | No | `inventory` |
 | `LIQUIDATION_ROUTER_ADDRESS` | LiquidationRouter; its `owner` must be this bot's signer | flash | — |
 | `FLASH_SWAP_VENUE_ADDRESS` | UniswapV4SwapVenue bound to that router | flash | — |
@@ -248,7 +247,7 @@ The bot automates monitoring and execution.
 | `SIGNER_SOURCE` | AUTO signer backend: `local` or `aws` KMS | No | `local` |
 | `SIGNER_KEY_REF` | Local signer secret reference | No | `LIQUIDATOR_PRIVATE_KEY` |
 | `KMS_KEY_ID` | AWS KMS key id/ARN/alias for `SIGNER_SOURCE=aws` | KMS only | — |
-| `SIGNER_ADDRESS` | Expected KMS signer address | No | — |
+| `SIGNER_ADDRESS` | Expected signer address (either source); boot fails on mismatch | No | — |
 | `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
 | `DATABASE_URL` | Enables Postgres StateStore; required for MANUAL proposals | MANUAL only | — |
 | `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables | No | `bot` |

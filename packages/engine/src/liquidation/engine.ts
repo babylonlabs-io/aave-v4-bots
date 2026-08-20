@@ -11,7 +11,7 @@ import {
   type LiquidationFunding,
   createLiquidationFunding,
 } from "./funding";
-import { discoverBorrowableReserves } from "./reserves";
+import { type SpokeReserves, borrowableTokens, discoverSpokeReserves } from "./reserves";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 /** Observability port — the engine reports through it; the service supplies metrics. */
@@ -36,8 +36,6 @@ export interface LiquidationEngineParams {
   adapterAddress: Address;
   lensAddress: Address;
   wbtcAddress: Address;
-  /** Override auto-discovered debt tokens from the Spoke. */
-  debtTokenAddresses?: Address[];
   /** BTC redeem key; bytes32(0) means WBTC payout via VaultSwap. */
   btcRedeemKey: Hex;
   /** Direct BTC redemption vs WBTC payout via VaultSwap. */
@@ -63,7 +61,8 @@ export interface LiquidationEngineConfig
 export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   private adapterAddress: Address;
   private lensAddress: Address;
-  private debtTokenAddresses: Address[];
+  /** The Spoke's reserves in id order. Undefined until `prepare()` reads them. */
+  private reserveTopology?: SpokeReserves;
   private wbtcAddress: Address;
   private isDirectRedemption: boolean;
   private txReceiptTimeoutMs: number;
@@ -74,7 +73,6 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     super(config, { engine: "liquidation", intentAction: "liquidation" });
     this.adapterAddress = config.adapterAddress;
     this.lensAddress = config.lensAddress;
-    this.debtTokenAddresses = config.debtTokenAddresses ?? [];
     this.wbtcAddress = config.wbtcAddress;
     this.isDirectRedemption = config.isDirectRedemption;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
@@ -84,7 +82,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     // symbol is read once per process.
     this.funding = createLiquidationFunding({
       ...config,
-      debtTokens: () => this.debtTokenAddresses,
+      reserves: () => this.discoverReserves(),
       tokenMeta: this.tokenMetaCache,
     });
   }
@@ -96,8 +94,43 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
    * approves the adapter, flash funding approves nothing.
    */
   async prepare(): Promise<void> {
-    if (this.debtTokenAddresses.length === 0) await this.discoverDebtTokens();
+    const topology = await this.discoverReserves();
+    await this.assertLensWiring(topology);
     await this.funding.prepare();
+  }
+
+  /**
+   * Check the configured Lens is the one that speaks this adapter's reserve index space.
+   *
+   * The one topology error nothing downstream can catch. Every other mismatch shows up as a length
+   * that disagrees, but a Lens wired to a *different* Spoke with the same number of reserves
+   * answers in its own index space, and the amounts line up perfectly against the wrong tokens.
+   * Two reads at boot close it, and the Lens carries both as immutables.
+   */
+  private async assertLensWiring(topology: SpokeReserves): Promise<void> {
+    const [adapter, spoke] = await Promise.all([
+      this.publicClient.readContract({
+        address: this.lensAddress,
+        abi: lensAbi,
+        functionName: "adapter",
+      }),
+      this.publicClient.readContract({
+        address: this.lensAddress,
+        abi: lensAbi,
+        functionName: "spoke",
+      }),
+    ]);
+    const eq = (a: Address, b: Address) => a.toLowerCase() === b.toLowerCase();
+    if (!eq(adapter, this.adapterAddress)) {
+      throw new Error(
+        `Lens ${this.lensAddress} estimates for adapter ${adapter}, but ADAPTER_ADDRESS is ${this.adapterAddress} — its repay amounts would be indexed by another deployment's reserves`
+      );
+    }
+    if (!eq(spoke, topology.spoke)) {
+      throw new Error(
+        `Lens ${this.lensAddress} reads Spoke ${spoke}, but the adapter's is ${topology.spoke} — its repay amounts would be indexed by another Spoke's reserves`
+      );
+    }
   }
 
   /**
@@ -123,16 +156,29 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   }
 
   /**
-   * Discover debt tokens from the Spoke contract's borrowable reserves.
-   * Reads Spoke address from the AaveAdapter, then enumerates reserves.
+   * Read the Spoke's reserves — every one, in id order — and keep the answer for this cycle.
+   *
+   * The only source for this. A repay amount is charged to the token of the reserve *id* it is
+   * indexed by, so the mapping has to come from the chain: no configured list of addresses can
+   * express it, and one that tried would decide which balance an outflow is charged against.
+   *
+   * Read afresh every cycle rather than cached, which is both simpler and more correct than
+   * checking for staleness. `id → token` is immutable, but the two things layered on it are not:
+   * a reserve can be appended, and `updateReserveConfig` can flip `borrowable` without the count
+   * moving at all. Nothing short of re-reading sees the second, and a stale `false` there is
+   * silent — the token is never approved or published, so every position owing it is blocked until
+   * somebody restarts the bot. Against a cycle that already reads a balance per token and an
+   * estimate per position, one read per reserve is not the expensive part.
    */
-  async discoverDebtTokens(): Promise<void> {
-    this.debtTokenAddresses = await discoverBorrowableReserves({
+  async discoverReserves(): Promise<SpokeReserves> {
+    this.reserveTopology = await discoverSpokeReserves({
       publicClient: this.publicClient,
       adapterAddress: this.adapterAddress,
       logger: this.logger,
       tokenSymbol: async (token) => (await this.tokenMeta(token)).symbol,
+      previous: this.reserveTopology,
     });
+    return this.reserveTopology;
   }
 
   /**
@@ -385,11 +431,21 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   }> {
     try {
       const data = await this.indexer.read<PonderResponse>("/liquidatable-positions");
-      this.metrics.recordPositionsChecked(data.checked);
+      // The response crosses an unauthenticated wire and is cast to its type, never parsed — the
+      // same reason the risk gate re-establishes the freshness stamp rather than trusting it. This
+      // is the field the cycle is built on, so a body that does not carry it (a version-skewed
+      // indexer, a proxy error page) fails here, named, instead of as a `TypeError` on `.length`
+      // two frames later with nothing pointing at the indexer.
+      if (!Array.isArray(data.liquidatable)) {
+        throw new Error("Invalid Ponder response: liquidatable must be an array");
+      }
+      // Counts are reported, not acted on, so a missing one costs a gauge rather than the cycle —
+      // but it must not reach `prom-client`, which throws on a value that is not a number.
+      if (Number.isFinite(data.checked)) this.metrics.recordPositionsChecked(data.checked);
       // A short scan is not a quiet market. Surfaced rather than acted on: the positions we DID see
       // are still worth acting on, and refusing the cycle would turn a partial view into no view.
       // What must not happen is reading an incomplete list as "nothing to liquidate" in silence.
-      if (data.unscanned) {
+      if (Number.isFinite(data.unscanned) && data.unscanned) {
         this.metrics.recordError("positions_unscanned");
         this.logger.warn(
           `Indexer could not probe ${data.unscanned} position(s) this cycle — the candidate list is incomplete`
@@ -415,7 +471,9 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
       // Debt tokens — symbol/decimals are immutable, fetched once and cached.
       // Kick metadata + balanceOf in parallel so cold-start matches the original
       // 3-RPC concurrency; subsequent cycles only fire balanceOf (cache hit).
-      for (const tokenAddress of this.debtTokenAddresses) {
+      for (const tokenAddress of this.reserveTopology
+        ? borrowableTokens(this.reserveTopology)
+        : []) {
         const [{ symbol, decimals }, balance] = await Promise.all([
           this.tokenMeta(tokenAddress),
           this.readOwnBalance(tokenAddress),

@@ -95,6 +95,16 @@ function createMockClients() {
     publicClient: {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
       readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
+        // One borrowable reserve, matching `mockAmounts` — the engine refuses to attribute a spend
+        // when the Lens vector and the Spoke's reserve list disagree in length. The Lens reports
+        // the adapter and Spoke it was built for; `prepare()` refuses a pair that disagrees.
+        if (functionName === "adapter") return Promise.resolve("0xadapter");
+        if (functionName === "spoke") return Promise.resolve("0xspoke");
+        if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
+        if (functionName === "getReserveCount") return Promise.resolve(BigInt(mockAmounts.length));
+        if (functionName === "getReserve") {
+          return Promise.resolve({ flags: 0x04, underlying: "0xdebt" });
+        }
         if (functionName === "estimateLiquidation") {
           // [amounts, wbtcPayment, vaults] — wbtcPayment is the WBTC the
           // adapter pulls from msg.sender for fairness + redemption fee.
@@ -261,6 +271,45 @@ describe("LiquidationEngine", () => {
 
       await expect(bot.run()).resolves.not.toThrow();
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+    });
+
+    // The response is cast to its type, never parsed, so what the cycle is built on is checked where
+    // it is read — the same reason the risk gate re-establishes the freshness stamp itself. The
+    // arbitrage engine has always done this for its vault list; this side had not.
+    describe("a response that is not the shape it claims", () => {
+      const answering = (body: unknown) =>
+        vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve(body) });
+
+      it.each([
+        ["no list at all", { total: 0, checked: 0 }],
+        ["a list that is not an array", { liquidatable: "none", total: 0, checked: 0 }],
+        ["a null list", { liquidatable: null, total: 0, checked: 0 }],
+      ])("is refused as a fetch failure when it carries %s", async (_label, body) => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = answering(body);
+
+        await bot.run();
+
+        // Named as what it is — an unusable indexer answer — not as a `poll_error` from a `TypeError`
+        // two frames later with nothing pointing at the indexer.
+        expect(metrics.recordError).toHaveBeenCalledWith("ponder_fetch_error");
+        expect(metrics.recordError).not.toHaveBeenCalledWith("poll_error");
+        expect(clients.sender.send).not.toHaveBeenCalled();
+      });
+
+      // Counts are reported, not acted on. A missing one costs a gauge, not the cycle — but it must
+      // not reach `prom-client`, which throws on a value that is not a number.
+      it("acts on a well-formed list whose counts are missing", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = answering({ liquidatable: [mockPosition] });
+
+        await bot.run();
+
+        expect(metrics.recordPositionsChecked).not.toHaveBeenCalled();
+        expect(clients.sender.send).toHaveBeenCalled();
+      });
     });
 
     // A failed cycle is still a cycle: the stamp answers "is this bot alive", not "is it winning".
@@ -735,18 +784,117 @@ describe("LiquidationEngine", () => {
 
   // Approving the adapter is inventory-funding behaviour: it exists because the signer's own tokens
   // pay. It happens inside the poll cycle (`refreshInventory`), NOT at boot — `prepare()` runs
-  // before the risk gate's state is ever read, so an approval sent from there escapes it. These
-  // pass `debtTokenAddresses`, so discovery is skipped and the cycle goes straight to the approvals.
+  // before the risk gate's state is ever read, so an approval sent from there escapes it.
+  // The one topology error nothing downstream can catch: a Lens wired to another deployment answers
+  // in *its* reserve index space, and if both Spokes list the same number of reserves the amounts
+  // line up perfectly against the wrong tokens. Two reads at boot, before anything is traded.
+  // The Spoke is read every cycle, not cached: `updateReserveConfig` can make a reserve borrowable
+  // without the reserve count moving, and a bot that only re-read on a count change would never
+  // hold or approve that token — blocking every position that owes it until someone restarts it.
+  describe("a Spoke that changes under a running bot", () => {
+    it("holds and approves a token whose reserve became borrowable mid-run", async () => {
+      const clients = createMockClients();
+      const reserves = [
+        { flags: 0x04, underlying: "0xtoken1" },
+        { flags: 0x00, underlying: "0xtoken2" },
+      ];
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
+          if (functionName === "adapter") return Promise.resolve("0xadapter");
+          if (functionName === "spoke") return Promise.resolve("0xspoke");
+          if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
+          if (functionName === "getReserveCount") return Promise.resolve(BigInt(reserves.length));
+          if (functionName === "getReserve")
+            return Promise.resolve(reserves[Number(args?.[0] ?? 0n)]);
+          // Nothing approved, so each cycle approves whatever it is told to hold.
+          if (functionName === "allowance") return Promise.resolve(0n);
+          return Promise.resolve(0n);
+        }
+      );
+      const bot = createBot(clients, { nonces: passthroughNonces() });
+      await bot.prepare();
+
+      const approvedIn = async () => {
+        clients.sender.send.mockClear();
+        await bot.run();
+        return clients.sender.send.mock.calls
+          .map(([call]) => (call as { address: string }).address)
+          .filter((address) => address === "0xtoken2");
+      };
+
+      expect(await approvedIn()).toEqual([]);
+      reserves[1].flags = 0x04; // the operator makes it borrowable, count unchanged
+      expect(await approvedIn()).toEqual(["0xtoken2"]);
+    });
+  });
+
+  describe("Lens wiring", () => {
+    const wiredTo = (clients: ReturnType<typeof createMockClients>, over: Record<string, string>) =>
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName }: { functionName: string }) => {
+          if (functionName in over) return Promise.resolve(over[functionName]);
+          if (functionName === "getReserveCount") return Promise.resolve(1n);
+          if (functionName === "getReserve")
+            return Promise.resolve({ flags: 0x04, underlying: "0xtoken1" });
+          return Promise.resolve(0n);
+        }
+      );
+
+    it("refuses a Lens built for another adapter", async () => {
+      const clients = createMockClients();
+      wiredTo(clients, {
+        adapter: "0xotheradapter",
+        spoke: "0xspoke",
+        BTC_VAULT_CORE_SPOKE: "0xspoke",
+      });
+
+      await expect(createBot(clients).prepare()).rejects.toThrow(/estimates for adapter/);
+    });
+
+    it("refuses a Lens reading another Spoke", async () => {
+      const clients = createMockClients();
+      wiredTo(clients, {
+        adapter: "0xadapter",
+        spoke: "0xotherspoke",
+        BTC_VAULT_CORE_SPOKE: "0xspoke",
+      });
+
+      await expect(createBot(clients).prepare()).rejects.toThrow(/reads Spoke/);
+    });
+
+    it("accepts the matching pair, whatever the address casing", async () => {
+      const clients = createMockClients();
+      wiredTo(clients, {
+        adapter: "0xADAPTER",
+        spoke: "0xSPOKE",
+        BTC_VAULT_CORE_SPOKE: "0xspoke",
+      });
+
+      await expect(createBot(clients).prepare()).resolves.not.toThrow();
+    });
+  });
+
   describe("adapter approvals", () => {
+    /** A Spoke listing one borrowable reserve in `0xtoken1`, with `allowance` as given. */
+    const oneReserve = (clients: ReturnType<typeof createMockClients>, allowance: bigint) =>
+      clients.publicClient.readContract.mockImplementation(
+        ({ functionName }: { functionName: string }) => {
+          if (functionName === "adapter") return Promise.resolve("0xadapter");
+          if (functionName === "spoke") return Promise.resolve("0xspoke");
+          if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
+          if (functionName === "getReserveCount") return Promise.resolve(1n);
+          if (functionName === "getReserve")
+            return Promise.resolve({ flags: 0x04, underlying: "0xtoken1" });
+          if (functionName === "allowance") return Promise.resolve(allowance);
+          return Promise.resolve(0n);
+        }
+      );
+
     it("approves when allowance is below threshold", async () => {
       const clients = createMockClients();
-      // Return low allowance
-      clients.publicClient.readContract.mockResolvedValue(0n);
+      oneReserve(clients, 0n);
 
-      const bot = createBot(clients, {
-        debtTokenAddresses: ["0xtoken1" as `0x${string}`],
-        nonces: passthroughNonces(),
-      });
+      const bot = createBot(clients, { nonces: passthroughNonces() });
 
       await bot.prepare();
       await bot.run();
@@ -762,12 +910,12 @@ describe("LiquidationEngine", () => {
 
     it("skips approval when allowance is sufficient", async () => {
       const clients = createMockClients();
-      const maxUint = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
-      clients.publicClient.readContract.mockResolvedValue(maxUint);
+      oneReserve(
+        clients,
+        BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+      );
 
-      const bot = createBot(clients, {
-        debtTokenAddresses: ["0xtoken1" as `0x${string}`],
-      });
+      const bot = createBot(clients);
 
       await bot.prepare();
       await bot.run();
@@ -781,13 +929,19 @@ describe("LiquidationEngine", () => {
       // logging via tokenMeta. The single readContract spy covers all three.
       clients.publicClient.readContract.mockImplementation(
         ({ functionName }: { functionName: string }) => {
+          // The Lens reports the adapter and Spoke it was built for; `prepare()` checks the pair.
+          if (functionName === "adapter") return Promise.resolve("0xadapter");
+          if (functionName === "spoke")
+            return Promise.resolve("0x0000000000000000000000000000000000000000");
+          if (functionName === "BTC_VAULT_CORE_SPOKE")
+            return Promise.resolve("0x0000000000000000000000000000000000000000");
           if (functionName === "allowance") return Promise.resolve(0n);
           if (functionName === "symbol") return Promise.resolve("WBTC");
           if (functionName === "decimals") return Promise.resolve(8);
           return Promise.resolve(0n);
         }
       );
-      const bot = createBot(clients, { debtTokenAddresses: [], nonces: passthroughNonces() });
+      const bot = createBot(clients, { nonces: passthroughNonces() });
 
       // WBTC approval is unconditional — the adapter pulls WBTC from msg.sender
       // for fairness + direct-redemption fee, independent of whether WBTC is a
@@ -812,11 +966,17 @@ describe("LiquidationEngine", () => {
   // because a pinned target's bytecode changed, and the old placement then granted that same
   // contract an unlimited allowance moments later.
   describe("approvals and the risk gate", () => {
-    const approvalArgs = { debtTokenAddresses: [] as `0x${string}`[] };
+    const approvalArgs = {};
 
     const zeroAllowance = (clients: ReturnType<typeof createMockClients>) =>
       clients.publicClient.readContract.mockImplementation(
         ({ functionName }: { functionName: string }) => {
+          // The Lens reports the adapter and Spoke it was built for; `prepare()` checks the pair.
+          if (functionName === "adapter") return Promise.resolve("0xadapter");
+          if (functionName === "spoke")
+            return Promise.resolve("0x0000000000000000000000000000000000000000");
+          if (functionName === "BTC_VAULT_CORE_SPOKE")
+            return Promise.resolve("0x0000000000000000000000000000000000000000");
           if (functionName === "allowance") return Promise.resolve(0n);
           if (functionName === "symbol") return Promise.resolve("WBTC");
           if (functionName === "decimals") return Promise.resolve(8);
@@ -940,11 +1100,13 @@ describe("LiquidationEngine", () => {
 
       const bot = createBot(clients);
 
-      await bot.discoverDebtTokens();
+      await bot.discoverReserves();
 
-      // BTC_VAULT_CORE_SPOKE + getReserveCount + 2× getReserve + symbol + decimals
-      // (decimals is read alongside symbol via the tokenMeta cache).
-      expect(clients.publicClient.readContract).toHaveBeenCalledTimes(6);
+      // BTC_VAULT_CORE_SPOKE + getReserveCount + 2× getReserve + symbol/decimals per reserve
+      // (decimals is read alongside symbol via the tokenMeta cache). Both reserves are read and
+      // named, not just the borrowable one: the non-borrowable one still occupies a reserve id,
+      // and the id is what the Lens amounts are keyed by.
+      expect(clients.publicClient.readContract).toHaveBeenCalledTimes(8);
     });
 
     it("handles zero reserves gracefully", async () => {
@@ -956,7 +1118,7 @@ describe("LiquidationEngine", () => {
 
       const bot = createBot(clients);
 
-      await bot.discoverDebtTokens();
+      await bot.discoverReserves();
 
       expect(clients.publicClient.readContract).toHaveBeenCalledTimes(2);
     });
@@ -968,6 +1130,10 @@ describe("LiquidationEngine", () => {
 
       clients.publicClient.readContract.mockImplementation(
         ({ functionName, address }: { functionName: string; address: string }) => {
+          if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
+          if (functionName === "getReserveCount") return Promise.resolve(1n);
+          if (functionName === "getReserve")
+            return Promise.resolve({ flags: 0x04, underlying: "0xtoken1" });
           if (functionName === "symbol")
             return Promise.resolve(address === "0xwbtc" ? "WBTC" : "USDC");
           if (functionName === "decimals") return Promise.resolve(address === "0xwbtc" ? 8 : 6);
@@ -977,9 +1143,10 @@ describe("LiquidationEngine", () => {
         }
       );
 
-      const bot = createBot(clients, {
-        debtTokenAddresses: ["0xtoken1" as `0x${string}`],
-      });
+      const bot = createBot(clients);
+      // The tokens logged are the Spoke's borrowable reserves, so they exist only once it has been
+      // read — the declared list is checked against that, never used in its place.
+      await bot.discoverReserves();
 
       await expect(bot.logBalances()).resolves.not.toThrow();
       expect(metrics.recordTokenBalance).toHaveBeenCalled();
@@ -988,7 +1155,7 @@ describe("LiquidationEngine", () => {
     it("swallows a balance-read failure so the poll loop keeps running", async () => {
       const clients = createMockClients();
       clients.publicClient.readContract.mockRejectedValue(new Error("RPC blip"));
-      const bot = createBot(clients, { debtTokenAddresses: ["0xtoken1" as `0x${string}`] });
+      const bot = createBot(clients);
 
       // Must not throw — a transient RPC error during balance logging must not
       // escape to the poll loop and crash the process.
@@ -1000,6 +1167,10 @@ describe("LiquidationEngine", () => {
 
       clients.publicClient.readContract.mockImplementation(
         ({ functionName, address }: { functionName: string; address: string }) => {
+          if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
+          if (functionName === "getReserveCount") return Promise.resolve(1n);
+          if (functionName === "getReserve")
+            return Promise.resolve({ flags: 0x04, underlying: "0xtoken1" });
           if (functionName === "symbol")
             return Promise.resolve(address === "0xwbtc" ? "WBTC" : "USDC");
           if (functionName === "decimals") return Promise.resolve(address === "0xwbtc" ? 8 : 6);
@@ -1009,9 +1180,8 @@ describe("LiquidationEngine", () => {
         }
       );
 
-      const bot = createBot(clients, {
-        debtTokenAddresses: ["0xtoken1" as `0x${string}`],
-      });
+      const bot = createBot(clients);
+      await bot.discoverReserves();
 
       await bot.logBalances();
       const callsAfterFirst = clients.publicClient.readContract.mock.calls.length;

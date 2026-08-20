@@ -126,7 +126,14 @@ function buildSubmission(
     logger.info("Submission: public mempool");
     return undefined;
   }
-  logger.info(`Submission: Flashbots Protect (${settings.rpcUrl})`);
+  // Both, because they are different services and only one of them is configured by hand. The
+  // status endpoint is where a transaction's own deadline and its `simError` come from, and it
+  // carries a default that is right for Flashbots and silently wrong for anything else — a
+  // divergence that is otherwise invisible, since nothing downstream fails when the status feed
+  // does (every probe failure reads as still-in-flight, and the declared horizon still releases).
+  logger.info(
+    `Submission: Flashbots Protect — sending to ${settings.rpcUrl}, status from ${settings.statusUrl}`
+  );
   const relay = createFlashbotsProtectSubmitter({
     rpcUrl: settings.rpcUrl,
     statusUrl: settings.statusUrl,

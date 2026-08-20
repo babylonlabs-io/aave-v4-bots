@@ -33,6 +33,34 @@ Safe). The fully keyless flow is `claim` → sign the printed hash elsewhere →
 - **`safe`** — a Safe{Wallet} multisig. Claiming fixes the Safe execution envelope (nonce, hashes);
   `broadcast` collects owner signatures and calls `execTransaction`.
 
+## Recovering a claim with no transaction hash
+
+A row left `claimed` with no `txHash` usually means nobody sent anything — but not always. If
+`broadcast` was interrupted between putting the transaction on the wire and recording its hash,
+the action is live on chain and nothing in the store points at it.
+
+**Check before you `release`.** Releasing returns the row to `proposed`, from which it can be
+claimed and broadcast again — a second transaction for an action that may already be executing.
+
+1. Look at `MANUAL_EXECUTOR_ADDRESS` on a block explorer for a recent transaction to the proposal's
+   target (`show <id>` prints it).
+2. If there is one, record it: `confirm <id> --tx <hash>`. That is the right command here; it
+   verifies the transaction matches the payload before it accepts it.
+3. Only if there is none, `release <id>`.
+
+Under `safe` custody the CLI does this for you — `release` scans the Safe for the reserved
+`safeTxHash` and refuses if it already executed. Under `eoa` custody it cannot: a plain transaction
+has no identifier until it is signed, so there is nothing to have reserved and scan for. Comparing
+the account nonce instead would not answer the question, because the same wallet signs the
+operator's other transactions.
+
+The exposure if this is got wrong is smaller than it sounds: a re-broadcast action whose subject is
+already gone reverts (`PositionNotLiquidatable`, or a vault that has left escrow), so the cost is
+gas rather than a second execution. A liquidation that was only *partial* the first time is the
+exception — the position is still unhealthy, so a second one can execute. The adapter caps each
+repayment at the debt actually outstanding and refunds unspent inputs, so it is a real liquidation
+rather than a double spend, but it is one nobody asked for.
+
 ## Configuration
 
 Set the same store and custody the bot uses. Secrets are resolved as *references* via `@repo/secrets`

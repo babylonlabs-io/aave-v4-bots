@@ -4,6 +4,7 @@ import type { Logger } from "@repo/logger";
 import type { RiskAction, RiskGate } from "@repo/risk";
 import type { Address, Hex, PublicClient } from "viem";
 import type { Executor } from "../../shared/executor";
+import type { SpokeReserves } from "../reserves";
 import type { LiquidatablePosition } from "../types";
 import type { VenueRegistry } from "./venues";
 
@@ -150,7 +151,13 @@ export interface FundingContext {
    * Late-bound on purpose: the borrowable-reserve list is discovered from the Spoke during
    * `prepare()`, after the strategy is built. The one thing here that genuinely cannot be a value.
    */
-  debtTokens: () => readonly Address[];
+  /**
+   * The Spoke's reserves in id order, revalidated for the current cycle.
+   *
+   * Async and re-checked rather than a fixed list, because it answers a question that must be right
+   * *now*: which token an amount at index i is denominated in. See `SpokeReserves`.
+   */
+  reserves: () => Promise<SpokeReserves>;
   /** Shared with the engine so a token's symbol/decimals are read once per process, not per user. */
   tokenMeta: TokenMetaCache;
   /**

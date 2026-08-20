@@ -44,6 +44,7 @@ following label values:
 |-------------|---------|
 | `poll_error` | Exception escaped the poll cycle |
 | `ponder_fetch_error` | Failed to fetch `/escrowed-vaults` from Ponder |
+| `vaults_unreadable` | The indexer answered, but could not read some escrowed vaults — their live preview reverted for a reason other than the vault having left escrow. Those vaults are missing from the list, so the cycle acted on an incomplete escrow. Sustained, it means a vault (or an RPC endpoint serving that read) is persistently failing, and those vaults are never acquired |
 | `vault_skipped` | Vault not in escrow at preview time, or its previewed profit was zero |
 | `risk_blocked` | Risk gate denied the action before execution |
 | `intent_in_flight` | A live persisted intent/proposal already exists for the vault |

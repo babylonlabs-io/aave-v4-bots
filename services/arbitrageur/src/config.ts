@@ -112,7 +112,6 @@ const envSchema = z.object({
   BTC_REDEEM_KEY: bytes32Schema.optional().default(ZERO_BYTES32),
   IS_DIRECT_REDEMPTION: z.string().optional(),
   LLP_ADDRESS: addressSchema.optional().default(ZERO_ADDRESS),
-  DEBT_TOKEN_ADDRESSES: addressListSchema.optional(),
   LIQUIDATION_POLLING_INTERVAL_MS: positiveIntSchema.optional().default("12000"),
 
   // ── Flash funding (liquidation mode only) ──────────────────────────────────────────────
@@ -200,11 +199,6 @@ export function loadConfig(): Config {
     backoffMultiplier: 2,
   };
 
-  const debtTokenAddresses =
-    env.DEBT_TOKEN_ADDRESSES && env.DEBT_TOKEN_ADDRESSES.length > 0
-      ? (env.DEBT_TOKEN_ADDRESSES as Address[])
-      : undefined;
-
   // Funding is a property of the liquidation engine, so a flash setup without that engine is
   // configuration that can never take effect. Rejecting it matches how a half-set ADAPTER/LENS pair
   // is treated above: the operator asked for something this process will not do.
@@ -222,7 +216,6 @@ export function loadConfig(): Config {
           adapterAddress: env.ADAPTER_ADDRESS as Address,
           lensAddress: env.LENS_ADDRESS as Address,
           wbtcAddress,
-          debtTokenAddresses,
           btcRedeemKey: env.BTC_REDEEM_KEY as Hex,
           isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
           llpAddress: env.LLP_ADDRESS as Address,

@@ -497,6 +497,63 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).toHaveBeenCalled();
     });
 
+    // A vault the indexer could not read is dropped from the list, not marked in it, so a short
+    // list reads exactly like a complete one. The count is the only thing that tells them apart —
+    // and being missing means the vault is never acquired, on any cycle, while its debt accrues.
+    describe("when the indexer could not read every vault", () => {
+      const partial = (failedVaultsCount: number) =>
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ vaults: [mockVault], total: 1, failedVaultsCount }),
+        });
+
+      it("says the escrow list is incomplete", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = partial(2);
+
+        await bot.run();
+
+        expect(metrics.recordError).toHaveBeenCalledWith("vaults_unreadable");
+      });
+
+      // Reported, not obeyed: one unreadable vault must not cost the ones that are fine.
+      it("still acts on the vaults it did get", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = partial(2);
+
+        await bot.run();
+
+        expect(clients.sender.send).toHaveBeenCalled();
+      });
+
+      it("says nothing when the whole escrow was readable", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = partial(0);
+
+        await bot.run();
+
+        expect(metrics.recordError).not.toHaveBeenCalledWith("vaults_unreadable");
+      });
+
+      // An indexer too old to send the field is read as "none failed" rather than blocking.
+      it("tolerates an indexer that does not report the count", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+        });
+
+        await bot.run();
+
+        expect(metrics.recordError).not.toHaveBeenCalledWith("vaults_unreadable");
+        expect(clients.sender.send).toHaveBeenCalled();
+      });
+    });
+
     it("handles empty vault list gracefully", async () => {
       const clients = createMockClients();
       const bot = createBot(clients);

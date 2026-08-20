@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildSignerConfig, createLocalSigner, createSigner } from "./index";
+import { buildSignerConfig, createLocalSigner, createSigner, resolveSigner } from "./index";
 
 // Anvil account[0].
 const KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as const;
@@ -19,6 +19,34 @@ describe("@repo/signer", () => {
       expect(sig).toMatch(/^0x[0-9a-fA-F]+$/);
     });
 
+    // The same assertion `createAwsSigner` makes about a KMS key, for the same reason: with the key
+    // behind a secret ref, the account it derives is invisible until something derives it. A
+    // rotated or mistyped ref otherwise boots a bot signing as an account nobody funded — which
+    // shows up as every action being unaffordable, not as an error.
+    describe("the expected address", () => {
+      it("accepts the key that derives it, whatever the casing", () => {
+        expect(createLocalSigner(KEY, ADDR.toLowerCase() as `0x${string}`).account.address).toBe(
+          ADDR
+        );
+      });
+
+      it("refuses a key that derives a different address", () => {
+        const other = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as const;
+        expect(() => createLocalSigner(KEY, other)).toThrow(
+          `the configured signing key derives address ${ADDR}, not the configured ${other}`
+        );
+      });
+
+      it("never echoes the key while refusing", () => {
+        const other = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as const;
+        expect(() => createLocalSigner(KEY, other)).not.toThrow(new RegExp(KEY));
+      });
+
+      it("is optional — an unset one asserts nothing", () => {
+        expect(createLocalSigner(KEY).account.address).toBe(ADDR);
+      });
+    });
+
     // The key-shape guard used to live in each service's zod config schema; it now
     // lives at this boundary. The thrown error must never echo the key material.
     it.each([
@@ -33,19 +61,53 @@ describe("@repo/signer", () => {
     });
   });
 
+  // Where the value comes from. It reached the aws branch and was dropped on the local one, so a
+  // deployment that set it as a wrong-key tripwire got neither the check nor a word about it.
+  describe("resolveSigner", () => {
+    it("enforces the expected address against the resolved local key", async () => {
+      const other = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" as const;
+
+      await expect(
+        resolveSigner({ source: "local", keyRef: "SIGNING_KEY", address: other }, async () => KEY)
+      ).rejects.toThrow(/derives address/);
+    });
+
+    it("resolves the ref and signs as the address it expected", async () => {
+      const signer = await resolveSigner(
+        { source: "local", keyRef: "SIGNING_KEY", address: ADDR },
+        async (ref) => {
+          expect(ref).toBe("SIGNING_KEY");
+          return KEY;
+        }
+      );
+
+      expect(signer.account.address).toBe(ADDR);
+    });
+  });
+
   // `createAwsSigner` (the real AWS KMS adapter) is covered in `aws.test.ts`.
 
   describe("buildSignerConfig", () => {
     it("defaults to a local signer whose keyRef is the service default", () => {
       expect(
         buildSignerConfig({ source: "local", defaultKeyRef: "LIQUIDATOR_PRIVATE_KEY" })
-      ).toEqual({ source: "local", keyRef: "LIQUIDATOR_PRIVATE_KEY" });
+      ).toEqual({ source: "local", keyRef: "LIQUIDATOR_PRIVATE_KEY", address: undefined });
+    });
+
+    it("carries an expected address onto a local signer, not only an aws one", () => {
+      expect(
+        buildSignerConfig({
+          source: "local",
+          defaultKeyRef: "LIQUIDATOR_PRIVATE_KEY",
+          address: ADDR,
+        })
+      ).toEqual({ source: "local", keyRef: "LIQUIDATOR_PRIVATE_KEY", address: ADDR });
     });
 
     it("uses an explicit keyRef over the default when given", () => {
       expect(
         buildSignerConfig({ source: "local", keyRef: "MY_KEY", defaultKeyRef: "DEFAULT" })
-      ).toEqual({ source: "local", keyRef: "MY_KEY" });
+      ).toEqual({ source: "local", keyRef: "MY_KEY", address: undefined });
     });
 
     it("builds an aws signer config from the KMS fields", () => {

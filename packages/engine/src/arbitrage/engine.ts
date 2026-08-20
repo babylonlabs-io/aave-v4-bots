@@ -235,6 +235,16 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       if (!Array.isArray(data.vaults)) {
         throw new Error("Invalid Ponder response: vaults must be an array");
       }
+      // A vault the indexer could not read is missing from the list rather than marked in it, so
+      // this is the only thing that tells a short list from a complete one. The cycle still acts on
+      // what it got — a vault nobody can preview must not stop the ones that are fine — but it says
+      // so, because "no more vaults" and "no more vaults we can see" are not the same answer.
+      if (data.failedVaultsCount) {
+        this.metrics.recordError("vaults_unreadable");
+        this.logger.warn(
+          `Indexer could not read ${data.failedVaultsCount} escrowed vault(s) this cycle — the escrow list is incomplete`
+        );
+      }
       return { vaults: data.vaults, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
       this.logger.error("Failed to fetch escrowed vaults:", error);

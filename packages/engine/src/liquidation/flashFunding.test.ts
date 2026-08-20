@@ -128,7 +128,6 @@ function harness(
     adapterAddress: ADAPTER,
     lensAddress: LENS,
     wbtcAddress: WBTC,
-    debtTokenAddresses: [USDC],
     btcRedeemKey: `0x${"00".repeat(32)}`,
     isDirectRedemption: false,
     llpAddress: VENUE,

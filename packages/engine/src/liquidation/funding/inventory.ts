@@ -1,6 +1,7 @@
 import { adapterAbi } from "@repo/abis";
 import { readBalance } from "@repo/chain";
 import type { ContractCall } from "@repo/execution";
+import type { TokenSpend } from "@repo/risk";
 import {
   type Address,
   BaseError,
@@ -10,6 +11,7 @@ import {
 } from "viem";
 import { retireSettledOutflows } from "../../shared/outflows";
 import { sequentialPriorityOrder } from "../domain";
+import { type SpokeReserves, borrowableTokens } from "../reserves";
 import type {
   FundedCandidate,
   FundingContext,
@@ -34,7 +36,7 @@ export type InventoryFundingDeps = Pick<
   | "btcRedeemKey"
   | "isDirectRedemption"
   | "wbtcAddress"
-  | "debtTokens"
+  | "reserves"
   | "executor"
   | "tokenMeta"
   | "risk"
@@ -45,15 +47,23 @@ export type InventoryFundingDeps = Pick<
 export class InventoryFunding implements LiquidationFunding {
   readonly mode = "inventory" as const;
 
+  /**
+   * The reserve list this cycle's balances were published against, read in `refreshInventory`.
+   *
+   * Per cycle rather than per candidate so a mid-cycle append cannot leave one liquidation
+   * attributed against a list the others were not — and so the balances the gate holds and the
+   * tokens the spends name always come from the same read.
+   */
+  private topology?: SpokeReserves;
+
   constructor(private readonly deps: InventoryFundingDeps) {}
 
   /** Nothing to do at boot: the approvals this mode needs are sent from `refreshInventory`. */
   async prepare(): Promise<void> {}
 
   /** Approve the adapter to pull every debt token plus WBTC. */
-  private async approveAdapter(): Promise<void> {
-    const { adapterAddress, wbtcAddress, executor, logger } = this.deps;
-    const tokens = Array.from(new Set<Address>([...this.deps.debtTokens(), wbtcAddress]));
+  private async approveAdapter(tokens: readonly Address[]): Promise<void> {
+    const { adapterAddress, executor, logger } = this.deps;
 
     for (const token of tokens) {
       const { symbol } = await this.deps.tokenMeta.get(this.deps.publicClient, token);
@@ -79,14 +89,20 @@ export class InventoryFunding implements LiquidationFunding {
    * silent failure would present as "everything is unaffordable" rather than "we could not read".
    */
   async refreshInventory(): Promise<void> {
+    const { publicClient, wbtcAddress, risk, executor } = this.deps;
+    const owner = executor.identity.from;
+
+    // The reserve list for this cycle, revalidated against the chain — the one source for both
+    // questions asked below: what the signer must hold and approve (the borrowable tokens), and
+    // which token each repay amount belongs to (`spendFor`, by reserve id). Held for the cycle so
+    // every candidate is judged against the same topology the balances were published for.
+    this.topology = await this.deps.reserves();
+    const tokens = Array.from(new Set<Address>([...borrowableTokens(this.topology), wbtcAddress]));
+
     // Before the balances, because an allowance the adapter cannot pull makes them meaningless —
     // and because this is the first point in the cycle that is downstream of the gate's HALTED
     // check, so it is the earliest place an approval may legitimately be sent.
-    await this.approveAdapter();
-
-    const { publicClient, wbtcAddress, risk, executor } = this.deps;
-    const owner = executor.identity.from;
-    const tokens = Array.from(new Set<Address>([...this.deps.debtTokens(), wbtcAddress]));
+    await this.approveAdapter(tokens);
 
     // Every balance in this refresh is read at one height, and that height is what the gate's
     // outflow holds are judged against: a hold is only retired by evidence that this read already
@@ -180,19 +196,70 @@ export class InventoryFunding implements LiquidationFunding {
    * undefined — which is why a profit floor is rejected outright for an inventory-funded engine.
    */
   private risk(candidate: LiquidationCandidate): FundedCandidate["risk"] {
-    const debtTokens = this.deps.debtTokens();
+    return { spend: this.spendFor(candidate) };
+  }
+
+  /**
+   * What this candidate's call can pull from the signer, per token.
+   *
+   * `candidate.amounts` is indexed by **reserve id** over every reserve the Spoke lists — the Lens
+   * sizes it from `getReserveCount()` and the adapter pulls `amounts[i]` in reserve `i`'s
+   * underlying. So the token behind an amount comes from the reserve at that id and from nowhere
+   * else. Deriving it from the borrowable subset (which skips reserve ids) charges one token's
+   * outflow to another's balance the moment any non-borrowable reserve sorts before a borrowable
+   * one, and the gate then admits liquidations the signer cannot fund while blocking ones it can.
+   *
+   * Everything that could make the mapping a guess throws instead. A wrong entry here is not a bad
+   * estimate — it is the shared signer's overdraw guard pointed at the wrong balance, and since a
+   * settled outflow becomes a hold the gate keeps until the chain settles it, a wrong one now
+   * outlives the cycle that made it.
+   */
+  private spendFor(candidate: LiquidationCandidate): TokenSpend[] {
+    const { wbtcAddress, executor } = this.deps;
+    const reserves = this.topology?.reserves;
+    if (!reserves) {
+      throw new Error(
+        "inventory funding vetted a candidate before refreshInventory read the Spoke"
+      );
+    }
+    if (candidate.amounts.length !== reserves.length) {
+      // Not truncated or padded to fit: a length that disagrees means this array is keyed by a
+      // reserve list we do not have, so every index in it is a guess. The adapter itself only
+      // requires `amounts.length <= reserveCount`, so a short array would execute happily while
+      // silently omitting the reserves past its end.
+      throw new Error(
+        `Lens returned ${candidate.amounts.length} reserve amount(s) for ${candidate.position.proxyAddress} but the Spoke lists ${reserves.length} reserve(s) — refusing to attribute the spend`
+      );
+    }
+
     // Inventory funding spends the signer's own tokens, so it is both the payer and the account
     // the gate reserves against.
-    const owner = this.deps.executor.identity.from;
-    return {
-      spend: [
-        ...candidate.amounts.map((amount, idx) => ({
-          owner,
-          token: debtTokens[idx] ?? this.deps.wbtcAddress,
-          amount,
-        })),
-        { owner, token: this.deps.wbtcAddress, amount: candidate.wbtcPayment },
-      ],
+    const owner = executor.identity.from;
+    // Summed per token: two reserves can share an underlying, and the WBTC payment below lands on
+    // the same balance as a WBTC repayment. One entry per token is what the signer actually owes.
+    const byToken = new Map<string, TokenSpend>();
+    const add = (token: Address, amount: bigint) => {
+      // Zero is the normal case for most reserves — the borrower owes them nothing — and the
+      // adapter skips those inputs entirely. Declaring one would be worse than noise: the gate
+      // checks that it knows a balance *before* it looks at the amount, so a zero entry for a
+      // collateral-only reserve blocks every liquidation this bot could otherwise fund.
+      if (amount === 0n) return;
+      const k = token.toLowerCase();
+      const existing = byToken.get(k);
+      if (existing) existing.amount += amount;
+      else byToken.set(k, { owner, token, amount });
     };
+
+    // Every reserve, borrowable or not. `borrowable` restricts *borrowing*; the adapter repays
+    // existing debt with a plain `transferFrom` and takes vaultBTC collateral, so debt left on a
+    // frozen reserve is still liquidatable by anyone holding its token — and where that token is
+    // one we already hold (another reserve lists it, or it is WBTC) this liquidation simply works.
+    // Where we do not hold it, the gate has no balance for it and blocks the action by itself.
+    for (const [id, amount] of candidate.amounts.entries()) add(reserves[id].token, amount);
+
+    // The adapter's fairness payment (plus the redemption fee in direct mode) is a separate pull
+    // in the adapter's own WBTC, on top of whatever the WBTC reserve is repaid.
+    add(wbtcAddress, candidate.wbtcPayment);
+    return [...byToken.values()];
   }
 }

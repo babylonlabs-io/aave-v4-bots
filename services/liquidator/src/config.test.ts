@@ -88,22 +88,6 @@ describe("config validation", () => {
       expect(config.wbtcAddress).toBe(validEnv.WBTC_ADDRESS);
     });
 
-    it("should use default values for optional fields", async () => {
-      process.env = { ...validEnv };
-
-      const { loadConfig } = await import("./config");
-      const config = loadConfig();
-
-      expect(config.pollingIntervalMs).toBe(12000);
-      expect(config.btcRedeemKey).toBe(
-        "0x0000000000000000000000000000000000000000000000000000000000000000"
-      );
-      expect(config.metricsPort).toBe(9090);
-      expect(config.isDirectRedemption).toBe(false);
-      expect(config.debtTokenAddresses).toBeUndefined();
-      expect(config.txReceiptTimeoutMs).toBe(120000);
-    });
-
     it("should parse custom polling interval", async () => {
       process.env = { ...validEnv, POLLING_INTERVAL_MS: "30000" };
 
@@ -227,56 +211,6 @@ describe("config validation", () => {
       const { loadConfig } = await import("./config");
 
       expect(() => loadConfig()).toThrow("process.exit called");
-    });
-  });
-
-  describe("debt token addresses", () => {
-    it("should parse comma-separated debt token addresses", async () => {
-      process.env = {
-        ...validEnv,
-        DEBT_TOKEN_ADDRESSES:
-          "0xaaaa000000000000000000000000000000000001,0xbbbb000000000000000000000000000000000002",
-      };
-
-      const { loadConfig } = await import("./config");
-      const config = loadConfig();
-
-      expect(config.debtTokenAddresses).toHaveLength(2);
-      expect(config.debtTokenAddresses![0]).toBe("0xaaaa000000000000000000000000000000000001");
-      expect(config.debtTokenAddresses![1]).toBe("0xbbbb000000000000000000000000000000000002");
-    });
-
-    it("should trim whitespace from debt token addresses", async () => {
-      process.env = {
-        ...validEnv,
-        DEBT_TOKEN_ADDRESSES:
-          " 0xaaaa000000000000000000000000000000000001 , 0xbbbb000000000000000000000000000000000002 ",
-      };
-
-      const { loadConfig } = await import("./config");
-      const config = loadConfig();
-
-      expect(config.debtTokenAddresses).toHaveLength(2);
-      expect(config.debtTokenAddresses![0]).toBe("0xaaaa000000000000000000000000000000000001");
-      expect(config.debtTokenAddresses![1]).toBe("0xbbbb000000000000000000000000000000000002");
-    });
-
-    it("should set debtTokenAddresses to undefined when empty string", async () => {
-      process.env = { ...validEnv, DEBT_TOKEN_ADDRESSES: "" };
-
-      const { loadConfig } = await import("./config");
-      const config = loadConfig();
-
-      expect(config.debtTokenAddresses).toBeUndefined();
-    });
-
-    it("should set debtTokenAddresses to undefined when not provided", async () => {
-      process.env = { ...validEnv };
-
-      const { loadConfig } = await import("./config");
-      const config = loadConfig();
-
-      expect(config.debtTokenAddresses).toBeUndefined();
     });
   });
 });

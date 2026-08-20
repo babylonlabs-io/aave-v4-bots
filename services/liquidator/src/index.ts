@@ -72,7 +72,6 @@ async function createBot(config: Config): Promise<LiquidationBot> {
     adapterAddress: config.adapterAddress,
     lensAddress: config.lensAddress,
     wbtcAddress: config.wbtcAddress,
-    debtTokenAddresses: config.debtTokenAddresses,
     btcRedeemKey: config.btcRedeemKey,
     isDirectRedemption: config.isDirectRedemption,
     llpAddress: config.llpAddress,
@@ -89,13 +88,6 @@ async function main() {
   if (command === "poll") {
     logger.info("Aave V4 Liquidation Bot Starting...");
     const bot = await createBot(config);
-
-    // Discover or use configured debt tokens
-    if (config.debtTokenAddresses) {
-      logger.info(
-        `Using ${config.debtTokenAddresses.length} debt token(s) from DEBT_TOKEN_ADDRESSES env var`
-      );
-    }
 
     // Discovery, plus whatever the funding mode needs before it can trade: inventory funding
     // approves the adapter here, flash funding approves nothing.

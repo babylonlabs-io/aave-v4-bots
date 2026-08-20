@@ -32,6 +32,24 @@ export const lensAbi = [
     ],
     stateMutability: "view",
   },
+  // Immutables, read at boot to check this Lens belongs to the adapter this bot was configured
+  // with. A Lens wired to a different Spoke answers every estimate in *its* reserve index space,
+  // which is a mapping error nothing downstream can detect: if the two Spokes happen to list the
+  // same number of reserves, the amounts line up and are charged to the wrong tokens.
+  {
+    type: "function",
+    name: "adapter",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "spoke",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
   // The lens is a view over the same call graph, so its reverts originate in the adapter and
   // spoke it reads through. See `protocolErrors.ts`.
   ...protocolErrorsAbi,

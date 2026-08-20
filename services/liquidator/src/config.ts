@@ -98,7 +98,6 @@ const envSchema = z.object({
   WBTC_ADDRESS: addressSchema,
 
   // Optional
-  DEBT_TOKEN_ADDRESSES: addressListSchema.optional(),
   BTC_REDEEM_KEY: bytes32Schema.optional().default(ZERO_BYTES32),
   IS_DIRECT_REDEMPTION: z.string().optional(),
   LLP_ADDRESS: addressSchema.optional().default(ZERO_ADDRESS),
@@ -157,12 +156,6 @@ const envSchema = z.object({
 export function loadConfig(): Config {
   const env = parseEnv(envSchema);
 
-  // An empty/whitespace-only list parses to []; treat that as "auto-discover".
-  const debtTokenAddresses =
-    env.DEBT_TOKEN_ADDRESSES && env.DEBT_TOKEN_ADDRESSES.length > 0
-      ? (env.DEBT_TOKEN_ADDRESSES as Address[])
-      : undefined;
-
   const funding = buildFundingParams(env);
 
   // A profit floor is enforceable here only under flash funding, which probes the router and hands
@@ -187,7 +180,6 @@ export function loadConfig(): Config {
     adapterAddress: env.ADAPTER_ADDRESS as Address,
     lensAddress: env.LENS_ADDRESS as Address,
     wbtcAddress: env.WBTC_ADDRESS as Address,
-    debtTokenAddresses,
     btcRedeemKey: env.BTC_REDEEM_KEY as Hex,
     isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
     llpAddress: env.LLP_ADDRESS as Address,

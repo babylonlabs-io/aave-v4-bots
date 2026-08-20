@@ -1,4 +1,4 @@
-import type { Address, Hex } from "viem";
+import { type Address, type Hex, isAddressEqual } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { type AwsSignerConfig, type KmsSend, createAwsSigner } from "./aws";
 import type { Signer } from "./types";
@@ -23,12 +23,26 @@ const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
  * The key shape is validated at this boundary (it used to be a zod schema in each
  * service's config). The error is deliberately **sanitized** — it never echoes the key
  * value — because a signer error can surface in logs.
+ *
+ * `expected` is the address the operator declared this process signs as, and boot fails if the key
+ * derives a different one — the same assertion `createAwsSigner` makes, for the same reason. It is
+ * not only a dev-key convenience: in the shape that matters (`SIGNER_SOURCE=local` with the key in
+ * Secrets Manager) the address behind a ref is exactly as invisible as a KMS key's, and a rotated
+ * or mistyped ref otherwise boots a bot that signs as an account nobody funded or granted a role
+ * to. That failure is quiet where it matters most — an unfunded signer just finds every action
+ * unaffordable and trades nothing.
  */
-export function createLocalSigner(privateKey: string): Signer {
+export function createLocalSigner(privateKey: string, expected?: Address): Signer {
   if (!PRIVATE_KEY_RE.test(privateKey)) {
     throw new Error("invalid private key: expected 0x-prefixed 32-byte hex (66 chars)");
   }
   const account = privateKeyToAccount(privateKey as Hex);
+  if (expected && !isAddressEqual(expected, account.address)) {
+    // Names the ref, never the key: this message reaches logs.
+    throw new Error(
+      `the configured signing key derives address ${account.address}, not the configured ${expected}`
+    );
+  }
   return { account };
 }
 
@@ -51,14 +65,18 @@ type AwsSignerSelection = { source: "aws"; keyId: string; address?: Address; reg
  *   `@repo/secrets` and passes the value in as a `ResolvedSignerConfig`.
  * - `aws`: the key lives in AWS KMS; `keyId` identifies it, nothing is resolved.
  */
-export type SignerConfig = { source: "local"; keyRef: string } | AwsSignerSelection;
+export type SignerConfig =
+  | { source: "local"; keyRef: string; address?: Address }
+  | AwsSignerSelection;
 
 /**
  * The **resolved** input `createSigner` consumes. Same as `SignerConfig` except the local
  * key ref has already been resolved to the actual `privateKey` by the caller — so
  * `@repo/signer` stays free of any secrets/resolver concept.
  */
-export type ResolvedSignerConfig = { source: "local"; privateKey: string } | AwsSignerSelection;
+export type ResolvedSignerConfig =
+  | { source: "local"; privateKey: string; address?: Address }
+  | AwsSignerSelection;
 
 /**
  * Turn raw (already string-validated) env fields into a `SignerConfig`, applying the
@@ -74,7 +92,7 @@ export function buildSignerConfig(input: {
   defaultKeyRef: string;
   /** `aws`: the KMS key id/ARN/alias. */
   kmsKeyId?: string;
-  /** `aws`: optional expected address (boot fails if it mismatches the key). */
+  /** Optional expected address — boot fails if the key derives a different one, either source. */
   address?: Address;
   /** `aws`: optional AWS region. */
   region?: string;
@@ -85,7 +103,7 @@ export function buildSignerConfig(input: {
     }
     return { source: "aws", keyId: input.kmsKeyId, address: input.address, region: input.region };
   }
-  return { source: "local", keyRef: input.keyRef ?? input.defaultKeyRef };
+  return { source: "local", keyRef: input.keyRef ?? input.defaultKeyRef, address: input.address };
 }
 
 /**
@@ -97,7 +115,7 @@ export function buildSignerConfig(input: {
 export async function createSigner(config: ResolvedSignerConfig): Promise<Signer> {
   switch (config.source) {
     case "local":
-      return createLocalSigner(config.privateKey);
+      return createLocalSigner(config.privateKey, config.address);
     case "aws":
       return createAwsSigner({
         keyId: config.keyId,
@@ -124,7 +142,11 @@ export async function resolveSigner(
   resolveRef: (ref: string) => Promise<string>
 ): Promise<Signer> {
   if (config.source === "local") {
-    return createSigner({ source: "local", privateKey: await resolveRef(config.keyRef) });
+    return createSigner({
+      source: "local",
+      privateKey: await resolveRef(config.keyRef),
+      address: config.address,
+    });
   }
   return createSigner(config);
 }

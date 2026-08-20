@@ -24,4 +24,17 @@ export interface PonderResponse {
    * bound unset.
    */
   dataTimestampMs?: number;
+  /**
+   * Escrowed vaults the indexer could not read this cycle — its live preview reverted for a reason
+   * other than the vault having left escrow.
+   *
+   * Those vaults are **absent from `vaults`**, so without this the list is indistinguishable from a
+   * complete one and a persistently unreadable vault is never acquired, never retried on any signal
+   * an operator can see, and accrues debt in silence. `/liquidatable-positions` reports the same
+   * thing as `unscanned` for the same reason.
+   *
+   * Optional for wire compatibility with an older indexer, which is safe here: an absent count is
+   * read as none, and the engine acts on the vaults it did get either way.
+   */
+  failedVaultsCount?: number;
 }

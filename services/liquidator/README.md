@@ -13,8 +13,9 @@ against the AaveAdapter contract.
 
 ## How It Works
 
-1. **Discover debt tokens** — at boot, either reads `DEBT_TOKEN_ADDRESSES` or
-   enumerates the Spoke's reserves and selects those flagged borrowable.
+1. **Discover reserves** — at boot, enumerates the Spoke's reserves in id order.
+   The ids matter: a repay amount is charged to the token of the reserve it is
+   indexed by. Those flagged borrowable are what the signer holds and approves.
 2. **Approve** — under `LIQUIDATION_FUNDING=inventory` (the default), once at
    boot, sets `MAX_UINT256` allowance on every debt token and on WBTC for the
    AaveAdapter contract. WBTC approval is required because the adapter pulls
@@ -124,7 +125,6 @@ WBTC_ADDRESS=0x...
 # FLASH_MAX_SLIPPAGE_BPS=2000
 
 # Comma-separated debt tokens. If unset, auto-discovered from the Spoke.
-# DEBT_TOKEN_ADDRESSES=0xUSDC...,0xUSDT...
 
 # Selects redemption mode. "true" → direct (calls liquidate); anything
 # else → LLP escrow (calls liquidateWithLLP). Default: false.

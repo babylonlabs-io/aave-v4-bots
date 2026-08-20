@@ -98,6 +98,11 @@ function setup(
     getBlockNumber: vi.fn(async () => 1n),
     readContract: vi.fn(
       async ({ functionName, args }: { functionName: string; args: unknown[] }) => {
+        // One reserve, so the Lens amounts vector and the Spoke's reserve list line up — the
+        // liquidation engine refuses to attribute a spend when they disagree.
+        if (functionName === "BTC_VAULT_CORE_SPOKE") return "0xspoke";
+        if (functionName === "getReserveCount") return 1n;
+        if (functionName === "getReserve") return { flags: 0x04, underlying: "0xdebt" };
         if (functionName === "estimateLiquidation") return [[1000000n], 0n, ["0xvault1"]];
         if (functionName === "previewEscrowedVaults") {
           const ids = args[0] as `0x${string}`[];

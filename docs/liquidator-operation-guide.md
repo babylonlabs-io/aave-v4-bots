@@ -301,7 +301,6 @@ WBTC_ADDRESS=0x...
 
 # Debt token addresses (comma-separated). If unset, auto-discovered from
 # the Spoke's borrowable reserves.
-# DEBT_TOKEN_ADDRESSES=0xUSDC...,0xUSDT...
 
 # Selects the redemption mode:
 #   true  → calls AaveAdapter.liquidate(borrower, BTC_REDEEM_KEY, ...)
@@ -375,7 +374,6 @@ METRICS_PORT=9090
 | `ADAPTER_ADDRESS` | AaveAdapter address | Yes | — |
 | `LENS_ADDRESS` | AaveAdapterLens address | Yes | — |
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
-| `DEBT_TOKEN_ADDRESSES` | Override auto-discovery (comma-separated) | No | — |
 | `LIQUIDATION_FUNDING` | `inventory` (repay from own balances) or `flash` (repay via LiquidationRouter) | No | `inventory` |
 | `LIQUIDATION_ROUTER_ADDRESS` | LiquidationRouter; its `owner` must be this bot's signer | flash | — |
 | `FLASH_SWAP_VENUE_ADDRESS` | UniswapV4SwapVenue bound to that router | flash | — |
@@ -395,7 +393,7 @@ METRICS_PORT=9090
 | `SIGNER_SOURCE` | AUTO signer backend: `local` or `aws` KMS | No | `local` |
 | `SIGNER_KEY_REF` | Local signer secret reference; defaults to the service private-key env var | No | `LIQUIDATOR_PRIVATE_KEY` |
 | `KMS_KEY_ID` | AWS KMS key id/ARN/alias for `SIGNER_SOURCE=aws` | KMS only | — |
-| `SIGNER_ADDRESS` | Expected KMS signer address; boot fails on mismatch | No | — |
+| `SIGNER_ADDRESS` | Expected signer address; boot fails if the key derives a different one. Applies to both `local` and `aws` — with the key behind a secret ref or a KMS id, the account it derives is invisible until something derives it | No | — |
 | `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
 | `DATABASE_URL` | Enables Postgres StateStore for intent idempotency and reconcile-on-boot | MANUAL only | — |
 | `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables, separate from Ponder. **One schema per signer** — a schema is claimed by the first execution identity to use it and a second one fails at boot, because intents in it are keyed and reconciled as a single account. Running both services against one `DATABASE_URL` therefore needs a distinct value here for each. | No | `bot` |
