@@ -27,8 +27,11 @@ services:
       context: .
       dockerfile: docker/ponder.Dockerfile
     container_name: liquidator-ponder
+    # The indexer's own file, not the bot's. It indexes the chain and serves HTTP; it has no use
+    # for a signing key, a kill-switch token or a webhook, and handing it `.env.liquidator` put all
+    # three in the environment of the most exposed process in the stack.
     env_file:
-      - .env.liquidator
+      - .env.liquidator.indexer
     environment:
       DATABASE_URL: postgresql://ponder:ponder@liquidator-postgres:5432/ponder
       DATABASE_SCHEMA: public
@@ -48,11 +51,11 @@ services:
       - liquidator-network
     restart: unless-stopped
 
-  liquidator-client:
+  liquidator-bot:
     build:
       context: .
-      dockerfile: docker/liquidator-client.Dockerfile
-    container_name: liquidator-client
+      dockerfile: docker/liquidator.Dockerfile
+    container_name: liquidator-bot
     env_file:
       - .env.liquidator
     environment:
@@ -101,8 +104,11 @@ services:
       context: .
       dockerfile: docker/ponder.Dockerfile
     container_name: arbitrageur-ponder
+    # The indexer's own file, not the bot's. It indexes the chain and serves HTTP; it has no use
+    # for a signing key, a kill-switch token or a webhook, and handing it `.env.arbitrageur` put all
+    # three in the environment of the most exposed process in the stack.
     env_file:
-      - .env.arbitrageur
+      - .env.arbitrageur.indexer
     environment:
       DATABASE_URL: postgresql://ponder:ponder@arbitrageur-postgres:5432/ponder
       DATABASE_SCHEMA: public
@@ -122,11 +128,11 @@ services:
       - arbitrageur-network
     restart: unless-stopped
 
-  arbitrageur-client:
+  arbitrageur-bot:
     build:
       context: .
-      dockerfile: docker/arbitrageur-client.Dockerfile
-    container_name: arbitrageur-client
+      dockerfile: docker/arbitrageur.Dockerfile
+    container_name: arbitrageur-bot
     env_file:
       - .env.arbitrageur
     environment:

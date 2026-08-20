@@ -8,7 +8,49 @@ on:
 
 jobs:
   e2e:
+    name: e2e (${{ matrix.suite }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Arbitrageur suite: one bot running BOTH engines (liquidation + acquisition).
+          - suite: arbitrageur
+            setup: ArbitrageurE2ESetup
+            verify: ArbitrageurE2EVerify
+          # Liquidator suite: standalone liquidator bot, funded by flash swap rather than from its
+          # own inventory. `fork: true` because that path needs a real UniswapV4 to swap through,
+          # which a bare chain has none of. The inventory-funded path stays covered by the
+          # arbitrageur suite above, whose liquidation engine still runs it.
+          - suite: liquidator
+            setup: LiquidationE2ESetup
+            verify: LiquidationE2EVerify
+            fork: true
+          # Router-funded acquisition: the WBTC comes from a treasury that approved an
+          # ArbitrageRouter, and the bot's key only signs the authorization. The suite's own
+          # assertion is that the treasury's balance fell — every other suite would still pass with
+          # the bot paying for itself, so this is the only one that proves the split.
+          - suite: router-arbitrageur
+            setup: RouterArbitrageurE2ESetup
+            verify: RouterArbitrageurE2EVerify
+          # MANUAL suites run against the ARBITRAGEUR — the bot that carries inventory (WBTC to
+          # acquire vaults, USDC to repay debt), so the one worth making keyless. Both engines are
+          # on, so the operator drives a liquidation AND the acquisition of the vault it escrows.
+          # `drive_kind` selects the operator custody the drive step plays.
+          #
+          # EOA: the executor is ARBITRAGEUR, itself a registered vault keeper, so the acquisition
+          # uses the direct `swapWbtcForVault` and the AUTO verification assertions hold unchanged.
+          - suite: manual-arbitrageur
+            setup: ManualArbitrageurE2ESetup
+            verify: ArbitrageurE2EVerify
+            drive_kind: eoa
+          # Safe: the executor is a Safe{Wallet} multisig, which can never be a vault keeper (they
+          # are registered by BTC public key against a roster frozen at vault creation). It pays
+          # while the registered keeper receives, via `swapWbtcForVaultOnBehalf`.
+          - suite: manual-safe-arbitrageur
+            setup: ManualSafeArbitrageurE2ESetup
+            verify: ManualSafeArbitrageurE2EVerify
+            drive_kind: safe
     permissions:
       contents: read
       packages: read
@@ -78,6 +120,25 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0 https://github.com/foundry-rs/foundry-toolchain/releases/tag/v1.8.0
 
+      # Forked state for a pinned block never changes, so it is fetched once and read from disk
+      # thereafter — ~150KB for everything this suite reads. Keyed on the block so bumping it fetches
+      # afresh rather than silently reusing the wrong state.
+      #
+      # The network is still touched when there is no cache to restore: the first run, runs racing it
+      # before it is saved, and after GitHub evicts an entry unused for 7 days. That is why the RPC
+      # below has a working public default rather than requiring a secret.
+      #
+      # The cache cannot cover anvil's boot handshake either: `--fork-url` asks the endpoint for its
+      # chain id before serving anything, so an endpoint that stops answering fails the job outright
+      # however warm the cache is.
+      - name: Cache forked RPC state
+        if: ${{ matrix.fork }}
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0 https://github.com/actions/cache/releases/tag/v4.2.0
+        with:
+          path: ~/.foundry/cache/rpc
+          key: foundry-rpc-e2e-11141103
+          restore-keys: foundry-rpc-
+
       - name: Install Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 https://github.com/actions/setup-node/releases/tag/v4.4.0
         with:
@@ -101,10 +162,10 @@ jobs:
           pip3 install --user base58 coincurve
 
       - name: Install contracts test utils (Node.js deps for PoP signature generation)
-        run: npm ci --prefix lib/contracts/test/utils
+        run: npm ci --prefix lib/tbv-contracts/test/utils
 
       - name: Create symlink for FFI scripts (PopHelpers uses relative path test/utils/)
-        run: ln -s ../lib/contracts/test/utils test/utils
+        run: ln -s ../lib/tbv-contracts/test/utils test/utils
 
       - name: Create separate Ponder databases
         run: |
@@ -112,19 +173,19 @@ jobs:
           PGPASSWORD=ponder psql -h localhost -U ponder -d ponder -c "CREATE DATABASE ponder_arbitrageur;"
 
       - name: Start Bitcoin regtest
-        run: docker compose -f lib/contracts/docker-compose.e2e.yml up -d bitcoin-regtest
+        run: docker compose -f lib/tbv-contracts/docker-compose.e2e.yml up -d bitcoin-regtest
 
       - name: Wait for Bitcoin node
         run: |
-          chmod +x lib/contracts/test/e2e/scripts/btc-helper.sh
+          chmod +x lib/tbv-contracts/test/e2e/scripts/btc-helper.sh
           for i in {1..30}; do
-            if USE_DOCKER=true lib/contracts/test/e2e/scripts/btc-helper.sh wait; then
+            if USE_DOCKER=true lib/tbv-contracts/test/e2e/scripts/btc-helper.sh wait; then
               echo "✓ Bitcoin node is ready"
               break
             fi
             if [ $i -eq 30 ]; then
               echo "✗ Bitcoin node failed to start"
-              docker compose -f lib/contracts/docker-compose.e2e.yml logs bitcoin-regtest
+              docker compose -f lib/tbv-contracts/docker-compose.e2e.yml logs bitcoin-regtest
               exit 1
             fi
             sleep 2
@@ -134,7 +195,7 @@ jobs:
         env:
           USE_DOCKER: "true"
         run: |
-          cd lib/contracts
+          cd lib/tbv-contracts
           ./test/e2e/scripts/btc-helper.sh wallet test_wallet
           ./test/e2e/scripts/btc-helper.sh mine 2020
           ./test/e2e/scripts/btc-helper.sh info
@@ -145,19 +206,45 @@ jobs:
         # (--gas-price 0 --block-base-fee-per-gas 0 --disable-min-priority-fee)
         # break viem's tx-fee auto-estimation in the bot client (TipAboveFeeCap),
         # so we leave Anvil at its defaults.
+        if: ${{ !matrix.fork }}
         run: anvil --silent &
 
-      - name: Deploy CreateX factory and initialise Anvil
+      # Forked suites keep chain id 31337: the protocol's proof-of-possession messages bind
+      # `block.chainid` and the test-side signer hardcodes 31337, so any other id fails every peg-in
+      # with `InvalidBIP322Signature`. The block is pinned so the fetched state is identical run to
+      # run and can be served from the cache restored above.
+      - name: Start Anvil (forked)
+        if: ${{ matrix.fork }}
+        env:
+          SEPOLIA_RPC: ${{ secrets.SEPOLIA_RPC || 'https://sepolia.gateway.tenderly.co' }}
         run: |
-          cd lib/contracts
+          anvil --silent --fork-url "$SEPOLIA_RPC" --chain-id 31337 --fork-block-number 11141103 &
+          for _ in $(seq 1 60); do
+            cast chain-id --rpc-url http://127.0.0.1:8545 --rpc-timeout 5 >/dev/null 2>&1 && break
+            sleep 2
+          done
+          cast chain-id --rpc-url http://127.0.0.1:8545 >/dev/null
+
+      - name: Deploy CreateX factory and initialise Anvil
+        if: ${{ !matrix.fork }}
+        run: |
+          cd lib/tbv-contracts
           forge script script/deployment/AnvilSetUp.s.sol:AnvilSetUp \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
             --skip-simulation
 
+      # A fork inherits CreateX, so `AnvilSetUp` is skipped and its other effects applied directly.
+      # Same script the local runner uses, so the two cannot drift.
+      - name: Initialise fork
+        if: ${{ matrix.fork }}
+        run: |
+          RPC_URL=http://127.0.0.1:8545 ./test/e2e/scripts/fork-init.sh \
+            "$DEPLOYER_ADDRESS" "$VAULT_PROVIDER_ADDRESS"
+
       - name: Deploy and setup E2E environment
         run: |
-          cd lib/contracts
+          cd lib/tbv-contracts
           forge script script/e2e/SetupEnvironment.s.sol:SetupEnvironment \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
@@ -165,9 +252,9 @@ jobs:
             --skip-simulation \
             --slow
 
-      - name: Run setup position script
+      - name: Run setup script (${{ matrix.suite }})
         run: |
-          forge script test/e2e/LiquidationE2ESetup.s.sol:LiquidationE2ESetup \
+          forge script test/e2e/${{ matrix.setup }}.s.sol:${{ matrix.setup }} \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
             --private-key $DEPLOYER_PRIVATE_KEY \
@@ -175,19 +262,20 @@ jobs:
             --skip-simulation \
             --slow
 
-      - name: Run liquidation verification script
-        run: |
-          forge script test/e2e/LiquidationE2EVerify.s.sol:LiquidationE2EVerify \
-            --rpc-url http://127.0.0.1:8545 \
-            --broadcast \
-            --private-key $DEPLOYER_PRIVATE_KEY \
-            --ffi \
-            --skip-simulation \
-            --slow
+      # MANUAL suites only. The keyless bot never broadcasts — it writes proposals and waits, so
+      # nothing reaches the chain until an operator drives them. This plays that operator:
+      # claim → sign in an external tool (never operator-cli) → confirm. Mirrors the DRIVE step in
+      # scripts/e2e-local.sh. Non-manual suites have no `drive_kind` and skip it.
+      - name: Drive operator flow (${{ matrix.suite }})
+        if: matrix.drive_kind != ''
+        env:
+          E2E_RPC_URL: http://127.0.0.1:8545
+          MANUAL_EXECUTOR_KIND: ${{ matrix.drive_kind }}
+        run: bash test/e2e/scripts/operator-confirm.sh
 
-      - name: Run arbitrageur verification script
+      - name: Run verification script (${{ matrix.suite }})
         run: |
-          forge script test/e2e/ArbitrageurE2EVerify.s.sol:ArbitrageurE2EVerify \
+          forge script test/e2e/${{ matrix.verify }}.s.sol:${{ matrix.verify }} \
             --rpc-url http://127.0.0.1:8545 \
             --broadcast \
             --private-key $DEPLOYER_PRIVATE_KEY \

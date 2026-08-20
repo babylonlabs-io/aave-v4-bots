@@ -1,5 +1,7 @@
 // AaveAdapter ABI - methods used by liquidator and arbitrageur bots
 
+import { protocolErrorsAbi } from "./protocolErrors";
+
 export const adapterAbi = [
   // Liquidator
   {
@@ -61,4 +63,28 @@ export const adapterAbi = [
     ],
     anonymous: false,
   },
+  // A borrower's position. `totalCollateralBTC` goes to 0 once the position is fully liquidated —
+  // the liquidation engine reads it after a reverted `liquidate` to tell a lost race (a competitor
+  // already cleared the position) from a genuine failure.
+  {
+    type: "function",
+    name: "getPosition",
+    inputs: [{ name: "user", type: "address" }],
+    outputs: [
+      {
+        name: "position",
+        type: "tuple",
+        components: [
+          { name: "vaultIds", type: "bytes32[]" },
+          { name: "totalCollateralBTC", type: "uint256" },
+          { name: "proxyContract", type: "address" },
+        ],
+      },
+    ],
+    stateMutability: "view",
+  },
+  // Reverts from anywhere in the liquidation call graph — the adapter delegates into the
+  // registries, the position account, and the Aave spoke, and any of them can be the one that
+  // actually reverted. See `protocolErrors.ts`.
+  ...protocolErrorsAbi,
 ] as const;

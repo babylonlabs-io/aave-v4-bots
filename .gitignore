@@ -41,13 +41,12 @@ out/
 /broadcast/**/dry-run/
 broadcast
 
-
-# Claude Code instruction file (keep local only)
-CLAUDE.md
-
 tmp/
-lib/contracts/deployments/local.json
+lib/tbv-contracts/deployments/local.json
 
 # Local e2e runner artefacts
 .venv-e2e/
 .e2e-*
+# Symlink to lib/tbv-contracts/test/utils, created at runtime by the e2e runner and CI
+# because PopHelpers' FFI scripts resolve the relative path test/utils/.
+test/utils

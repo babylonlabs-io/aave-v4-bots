@@ -3,9 +3,9 @@
 pragma solidity 0.8.28;
 
 import {Test} from "forge-std/Test.sol";
-import {IAaveOracle} from "../../../lib/contracts/lib/aave-v4/src/spoke/interfaces/IAaveOracle.sol";
-import {AaveAdapter} from "../../../lib/contracts/src/applications/aave/AaveAdapter.sol";
-import {IAaveSpoke} from "../../../lib/contracts/src/applications/aave/interfaces/IAaveSpoke.sol";
+import {IAaveOracle} from "../../../lib/tbv-contracts/lib/aave-v4/src/spoke/interfaces/IAaveOracle.sol";
+import {AaveAdapter} from "../../../lib/tbv-contracts/src/applications/aave/AaveAdapter.sol";
+import {IAaveSpoke} from "../../../lib/tbv-contracts/src/applications/aave/interfaces/IAaveSpoke.sol";
 
 abstract contract TBVHelper {
     function _getWbtcPriceAgainstTokens(address adapter, address[] memory tokens)

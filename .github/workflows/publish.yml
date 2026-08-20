@@ -2,8 +2,10 @@ name: docker_publish
 
 on:
   push:
+    # '**' and not '*': a single-star glob does not cross '/', so branches
+    # like GAtom22/reorg-2 silently skipped publishing entirely.
     branches:
-    - '*'
+    - '**'
     tags:
     - '*'
   workflow_dispatch:
@@ -11,15 +13,19 @@ on:
 permissions:
   contents: read
 
+# Two images, matching the production architecture proposal: one bot service
+# (the arbitrageur composition root, which also runs the liquidation engine
+# when ADAPTER_ADDRESS+LENS_ADDRESS are set) and one mode-gated ponder
+# indexer. The standalone liquidator entrypoint stays in the repo for local
+# runs but is not published as an image.
 jobs:
-  # Liquidator Service
-  docker_liquidator_indexer:
+  docker_bots_indexer:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
     secrets: inherit
     with:
       publish: true
       dockerfile: ./docker/ponder.Dockerfile
-      repoName: liquidation-aave-indexer
+      repoName: aave-bots-indexer
       push_to_dockerhub: false
     permissions:
       contents: read
@@ -27,42 +33,13 @@ jobs:
       security-events: write
       packages: read
 
-  docker_liquidator_client:
+  docker_bots_svc:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
     secrets: inherit
     with:
       publish: true
-      dockerfile: ./docker/liquidator-client.Dockerfile
-      repoName: liquidation-aave-client
-      push_to_dockerhub: false
-    permissions:
-      contents: read
-      id-token: write
-      security-events: write
-      packages: read
-
-  # Arbitrageur Service
-  docker_arbitrageur_indexer:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
-    secrets: inherit
-    with:
-      publish: true
-      dockerfile: ./docker/ponder.Dockerfile
-      repoName: arbitrageur-aave-indexer
-      push_to_dockerhub: false
-    permissions:
-      contents: read
-      id-token: write
-      security-events: write
-      packages: read
-
-  docker_arbitrageur_client:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
-    secrets: inherit
-    with:
-      publish: true
-      dockerfile: ./docker/arbitrageur-client.Dockerfile
-      repoName: arbitrageur-aave-client
+      dockerfile: ./docker/arbitrageur.Dockerfile
+      repoName: aave-bots-svc
       push_to_dockerhub: false
     permissions:
       contents: read

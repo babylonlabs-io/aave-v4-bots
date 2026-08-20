@@ -1,3 +1,7 @@
+import { createLogger } from "@repo/logger";
+
+const logger = createLogger();
+
 /**
  * Retry configuration
  */
@@ -10,13 +14,23 @@ export interface RetryConfig {
   maxDelayMs: number;
   /** Multiplier for exponential backoff */
   backoffMultiplier: number;
+  /**
+   * Per-attempt request timeout for `fetchWithRetry`, in ms. Retry only reacts to a request that
+   * *fails*: a peer that accepts the connection and then never answers produces no error at all,
+   * so a poll loop awaiting it simply stops — no retry, no metric, no log, and a bot that looks
+   * alive while doing nothing. Bounding each attempt turns that silence into a normal retryable
+   * failure. Optional only so existing full `RetryConfig` values keep type-checking; the default
+   * below applies when unset.
+   */
+  timeoutMs?: number;
 }
 
-const DEFAULT_RETRY_CONFIG: RetryConfig = {
+const DEFAULT_RETRY_CONFIG: Required<RetryConfig> = {
   maxAttempts: 3,
   initialDelayMs: 1000,
   maxDelayMs: 30000,
   backoffMultiplier: 2,
+  timeoutMs: 10000,
 };
 
 /**
@@ -59,7 +73,7 @@ export async function withRetry<T>(
 
       const delay = calculateDelay(attempt, config);
       const contextStr = context ? `[${context}] ` : "";
-      console.warn(
+      logger.warn(
         `${contextStr}Attempt ${attempt + 1}/${config.maxAttempts} failed: ${lastError.message}. Retrying in ${Math.round(delay)}ms...`
       );
 
@@ -78,16 +92,44 @@ export async function fetchWithRetry(
   options?: RequestInit,
   retryConfig?: Partial<RetryConfig>
 ): Promise<Response> {
+  const config = { ...DEFAULT_RETRY_CONFIG, ...retryConfig };
   return withRetry(
     async () => {
-      const response = await fetch(url, options);
+      // Built per attempt, not hoisted: an AbortSignal is single-use, so one shared signal would
+      // leave every retry after the first starting out already aborted. A caller-supplied signal
+      // wins — it owns the request's lifetime and may be cancelling for its own reasons.
+      const response = await fetch(url, {
+        ...options,
+        signal: options?.signal ?? AbortSignal.timeout(config.timeoutMs),
+      });
       if (!response.ok && response.status >= 500) {
         // Retry on 5xx errors
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       return response;
     },
-    retryConfig,
+    config,
     `fetch ${url}`
   );
+}
+
+/**
+ * `fetchWithRetry` + status check + JSON decode — the three lines every indexer read repeats.
+ *
+ * Deliberately does **not** absorb the caller's error handling. Each engine degrades differently
+ * when its indexer read fails (which metric, which empty shape, what else it validates), and those
+ * differences are the interesting part; folding them in here would need a parameter per caller and
+ * would hide exactly what a reader needs to see.
+ *
+ * @throws on a non-2xx response, or whatever `fetchWithRetry` throws once retries are exhausted.
+ */
+export async function fetchJsonWithRetry<T>(
+  url: string,
+  retryConfig?: Partial<RetryConfig>
+): Promise<T> {
+  const response = await fetchWithRetry(url, undefined, retryConfig);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} ${response.statusText} from ${url}`);
+  }
+  return (await response.json()) as T;
 }

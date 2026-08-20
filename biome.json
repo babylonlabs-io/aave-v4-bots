@@ -17,6 +17,9 @@
       "style": {
         "noNonNullAssertion": "off",
         "useConst": "error"
+      },
+      "correctness": {
+        "noUndeclaredVariables": "error"
       }
     }
   },
@@ -43,9 +46,10 @@
       "services/ponder/.ponder",
       "services/*/client/src/abis/**",
       "services/ponder/abis/**",
-      "lib/contracts/**",
+      "lib/**",
       "external",
       ".venv-e2e/**",
+      ".e2e-*",
       "broadcast/**",
       "cache/**",
       "out/**"

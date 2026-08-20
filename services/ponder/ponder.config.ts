@@ -1,13 +1,28 @@
 import { adapterAbi, spokeAbi, vaultSwapAbi } from "@repo/abis";
+import { createAwsSecrets } from "@repo/secrets";
 import { createConfig } from "ponder";
 
 import { INDEX_ARBITRAGE, INDEX_LIQUIDATION } from "./src/flags";
 
+// Secret-bearing values (DB connection, RPC URL) are read from env first; if one is absent
+// and CONFIG_SECRET_ID is set, it falls back to that AWS Secrets Manager JSON secret's
+// matching field (e.g. `<CONFIG_SECRET_ID>#DATABASE_URL`). Unset ⇒ pure env (unchanged).
+const CONFIG_SECRET_ID = process.env.CONFIG_SECRET_ID;
+const secrets = CONFIG_SECRET_ID ? createAwsSecrets({ region: process.env.AWS_REGION }) : undefined;
+
+async function resolveSecret(name: string): Promise<string | undefined> {
+  const fromEnv = process.env[name];
+  if (fromEnv) return fromEnv;
+  if (secrets && CONFIG_SECRET_ID)
+    return secrets.get(`${CONFIG_SECRET_ID}#${name}`, "CONFIG_SECRET_ID");
+  return undefined;
+}
+
 // Shared chain config
-const PONDER_RPC_URL = process.env.PONDER_RPC_URL;
+const PONDER_RPC_URL = await resolveSecret("PONDER_RPC_URL");
+const DATABASE_URL = await resolveSecret("DATABASE_URL");
 const CHAIN_ID = Number(process.env.CHAIN_ID || 1);
 const START_BLOCK = Number(process.env.START_BLOCK || 0);
-const DATABASE_URL = process.env.DATABASE_URL;
 const POLLING_INTERVAL = Number(process.env.PONDER_POLLING_INTERVAL || 4000);
 
 // Per-mode addresses
@@ -19,20 +34,8 @@ if (!PONDER_RPC_URL) {
   throw new Error("PONDER_RPC_URL environment variable is required");
 }
 
-// A half-configured liquidation mode is almost certainly a typo, not an intent to
-// disable it — fail loudly rather than silently indexing nothing for liquidation.
-if (!!SPOKE_ADDRESS !== !!ADAPTER_ADDRESS) {
-  throw new Error(
-    "Liquidation indexing requires BOTH SPOKE_ADDRESS and ADAPTER_ADDRESS (set both or neither)."
-  );
-}
-
-if (!INDEX_LIQUIDATION && !INDEX_ARBITRAGE) {
-  throw new Error(
-    "Enable at least one index mode: set ADAPTER_ADDRESS + SPOKE_ADDRESS (liquidation) " +
-      "and/or VAULT_SWAP_ADDRESS (arbitrage)."
-  );
-}
+// The mode gating + its fail-fast guards (half-configured / no-mode enabled) live
+// in resolveIndexingModes, which runs when `./src/flags` is imported above.
 
 // One network for every contract; handlers reference contract names, not the
 // network key, so unifying the previous `chain` / `local` keys is safe.
