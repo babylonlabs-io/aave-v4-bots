@@ -55,12 +55,29 @@ export type RouterFundingDeps = Pick<
  * treasury-spending signature lives: `SelfCallRelayer` carries no nonce and no submitter binding,
  * so the deadline is the *entire* replay bound on a message anyone who sees it may execute.
  *
- * This is the local floor under that. Generous on purpose — chain timestamps track real time within
- * seconds, so five minutes is far outside honest behaviour while tolerating any legitimate skew.
+ * This is the local floor under that, and it doubles as a bound on the lifetime itself: whatever
+ * lead is tolerated here is added to the configured window, because the deadline is that timestamp
+ * plus `deadlineSeconds`. A minute is already far outside honest behaviour — chain timestamps track
+ * real time within seconds — while leaving any legitimate skew room, and it keeps the worst case a
+ * hostile endpoint can buy to a fraction of the configured window rather than a multiple of it.
+ *
  * It refuses rather than silently shortening the deadline: a quietly clipped batch expires in
  * flight, which this design already classifies as *not our failure*, so the symptom would hide.
  */
-const MAX_CHAIN_TIME_LEAD_SECONDS = 300n;
+const MAX_CHAIN_TIME_LEAD_SECONDS = 60n;
+
+/**
+ * How far past its deadline an authorization is held before it is forgotten.
+ *
+ * Expiry is judged from one block header, and a header is not proof of the canonical chain: a
+ * shallow reorg can replace it, and behind a load-balanced pool the endpoint answering may sit a
+ * block or two from the one that answered last. Either way a batch this map has dropped can still
+ * be inside its window on the chain that survives — and an authorization nobody is accounting for
+ * is treasury capacity committed twice. Two block times covers both; anything longer only delays
+ * releasing capacity nothing can spend. The nonce fence keeps `PRIVATE_RECLAIM_MARGIN_BLOCKS` for
+ * the same reason, in the unit that mechanism reasons in.
+ */
+const AUTHORIZATION_EXPIRY_MARGIN_SECONDS = 24n;
 
 /**
  * How far below the recorded authorization height `spentWithoutUs` starts looking.
@@ -296,7 +313,15 @@ export class RouterFunding implements ArbitrageFunding {
   private async retireAuthorizations(head: bigint, chainTime: bigint): Promise<void> {
     const { publicClient, routerAddress, vaultSwapAddress, vaultKeeperAddress } = this.deps;
     for (const [id, a] of this.authorizations) {
-      if (a.deadline < chainTime) this.authorizations.delete(id);
+      // Past the deadline *and* past the margin. Retiring on the first header that reports expiry
+      // trusts one timestamp to be canonical, and the two ordinary ways it is not — a shallow reorg
+      // that replaces it, and a load-balanced pool whose members disagree by a block — both put a
+      // batch back inside its window after this map has forgotten it. The treasury capacity it was
+      // holding is then republished and can be committed to a second vault while the first is still
+      // executable by anyone holding it.
+      if (a.deadline + AUTHORIZATION_EXPIRY_MARGIN_SECONDS < chainTime) {
+        this.authorizations.delete(id);
+      }
     }
     const live = [...this.authorizations.values()];
     if (live.length === 0) return;

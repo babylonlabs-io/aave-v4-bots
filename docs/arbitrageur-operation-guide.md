@@ -491,7 +491,7 @@ transactions it never sends.
 | `FLASHBOTS_PROTECT_URL` | in private mode | e.g. `https://rpc.flashbots.net/fast` |
 | `FLASHBOTS_STATUS_URL` | no | defaults to `https://protect.flashbots.net` |
 | `PRIVATE_MIN_PRIORITY_FEE_WEI` | in private mode | no default, deliberately — see below |
-| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | default `25` — the relay's retry window, used when it states no deadline of its own; capped at `7200` (~a day of blocks) |
+| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | default `25` — the relay's retry window, used when it states no deadline of its own; capped at `7200` (~a day of blocks). Reading status from Protect, a value below its ~25-block window is refused at boot: when a status probe says nothing, this is the only thing fencing the nonce |
 | `PRIVATE_RECLAIM_MARGIN_BLOCKS` | no | default `3` — reorg headroom past that deadline; same cap |
 
 Four things fail the boot rather than degrading quietly, because each one
@@ -515,6 +515,15 @@ otherwise produces a bot that looks healthy and lands nothing:
   release the nonce of a private transaction the relay has dropped, and a fence
   set to an implausible number is indistinguishable, from the outside, from a
   nonce that never comes back.
+
+**Accepted risk: the relay is trusted to stop offering a transaction.** A signed
+transaction carries no expiry, so nothing on chain forces the relay to drop it
+once its deadline passes. Releasing the nonce rests on the relay honouring the
+deadline it reported, or — when it reports none — on
+`PRIVATE_RELAY_HORIZON_BLOCKS` describing the relay you actually use. The
+declared window, the reorg margin and the absolute cap bound the exposure; they
+do not remove it. Only consuming the nonce on chain would, which this bot does
+not do.
 
 **The trade-off is yours to make, and it is real.** Private submission reduces
 front-running, but it also narrows who can include you (Protect's default forwards

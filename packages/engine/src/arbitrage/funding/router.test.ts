@@ -509,10 +509,31 @@ describe("RouterFunding", () => {
       });
       h.funding.settleAuthorization(authorizationId, { consumed: false });
 
-      // One second past the 120s deadline signed at 1_700_000_000.
-      h.getBlock.mockResolvedValue({ timestamp: 1_700_000_121n, number: 200n });
+      // Past the 120s deadline signed at 1_700_000_000, and past the margin held on top of it.
+      h.getBlock.mockResolvedValue({ timestamp: 1_700_000_150n, number: 200n });
       await h.funding.refreshInventory();
       expect(published(h)).toMatchObject({ authorized: 0n });
+    });
+
+    // Expiry is judged from one header, and a header is not the canonical chain: a shallow reorg or
+    // a pool member a block behind can put the batch back inside its window after this map has
+    // dropped it — and an authorization nobody accounts for is treasury capacity committed twice.
+    it("keeps holding through the first header that reports expiry", async () => {
+      const h = build({ balance: 1_000n, allowance: 1_000n });
+      await h.funding.prepare();
+      const { authorizationId } = await h.funding.buildAcquisition({
+        vaultId: VAULT_ID,
+        preview: PREVIEW,
+        maxWbtcIn: 90n,
+      });
+      h.funding.settleAuthorization(authorizationId, { consumed: false });
+
+      // One second past the deadline: expired by this header, and a block or two of disagreement
+      // away from not being.
+      h.getBlock.mockResolvedValue({ timestamp: 1_700_000_121n, number: 200n });
+      await h.funding.refreshInventory();
+
+      expect(published(h)).toMatchObject({ authorized: 90n });
     });
 
     // The other way out: someone submitted it. The vault leaves escrow, so no batch for it can
@@ -554,11 +575,37 @@ describe("RouterFunding", () => {
     });
 
     it("tolerates a lead within the allowance, since chain time is not our clock", async () => {
-      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 299n });
+      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 59n });
       await funding.prepare();
       await funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
 
       expect(signTypedData).toHaveBeenCalled();
+    });
+
+    // The bound itself, not just a value under it: a lead this size is minutes of chain time out of
+    // step with the host, which is not skew — and every second of it would be added to the window.
+    it("refuses a lead of minutes, however plausible the block otherwise looks", async () => {
+      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 299n });
+
+      await funding.prepare();
+      await expect(
+        funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n })
+      ).rejects.toThrow(/leads this host's clock/);
+      expect(signTypedData).not.toHaveBeenCalled();
+    });
+
+    // Whatever lead is tolerated is added to the configured window, because the deadline is that
+    // timestamp plus `deadlineSeconds`. The bound therefore decides the worst-case lifetime of a
+    // bearer signature, and it has to stay a fraction of the window rather than a multiple of it.
+    it("bounds the lifetime a tolerated lead can buy", async () => {
+      const now = nowSeconds();
+      const { funding, signTypedData } = build({ blockTimestamp: now + 59n });
+      await funding.prepare();
+      await funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
+
+      const { message } = signTypedData.mock.calls[0][0] as { message: { deadline: bigint } };
+      // 120s configured; the lead may stretch it, but not past half as long again.
+      expect(message.deadline - now).toBeLessThanOrEqual(120n + 60n);
     });
 
     // A month-ahead timestamp turns a 120-second authorization into a month-long one. The router

@@ -184,6 +184,60 @@ describe("submission is an AUTO-only decision", () => {
   });
 });
 
+// The declared window is the only thing fencing a nonce when the relay says nothing about a
+// transaction's own deadline — a probe that fails, answers UNKNOWN, or under-reports leaves it
+// carrying the whole weight. Too long only delays reclaiming a nonce nobody will spend; too short
+// hands one out while the relay can still spend it, which is the failure the fence exists for.
+describe("the declared relay window, where the relay is known", () => {
+  const PROTECT_STATUS = "https://protect.flashbots.net";
+
+  it("refuses a window shorter than Protect's, when reading status from Protect", () => {
+    expect(() =>
+      buildSubmitterConfig(
+        privateEnv({ FLASHBOTS_STATUS_URL: PROTECT_STATUS, PRIVATE_RELAY_HORIZON_BLOCKS: "24" })
+      )
+    ).toThrow(/below the ~25 blocks Flashbots Protect keeps offering/);
+  });
+
+  // The check recognises a relay, so a trailing slash is still Protect. Matching on the exact
+  // string would let a shade of spelling turn the floor off without changing anything real.
+  it.each(["https://protect.flashbots.net/", "https://Protect.Flashbots.net"])(
+    "recognises %s as Protect",
+    (statusUrl) => {
+      expect(() =>
+        buildSubmitterConfig(
+          privateEnv({ FLASHBOTS_STATUS_URL: statusUrl, PRIVATE_RELAY_HORIZON_BLOCKS: "4" })
+        )
+      ).toThrow(/below the ~25 blocks/);
+    }
+  );
+
+  it("accepts Protect's own window, and anything longer", () => {
+    for (const blocks of ["25", "50"]) {
+      expect(
+        buildSubmitterConfig(
+          privateEnv({ FLASHBOTS_STATUS_URL: PROTECT_STATUS, PRIVATE_RELAY_HORIZON_BLOCKS: blocks })
+        )
+      ).toMatchObject({ relayHorizonBlocks: Number(blocks) });
+    }
+  });
+
+  // A relay this bot knows nothing about: its window is a fact only its operator has, and a bot
+  // that guessed Protect's number for it would be asserting something it cannot know. The e2e's
+  // fake relay is exactly this — a genuine 4-block window, declared honestly.
+  it("leaves a custom relay's window to the operator who named it", () => {
+    expect(
+      buildSubmitterConfig(
+        privateEnv({
+          FLASHBOTS_PROTECT_URL: "http://127.0.0.1:8555",
+          FLASHBOTS_STATUS_URL: "http://127.0.0.1:8555",
+          PRIVATE_RELAY_HORIZON_BLOCKS: "4",
+        })
+      )
+    ).toMatchObject({ relayHorizonBlocks: 4 });
+  });
+});
+
 // The nonce fence is the only thing that ever frees the nonce of a privately-submitted transaction
 // the relay has dropped, so every input to it is bounded at the env layer — where an unbounded one
 // reads as a plain large number, and everywhere after as a nonce that never comes back.

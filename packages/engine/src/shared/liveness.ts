@@ -179,19 +179,18 @@ export interface RelayStatusSource {
 }
 
 /**
- * How far past the configured window a relay's own deadline is still believed, as a multiple of it.
+ * Hard ceiling on a relay-declared deadline, independent of anything the operator configured.
  *
- * The relay is authoritative about how long it will keep offering a transaction, so a deadline
- * *longer* than ours is normally the truth and fencing to it is the safe direction. That stops
- * being true without a ceiling: this number is the only thing that ever frees a privately-submitted
- * nonce, so one response claiming a deadline a million blocks out fences that nonce for good and
- * every later send queues behind it. Well-formed, in range, and permanent.
+ * Absolute rather than a multiple of the configured window, because the two errors it sits between
+ * are not symmetric. Believing an over-long declaration fences a nonce for longer than it needed to
+ * be: the bot stops trading and an operator can see exactly why. Recording one *shorter* than the
+ * relay's real deadline hands out a nonce the relay can still spend, which is the failure this
+ * mechanism exists to prevent. A cap derived from the configured window would shrink along with it,
+ * so declaring a short window would truncate the relay's own honest, longer answer.
  *
- * A multiple rather than an absolute cap, because the quantity it bounds is the operator's declared
- * window — whatever `PRIVATE_RELAY_HORIZON_BLOCKS` says the relay's retry window is, this says we
- * will believe up to ten of them and no further.
+ * Roughly a day of Ethereum blocks, matching the ceiling the config puts on the declared window.
  */
-export const RELAY_HORIZON_TRUST_MULTIPLE = 10;
+export const MAX_RELAY_HORIZON_BLOCKS = 7200;
 
 /**
  * Resolve a just-submitted transaction's deadline — the block past which it can no longer be
@@ -218,17 +217,24 @@ export function createRelayHorizon(
     ]);
     const fallback = head + horizonBlocks;
     const declared = status?.maxBlockNumber ?? 0;
-    const ceiling = head + horizonBlocks * RELAY_HORIZON_TRUST_MULTIPLE;
+    const ceiling = head + MAX_RELAY_HORIZON_BLOCKS;
     if (declared > ceiling) {
-      // Said rather than silently clamped: a relay claiming a window this far past the one it
-      // documents is either broken or not the relay we think we are talking to, and the operator
-      // cannot infer either from a nonce that simply takes longer to come back.
+      // Said rather than silently clamped: a relay naming a deadline a day out is either broken or
+      // not the relay we think we are talking to, and the operator cannot infer either from a nonce
+      // that simply takes longer to come back.
       logger?.warn(
-        `Relay declared a deadline of block ${declared} for ${hash}, beyond the ${RELAY_HORIZON_TRUST_MULTIPLE}x window this bot will honour — fencing to ${ceiling} instead.`
+        `Relay declared a deadline of block ${declared} for ${hash}, beyond the ${MAX_RELAY_HORIZON_BLOCKS} blocks this bot will fence for — fencing to ${ceiling} instead.`
       );
-      return ceiling;
     }
-    return Math.max(declared, fallback);
+    // Never shorter than either input: the cap only trims a declaration that is implausible on its
+    // face, and the configured window is a floor rather than a competing answer. A relay that
+    // reports a longer deadline than we expected is telling us something we cannot learn any other
+    // way, and the safe reading of a disagreement here is always the later block.
+    const trusted = Math.min(declared, ceiling);
+    // A relay that says nothing reports 0 — see `flashbots.ts`. The fallback carries it then, and
+    // is the only bound in that case, which is why the configured window has to describe the real
+    // relay rather than however long the operator would like to wait.
+    return Math.max(trusted, fallback);
   };
 }
 

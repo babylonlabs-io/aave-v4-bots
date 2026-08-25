@@ -38,6 +38,18 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   // that string is overwritten by whichever halt came last. Without it, a code-hash halt landing on
   // an already-HALTED gate is indistinguishable from the manual halt it replaced.
   let codeHashHalt = false;
+  /**
+   * Bumped every time a code-hash halt is recorded, so a `verifyCode` pass can tell whether the
+   * ground moved under it while it was reading.
+   *
+   * Passes are not serialised — `startCodeHashGuard` ticks on an interval and a probe slower than
+   * that interval overlaps its successor — and a clean result says only that the targets were sound
+   * when *that* pass read them. Without this, the later-finishing pass wins: one that read before an
+   * upgrade can land after one that saw it and clear the halt it raised, leaving `resume` free to
+   * admit trading against bytecode the guard already rejected. Reading the counter is how a pass
+   * asks "is my answer still about the current state of the world".
+   */
+  let codeHashHaltSeq = 0;
   let everVerified = false;
 
   // Token ledger. Spendable capacity for one `(owner, token)` is
@@ -136,7 +148,10 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
     const wasRunning = state === "RUNNING";
     state = "HALTED";
     haltReason = reason;
-    if (fromCodeHash) codeHashHalt = true;
+    if (fromCodeHash) {
+      codeHashHalt = true;
+      codeHashHaltSeq++;
+    }
     if (wasRunning) emit({ kind: "halted", reason });
   };
 
@@ -374,6 +389,10 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       const expected = config.expectedCodeHashes;
       if (!expected) return;
 
+      // Captured before the first read: a clean result is evidence about the chain as it was at this
+      // moment, and it may only retire a halt that was already standing then.
+      const seq = codeHashHaltSeq;
+
       const addresses = Object.keys(expected);
       // Read every address independently. `Promise.all` would reject on the first RPC blip and
       // discard the results that DID come back — so an upgraded contract could hide behind an
@@ -416,7 +435,13 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       // — an operator cannot assert it, and the state the periodic guard's fail-open rests on is
       // now actually true. The gate stays HALTED: proving the target is sound is not the same as
       // deciding to trade again, and that decision stays with the operator.
-      codeHashHalt = false;
+      //
+      // Unless a mismatch was recorded while this pass was reading, in which case this answer is
+      // about a chain state that no longer holds and the newer one stands.
+      if (codeHashHaltSeq === seq) codeHashHalt = false;
+      // Not gated the same way: a clean pass did see every pinned target sound at the block it read,
+      // which is all this claims. It decides whether a later *probe failure* halts, and one blip
+      // after one good read is a blip whenever that read happened.
       everVerified = true;
     },
   };

@@ -441,7 +441,9 @@ pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
 
 Identical to the arbitrageur's, and configured with the same variables —
 `SUBMITTER`, `FLASHBOTS_PROTECT_URL`, `PRIVATE_MIN_PRIORITY_FEE_WEI`,
-`PRIVATE_RELAY_HORIZON_BLOCKS`, `PRIVATE_RECLAIM_MARGIN_BLOCKS`. Liquidation is the more contested path of the two, so
+`PRIVATE_RELAY_HORIZON_BLOCKS`, `PRIVATE_RECLAIM_MARGIN_BLOCKS` — including the
+accepted risk that releasing a nonce trusts the relay to stop offering the
+transaction. Liquidation is the more contested path of the two, so
 the reach-versus-protection trade-off matters more here, not less: read
 [§5.5 of the arbitrageur guide](arbitrageur-operation-guide.md#55-mev-protection-private-submission)
 before enabling it, including what a stuck private nonce looks like.

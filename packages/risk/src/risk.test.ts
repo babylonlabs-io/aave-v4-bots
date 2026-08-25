@@ -825,6 +825,44 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.haltReason()).toMatch(/code hash mismatch/);
     });
 
+    // Passes are not serialised: `startCodeHashGuard` ticks on an interval, so a probe slower than
+    // that interval overlaps its successor. A clean answer is evidence about the chain the pass
+    // read, not about the chain now — so the pass that finishes last must not be the one that wins.
+    it("refuses when a stale clean pass lands after a newer mismatch", async () => {
+      const gate = createRiskGate(pinned);
+      let releaseStale: (hash: string) => void = () => {};
+      const stalled = new Promise<string>((resolve) => {
+        releaseStale = resolve;
+      });
+
+      // Pass A reads against a lagging backend and hangs mid-flight.
+      const stale = gate.verifyCode(() => stalled);
+      // Pass B sees the upgrade and halts.
+      await gate.verifyCode(async () => "0xtampered");
+      expect(gate.resume()).toBe(false);
+
+      // A now returns the pre-upgrade hash. It answers a question about a chain that has moved.
+      releaseStale("0xgood");
+      await stale;
+
+      expect(gate.resume()).toBe(false);
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.openSlot(action()).allowed).toBe(false);
+    });
+
+    // The other side of the same rule: once a pass that started *after* the mismatch reads clean,
+    // the halt is about a state that no longer holds and the operator may act on that.
+    it("lets a pass started after the mismatch retire it", async () => {
+      const gate = createRiskGate(pinned);
+      await gate.verifyCode(async () => "0xtampered");
+      expect(gate.resume()).toBe(false);
+
+      await gate.verifyCode(async () => "0xgood");
+
+      expect(gate.resume()).toBe(true);
+      expect(gate.state()).toBe("RUNNING");
+    });
+
     // Same cause, different evidence: a self-destructed target or a wrong address reads as no code
     // at all, which is the compromise this guard exists to catch and not an operator's own halt.
     it("refuses after the target turns out to have no code", async () => {
