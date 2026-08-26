@@ -136,10 +136,10 @@ export interface TokenSpend extends TokenAccount {
    * broadcast the gate holds the amount until the chain says what became of it.
    *
    * `caller` says the funding mode has its own accounting and the gate must not hold the amount a
-   * second time. Router funding signs a bearer authorization a permissionless relay can execute:
-   * it stays live after our transaction resolves — until it is observed executing or its deadline
-   * passes — so it outlives the transaction the gate can see, and `RouterFunding.refreshInventory`
-   * publishes a balance already net of it. Holding it here as well would subtract it twice.
+   * second time. Router funding signs the payment separately from the transaction: the batch stays
+   * live after our transaction resolves — until it is observed executing or its deadline passes —
+   * so it outlives the transaction the gate can see, and `RouterFunding` publishes a balance
+   * already net of it. Holding it here as well would subtract it twice.
    */
   accounting?: "gate" | "caller";
 }

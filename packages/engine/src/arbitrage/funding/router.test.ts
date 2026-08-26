@@ -158,8 +158,16 @@ describe("RouterFunding", () => {
       );
     });
 
-    it("refuses to start with an empty treasury", async () => {
-      await expect(build({ balance: 0n }).funding.prepare()).rejects.toThrow(/holds no WBTC/);
+    // Not fatal, unlike a missing approval: a drained treasury is refilled by a transfer, and an
+    // acquisition that empties it right before a restart would otherwise crash-loop the service.
+    // The gate admits nothing against zero capacity, so idling is the same safety with a way back.
+    it("starts with an empty treasury, publishing nothing to spend", async () => {
+      const h = build({ balance: 0n });
+      await h.funding.prepare();
+      await h.funding.refreshInventory();
+
+      expect(h.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/holds no WBTC/));
+      expect(h.risk.openSlot({ kind: "a", subject: "v", spend: [SPEND(1n)] }).allowed).toBe(false);
     });
   });
 
@@ -328,8 +336,9 @@ describe("RouterFunding", () => {
       return { ...h, authorizationId };
     }
 
-    // `relay` is permissionless and the batch is visible before we broadcast — gas estimation puts
-    // it in front of an RPC first — so a third party can execute it and leave our own tx reverting.
+    // The batch outlives the transaction meant to carry it, and it is visible before we broadcast —
+    // gas estimation puts it in front of an RPC first — so another send of it can execute and leave
+    // our own tx reverting. A router that relays for anyone lets a third party make that send.
     it("reports a spend when the router shows our authorization acquired the vault", async () => {
       const { funding, getLogs, authorizationId } = await authorized({
         swapLogs: [{ blockNumber: 99n }],
@@ -424,7 +433,7 @@ describe("RouterFunding", () => {
   describe("holding capacity for batches that are settled but still executable", () => {
     /** Sign a batch, then tell the mode what became of the slot that opened it. */
     async function authorizedThen(
-      outcome: { consumed: boolean } | undefined,
+      outcome: { consumed: boolean; minedAtBlock?: bigint } | undefined,
       opts: Parameters<typeof build>[0] = {}
     ) {
       const h = build({ balance: 1_000n, allowance: 1_000n, ...opts });
@@ -455,11 +464,42 @@ describe("RouterFunding", () => {
       expect(published(h)).toMatchObject({ authorized: 90n });
     });
 
-    // The confirmed acquisition's WBTC has already left, so the balance read reports it. Holding it
-    // as well would subtract the same money twice and shrink capacity for no reason.
-    it("holds nothing for a batch whose acquisition confirmed", async () => {
-      const h = await authorizedThen({ consumed: true });
+    // The confirmed acquisition's WBTC has already left, and the refresh below reads at block 100 —
+    // at or above where it mined, so that balance reports it. Holding it as well would subtract the
+    // same money twice and shrink capacity for no reason.
+    it("holds nothing for a batch whose acquisition confirmed below the refresh height", async () => {
+      const h = await authorizedThen({ consumed: true, minedAtBlock: 99n });
       expect(published(h)).toMatchObject({ authorized: 0n });
+    });
+
+    // The other half, and the one that costs money to get wrong: mined is not the same as visible.
+    // A balance read from a height below the acquisition still contains the WBTC, so dropping the
+    // record against it would publish the same money as spendable a second time.
+    it("keeps holding a confirmed acquisition the refresh height cannot report yet", async () => {
+      const h = await authorizedThen({ consumed: true, minedAtBlock: 150n }, { blockNumber: 100n });
+      expect(published(h)).toMatchObject({ authorized: 90n });
+    });
+
+    // The whole point of holding it at all. `refreshInventory` runs once per cycle, before the send
+    // loop, and the loop settles acquisitions as it goes — a hold that waits for the next refresh
+    // reaches the gate a cycle after the vault it was supposed to stop was already admitted.
+    it("republishes capacity the moment a batch becomes held, not at the next refresh", async () => {
+      const h = build({ balance: 1_000n, allowance: 1_000n });
+      await h.funding.prepare();
+      await h.funding.refreshInventory();
+      const { authorizationId } = await h.funding.buildAcquisition({
+        vaultId: VAULT_ID,
+        preview: PREVIEW,
+        maxWbtcIn: 90n,
+      });
+
+      h.funding.settleAuthorization(authorizationId, { consumed: false });
+
+      // No refresh in between: this is the figure the gate holds for the rest of the cycle.
+      expect(published(h)).toMatchObject({ authorized: 90n });
+      expect(h.risk.openSlot({ kind: "a", subject: "v2", spend: [SPEND(911n)] }).allowed).toBe(
+        false
+      );
     });
 
     it("publishes capacity net of the hold, not the raw balance", async () => {

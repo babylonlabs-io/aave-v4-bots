@@ -87,13 +87,17 @@ export interface ArbitrageFunding {
    * execute is a claim on the treasury that nothing else is counting — see
    * `RouterFunding.refreshInventory`.
    *
-   * `consumed` means the money provably moved (our own acquisition confirmed), so the treasury's
-   * balance already reflects it and holding it again would count it twice. Anything else leaves the
-   * authorization live until it expires or is observed executing.
+   * `consumed` means the money provably moved (our own acquisition confirmed), and `minedAtBlock`
+   * is where — the height a balance read has to reach before it reports the payment. Until it does,
+   * the outflow is still the mode's to account for, exactly as an unexecuted batch is. Anything
+   * else leaves the authorization live until it expires or is observed executing.
    *
    * Idempotent, and a no-op for a mode whose payment cannot outlive its transaction.
    */
-  settleAuthorization(authorizationId: Hex | undefined, outcome: { consumed: boolean }): void;
+  settleAuthorization(
+    authorizationId: Hex | undefined,
+    outcome: { consumed: boolean; minedAtBlock?: bigint }
+  ): void;
 
   /**
    * The call that acquires one vault, bounded by the slippage-adjusted ceiling.
@@ -114,7 +118,7 @@ export interface ArbitrageFunding {
  * `authorizationId` is present only for a mode that signs a payment separately from the
  * transaction. It is what the engine hands back to `spentWithoutUs`, `authorizationExpired` and
  * `settleAuthorization`, so those answer about *this* batch rather than about whatever was last
- * signed for the same vault — with a permissionless relay, more than one can be live at once.
+ * signed for the same vault — the batch carries no nonce, so more than one can be live at once.
  */
 export interface AcquisitionCall {
   call: ContractCall;

@@ -12,14 +12,14 @@ import {IBTCVaultSwap} from "vault-contracts/applications/aave/interfaces/IBTCVa
 ///         of a registered vault keeper.
 /// @dev Splits three roles that are usually collapsed into one key:
 ///
-///      - `signer` (inherited from {SelfCallRelayer}) authorizes which acquisitions may happen. It is a hot
-///        key held by the off-chain arbitrage system and never holds funds.
+///      - `signer` (inherited from {SelfCallRelayer}) authorizes which acquisitions may happen, and is also
+///        the only address that may submit one — see {_checkExecutor}. It is a hot key held by the
+///        off-chain arbitrage system, pays the gas for every acquisition, and never holds funds.
 ///      - `payer` supplies the WBTC. It grants this contract an ERC-20 allowance and is refunded any WBTC
 ///        left on the contract after each acquisition.
 ///      - `onBehalfOf`, chosen per call, is the vault keeper whose BTC key receives the redeemed vault.
 ///
-///      Anyone may submit a signed batch and pay its gas; see {SelfCallRelayer} for the full trust model,
-///      including the deliberate absence of replay protection.
+///      See {SelfCallRelayer} for the rest of the trust model, including the absence of a nonce.
 ///
 ///      `vaultSwap` is supplied per call rather than pinned at construction, so the router can follow new
 ///      LLP deployments without a redeploy. It is therefore only as trustworthy as the signer that named
@@ -66,6 +66,20 @@ contract ArbitrageRouter is SelfCallRelayer {
         require(_wbtc != address(0), "ArbitrageRouter: invalid wbtc");
         payer = _payer;
         wbtc = _wbtc;
+    }
+
+    /// @notice Restricts submission of a relayed batch to `signer`.
+    /// @dev The authorization this router checks is an argument to a call rather than a transaction of its
+    ///      own, so it is visible before it executes: the arbitrage bot has to hand the batch to a node to
+    ///      estimate its gas, and to the mempool to broadcast it. Without this the batch would stay
+    ///      executable by whoever saw it, for its whole `deadline`, even after the bot decided not to
+    ///      broadcast — an acquisition the bot never made, paid for out of `payer`'s allowance.
+    ///
+    ///      Binding costs nothing here because the two addresses are the same one already: the bot signs
+    ///      the authorization and the transaction carrying it with one key, and pays that transaction's gas.
+    ///      A deployment that wants a separate gas payer needs a different router.
+    function _checkExecutor() internal view override {
+        require(msg.sender == signer, "ArbitrageRouter: unauthorized submitter");
     }
 
     /// @notice Buys one escrowed vault from `vaultSwap` and has it redeemed to `onBehalfOf`'s BTC key.
