@@ -90,13 +90,18 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   /**
    * Boot-time setup: discover the debt tokens, then let the funding mode prepare itself.
    *
-   * One call so a service never has to know which setup its funding mode needs: inventory funding
-   * approves the adapter, flash funding approves nothing.
+   * One call so a service never has to know which setup its funding mode needs. Neither mode sends
+   * a transaction from here — see `LiquidationFunding.prepare`.
    */
   async prepare(): Promise<void> {
     const topology = await this.discoverReserves();
     await this.assertLensWiring(topology);
     await this.funding.prepare();
+  }
+
+  /** The funding mode owns the allowances, so it owns taking them back. */
+  protected async revokeApprovals(): Promise<void> {
+    await this.funding.revokeApprovals();
   }
 
   /**

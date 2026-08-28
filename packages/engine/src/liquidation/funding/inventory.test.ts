@@ -30,9 +30,13 @@ const reserve = (id: number, token: Address, borrowable = true): SpokeReserve =>
   borrowable,
 });
 
-function build(reserves: SpokeReserve[], opts: { balance?: bigint } = {}) {
+type Revoke = (input: { token: Address; spender: Address; label?: string }) => Promise<unknown>;
+
+function build(reserves: SpokeReserve[], opts: { balance?: bigint; revoke?: Revoke } = {}) {
   const risk = createRiskGate();
   const topology: SpokeReserves = { spoke: "0xspoke" as Address, reserves };
+  const revokeAllowance = vi.fn(opts.revoke ?? (async () => ({ kind: "satisfied" as const })));
+  const readReserves = vi.fn(async () => topology);
   const funding = new InventoryFunding({
     publicClient: {
       getBlockNumber: vi.fn(async () => 1n),
@@ -48,17 +52,18 @@ function build(reserves: SpokeReserve[], opts: { balance?: bigint } = {}) {
     executor: {
       identity: { from: SIGNER, chainId: 31337 },
       ensureAllowance: vi.fn(async () => ({ kind: "satisfied" as const })),
+      revokeAllowance,
       inFlightTxHashes: vi.fn(async () => undefined),
     },
     tokenMeta: { get: vi.fn(async () => ({ symbol: "TKN", decimals: 18 })) },
-    reserves: vi.fn(async () => topology),
+    reserves: readReserves,
     adapterAddress: ADAPTER,
     wbtcAddress: WBTC,
     btcRedeemKey: `0x${"0".repeat(64)}`,
     llpAddress: "0xllp",
     isDirectRedemption: false,
   } as unknown as ConstructorParameters<typeof InventoryFunding>[0]);
-  return { funding, risk };
+  return { funding, risk, revokeAllowance, readReserves };
 }
 
 /** What the gate ends up reserving per token, after vetting one candidate. */
@@ -184,5 +189,49 @@ describe("InventoryFunding spend attribution", () => {
     const { funding } = build([reserve(0, USDC)]);
 
     await expect(funding.vet([candidate([100n])])).rejects.toThrow(/before refreshInventory/);
+  });
+});
+
+// The gate halting stops what this bot sends. It does nothing about the adapter, which needs
+// nothing further from us to pull what it was already approved for — so a code-hash halt takes
+// that back, and the engine's halted cycle is what calls this.
+describe("InventoryFunding revokeApprovals", () => {
+  const revoked = (calls: { token: Address; spender: Address }[]) =>
+    calls.map((c) => [c.token, c.spender]);
+
+  it("withdraws the adapter's allowance on every token it approves", async () => {
+    const { funding, revokeAllowance, readReserves } = build([
+      reserve(0, USDC),
+      reserve(1, VAULT_BTC, false),
+      reserve(2, USDT),
+    ]);
+
+    await funding.revokeApprovals();
+
+    // Exactly the set `refreshInventory` approves: the borrowable reserves plus WBTC, and nothing
+    // for a reserve nothing can be borrowed from.
+    expect(revoked(revokeAllowance.mock.calls.map((c) => c[0]))).toEqual([
+      [USDC, ADAPTER],
+      [USDT, ADAPTER],
+      [WBTC, ADAPTER],
+    ]);
+    // No cycle has run, so the list came from a fresh read — a bot that halted at boot has no
+    // published topology to withdraw against.
+    expect(readReserves).toHaveBeenCalled();
+  });
+
+  it("withdraws the rest when one token cannot be", async () => {
+    const { funding, revokeAllowance } = build([reserve(0, USDC), reserve(1, USDT)], {
+      revoke: async ({ token }) => {
+        if (token === USDC) throw new Error("rpc down");
+        return { kind: "satisfied" as const };
+      },
+    });
+
+    await expect(funding.revokeApprovals()).resolves.toBeUndefined();
+
+    // The next token is a different allowance and a different transaction: one failure is no
+    // reason to leave the others standing.
+    expect(revokeAllowance.mock.calls.map((c) => c[0].token)).toEqual([USDC, USDT, WBTC]);
   });
 });

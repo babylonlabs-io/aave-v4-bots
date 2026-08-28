@@ -62,6 +62,20 @@ export interface LiquidationFunding {
   refreshInventory(): Promise<void>;
 
   /**
+   * Take back every standing allowance this mode has granted. Called on a code-hash halt, and only
+   * then — from the halted branch of the cycle, which is the one place a stopped engine still runs.
+   *
+   * A halt stops what this bot sends. It does nothing about a spender that is already allowed to
+   * pull, and a code-hash halt is precisely the case where that spender is the suspect contract:
+   * the bytecode at a pinned address changed, and whatever the old code was approved for, the new
+   * code inherits. The allowance is the exposure, so withdrawing it is the stop.
+   *
+   * Best-effort per token: one that cannot be withdrawn must not stop the others, and every halted
+   * cycle re-attempts, so a failure retries and a completed withdrawal costs one allowance read.
+   */
+  revokeApprovals(): Promise<void>;
+
+  /**
    * Filter the candidates down to those this mode can actually fund, and price them.
    *
    * The two modes vet incompatibly and cannot share an implementation: the inventory simulation calls
@@ -124,10 +138,13 @@ export interface FundingMetrics {
  * The execution collaborator, narrowed to what funding may touch.
  *
  * `identity` is a live property, so strategies read it per call rather than capturing it. They get
- * `ensureAllowance` and nothing else: committing is the engine's job, and a strategy that could
- * commit would be able to bypass the risk slot.
+ * the two allowance calls and nothing else: committing is the engine's job, and a strategy that
+ * could commit would be able to bypass the risk slot.
  */
-export type FundingExecutor = Pick<Executor, "identity" | "ensureAllowance" | "inFlightTxHashes">;
+export type FundingExecutor = Pick<
+  Executor,
+  "identity" | "ensureAllowance" | "revokeAllowance" | "inFlightTxHashes"
+>;
 
 /**
  * Everything a funding strategy draws on.

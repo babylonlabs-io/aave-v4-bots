@@ -799,6 +799,19 @@ not an outage. If the pinned hash is simply *wrong*, correct
 `RISK_EXPECTED_CODE_HASHES` and restart; no amount of resuming will clear a
 mismatch that is really there.
 
+**A code-hash halt also withdraws the allowances the bot granted.** While that
+halt stands, every poll cycle sends an `approve(spender, 0)` for each allowance
+this signer granted and that is not already zero — the LLP's WBTC allowance
+under signer funding, and the adapter's debt-token and WBTC allowances when the
+liquidation engine is enabled. This is the one transaction a HALTED gate still
+sends, and it is the only one it can: a halt stops what the bot sends, and a
+spender needs nothing further from the bot to pull what it was already approved
+for. An operator kill-switch halt does **not** do this. Router funding withdraws
+nothing — that allowance is the treasury's, granted by an operator to the
+router, and this process never held the right to grant or revoke it. Under
+`EXECUTION_MODE=MANUAL` each withdrawal is a proposal to sign. Once the pin is
+corrected and the gate resumes, the next cycle re-approves what it needs.
+
 **Query indexer endpoints:**
 
 ```bash

@@ -406,7 +406,11 @@ describe("createAutoExecutor", () => {
 
     await exec.commit(CALL, claim("p"));
 
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ nonce: 42 }), expect.any(Function));
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ nonce: 42 }),
+      expect.any(Function),
+      expect.any(Function)
+    );
   });
 
   describe("ensureAllowance", () => {
@@ -439,14 +443,16 @@ describe("createAutoExecutor", () => {
       const result = await exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n });
 
       expect(result).toEqual({ kind: "satisfied" });
-      // Two arguments now: the call, and the `onSigned` hook that durably records nonce + hash
-      // before the approval reaches the chain — the same pre-broadcast record `commit` makes.
+      // Three arguments: the call, the `onSigned` hook that durably records nonce + hash before the
+      // approval reaches the chain, and the last-word broadcast guard — the same pre-broadcast
+      // record and the same guard `commit` sends under.
       expect(sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           address: WBTC,
           functionName: "approve",
           args: [SPENDER, expect.anything()],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(autoWallet.writeContract).not.toHaveBeenCalled();
@@ -568,6 +574,96 @@ describe("createAutoExecutor", () => {
       await expect(
         exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n })
       ).rejects.toThrow(/reverted/);
+    });
+  });
+
+  // The counterpart of `ensureAllowance`, and the one send that is not asked whether it may go out:
+  // it is called *because* the gate halted, and what it does is take a permission away.
+  describe("revokeAllowance", () => {
+    const WBTC = "0x0000000000000000000000000000000000000abc" as Address;
+    const SPENDER = "0x0000000000000000000000000000000000000def" as Address;
+    const allowanceReader = (allowance: bigint) => ({
+      readContract: vi.fn(async () => allowance),
+    });
+
+    it("sends approve(spender, 0) and waits the receipt", async () => {
+      const sender = autoSender();
+      const { exec } = autoExecutor(sender, undefined, autoPublicClient(allowanceReader(500n)));
+
+      const result = await exec.revokeAllowance({ token: WBTC, spender: SPENDER });
+
+      expect(result).toEqual({ kind: "satisfied" });
+      expect(sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: WBTC,
+          functionName: "approve",
+          args: [SPENDER, 0n],
+        }),
+        expect.any(Function),
+        // No guard: the third argument the approval carries is deliberately absent here.
+        undefined
+      );
+    });
+
+    // What makes it safe to re-attempt on every halted cycle: once the allowance is gone there is
+    // nothing to send, so the retry costs one read.
+    it("sends nothing when the spender can already pull nothing", async () => {
+      const sender = autoSender();
+      const { exec } = autoExecutor(sender, undefined, autoPublicClient(allowanceReader(0n)));
+
+      const result = await exec.revokeAllowance({ token: WBTC, spender: SPENDER });
+
+      expect(result).toEqual({ kind: "satisfied" });
+      expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    // The whole point. A halted gate refuses every other transaction this executor sends, and this
+    // one has to go out anyway — refusing it would leave the gate protecting the changed contract.
+    it("goes out while the broadcast guard is refusing everything", async () => {
+      const sender = autoSender();
+      const exec = createAutoExecutor({
+        crash: createCrashSafety({
+          nonces: allocator(),
+          reader: createChainReader(autoPublicClient()),
+          signer: "0xsigner" as Address,
+          logger: silentLogger,
+        }),
+        sender,
+        publicClient: autoPublicClient(allowanceReader(500n)),
+        walletClient: autoWallet,
+        txReceiptTimeoutMs: 1000,
+        assertCanBroadcast: () => {
+          throw new PreBroadcastError("halted");
+        },
+        logger: silentLogger,
+      });
+
+      await expect(exec.revokeAllowance({ token: WBTC, spender: SPENDER })).resolves.toEqual({
+        kind: "satisfied",
+      });
+      expect(sender.send).toHaveBeenCalledOnce();
+    });
+
+    // A distinct action from `approval`, so a live grant does not make the withdrawal a duplicate
+    // of it — the two are opposite transactions and the withdrawal is the one that must not wait.
+    it("records its intent under its own action", async () => {
+      const store = createMemoryStateStore();
+      const { exec } = autoExecutor(autoSender(), store, autoPublicClient(allowanceReader(500n)));
+      await store.recordIntent({
+        chainId: 31337,
+        target: WBTC,
+        action: "approval",
+        subject: SPENDER,
+      });
+
+      const result = await exec.revokeAllowance({ token: WBTC, spender: SPENDER });
+
+      expect(result).toEqual({ kind: "satisfied" });
+      expect(
+        store.get(
+          idempotencyKey({ chainId: 31337, target: WBTC, action: "revoke", subject: SPENDER })
+        )
+      ).toMatchObject({ status: "confirmed", txHash: "0xhash" });
     });
   });
 });
@@ -1081,6 +1177,68 @@ describe("createAutoExecutor — the broadcast guard", () => {
       exec.ensureAllowance({ token: TARGET, spender: OPERATOR, required: 1n })
     ).rejects.toThrow(/halted/);
     expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  // The window the first check cannot cover. A send that is admitted still has to wait for the
+  // shared nonce lock, price itself against the node, be signed (a KMS round trip in production)
+  // and be durably recorded — seconds, under load — and a kill switch or a code-hash tick can land
+  // anywhere in it. Only the check the sender makes against the wire sees that.
+  const haltsMidSend = () => {
+    let halted = false;
+    const broadcast = vi.fn(async () => "0xhash" as Hex);
+    const sender: TxSender = {
+      identity: { from: "0xsigner" as Address, chainId: 31337 },
+      // Ordered like the real sender: durable record, last gate, wire.
+      send: async (call, onSigned, beforeBroadcast) => {
+        await onSigned?.({ hash: "0xhash" as Hex, nonce: call.nonce ?? 0, serialized: "0xraw" });
+        halted = true;
+        beforeBroadcast?.();
+        return broadcast();
+      },
+    };
+    return {
+      sender,
+      broadcast,
+      assertCanBroadcast: () => {
+        if (halted) throw new PreBroadcastError("halted");
+      },
+    };
+  };
+
+  it("stops a commit whose gate halts after it was admitted", async () => {
+    const { sender, broadcast, assertCanBroadcast } = haltsMidSend();
+    const exec = createAutoExecutor({
+      crash: crashFor(),
+      sender,
+      publicClient: autoPublicClient(),
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      assertCanBroadcast,
+      logger: silentLogger,
+    });
+
+    const out = await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: false });
+  });
+
+  it("stops an approval whose gate halts after it was admitted", async () => {
+    const { sender, broadcast, assertCanBroadcast } = haltsMidSend();
+    const exec = createAutoExecutor({
+      crash: crashFor(),
+      sender,
+      publicClient: autoPublicClient({ readContract: vi.fn(async () => 0n) }),
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      assertCanBroadcast,
+      logger: silentLogger,
+    });
+
+    await expect(
+      exec.ensureAllowance({ token: TARGET, spender: OPERATOR, required: 1n })
+    ).rejects.toThrow(/halted/);
+    expect(broadcast).not.toHaveBeenCalled();
   });
 
   it("is out of the way when nothing refuses", async () => {

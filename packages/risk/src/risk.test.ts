@@ -724,6 +724,32 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.openSlot(action()).allowed).toBe(false);
     });
 
+    // The flag a caller reads to tell this halt from an operator's: only here is the *spender* the
+    // suspect, so only here is there anything to take back from it.
+    it("reports a code-hash halt apart from any other halt", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
+      expect(gate.codeHashHalted()).toBe(false);
+
+      gate.halt("operator kill-switch");
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.codeHashHalted()).toBe(false);
+
+      await gate.verifyCode(reader({ "0xadapter": "0xdead" }));
+      expect(gate.codeHashHalted()).toBe(true);
+    });
+
+    it("stops reporting a code-hash halt once a clean pass retires it", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
+      await gate.verifyCode(reader({ "0xadapter": "0xdead" }));
+      expect(gate.codeHashHalted()).toBe(true);
+
+      await gate.verifyCode(reader({ "0xadapter": "0xabc" }));
+      // Still HALTED — resuming is the operator's decision — but the cause is cleared, so there is
+      // no longer a changed contract to withdraw from.
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.codeHashHalted()).toBe(false);
+    });
+
     it("halts when the target has no code (self-destructed / wrong address)", async () => {
       const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
       await gate.verifyCode(reader({ "0xadapter": undefined }));

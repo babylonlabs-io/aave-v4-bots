@@ -189,6 +189,17 @@ export interface RiskGate {
    * looking at. `GET /status` serves this for exactly that reason.
    */
   haltReason(): string;
+  /**
+   * Is the standing halt the code-hash guard's — a pinned target whose bytecode changed, or one
+   * that has never been readable?
+   *
+   * Separate from `haltReason` because that is prose: it is overwritten by whichever halt came
+   * last, and reading a safety decision out of a string is how the two drift apart. This is the
+   * same flag `resume` refuses on, exposed because a halt with this cause says something no other
+   * halt does — the target itself is suspect, not the market — and a caller may have standing
+   * permissions granted to that target to take back.
+   */
+  codeHashHalted(): boolean;
   /** Kill-switch — trip to `HALTED` with a reason. */
   halt(reason: string): void;
   /**

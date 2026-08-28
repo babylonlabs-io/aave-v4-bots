@@ -256,6 +256,7 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
     halt,
 
     haltReason: () => haltReason,
+    codeHashHalted: () => codeHashHalt,
     everVerified: () => everVerified,
 
     resume() {

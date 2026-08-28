@@ -49,6 +49,17 @@ export interface ArbitrageFunding {
   refreshInventory(): Promise<void>;
 
   /**
+   * Take back every standing allowance this mode has granted. Called on a code-hash halt, and only
+   * then — from the halted branch of the cycle, which is the one place a stopped engine still runs.
+   *
+   * A halt stops what this bot sends. It does nothing about a spender that is already allowed to
+   * pull, and a code-hash halt is precisely the case where that spender is the suspect contract:
+   * the bytecode at a pinned address changed, and whatever the old code was approved for, the new
+   * code inherits. The allowance is the exposure, so withdrawing it is the stop.
+   */
+  revokeApprovals(): Promise<void>;
+
+  /**
    * Make sure `maxWbtcIn` can actually be delivered when the swap runs.
    *
    * Returns `satisfied` when the payment can go ahead. Anything else means an operator has to act

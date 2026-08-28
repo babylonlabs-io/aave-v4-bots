@@ -208,6 +208,7 @@ describe("ArbitrageEngine", () => {
           functionName: "swapWbtcForVault",
           args: [mockVault.vaultId, 50500000n], // 0.5 WBTC debt + 1% slippage
         }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.publicClient.waitForTransactionReceipt).toHaveBeenCalledWith({
@@ -326,6 +327,7 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).toHaveBeenCalledTimes(2);
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
@@ -367,6 +369,7 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).toHaveBeenCalledTimes(2);
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -408,6 +411,7 @@ describe("ArbitrageEngine", () => {
           functionName: "swapWbtcForVault",
           args: [mockVault.vaultId, 1n],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -425,6 +429,7 @@ describe("ArbitrageEngine", () => {
       // Fixture preview cost is 50_000_000 (+1% = 50_500_000); the stale 1000 must not be used.
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ args: [staleVault.vaultId, 50500000n] }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -446,6 +451,7 @@ describe("ArbitrageEngine", () => {
           functionName: "swapWbtcForVault",
           args: [mockVault.vaultId, MAX_WBTC_IN],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -462,6 +468,7 @@ describe("ArbitrageEngine", () => {
           functionName: "swapWbtcForVaultOnBehalf",
           args: [mockVault.vaultId, MAX_WBTC_IN, KEEPER],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1267,6 +1274,7 @@ describe("ArbitrageEngine", () => {
       expect(ok).toBe("acquired");
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "swapWbtcForVault", nonce: 5 }),
+        expect.any(Function),
         expect.any(Function)
       );
       const intent = store.all()[0];

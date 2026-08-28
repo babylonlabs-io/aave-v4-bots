@@ -132,6 +132,11 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     await this.funding.prepare();
   }
 
+  /** The funding mode owns the allowances, so it owns taking them back. */
+  protected async revokeApprovals(): Promise<void> {
+    await this.funding.revokeApprovals();
+  }
+
   protected async poll(cycleSlots: RiskSlot[]): Promise<void> {
     // Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
     const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();

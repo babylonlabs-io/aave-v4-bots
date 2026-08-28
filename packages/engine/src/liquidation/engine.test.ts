@@ -625,6 +625,7 @@ describe("LiquidationEngine", () => {
           nonce: 42,
           functionName: "liquidateWithLLP",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -659,6 +660,7 @@ describe("LiquidationEngine", () => {
           // bumped adapter).
           args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n], 0n, maxUint256],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -691,11 +693,13 @@ describe("LiquidationEngine", () => {
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ nonce: 10 }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({ nonce: 11 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -904,6 +908,7 @@ describe("LiquidationEngine", () => {
         expect.objectContaining({
           functionName: "approve",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -955,6 +960,7 @@ describe("LiquidationEngine", () => {
           address: "0xwbtc",
           functionName: "approve",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1023,6 +1029,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1312,6 +1319,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ nonce: 7 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1361,11 +1369,13 @@ describe("LiquidationEngine", () => {
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ nonce: 10 }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({ nonce: 11 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });

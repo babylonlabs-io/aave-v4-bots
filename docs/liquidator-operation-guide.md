@@ -684,6 +684,16 @@ not an outage. If the pinned hash is simply *wrong*, correct
 `RISK_EXPECTED_CODE_HASHES` and restart; no amount of resuming will clear a
 mismatch that is really there.
 
+**A code-hash halt also withdraws the adapter's allowances.** While that halt
+stands, every poll cycle sends `approve(adapter, 0)` for each token whose
+allowance is not already zero — the debt tokens and WBTC. This is the one
+transaction a HALTED gate still sends, and it is the only one it can: a halt
+stops what the bot sends, and the adapter needs nothing further from the bot to
+pull what it was already approved for. An operator kill-switch halt does **not**
+do this. Under `EXECUTION_MODE=MANUAL` the withdrawal is a proposal to sign, not
+a transaction, so expect one alert per token. Once the pin is corrected and the
+gate resumes, the next cycle re-approves what it needs.
+
 **Query indexer endpoints:**
 
 ```bash

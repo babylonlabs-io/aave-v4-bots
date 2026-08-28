@@ -447,6 +447,12 @@ export class RouterFunding implements ArbitrageFunding {
   }
 
   /**
+   * Nothing to withdraw: the allowance this mode spends through is the treasury's, granted by an
+   * operator to the router. This process never held the right to grant it and cannot take it back.
+   */
+  async revokeApprovals(): Promise<void> {}
+
+  /**
    * The payment is authorized separately from the transaction, and the batch is visible before we
    * broadcast anything — gas estimation already put it in front of an RPC provider. Another
    * submission of the same authorization can therefore execute first, leaving our own transaction

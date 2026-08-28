@@ -82,6 +82,42 @@ export class InventoryFunding implements LiquidationFunding {
     }
   }
 
+  /** Take the adapter's allowance back to zero on every token this mode approves. */
+  async revokeApprovals(): Promise<void> {
+    const { adapterAddress, executor, logger } = this.deps;
+
+    for (const token of await this.approvedTokens()) {
+      const { symbol } = await this.deps.tokenMeta.get(this.deps.publicClient, token);
+      try {
+        const result = await executor.revokeAllowance({
+          token,
+          spender: adapterAddress,
+          label: symbol,
+        });
+        // MANUAL cannot withdraw it itself, so the operator is told what is still standing.
+        if (result.kind !== "satisfied") {
+          logger.warn(`Revocation for ${symbol} ${result.kind} — awaiting operator signature`);
+        }
+      } catch (error) {
+        // Per token, because the next one is a different allowance and a different transaction: a
+        // revert or an RPC failure on this one is no reason to leave the rest granted.
+        logger.error(`Could not revoke the adapter's ${symbol} allowance:`, error);
+      }
+    }
+  }
+
+  /**
+   * The tokens this mode approves the adapter for: every borrowable reserve, plus WBTC.
+   *
+   * Read fresh when the cycle has not published a topology — `revokeApprovals` runs from a halted
+   * cycle, which is exactly when no `refreshInventory` has been reached, and a bot that halted at
+   * boot would otherwise have no list to withdraw against.
+   */
+  private async approvedTokens(): Promise<Address[]> {
+    const topology = this.topology ?? (await this.deps.reserves());
+    return Array.from(new Set<Address>([...borrowableTokens(topology), this.deps.wbtcAddress]));
+  }
+
   /**
    * Tell the risk gate what this signer can currently spend, for every token an action may pull.
    *
@@ -97,7 +133,7 @@ export class InventoryFunding implements LiquidationFunding {
     // which token each repay amount belongs to (`spendFor`, by reserve id). Held for the cycle so
     // every candidate is judged against the same topology the balances were published for.
     this.topology = await this.deps.reserves();
-    const tokens = Array.from(new Set<Address>([...borrowableTokens(this.topology), wbtcAddress]));
+    const tokens = await this.approvedTokens();
 
     // Before the balances, because an allowance the adapter cannot pull makes them meaningless —
     // and because this is the first point in the cycle that is downstream of the gate's HALTED
