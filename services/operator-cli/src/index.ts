@@ -122,8 +122,16 @@ async function dispatch(command: string, args: string[], ctx: ops.OperatorContex
         process.exitCode = 1;
         return;
       }
-      const hash = result.row.safeEnvelope?.safeTxHash;
-      console.log(`claimed ${result.row.id}${hash ? ` — sign safeTxHash ${hash}` : ""}`);
+      const envelope = result.row.safeEnvelope;
+      // The nonce alongside the hash: it is what the Safe UI shows for the transaction the owners
+      // are about to sign, and the only part of this line they can check against another source.
+      console.log(
+        `claimed ${result.row.id}${
+          envelope
+            ? ` — sign safeTxHash ${envelope.safeTxHash} at Safe nonce ${envelope.safeNonce}`
+            : ""
+        }`
+      );
       return;
     }
     case "broadcast": {

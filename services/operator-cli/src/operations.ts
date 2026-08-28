@@ -1,3 +1,4 @@
+import { safeAbi } from "@repo/abis";
 import { findSafeExecutionByHash } from "@repo/chain";
 import type { ProposedTx } from "@repo/execution";
 import {
@@ -104,6 +105,49 @@ function assertSafeEnvelopeIntact(
 }
 
 /**
+ * Is the claimed envelope still the Safe's *next* transaction? Read from the chain, and the two
+ * directions mean opposite things.
+ *
+ * A nonce **ahead** of the chain is the one thing here a modified record can do and the policy
+ * cannot catch: a nonce is not a gas field, so any value is structurally valid, and rewriting it
+ * with a recomputed `safeTxHash` leaves the record self-consistent. Everything else an owner signs
+ * is pinned — the inner call by `payloadHash`, which the operator compares against the notification,
+ * and the gas/refund fields by `assertZeroGasPolicy` — which leaves this as the last field a
+ * rewritten row could choose. What it buys is time rather than content: the hash cannot execute now,
+ * so the operator signs an authorization that sits valid until the Safe reaches that nonce, for a
+ * call they approved at a moment they did not — long enough for an `approve` to be replayed after
+ * the revocation that was supposed to end it. A Safe nonce only ever goes up, so this is refused.
+ *
+ * A nonce **behind** the chain is ordinary history, not a tamper: the SafeTx executed (`confirm` it)
+ * or the Safe did something else (`release` it). That is reported rather than refused, so `show`
+ * stays a read-only diagnostic in exactly the window an operator reaches for it — after execution,
+ * before `confirm`, when the row is still `claimed`. Its hash is no longer signable, and signing it
+ * would only produce a signature for a nonce the chain has consumed.
+ *
+ * Only on the path that surfaces a hash for signing. `confirm`, `release` and the reconcile scan all
+ * read envelopes whose nonce the chain has legitimately moved past, and are right to.
+ */
+async function isEnvelopeNext(
+  ctx: OperatorContext,
+  id: string,
+  envelope: SafeEnvelope
+): Promise<boolean> {
+  const live = Number(
+    await ctx.publicClient.readContract({
+      address: ctx.executorAddress,
+      abi: safeAbi,
+      functionName: "nonce",
+    })
+  );
+  if (live < envelope.safeNonce) {
+    throw new Error(
+      `Safe nonce for ${id} is ahead of the chain: the envelope reserved ${envelope.safeNonce}, the Safe is at ${live} — refusing to show a hash to sign. A Safe nonce only goes up, so this envelope was changed after the claim.`
+    );
+  }
+  return live === envelope.safeNonce;
+}
+
+/**
  * v1 handles ONE Safe SafeTx at a time. Each claim reads `Safe.nonce()` independently, so two
  * concurrent Safe claims would reserve the SAME nonce and one SafeTx would be dead on arrival (it
  * reverts, reconcile fails it, the subject revives — no fund loss, but wasted). Until the store
@@ -138,6 +182,15 @@ export interface ProposalView {
   /** For `safe`: the settled hash (if claimed) or a preview (if still proposed). */
   safeTxHash?: Hex;
   safeTxHashIsPreview?: boolean;
+  /** For `safe`: the Safe nonce this hash is for — checked against the chain before it is shown. */
+  safeNonce?: number;
+  /**
+   * For a claimed `safe` row: is this still the Safe's next transaction, and so still signable?
+   *
+   * `false` means the Safe has moved past it — it executed (`confirm`) or something else did
+   * (`release`). A hash ahead of the chain is not reported here; it is refused outright.
+   */
+  safeTxIsNext?: boolean;
 }
 
 /** Verify + render one proposal (read-only). For a not-yet-claimed Safe proposal, previews the
@@ -148,15 +201,20 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
 
   let safeTxHash = row.safeEnvelope?.safeTxHash;
   let safeTxHashIsPreview = false;
+  let safeNonce = row.safeEnvelope?.safeNonce;
+  let safeTxIsNext: boolean | undefined;
   if (ctx.executorKind === "safe") {
     if (row.safeEnvelope) {
       // A claimed Safe row: recompute the hash from the persisted envelope and require it to match,
       // so a tampered `safeEnvelope.safeTxHash` can never be shown to an operator to sign.
       assertSafeEnvelopeIntact(ctx, row.id, payload, row.safeEnvelope);
+      // Then against the chain, which is the only party to this that a modified record cannot write.
+      safeTxIsNext = await isEnvelopeNext(ctx, row.id, row.safeEnvelope);
     } else {
       // Not yet claimed: preview the hash the owners would sign (a chain read, allocates no nonce).
       const preview = await ctx.signer.buildEnvelope(payload);
       safeTxHash = preview?.safeTxHash;
+      safeNonce = preview?.safeNonce;
       safeTxHashIsPreview = true;
     }
   }
@@ -172,6 +230,8 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
     ageMs: ctx.now() - row.updatedAt,
     safeTxHash,
     safeTxHashIsPreview: safeTxHash ? safeTxHashIsPreview : undefined,
+    safeNonce,
+    safeTxIsNext,
   };
 }
 

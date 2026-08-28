@@ -188,6 +188,80 @@ describe("verifyProposal (tamper check)", () => {
 
     await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/baseGas 21000.*gasPrice 1/);
   });
+
+  // The last field the policy cannot hold: a nonce is not a gas field, so any value is structurally
+  // valid, and rewriting it with its hash leaves the record self-consistent like the case above. It
+  // does not change what executes — it changes WHEN, to a moment the operator never approved. The
+  // chain is the one party to this that a modified record cannot write.
+  it("refuses an envelope moved to a future nonce, however consistent", async () => {
+    const c = ctx({
+      signer: safeSigner(4),
+      executorAddress: SAFE,
+      executorKind: "safe",
+      publicClient: fakeClient({ safeNonce: 4n }),
+    });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const row = await c.store.getIntent(id);
+    if (!row?.safeEnvelope) throw new Error("expected a persisted envelope");
+    const future = { ...row.safeEnvelope, safeNonce: 5 };
+    const envelope = {
+      ...future,
+      safeTxHash: computeSafeTxHash({ inner: p, params: future, safe: SAFE, chainId: c.chainId }),
+    };
+    const tamperedCtx = {
+      ...c,
+      store: { ...c.store, getIntent: async () => ({ ...row, safeEnvelope: envelope }) },
+    };
+
+    await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/ahead of the chain/);
+  });
+
+  // The other direction, and not a tamper at all: the SafeTx executed, or the Safe did something
+  // else. It is reported rather than refused — this is the window an operator runs `show` in, after
+  // execution and before `confirm`, and a diagnostic that throws there tells them nothing.
+  it("reports, without refusing, a claim the Safe has already moved past", async () => {
+    const c = ctx({
+      signer: safeSigner(4),
+      executorAddress: SAFE,
+      executorKind: "safe",
+      publicClient: fakeClient({ safeNonce: 4n }),
+    });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const moved = { ...c, publicClient: fakeClient({ safeNonce: 5n }) };
+    const view = await ops.showProposal(moved, id);
+
+    expect(view.safeTxIsNext).toBe(false);
+    expect(view.safeNonce).toBe(4);
+  });
+
+  it("shows the hash and its nonce when the envelope is the Safe's next transaction", async () => {
+    const c = ctx({
+      signer: safeSigner(4),
+      executorAddress: SAFE,
+      executorKind: "safe",
+      publicClient: fakeClient({ safeNonce: 4n }),
+    });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const view = await ops.showProposal(c, id);
+
+    // The nonce travels with the hash: it is what an operator can check against the Safe UI.
+    expect(view.safeNonce).toBe(4);
+    expect(view.safeTxIsNext).toBe(true);
+    expect(view.safeTxHash).toBe((await c.store.getIntent(id))?.safeEnvelope?.safeTxHash);
+    expect(view.safeTxHashIsPreview).toBe(false);
+  });
 });
 
 describe("claimProposal", () => {
