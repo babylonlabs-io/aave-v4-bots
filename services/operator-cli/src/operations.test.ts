@@ -571,6 +571,139 @@ describe("release + fail (recovery)", () => {
     expect((await c.store.getIntent(id))?.status).toBe("proposed");
   });
 
+  // The gap release leaves behind, and the reason the envelope now survives it. Owners sign the hash
+  // off chain, where nothing here can see it, and from that moment anyone can execute that SafeTx
+  // until its nonce is consumed. Reserving a second envelope over the same payload is what turns
+  // that into two executions.
+  describe("an envelope released without being resolved", () => {
+    const safeCtx = (safeNonce = 4, over: Parameters<typeof fakeClient>[0] = {}) =>
+      ctx({
+        signer: safeSigner(safeNonce),
+        executorAddress: SAFE,
+        executorKind: "safe",
+        publicClient: fakeClient({ safeNonce: BigInt(safeNonce), ...over }),
+      });
+
+    const claimedThenReleased = async (c: ops.OperatorContext) => {
+      const p = payload();
+      const id = idempotencyKey(input());
+      await c.store.propose(input(), p, hashPayload(p));
+      await ops.claimProposal(c, id);
+      const envelope = (await c.store.getIntent(id))?.safeEnvelope;
+      if (!envelope) throw new Error("expected an envelope");
+      await ops.releaseProposal(c, id);
+      return { id, envelope };
+    };
+
+    it("survives the release rather than being discarded", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      const row = await c.store.getIntent(id);
+      expect(row?.status).toBe("proposed");
+      expect(row?.safeEnvelope).toEqual(envelope);
+    });
+
+    // Nothing to decide: the payload and the gas policy are fixed, so a re-claim at the same nonce
+    // computes the very hash that is already outstanding. Handing it back is what keeps the count of
+    // executable authorizations at one.
+    it("is handed back by the next claim while its nonce still stands", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      const result = await ops.claimProposal(c, id);
+
+      expect(result.claimed).toBe(true);
+      expect((await c.store.getIntent(id))?.safeEnvelope).toEqual(envelope);
+    });
+
+    // The sequence this exists for: released, executed by anyone watching the queue, then claimed
+    // again. A second envelope here is the same payload authorized twice.
+    it("refuses the next claim when it executed after the release", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      // The Safe moved on, and it moved on by executing exactly our SafeTx.
+      c.publicClient = fakeClient({
+        safeNonce: 5n,
+        safeLogs: [
+          {
+            eventName: "ExecutionSuccess",
+            args: { txHash: envelope.safeTxHash },
+            transactionHash: SENT_TX,
+          },
+        ],
+      });
+
+      await expect(ops.claimProposal(c, id)).rejects.toThrow(/already executed/);
+    });
+
+    // Its nonce is spent by something else, so it can never execute. Dead, and the way is clear.
+    it("is replaced once its nonce is spent by another transaction", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      c.publicClient = fakeClient({ safeNonce: 5n });
+      c.signer = safeSigner(5);
+
+      const result = await ops.claimProposal(c, id);
+
+      expect(result.claimed).toBe(true);
+      const replaced = (await c.store.getIntent(id))?.safeEnvelope;
+      expect(replaced?.safeNonce).toBe(5);
+      expect(replaced?.safeTxHash).not.toBe(envelope.safeTxHash);
+    });
+
+    // `broadcast` claims too, so it can duplicate a reservation exactly as `claim` can — and it
+    // sends what it reserves, which makes it the worse of the two paths to leave open.
+    it("is handed back by broadcast rather than reserved a second time", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      await ops.broadcastProposal(c, id);
+
+      expect((await c.store.getIntent(id))?.safeEnvelope).toEqual(envelope);
+    });
+
+    it("refuses a broadcast when it executed after the release", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      c.publicClient = fakeClient({
+        safeNonce: 5n,
+        safeLogs: [
+          {
+            eventName: "ExecutionSuccess",
+            args: { txHash: envelope.safeTxHash },
+            transactionHash: SENT_TX,
+          },
+        ],
+      });
+
+      await expect(ops.broadcastProposal(c, id)).rejects.toThrow(/already executed/);
+    });
+
+    // `fail` is what strands it: the row goes terminal and the next proposal for the subject revives
+    // it, clearing the envelope and with it the only record of what is still outstanding.
+    it("cannot be failed away while it still stands", async () => {
+      const c = safeCtx();
+      const { id } = await claimedThenReleased(c);
+
+      await expect(ops.failProposal(c, id)).rejects.toThrow(/still executable/);
+      expect((await c.store.getIntent(id))?.status).toBe("proposed");
+    });
+
+    it("can be failed once its nonce is spent and it did not execute", async () => {
+      const c = safeCtx();
+      const { id } = await claimedThenReleased(c);
+
+      c.publicClient = fakeClient({ safeNonce: 5n });
+
+      await ops.failProposal(c, id, "giving up");
+      expect((await c.store.getIntent(id))?.status).toBe("failed");
+    });
+  });
+
   it("fail marks a proposal failed and revives the subject", async () => {
     const c = ctx();
     const p = payload();

@@ -252,14 +252,34 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
   });
 
   describe("release + fail (recovery)", () => {
-    it("release reverts claimed → proposed and clears the envelope", async () => {
+    // The envelope outlives the claim on purpose. A threshold-signed SafeTx is executable by anyone
+    // until its nonce is consumed, and those signatures are off chain — so giving up the claim
+    // cannot give up the authorization, and the record of it is the only thing that stops the next
+    // claim reserving a second one over the same payload.
+    it("release reverts claimed → proposed and keeps the envelope", async () => {
       const store = createMemoryStateStore();
       const id = idempotencyKey(input("p"));
       await store.propose(input("p"), payload(), HASH_A);
       await store.claimProposal(id, HASH_A, SAFE_ENV);
 
       expect(await store.release(id, HASH_A)).toBe(true);
-      expect(store.get(id)).toMatchObject({ status: "proposed", safeEnvelope: null });
+      expect(store.get(id)).toMatchObject({ status: "proposed", safeEnvelope: SAFE_ENV });
+    });
+
+    // Expiry is a timer, and a signed SafeTx does not expire with it. Sweeping the row would make it
+    // terminal, and the next proposal for the subject would revive it and clear the envelope.
+    it("does not expire a released row that still carries an envelope", async () => {
+      let clock = 1_000_000;
+      const store = createMemoryStateStore(() => clock);
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A, SAFE_ENV);
+      await store.release(id, HASH_A);
+
+      clock += 10_000;
+
+      expect(await store.expireProposals(1_000)).toBe(0);
+      expect(store.get(id)?.status).toBe("proposed");
     });
 
     it("release refuses a non-claimed row or a hash mismatch", async () => {

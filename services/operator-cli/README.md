@@ -48,11 +48,29 @@ claimed and broadcast again — a second transaction for an action that may alre
    verifies the transaction matches the payload before it accepts it.
 3. Only if there is none, `release <id>`.
 
-Under `safe` custody the CLI does this for you — `release` scans the Safe for the reserved
-`safeTxHash` and refuses if it already executed. Under `eoa` custody it cannot: a plain transaction
-has no identifier until it is signed, so there is nothing to have reserved and scan for. Comparing
-the account nonce instead would not answer the question, because the same wallet signs the
-operator's other transactions.
+Under `safe` custody the CLI scans the Safe for the reserved `safeTxHash` and refuses the release if
+it already executed. Read what that does and does not establish: it answers *has it executed*, never
+*can it still execute*. A SafeTx becomes executable by anyone the moment a threshold of owners has
+signed its hash, and those signatures are off chain — the CLI cannot see them. So a release is not a
+cancellation, and the reservation outlives it.
+
+That is why the envelope is **kept** when a claim is released. The next `claim` settles it instead of
+reserving a second one: the same envelope while the Safe is still at that nonce (which recomputes the
+same hash anyway), a refusal pointing at `confirm --tx` if the hash executed in the meantime, and a
+fresh envelope only once the nonce is spent and it provably did not. `fail` is refused for the same
+reason while the reservation stands, since failing the row is what would erase it. The way out is the
+chain: execute it and `confirm`, or let the Safe consume that nonce — its own reject flow does
+exactly that — and then release or fail.
+
+Two consequences to know about. A released row that still carries a reservation counts as the one
+live Safe intent, so **no other subject can be claimed until it is settled** — which is the point,
+since a second claim would reserve the same nonce. And it is never swept by `MANUAL_INTENT_TTL_MS`,
+because a signed SafeTx does not expire when a database row does; the `intent-stuck` alert reports it
+instead, so it cannot sit unnoticed.
+
+Under `eoa` custody none of this applies: a plain transaction has no identifier until it is signed,
+so there is nothing to have reserved and scan for. Comparing the account nonce instead would not
+answer the question, because the same wallet signs the operator's other transactions.
 
 The exposure if this is got wrong is smaller than it sounds: a re-broadcast action whose subject is
 already gone reverts (`PositionNotLiquidatable`, or a vault that has left escrow), so the cost is

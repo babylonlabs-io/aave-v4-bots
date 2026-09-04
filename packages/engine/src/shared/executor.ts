@@ -599,7 +599,11 @@ export function createManualExecutor(deps: {
     if (intentStuckMs <= 0) return;
     const at = now();
     const candidates = [
-      ...(await store.proposals()).filter((r) => r.status === "claimed"),
+      // `claimed` is the obvious one. A `proposed` row still carrying a Safe envelope is the other:
+      // it was claimed once and released without the reservation being resolved, and that row is
+      // deliberately never swept by the TTL — a signed SafeTx does not expire with a timer. Nothing
+      // else would ever mention it, and until an operator settles it no other Safe intent may claim.
+      ...(await store.proposals()).filter((r) => r.status === "claimed" || r.safeEnvelope !== null),
       ...(await store.reconcile()).filter((r) => r.status === "submitted"),
     ];
     const stuck = new Set<string>();

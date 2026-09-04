@@ -317,10 +317,17 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       return (res.rowCount ?? 0) > 0;
     },
 
+    // The envelope deliberately survives. Releasing gives up the *claim*, and a Safe envelope is not
+    // part of the claim: once a threshold of owners has signed its hash — off chain, where nothing
+    // here can see it — that SafeTx is executable by anyone until its nonce is consumed. Dropping the
+    // record would leave that authorization live with nothing pointing at it, and the next claim
+    // would reserve a second one over the same payload. `claimProposal` in the operator CLI is what
+    // resolves it: the same envelope while its nonce stands, a new one only once the old is provably
+    // dead. See `expireProposals`, which for the same reason will not sweep a row still carrying one.
     async release(id, expectedPayloadHash) {
       await ensureReady();
       const res = await client.query(
-        `UPDATE ${intents} SET status = 'proposed', safe_envelope = NULL, updated_at = $3
+        `UPDATE ${intents} SET status = 'proposed', updated_at = $3
          WHERE id = $1 AND status = 'claimed' AND payload_hash = $2`,
         [id, expectedPayloadHash, Date.now()]
       );
@@ -347,11 +354,17 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       return (res.rowCount ?? 0) > 0;
     },
 
+    // A row still carrying a Safe envelope is never swept. Expiry is a *timer*, and a signed SafeTx
+    // does not expire with it — the authorization stays executable until its nonce is consumed. Left
+    // to the timer, the row would go terminal and the next proposal for the subject would revive it,
+    // clearing the envelope (see `recordIntent`) and taking with it the only record of what is still
+    // outstanding. The row stays until an operator resolves it.
     async expireProposals(ttlMs, action) {
       await ensureReady();
       const res = await client.query(
         `UPDATE ${intents} SET status = 'expired', updated_at = $1
-         WHERE status = 'proposed' AND updated_at <= $2 AND ($3::text IS NULL OR action = $3)`,
+         WHERE status = 'proposed' AND safe_envelope IS NULL AND updated_at <= $2
+           AND ($3::text IS NULL OR action = $3)`,
         [Date.now(), Date.now() - ttlMs, action ?? null]
       );
       return res.rowCount ?? 0;
