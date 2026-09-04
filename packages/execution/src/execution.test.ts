@@ -393,6 +393,50 @@ describe("@repo/execution", () => {
       expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
     });
 
+    // The gate the caller cannot place itself: everything between admitting a send and this point —
+    // the nonce lock, the pricing reads, the signature, the durable write — is awaited, and a halt
+    // that lands in it would otherwise reach the wire.
+    it("asks beforeBroadcast last, after the durable record and before the wire", async () => {
+      const { walletClient, publicClient } = txClients();
+      const order: string[] = [];
+      publicClient.sendRawTransaction.mockImplementation(async () => {
+        order.push("broadcast");
+        return SIGNED_HASH;
+      });
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg
+      );
+
+      await sender.send(
+        CALL,
+        async () => {
+          order.push("onSigned");
+        },
+        () => {
+          order.push("beforeBroadcast");
+        }
+      );
+
+      expect(order).toEqual(["onSigned", "beforeBroadcast", "broadcast"]);
+    });
+
+    it("does NOT broadcast when beforeBroadcast refuses, and says nothing was sent", async () => {
+      const { walletClient, publicClient } = txClients();
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg
+      );
+
+      await expect(
+        sender.send(CALL, undefined, () => {
+          throw new Error("halted");
+        })
+      ).rejects.toThrow(PreBroadcastError);
+
+      expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
+    });
+
     // A caller cannot settle its risk slot correctly without knowing WHICH side of the
     // broadcast it failed on: everything before the wire is `abandoned` (nothing is on chain,
     // so it says nothing about whether the chain is rejecting us), and only a failed broadcast

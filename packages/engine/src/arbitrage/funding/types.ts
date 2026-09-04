@@ -49,6 +49,17 @@ export interface ArbitrageFunding {
   refreshInventory(): Promise<void>;
 
   /**
+   * Take back every standing allowance this mode has granted. Called on a code-hash halt, and only
+   * then — from the halted branch of the cycle, which is the one place a stopped engine still runs.
+   *
+   * A halt stops what this bot sends. It does nothing about a spender that is already allowed to
+   * pull, and a code-hash halt is precisely the case where that spender is the suspect contract:
+   * the bytecode at a pinned address changed, and whatever the old code was approved for, the new
+   * code inherits. The allowance is the exposure, so withdrawing it is the stop.
+   */
+  revokeApprovals(): Promise<void>;
+
+  /**
    * Make sure `maxWbtcIn` can actually be delivered when the swap runs.
    *
    * Returns `satisfied` when the payment can go ahead. Anything else means an operator has to act
@@ -87,13 +98,17 @@ export interface ArbitrageFunding {
    * execute is a claim on the treasury that nothing else is counting — see
    * `RouterFunding.refreshInventory`.
    *
-   * `consumed` means the money provably moved (our own acquisition confirmed), so the treasury's
-   * balance already reflects it and holding it again would count it twice. Anything else leaves the
-   * authorization live until it expires or is observed executing.
+   * `consumed` means the money provably moved (our own acquisition confirmed), and `minedAtBlock`
+   * is where — the height a balance read has to reach before it reports the payment. Until it does,
+   * the outflow is still the mode's to account for, exactly as an unexecuted batch is. Anything
+   * else leaves the authorization live until it expires or is observed executing.
    *
    * Idempotent, and a no-op for a mode whose payment cannot outlive its transaction.
    */
-  settleAuthorization(authorizationId: Hex | undefined, outcome: { consumed: boolean }): void;
+  settleAuthorization(
+    authorizationId: Hex | undefined,
+    outcome: { consumed: boolean; minedAtBlock?: bigint }
+  ): void;
 
   /**
    * The call that acquires one vault, bounded by the slippage-adjusted ceiling.
@@ -114,7 +129,7 @@ export interface ArbitrageFunding {
  * `authorizationId` is present only for a mode that signs a payment separately from the
  * transaction. It is what the engine hands back to `spentWithoutUs`, `authorizationExpired` and
  * `settleAuthorization`, so those answer about *this* batch rather than about whatever was last
- * signed for the same vault — with a permissionless relay, more than one can be live at once.
+ * signed for the same vault — the batch carries no nonce, so more than one can be live at once.
  */
 export interface AcquisitionCall {
   call: ContractCall;

@@ -273,6 +273,35 @@ describe("LiquidationEngine", () => {
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
     });
 
+    // The cycle ends either way, so what this pins is what is *said* about it. A candidate list we
+    // never received is not a market with nothing in it, and the gauge is what an operator reads to
+    // tell an idle bot from a blind one — a zero written from a failed read says the one thing that
+    // is never safe to infer from a failure.
+    it("does not record an empty market when the candidate list cannot be read", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
+
+      await bot.run();
+
+      expect(metrics.recordError).toHaveBeenCalledWith("ponder_fetch_error");
+      expect(metrics.recordPositionsLiquidatable).not.toHaveBeenCalled();
+    });
+
+    it("records the empty market when the indexer actually reports one", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: [], total: 0, checked: 0 }),
+      });
+
+      await bot.run();
+
+      expect(metrics.recordPositionsLiquidatable).toHaveBeenCalledWith(0);
+      expect(metrics.recordError).not.toHaveBeenCalledWith("ponder_fetch_error");
+    });
+
     // The response is cast to its type, never parsed, so what the cycle is built on is checked where
     // it is read — the same reason the risk gate re-establishes the freshness stamp itself. The
     // arbitrage engine has always done this for its vault list; this side had not.
@@ -625,6 +654,7 @@ describe("LiquidationEngine", () => {
           nonce: 42,
           functionName: "liquidateWithLLP",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -659,6 +689,7 @@ describe("LiquidationEngine", () => {
           // bumped adapter).
           args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n], 0n, maxUint256],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -691,11 +722,13 @@ describe("LiquidationEngine", () => {
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ nonce: 10 }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({ nonce: 11 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -904,6 +937,7 @@ describe("LiquidationEngine", () => {
         expect.objectContaining({
           functionName: "approve",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -955,6 +989,7 @@ describe("LiquidationEngine", () => {
           address: "0xwbtc",
           functionName: "approve",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1023,6 +1058,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1312,6 +1348,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ nonce: 7 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1361,11 +1398,13 @@ describe("LiquidationEngine", () => {
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ nonce: 10 }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({ nonce: 11 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });

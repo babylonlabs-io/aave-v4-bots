@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "@repo/logger";
 import {
   type ChainReader,
-  RELAY_HORIZON_TRUST_MULTIPLE,
+  MAX_RELAY_HORIZON_BLOCKS,
   createRelayAwareReader,
   createRelayHorizon,
 } from "./liveness";
@@ -87,12 +87,12 @@ describe("createRelayHorizon — what the relay is allowed to claim", () => {
   // This number is the only thing that ever frees a privately-submitted nonce. A relay that names a
   // deadline far enough out fences that nonce permanently, and the value is well-formed — no
   // validation of the response can catch it, because there is nothing wrong with the number itself.
-  it("will not fence past a multiple of the declared window, however far out the relay claims", async () => {
+  it("will not fence past the absolute ceiling, however far out the relay claims", async () => {
     const horizon = createRelayHorizon(node(100), relay({ maxBlockNumber: 1_000_000_000 }), 25, {
       warn,
     });
 
-    expect(await horizon(HASH)).toBe(100 + 25 * RELAY_HORIZON_TRUST_MULTIPLE);
+    expect(await horizon(HASH)).toBe(100 + MAX_RELAY_HORIZON_BLOCKS);
   });
 
   // Capping quietly would leave the operator watching a nonce that just takes longer to come back.
@@ -101,7 +101,28 @@ describe("createRelayHorizon — what the relay is allowed to claim", () => {
 
     await horizon(HASH);
 
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/beyond the 10x window/));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(new RegExp(`beyond the ${MAX_RELAY_HORIZON_BLOCKS} blocks`))
+    );
+  });
+
+  // A cap derived from the configured window would point the wrong way: a short declaration would
+  // shrink the cap with it and truncate the relay's true, longer deadline, freeing the nonce while
+  // the transaction could still be included. The cap bounds a broken relay; it does not overrule an
+  // honest one.
+  it("honours a deadline past a multiple of a small configured window", async () => {
+    const horizon = createRelayHorizon(node(100), relay({ maxBlockNumber: 125 }), 1, { warn });
+
+    expect(await horizon(HASH)).toBe(125);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // Both directions of the same rule: the configured window is a floor under the relay's answer,
+  // never a competing one. Whichever is later is the one that keeps the nonce fenced.
+  it("keeps the configured window when the relay declares something shorter", async () => {
+    const horizon = createRelayHorizon(node(100), relay({ maxBlockNumber: 105 }), 25, { warn });
+
+    expect(await horizon(HASH)).toBe(125);
   });
 
   it("leaves an ordinary deadline alone, and says nothing", async () => {
@@ -113,7 +134,7 @@ describe("createRelayHorizon — what the relay is allowed to claim", () => {
 
   // The boundary itself is believed: a relay may legitimately declare the longest window we honour.
   it("believes a deadline exactly at the ceiling", async () => {
-    const ceiling = 100 + 25 * RELAY_HORIZON_TRUST_MULTIPLE;
+    const ceiling = 100 + MAX_RELAY_HORIZON_BLOCKS;
     const horizon = createRelayHorizon(node(100), relay({ maxBlockNumber: ceiling }), 25, { warn });
 
     expect(await horizon(HASH)).toBe(ceiling);

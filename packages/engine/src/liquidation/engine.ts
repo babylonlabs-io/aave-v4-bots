@@ -90,13 +90,18 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   /**
    * Boot-time setup: discover the debt tokens, then let the funding mode prepare itself.
    *
-   * One call so a service never has to know which setup its funding mode needs: inventory funding
-   * approves the adapter, flash funding approves nothing.
+   * One call so a service never has to know which setup its funding mode needs. Neither mode sends
+   * a transaction from here — see `LiquidationFunding.prepare`.
    */
   async prepare(): Promise<void> {
     const topology = await this.discoverReserves();
     await this.assertLensWiring(topology);
     await this.funding.prepare();
+  }
+
+  /** The funding mode owns the allowances, so it owns taking them back. */
+  protected async revokeApprovals(): Promise<void> {
+    await this.funding.revokeApprovals();
   }
 
   /**
@@ -193,7 +198,20 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     await this.funding.refreshInventory();
 
     // Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
-    const { positions, dataTimestampMs } = await this.fetchLiquidatablePositions();
+    const feed = await this.fetchLiquidatablePositions();
+
+    // Asking and failing is not the same as asking and being told nothing is liquidatable. The
+    // cycle ends either way, but only one of them may be recorded as a market with no candidates:
+    // the gauge below drives the dashboards an operator reads to decide whether the bot is idle
+    // because there is nothing to do, and a zero written from a failed read says exactly the wrong
+    // thing about the one condition this bot exists for.
+    if (feed.kind === "unavailable") {
+      this.logger.warn(
+        "Skipping cycle: the candidate list could not be read (not an empty market)"
+      );
+      return;
+    }
+    const { positions, dataTimestampMs } = feed;
 
     this.metrics.recordPositionsLiquidatable(positions.length);
 
@@ -425,10 +443,17 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
    * live reads were evaluated at (the risk gate's freshness input; `undefined` if the indexer
    * doesn't report it).
    */
-  private async fetchLiquidatablePositions(): Promise<{
-    positions: LiquidatablePosition[];
-    dataTimestampMs?: number;
-  }> {
+  /**
+   * The candidate list, or the fact that there is none to be had this cycle.
+   *
+   * Two outcomes rather than one list, because an empty list and a failed read are opposite
+   * answers: one says the market is quiet, the other says we do not know what the market is. See
+   * `probeInChunks` in the indexer, which keeps the same distinction on the other side of the wire.
+   */
+  private async fetchLiquidatablePositions(): Promise<
+    | { kind: "ok"; positions: LiquidatablePosition[]; dataTimestampMs?: number }
+    | { kind: "unavailable" }
+  > {
     try {
       const data = await this.indexer.read<PonderResponse>("/liquidatable-positions");
       // The response crosses an unauthenticated wire and is cast to its type, never parsed — the
@@ -451,11 +476,15 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
           `Indexer could not probe ${data.unscanned} position(s) this cycle — the candidate list is incomplete`
         );
       }
-      return { positions: data.liquidatable, dataTimestampMs: data.dataTimestampMs };
+      return {
+        kind: "ok",
+        positions: data.liquidatable,
+        dataTimestampMs: data.dataTimestampMs,
+      };
     } catch (error) {
       this.metrics.recordError("ponder_fetch_error");
       this.logger.error("Failed to fetch liquidatable positions:", error);
-      return { positions: [] };
+      return { kind: "unavailable" };
     }
   }
 

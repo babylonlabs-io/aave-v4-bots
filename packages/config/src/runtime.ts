@@ -33,10 +33,22 @@ type Hex40 = `0x${string}`;
  * frees the nonce of a privately-submitted transaction the relay has dropped, so a horizon set to a
  * number nobody meant does not read as a big number anywhere downstream: it reads as a nonce that
  * never comes back, with every later send from either engine queued behind it. `liveness.ts` bounds
- * the relay's *declared* deadline for the same reason (`RELAY_HORIZON_TRUST_MULTIPLE`); this bounds
- * the operator's declared one.
+ * the relay's *declared* deadline for the same reason (`MAX_RELAY_HORIZON_BLOCKS`); this bounds the
+ * operator's declared one.
  */
 const MAX_HORIZON_BLOCKS = 7200;
+
+/**
+ * Flashbots Protect's status service, and the retry window it documents.
+ *
+ * The status URL is the only thing that says *which relay* a deployment is talking to, and it is
+ * the one this client speaks the API of. A deployment pointed at it is on Protect, so its declared
+ * window has a known correct answer — which is what `buildSubmitterConfig` holds it to. A custom
+ * relay names its own status endpoint, and its window is then the operator's to declare, because
+ * nothing here can know it.
+ */
+const PROTECT_STATUS_URL = "https://protect.flashbots.net";
+const PROTECT_HORIZON_BLOCKS = 25;
 
 /**
  * Ceiling on the relay's two network deadlines. Both are per-call timeouts inside a poll cycle, and
@@ -74,8 +86,13 @@ export const runtimeEnvFields = {
   PRIVATE_MIN_PRIORITY_FEE_WEI: positiveBigIntSchema.optional(),
   /**
    * The relay's retry window, in blocks — how long it may keep offering a transaction to builders.
-   * Used when the relay does not tell us a transaction's own deadline. Protect's is ~25 blocks;
-   * declare whatever the configured relay actually uses.
+   *
+   * Declare whatever the configured relay actually uses; Protect's is ~25 blocks. It is used when
+   * the relay does not tell us a transaction's own deadline, and it is the **only** bound in that
+   * case — a status probe that fails, answers `UNKNOWN`, or under-reports leaves nothing else
+   * holding the nonce. So the two directions cost differently: too long only delays reclaiming a
+   * nonce nothing will spend, while too short hands one out while the relay can still spend it.
+   * Where the relay is known to be Protect, `buildSubmitterConfig` refuses a value below its window.
    */
   PRIVATE_RELAY_HORIZON_BLOCKS: intInRangeSchema(
     1,
@@ -274,6 +291,23 @@ export type SubmitterSettings =
     };
 
 /**
+ * Is this status endpoint Flashbots Protect's own service?
+ *
+ * Compared by origin rather than by string, so a trailing slash or a different spelling of the same
+ * host is still Protect — the check exists to recognise a relay, and an operator who writes the URL
+ * a shade differently has not changed which one they are talking to.
+ */
+function readsProtectStatus(statusUrl: string): boolean {
+  try {
+    return new URL(statusUrl).origin === new URL(PROTECT_STATUS_URL).origin;
+  } catch {
+    // `urlSchema` already rejected anything unparseable; a caller reaching here without it still
+    // gets an answer rather than an exception thrown from a config builder.
+    return statusUrl === PROTECT_STATUS_URL;
+  }
+}
+
+/**
  * The variables that mean nothing unless the bot broadcasts privately, paired with their values.
  *
  * Named once because two builders reject them, for the same reason from opposite directions:
@@ -330,12 +364,25 @@ export function buildSubmitterConfig(env: SubmitterEnv): SubmitterSettings {
     );
   }
 
+  // A window shorter than the relay's real retention is the one setting here that can free a nonce
+  // the relay may still spend, and nothing downstream can tell — which is why it is refused for the
+  // one relay whose window this bot knows. The status URL is what names that relay: it is Protect's
+  // own service and the API this client speaks, so a deployment reading status from it is on
+  // Protect. A custom relay points somewhere else and declares its own window, which only its
+  // operator can know.
+  const relayHorizonBlocks = Number.parseInt(env.PRIVATE_RELAY_HORIZON_BLOCKS, 10);
+  if (readsProtectStatus(env.FLASHBOTS_STATUS_URL) && relayHorizonBlocks < PROTECT_HORIZON_BLOCKS) {
+    throw new Error(
+      `PRIVATE_RELAY_HORIZON_BLOCKS=${relayHorizonBlocks} is below the ~${PROTECT_HORIZON_BLOCKS} blocks Flashbots Protect keeps offering a transaction, and FLASHBOTS_STATUS_URL points at Protect. When a status probe fails or reports nothing, that window is the only thing fencing the nonce — set it to at least ${PROTECT_HORIZON_BLOCKS}, or name the status endpoint of the relay you are actually using.`
+    );
+  }
+
   return {
     mode: "flashbots-protect",
     rpcUrl: env.FLASHBOTS_PROTECT_URL as string,
     statusUrl: env.FLASHBOTS_STATUS_URL,
     minPriorityFeeWei: BigInt(env.PRIVATE_MIN_PRIORITY_FEE_WEI as string),
-    relayHorizonBlocks: Number.parseInt(env.PRIVATE_RELAY_HORIZON_BLOCKS, 10),
+    relayHorizonBlocks,
     reclaimMarginBlocks: Number.parseInt(env.PRIVATE_RECLAIM_MARGIN_BLOCKS, 10),
     submitTimeoutMs: Number.parseInt(env.PRIVATE_SUBMIT_TIMEOUT_MS, 10),
     statusTimeoutMs: Number.parseInt(env.PRIVATE_STATUS_TIMEOUT_MS, 10),

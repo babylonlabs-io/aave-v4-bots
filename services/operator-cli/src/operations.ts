@@ -1,3 +1,4 @@
+import { safeAbi } from "@repo/abis";
 import { findSafeExecutionByHash } from "@repo/chain";
 import type { ProposedTx } from "@repo/execution";
 import {
@@ -104,6 +105,131 @@ function assertSafeEnvelopeIntact(
 }
 
 /**
+ * Is the claimed envelope still the Safe's *next* transaction? Read from the chain, and the two
+ * directions mean opposite things.
+ *
+ * A nonce **ahead** of the chain is the one thing here a modified record can do and the policy
+ * cannot catch: a nonce is not a gas field, so any value is structurally valid, and rewriting it
+ * with a recomputed `safeTxHash` leaves the record self-consistent. Everything else an owner signs
+ * is pinned — the inner call by `payloadHash`, which the operator compares against the notification,
+ * and the gas/refund fields by `assertZeroGasPolicy` — which leaves this as the last field a
+ * rewritten row could choose. What it buys is time rather than content: the hash cannot execute now,
+ * so the operator signs an authorization that sits valid until the Safe reaches that nonce, for a
+ * call they approved at a moment they did not — long enough for an `approve` to be replayed after
+ * the revocation that was supposed to end it. A Safe nonce only ever goes up, so this is refused.
+ *
+ * A nonce **behind** the chain is ordinary history, not a tamper: the SafeTx executed (`confirm` it)
+ * or the Safe did something else (`release` it). That is reported rather than refused, so `show`
+ * stays a read-only diagnostic in exactly the window an operator reaches for it — after execution,
+ * before `confirm`, when the row is still `claimed`. Its hash is no longer signable, and signing it
+ * would only produce a signature for a nonce the chain has consumed.
+ *
+ * Only on the path that surfaces a hash for signing. `confirm`, `release` and the reconcile scan all
+ * read envelopes whose nonce the chain has legitimately moved past, and are right to.
+ */
+async function isEnvelopeNext(
+  ctx: OperatorContext,
+  id: string,
+  envelope: SafeEnvelope
+): Promise<boolean> {
+  const live = Number(
+    await ctx.publicClient.readContract({
+      address: ctx.executorAddress,
+      abi: safeAbi,
+      functionName: "nonce",
+    })
+  );
+  if (live < envelope.safeNonce) {
+    throw new Error(
+      `Safe nonce for ${id} is ahead of the chain: the envelope reserved ${envelope.safeNonce}, the Safe is at ${live} — refusing to show a hash to sign. A Safe nonce only goes up, so this envelope was changed after the claim.`
+    );
+  }
+  return live === envelope.safeNonce;
+}
+
+/**
+ * What became of an envelope a previous claim reserved and released without resolving.
+ *
+ * `release` gives up the claim, not the authorization: a threshold of owners may have signed that
+ * SafeTx's hash, off chain where nothing here can see it, and from that moment anyone can execute it
+ * until its nonce is consumed. So the record survives the release, and this is what a later claim
+ * asks about it before deciding whether it may reserve another.
+ *
+ * The Safe's nonce is what answers it, and the three cases are not symmetric:
+ *
+ * - **still at the reserved nonce** — the reservation stands. Re-issuing here would produce the same
+ *   hash anyway (the payload and the gas policy are fixed), so there is nothing to decide: the same
+ *   envelope is handed back and no second authorization exists.
+ * - **past it, and the hash executed** — the action already landed. That is a `confirm`, not a new
+ *   attempt, and reserving a second envelope would put the same payload on chain twice.
+ * - **past it, and the hash did not execute** — its nonce is spent, so it can never execute. Dead,
+ *   and a new envelope may be reserved.
+ *
+ * A nonce *below* the reservation cannot happen on a chain that only moves forward, so it is refused
+ * rather than interpreted.
+ */
+async function classifyRetainedEnvelope(
+  ctx: OperatorContext,
+  id: string,
+  payload: ProposedTx,
+  envelope: SafeEnvelope
+): Promise<{ kind: "live" } | { kind: "dead" }> {
+  // The hash is about to decide whether a second SafeTx is reserved, so it is checked before it is
+  // trusted — the same call `show`, `confirm` and `release` make of the same record.
+  assertSafeEnvelopeIntact(ctx, id, payload, envelope);
+
+  const live = Number(
+    await ctx.publicClient.readContract({
+      address: ctx.executorAddress,
+      abi: safeAbi,
+      functionName: "nonce",
+    })
+  );
+  if (live < envelope.safeNonce) {
+    throw new Error(
+      `Safe nonce for ${id} is ahead of the chain: the envelope reserved ${envelope.safeNonce}, the Safe is at ${live} — refusing. A Safe nonce only goes up, so this envelope was changed after the claim.`
+    );
+  }
+  if (live === envelope.safeNonce) return { kind: "live" };
+
+  const executed = await findSafeExecutionByHash(
+    ctx.publicClient,
+    ctx.executorAddress,
+    envelope.safeTxHash,
+    BigInt(envelope.claimBlock)
+  );
+  if (executed) {
+    throw new Error(
+      `the SafeTx ${envelope.safeTxHash} reserved for ${id} already executed (tx ${executed.txHash}) — record it with \`confirm ${id} --tx ${executed.txHash}\`, not a new claim`
+    );
+  }
+  return { kind: "dead" };
+}
+
+/**
+ * The envelope a claim should proceed under: the one already outstanding, or a new reservation.
+ *
+ * Every path that turns a `proposed` row into a `claimed` one goes through here — `claim` and
+ * `broadcast` alike — because the thing being protected is not a command, it is the count of
+ * executable authorizations over one payload. A second reservation is what makes two of them.
+ */
+async function envelopeForClaim(
+  ctx: OperatorContext,
+  id: string,
+  row: TxIntent,
+  payload: ProposedTx
+): Promise<SafeEnvelope | undefined> {
+  if (ctx.executorKind !== "safe") return undefined;
+
+  // An envelope on a `proposed` row is one a previous claim reserved and released without resolving.
+  const retained = row.safeEnvelope;
+  if (retained && (await classifyRetainedEnvelope(ctx, id, payload, retained)).kind === "live") {
+    return retained;
+  }
+  return ctx.signer.buildEnvelope(payload);
+}
+
+/**
  * v1 handles ONE Safe SafeTx at a time. Each claim reads `Safe.nonce()` independently, so two
  * concurrent Safe claims would reserve the SAME nonce and one SafeTx would be dead on arrival (it
  * reverts, reconcile fails it, the subject revives — no fund loss, but wasted). Until the store
@@ -138,6 +264,15 @@ export interface ProposalView {
   /** For `safe`: the settled hash (if claimed) or a preview (if still proposed). */
   safeTxHash?: Hex;
   safeTxHashIsPreview?: boolean;
+  /** For `safe`: the Safe nonce this hash is for — checked against the chain before it is shown. */
+  safeNonce?: number;
+  /**
+   * For a claimed `safe` row: is this still the Safe's next transaction, and so still signable?
+   *
+   * `false` means the Safe has moved past it — it executed (`confirm`) or something else did
+   * (`release`). A hash ahead of the chain is not reported here; it is refused outright.
+   */
+  safeTxIsNext?: boolean;
 }
 
 /** Verify + render one proposal (read-only). For a not-yet-claimed Safe proposal, previews the
@@ -148,15 +283,20 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
 
   let safeTxHash = row.safeEnvelope?.safeTxHash;
   let safeTxHashIsPreview = false;
+  let safeNonce = row.safeEnvelope?.safeNonce;
+  let safeTxIsNext: boolean | undefined;
   if (ctx.executorKind === "safe") {
     if (row.safeEnvelope) {
       // A claimed Safe row: recompute the hash from the persisted envelope and require it to match,
       // so a tampered `safeEnvelope.safeTxHash` can never be shown to an operator to sign.
       assertSafeEnvelopeIntact(ctx, row.id, payload, row.safeEnvelope);
+      // Then against the chain, which is the only party to this that a modified record cannot write.
+      safeTxIsNext = await isEnvelopeNext(ctx, row.id, row.safeEnvelope);
     } else {
       // Not yet claimed: preview the hash the owners would sign (a chain read, allocates no nonce).
       const preview = await ctx.signer.buildEnvelope(payload);
       safeTxHash = preview?.safeTxHash;
+      safeNonce = preview?.safeNonce;
       safeTxHashIsPreview = true;
     }
   }
@@ -172,6 +312,8 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
     ageMs: ctx.now() - row.updatedAt,
     safeTxHash,
     safeTxHashIsPreview: safeTxHash ? safeTxHashIsPreview : undefined,
+    safeNonce,
+    safeTxIsNext,
   };
 }
 
@@ -186,8 +328,7 @@ export async function claimProposal(
   assertSignerIsExecutor(ctx);
   await assertNoOtherLiveSafeClaim(ctx, id);
 
-  const envelope =
-    ctx.executorKind === "safe" ? await ctx.signer.buildEnvelope(payload) : undefined;
+  const envelope = await envelopeForClaim(ctx, id, row, payload);
   const result = await ctx.store.claimProposal(id, payloadHash, envelope);
   return result.claimed
     ? { claimed: true, row: result.intent }
@@ -215,8 +356,9 @@ export async function broadcastProposal(
   }
   await assertNoOtherLiveSafeClaim(ctx, id);
 
-  const envelope =
-    ctx.executorKind === "safe" ? await ctx.signer.buildEnvelope(payload) : undefined;
+  // Through the same resolver `claim` uses: this path claims too, so it can strand or duplicate an
+  // outstanding reservation in exactly the same way.
+  const envelope = await envelopeForClaim(ctx, id, row, payload);
   const result = await ctx.store.claimProposal(id, payloadHash, envelope);
   if (!result.claimed) throw new Error(`cannot claim ${id}: ${result.reason}`);
 
@@ -322,8 +464,12 @@ function verifySafeTx(
  * reserved `safeTxHash` (precise: an unrelated SafeTx on the same Safe does not trip it, unlike a bare
  * nonce compare). That case is a `confirm`, not a `release`, or a double-broadcast could follow. There
  * is an irreducible window between this read and `store.release` — inherent to any check-then-act
- * against the chain — but under one live claim it only opens if a concurrent process broadcast, and
- * the engine's fresh simulation still guards against re-executing an action that landed.
+ * against the chain — but under one live claim it only opens if a concurrent process broadcast.
+ *
+ * What a release does NOT do is retire the SafeTx it scanned for: that authorization lives on the
+ * chain's terms, not this row's, and no re-derivation stands between a released row and a second
+ * attempt — the row is re-armed carrying the same payload. The envelope is kept for exactly that
+ * reason; `classifyRetainedEnvelope` is what the next claim settles it with.
  */
 export async function releaseProposal(ctx: OperatorContext, id: string): Promise<void> {
   const row = await load(ctx, id);
@@ -363,7 +509,23 @@ export async function failProposal(
   id: string,
   reason?: string
 ): Promise<void> {
-  verifyProposal(ctx, await load(ctx, id));
+  const row = await load(ctx, id);
+  const { payload } = verifyProposal(ctx, row);
+
+  // Failing is what strands an authorization: the row goes terminal, and the next proposal for this
+  // subject revives it — clearing the envelope, and with it the only record that a signed SafeTx is
+  // still executable. So a reservation that still stands is refused here, exactly as a new claim
+  // would be. The way out is the chain, not the database: execute it and `confirm`, or let the Safe
+  // consume that nonce (its own reject flow does precisely that) and fail it after.
+  if (ctx.executorKind === "safe" && row.safeEnvelope) {
+    const verdict = await classifyRetainedEnvelope(ctx, id, payload, row.safeEnvelope);
+    if (verdict.kind === "live") {
+      throw new Error(
+        `cannot fail ${id}: the SafeTx ${row.safeEnvelope.safeTxHash} it reserved is still executable at Safe nonce ${row.safeEnvelope.safeNonce}. If owners signed it, it can execute after this row is gone. Execute it and \`confirm\`, or consume that nonce (reject it in the Safe UI), then fail.`
+      );
+    }
+  }
+
   if (!(await ctx.store.fail(id, reason ?? "failed by operator"))) {
     throw new Error(`fail refused for ${id} (already terminal?)`);
   }

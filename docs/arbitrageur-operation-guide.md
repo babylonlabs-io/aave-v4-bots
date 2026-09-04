@@ -32,6 +32,7 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [Health Monitoring](#81-health-monitoring)
    - [Prometheus Metrics](#82-prometheus-metrics)
    - [Indexer Endpoints](#83-indexer-endpoints)
+   - [Restarting under router funding](#84-restarting-under-router-funding)
 9. [Vault Acquisition Flow](#9-vault-acquisition-flow)
    - [Incident: signing key compromised](#91-incident-the-signing-key-is-compromised-router-funding)
     - [Economic Model](#91-economic-model)
@@ -181,7 +182,9 @@ Skip this under `ARBITRAGE_FUNDING=inventory` — the bot pays for acquisitions 
 needs no contract of its own.
 
 Router funding moves the float off the signing key: a treasury holds the WBTC, and the bot only
-signs an authorization and submits it. Deploy the router once:
+signs an authorization and submits it. The router relays a batch **only for its own signer**, so the
+authorization is useless to anyone else who sees it — and the bot pays the gas for every acquisition
+out of the signing account. Deploy the router once:
 
 ```bash
 export ARBITRAGE_ROUTER_SIGNER=0x...   # this bot's signer. Authorizes acquisitions; holds no funds
@@ -389,7 +392,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
 | `ARBITRAGE_FUNDING` | `inventory` (pay from this signer's WBTC) or `router` (a treasury pays through an `ArbitrageRouter`) | No | `inventory` |
 | `ARBITRAGE_ROUTER_ADDRESS` | The deployed `ArbitrageRouter`. Its immutable `signer`, `payer` and `wbtc` are read back and checked at boot | router | — |
-| `ARBITRAGE_RELAY_DEADLINE_SECONDS` | How long a signed batch stays valid, in **chain** seconds. Bounded to 1–300: the router carries no nonce, so a signed batch is replayable by anyone until it expires, and the signature is public from the moment it is broadcast | No | `120` |
+| `ARBITRAGE_RELAY_DEADLINE_SECONDS` | How long a signed batch stays valid, in **chain** seconds. Bounded to 1–300: the router carries no nonce, so a signed batch stays executable by this bot's signer until it expires, whether or not the transaction that carried it ever landed | No | `120` |
 | `VAULT_KEEPER_ADDRESS` | Registered vault keeper the acquired vault is redeemed to. **Required** under `ARBITRAGE_FUNDING=router`, which only ever redeems on behalf of a keeper. Set it when the executor is **not** itself a keeper (e.g. a Safe): the bot pays and this keeper receives, via `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself. Only point this at a keeper you control — the BTC lands there while the WBTC leaves the bot, so the legs only net out (and `RISK_MIN_PROFIT` only means anything) under one owner | No | — |
 | `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | No | `100` |
 | `POLLING_INTERVAL_MS` | How often to check for vaults | No | `30000` |
@@ -491,7 +494,7 @@ transactions it never sends.
 | `FLASHBOTS_PROTECT_URL` | in private mode | e.g. `https://rpc.flashbots.net/fast` |
 | `FLASHBOTS_STATUS_URL` | no | defaults to `https://protect.flashbots.net` |
 | `PRIVATE_MIN_PRIORITY_FEE_WEI` | in private mode | no default, deliberately — see below |
-| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | default `25` — the relay's retry window, used when it states no deadline of its own; capped at `7200` (~a day of blocks) |
+| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | default `25` — the relay's retry window, used when it states no deadline of its own; capped at `7200` (~a day of blocks). Reading status from Protect, a value below its ~25-block window is refused at boot: when a status probe says nothing, this is the only thing fencing the nonce |
 | `PRIVATE_RECLAIM_MARGIN_BLOCKS` | no | default `3` — reorg headroom past that deadline; same cap |
 
 Four things fail the boot rather than degrading quietly, because each one
@@ -515,6 +518,15 @@ otherwise produces a bot that looks healthy and lands nothing:
   release the nonce of a private transaction the relay has dropped, and a fence
   set to an implausible number is indistinguishable, from the outside, from a
   nonce that never comes back.
+
+**Accepted risk: the relay is trusted to stop offering a transaction.** A signed
+transaction carries no expiry, so nothing on chain forces the relay to drop it
+once its deadline passes. Releasing the nonce rests on the relay honouring the
+deadline it reported, or — when it reports none — on
+`PRIVATE_RELAY_HORIZON_BLOCKS` describing the relay you actually use. The
+declared window, the reorg margin and the absolute cap bound the exposure; they
+do not remove it. Only consuming the nonce on chain would, which this bot does
+not do.
 
 **The trade-off is yours to make, and it is real.** Private submission reduces
 front-running, but it also narrows who can include you (Protect's default forwards
@@ -787,6 +799,19 @@ not an outage. If the pinned hash is simply *wrong*, correct
 `RISK_EXPECTED_CODE_HASHES` and restart; no amount of resuming will clear a
 mismatch that is really there.
 
+**A code-hash halt also withdraws the allowances the bot granted.** While that
+halt stands, every poll cycle sends an `approve(spender, 0)` for each allowance
+this signer granted and that is not already zero — the LLP's WBTC allowance
+under signer funding, and the adapter's debt-token and WBTC allowances when the
+liquidation engine is enabled. This is the one transaction a HALTED gate still
+sends, and it is the only one it can: a halt stops what the bot sends, and a
+spender needs nothing further from the bot to pull what it was already approved
+for. An operator kill-switch halt does **not** do this. Router funding withdraws
+nothing — that allowance is the treasury's, granted by an operator to the
+router, and this process never held the right to grant or revoke it. Under
+`EXECUTION_MODE=MANUAL` each withdrawal is a proposal to sign. Once the pin is
+corrected and the gate resumes, the next cycle re-approves what it needs.
+
 **Query indexer endpoints:**
 
 ```bash
@@ -796,6 +821,44 @@ curl http://localhost:42070/escrowed-vaults
 # Raw escrowed vaults (for debugging)
 curl http://localhost:42070/escrowed-vaults-raw
 ```
+
+### 8.4. Restarting under router funding
+
+Skip this under `ARBITRAGE_FUNDING=inventory`.
+
+The bot remembers its signed batches **in memory only**. A restart forgets them. This is by design:
+the router relays only for its own signer, so a forgotten batch is executable by nobody but this
+bot, and the bot signs a fresh batch for every attempt rather than replaying an old one.
+
+What can outlive the process is a `relay` **transaction that was already broadcast**. It stays in
+the mempool and may mine after the restart, up to its `ARBITRAGE_RELAY_DEADLINE_SECONDS` deadline.
+Inside that window:
+
+- The restarted bot publishes the treasury's raw capacity, because it no longer knows the old batch
+  exists. It can commit the same WBTC to a new vault.
+- If the old transaction lands first, it is a valid acquisition — the vault reaches your keeper and
+  the treasury pays the previewed cost. Nothing is lost, and nothing is spent beyond the approval.
+- The new acquisition then reverts on the WBTC pull, with its own vault still in escrow. That costs
+  gas, and the engine counts it as a genuine failure.
+- A run of such failures reaches `RISK_MAX_CONSECUTIVE_FAILURES` and halts the gate. The breaker is
+  off unless you set it; if you set it, keep the threshold above `RISK_MAX_IN_FLIGHT` so one
+  restart window cannot halt the bot on its own.
+- The old acquisition never reaches this process's `arbitrageur_vaults_acquired_total`. The
+  router's own `SwapWbtcToVault` events are the authoritative record of what the treasury paid for,
+  so alert on those rather than on the bot's counter alone.
+
+The next `refreshInventory` reads the real balance, so the accounting corrects itself on the
+following cycle. Nothing here needs an operator to repair it.
+
+**A planned stop costs nothing.** Halt the gate first (`POST /halt`), wait for the in-flight
+acquisitions to reach their receipts — `inFlight` in the kill switch's `GET /status` reaching zero,
+or one poll interval plus `TX_RECEIPT_TIMEOUT_MS` — then stop the process. No transaction is then
+outstanding.
+
+**After an unplanned stop**, expect the window above for at most
+`ARBITRAGE_RELAY_DEADLINE_SECONDS` plus a block or two. If the gate halted during it, read
+`GET /status`, confirm the treasury's balance and the router's recent events explain the failures,
+and resume.
 
 ## 9. Vault Acquisition Flow
 
@@ -861,8 +924,8 @@ Then, in order:
 4. Approve the new router from the treasury, with working capital rather than an unlimited amount.
 
 Signed batches already in flight stay valid until their `ARBITRAGE_RELAY_DEADLINE_SECONDS` expires —
-they carry no nonce and anyone may submit them — but revoking the approval makes them fail, which is
-the second reason to revoke first.
+they carry no nonce, and a compromised signer is exactly the address the router relays for — but
+revoking the approval makes them fail, which is the second reason to revoke first.
 
 The same key also signs liquidations. If the liquidation engine is enabled, treat
 `LIQUIDATION_ROUTER_ADDRESS` as compromised too: its `owner` is this signer, and it sweeps proceeds

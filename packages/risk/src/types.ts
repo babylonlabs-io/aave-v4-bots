@@ -136,10 +136,10 @@ export interface TokenSpend extends TokenAccount {
    * broadcast the gate holds the amount until the chain says what became of it.
    *
    * `caller` says the funding mode has its own accounting and the gate must not hold the amount a
-   * second time. Router funding signs a bearer authorization a permissionless relay can execute:
-   * it stays live after our transaction resolves — until it is observed executing or its deadline
-   * passes — so it outlives the transaction the gate can see, and `RouterFunding.refreshInventory`
-   * publishes a balance already net of it. Holding it here as well would subtract it twice.
+   * second time. Router funding signs the payment separately from the transaction: the batch stays
+   * live after our transaction resolves — until it is observed executing or its deadline passes —
+   * so it outlives the transaction the gate can see, and `RouterFunding` publishes a balance
+   * already net of it. Holding it here as well would subtract it twice.
    */
   accounting?: "gate" | "caller";
 }
@@ -189,6 +189,17 @@ export interface RiskGate {
    * looking at. `GET /status` serves this for exactly that reason.
    */
   haltReason(): string;
+  /**
+   * Is the standing halt the code-hash guard's — a pinned target whose bytecode changed, or one
+   * that has never been readable?
+   *
+   * Separate from `haltReason` because that is prose: it is overwritten by whichever halt came
+   * last, and reading a safety decision out of a string is how the two drift apart. This is the
+   * same flag `resume` refuses on, exposed because a halt with this cause says something no other
+   * halt does — the target itself is suspect, not the market — and a caller may have standing
+   * permissions granted to that target to take back.
+   */
+  codeHashHalted(): boolean;
   /** Kill-switch — trip to `HALTED` with a reason. */
   halt(reason: string): void;
   /**

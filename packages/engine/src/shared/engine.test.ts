@@ -1,4 +1,4 @@
-import type { RiskSlot } from "@repo/risk";
+import type { RiskGate, RiskSlot } from "@repo/risk";
 import { createRiskGate } from "@repo/risk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BaseEngine, type BaseEngineConfig, type CycleMetrics } from "./engine";
@@ -22,6 +22,9 @@ class TestEngine extends BaseEngine<CycleMetrics> {
     this.calls.push("poll");
     await this.body(this, slots);
   }
+  protected async revokeApprovals(): Promise<void> {
+    this.calls.push("revokeApprovals");
+  }
   /** Reaching `this.risk` is what `protected` is for — a real strategy opens its slots this way. */
   openTestSlot(): RiskSlot {
     return this.risk.openSlot({ kind: "test", subject: "test" });
@@ -33,10 +36,11 @@ function harness(
     indexerOk?: boolean;
     onReconcile?: () => void;
     body?: (self: TestEngine, slots: RiskSlot[]) => Promise<void>;
+    risk?: RiskGate;
   } = {}
 ) {
   const reconciled: string[] = [];
-  const risk = createRiskGate();
+  const risk = opts.risk ?? createRiskGate();
   const metrics = { recordError: vi.fn(), recordPollDuration: vi.fn() };
   const onPollComplete = vi.fn();
   const engine = new TestEngine(
@@ -102,6 +106,31 @@ describe("BaseEngine", () => {
     expect(engine.calls).toEqual([]);
     expect(metrics.recordPollDuration).toHaveBeenCalledOnce();
     expect(onPollComplete).toHaveBeenCalledOnce();
+  });
+
+  // A halt stops what the bot sends. An allowance is a permission that already left, and a
+  // code-hash halt is the one that says the holder of it changed under us — so the halted cycle
+  // takes it back, and does nothing else.
+  it("withdraws its allowances when the halt says a pinned target changed", async () => {
+    const risk = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
+    await risk.verifyCode(async () => "0xdead");
+    const { engine, onPollComplete } = harness({ risk });
+
+    await engine.run();
+
+    expect(engine.calls).toEqual(["revokeApprovals"]);
+    expect(onPollComplete).toHaveBeenCalledOnce();
+  });
+
+  it("leaves them standing on any other halt", async () => {
+    const { engine, risk } = harness();
+    risk.halt("operator kill-switch");
+
+    await engine.run();
+
+    // The operator stopped trading; they did not say the adapter was compromised. Withdrawing here
+    // would make every kill-switch halt cost an approval to undo.
+    expect(engine.calls).toEqual([]);
   });
 
   it("runs the strategy only when the indexer says so", async () => {

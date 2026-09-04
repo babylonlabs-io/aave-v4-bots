@@ -153,6 +153,18 @@ export abstract class BaseEngine<M extends CycleMetrics> {
    */
   protected abstract poll(slots: RiskSlot[]): Promise<void>;
 
+  /**
+   * Take back every standing allowance this engine's funding has granted. Nothing granted by
+   * default; an engine whose funding approves a spender overrides it.
+   *
+   * Called only from the halted branch of `run`, and only on a code-hash halt. It is in the cycle
+   * because the cycle is the one thing still running when the gate is HALTED — and it is *this*
+   * halt because only this one says the spender itself changed under us. A halt stops what this bot
+   * sends; an allowance is a permission that already left, and the contract holding it needs
+   * nothing further from us to use it.
+   */
+  protected async revokeApprovals(): Promise<void> {}
+
   /** Run one poll cycle. */
   async run(): Promise<void> {
     const startTime = Date.now();
@@ -165,6 +177,11 @@ export abstract class BaseEngine<M extends CycleMetrics> {
       // stop is immediate and touches nothing.
       if (this.risk.state() === "HALTED") {
         this.logger.warn(`Risk gate is HALTED — skipping ${this.engineName} run`);
+        // The one thing a halted cycle still does, and only for the halt that calls for it: a
+        // pinned target's bytecode changed, so any allowance granted to it is withdrawn. Re-tried
+        // every halted cycle — each mode reads the allowance first, so once it is zero this costs a
+        // read and sends nothing.
+        if (this.risk.codeHashHalted()) await this.revokeApprovals();
         return;
       }
 

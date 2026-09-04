@@ -139,10 +139,12 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       return true;
     },
 
+    // Keeps the Safe envelope — see the Postgres store, which explains why an unresolved
+    // authorization outlives the claim that reserved it.
     async release(id, expectedPayloadHash) {
       const row = rows.get(id);
       if (!row || row.status !== "claimed" || row.payloadHash !== expectedPayloadHash) return false;
-      rows.set(id, { ...row, status: "proposed", safeEnvelope: null, updatedAt: now() });
+      rows.set(id, { ...row, status: "proposed", updatedAt: now() });
       return true;
     },
 
@@ -166,6 +168,8 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       let swept = 0;
       for (const [id, row] of rows) {
         if (row.status !== "proposed") continue;
+        // Never a row still carrying an envelope — see the Postgres store.
+        if (row.safeEnvelope !== null) continue;
         if (action !== undefined && row.action !== action) continue;
         if (row.updatedAt > cutoff) continue;
         rows.set(id, { ...row, status: "expired", updatedAt: now() });
