@@ -139,7 +139,15 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
 
   protected async poll(cycleSlots: RiskSlot[]): Promise<void> {
     // Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
-    const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();
+    const feed = await this.fetchEscrowedVaults();
+
+    // The same distinction the liquidation engine keeps, for the same reason: a failed read is not
+    // an empty escrow. Both end the cycle, and only one of them is a statement about the market.
+    if (feed.kind === "unavailable") {
+      this.logger.warn("Skipping cycle: the escrow list could not be read (not an empty escrow)");
+      return;
+    }
+    const { vaults, dataTimestampMs } = feed;
 
     if (vaults.length === 0) {
       this.logger.info("No escrowed vaults available");
@@ -266,10 +274,9 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   /**
    * Fetch escrowed vaults from Ponder indexer with retry
    */
-  private async fetchEscrowedVaults(): Promise<{
-    vaults: EscrowedVault[];
-    dataTimestampMs?: number;
-  }> {
+  private async fetchEscrowedVaults(): Promise<
+    { kind: "ok"; vaults: EscrowedVault[]; dataTimestampMs?: number } | { kind: "unavailable" }
+  > {
     try {
       const data = await this.indexer.read<PonderResponse>("/escrowed-vaults");
       if (!Array.isArray(data.vaults)) {
@@ -285,11 +292,11 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           `Indexer could not read ${data.failedVaultsCount} escrowed vault(s) this cycle — the escrow list is incomplete`
         );
       }
-      return { vaults: data.vaults, dataTimestampMs: data.dataTimestampMs };
+      return { kind: "ok", vaults: data.vaults, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
       this.logger.error("Failed to fetch escrowed vaults:", error);
       this.metrics.recordError("ponder_fetch_error");
-      return { vaults: [] };
+      return { kind: "unavailable" };
     }
   }
 

@@ -6,7 +6,13 @@ import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
 import type { Address, PublicClient } from "viem";
 import { FaultTally, isHealthyPositionRevert, isVaultGoneRevert } from "../probeFaults";
-import { type Probe, probeInChunks, resolveChunkSize } from "../probePositions";
+import {
+  MULTICALL_BATCH_BYTES,
+  type Probe,
+  probeInChunks,
+  resolveChunkSize,
+  selectProbeCandidates,
+} from "../probePositions";
 
 const logger = createLogger();
 
@@ -141,10 +147,18 @@ app.get("/liquidatable-positions", async (c) => {
   const blockRef = await readBlockRef(publicClient);
   const dataTimestampMs = blockRef?.dataTimestampMs;
 
-  // Build proxy -> borrower lookup
-  const proxyToBorrower = new Map<string, string>();
-  for (const m of proxyMappings) {
-    proxyToBorrower.set(m.proxyAddress.toLowerCase(), m.borrower);
+  // Probe only rows a liquidation could actually be built for, with their borrower resolved here
+  // rather than after the estimate — see `selectProbeCandidates`.
+  const { candidates, unmapped } = selectProbeCandidates(positions, proxyMappings);
+
+  // Reported per cycle rather than per row: these are permanently unactionable, so one line saying
+  // how many there are informs an operator, while one line each would drown the log. A count that
+  // climbs on a deployment whose users all go through the adapter is worth looking at — it means
+  // proxy mappings are missing, not that strangers are supplying.
+  if (unmapped > 0) {
+    logger.warn(
+      `${unmapped} position row(s) have no proxy mapping and were not probed — no borrower means no liquidation call can be built for them`
+    );
   }
 
   // estimateLiquidation reverts for healthy positions and returns
@@ -164,24 +178,26 @@ app.get("/liquidatable-positions", async (c) => {
       error instanceof Error ? error.message : error
     );
 
+  const scanStartedAt = Date.now();
   const { probes, unscanned } = (await isMulticallSupported(publicClient))
     ? // One aggregate over every position would be one `eth_call`: past the node's gas cap the
       // whole thing reverts, viem throws, and this endpoint 500s while real unhealthy positions
-      // exist. The position table only grows (a row is created on any Supply and removed only when
-      // shares reach zero), so that ceiling is reached by ordinary adoption, not just by someone
-      // trying.
+      // exist. `PROBES_PER_CALL` is what bounds a call; the chunk is how many of them run at once.
       await probeInChunks(
-        positions,
+        candidates,
         async (chunk): Promise<Probe<Estimate>[]> => {
           const results = await publicClient.multicall({
-            contracts: chunk.map((p) => ({
+            contracts: chunk.map(({ position }) => ({
               address: lensAddress,
               abi: lensAbi,
               functionName: "estimateLiquidation" as const,
-              args: [p.proxyAddress as Address, false] as const,
+              args: [position.proxyAddress as Address, false] as const,
             })),
             allowFailure: true,
             multicallAddress: MULTICALL3_ADDRESS,
+            // Stated rather than inherited: viem's default splits by 1024 calldata bytes, which is
+            // a per-call gas budget arrived at by accident. See `PROBES_PER_CALL`.
+            batchSize: MULTICALL_BATCH_BYTES,
             blockNumber: blockRef?.blockNumber,
           });
           return results.map((r) =>
@@ -198,15 +214,15 @@ app.get("/liquidatable-positions", async (c) => {
       // endpoint — so the batching is not just a multicall concern. `allSettled` keeps a single
       // failed read from costing its batch, which is why this path rarely reports `unscanned`.
       await probeInChunks(
-        positions,
+        candidates,
         async (chunk): Promise<Probe<Estimate>[]> => {
           const settled = await Promise.allSettled(
-            chunk.map((p) =>
+            chunk.map(({ position }) =>
               publicClient.readContract({
                 address: lensAddress,
                 abi: lensAbi,
                 functionName: "estimateLiquidation",
-                args: [p.proxyAddress as Address, false],
+                args: [position.proxyAddress as Address, false],
                 blockNumber: blockRef?.blockNumber,
               })
             )
@@ -220,6 +236,9 @@ app.get("/liquidatable-positions", async (c) => {
         onChunkFailure,
         probeChunkSize
       );
+
+  // Measured across the probes alone, before anything is made of their results.
+  const scanMs = Date.now() - scanStartedAt;
 
   const liquidatable: Array<{
     proxyAddress: string;
@@ -237,7 +256,7 @@ app.get("/liquidatable-positions", async (c) => {
 
   for (let i = 0; i < probes.length; i++) {
     const probe = probes[i];
-    const p = positions[i];
+    const { position, borrower } = candidates[i];
 
     if (probe.status === "failure") {
       // A healthy position is the lens answering the question, and it is most of the table on every
@@ -246,22 +265,24 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
-    const borrower = proxyToBorrower.get(p.proxyAddress.toLowerCase());
-    if (!borrower) {
-      logger.error(`No borrower mapping found for proxy ${p.proxyAddress}`);
-      continue;
-    }
-
     const [amounts, , vaults] = probe.value;
 
     liquidatable.push({
-      proxyAddress: p.proxyAddress,
+      proxyAddress: position.proxyAddress,
       borrower,
       amounts: amounts.map((amt) => amt.toString()),
       vaults: vaults as string[],
-      suppliedShares: p.suppliedShares.toString(),
+      suppliedShares: position.suppliedShares.toString(),
     });
   }
+
+  // The one line that says where this deployment sits on the curve. The scan is linear in the
+  // number of candidates — chunks are awaited one wave at a time — while the bot reads this route
+  // under a fixed per-attempt timeout, so "how long did it take, over how many" is what decides
+  // whether the candidate feed is about to start timing out. Nothing else measures it.
+  logger.info(
+    `Probed ${candidates.length} candidate(s) in ${scanMs}ms: ${liquidatable.length} liquidatable, ${unscanned} unscanned, ${unmapped} unmapped`
+  );
 
   if (faults.count > 0) {
     logger.warn(
@@ -279,8 +300,15 @@ app.get("/liquidatable-positions", async (c) => {
       // everything else — a batch that failed as a whole, or a probe that reverted for a reason
       // that is not "healthy". Without it a partial scan is indistinguishable from a quiet market,
       // and "no candidates" is exactly the answer a liquidator must not infer from a failure.
-      checked: positions.length - unknown,
+      checked: candidates.length - unknown,
       unscanned: unknown,
+      // Rows that carry no borrower, so nothing could have been built from them. Apart from
+      // `unscanned` on purpose: those are positions this cycle has no answer for, while these are
+      // not candidates at all and no later cycle will make them one.
+      unmapped,
+      // How long the probes took. Read it against `checked`: the scan is linear in that number and
+      // the bot's own read of this route is not patient.
+      scanMs,
       dataTimestampMs,
     })
   );

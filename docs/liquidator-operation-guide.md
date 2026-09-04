@@ -707,10 +707,18 @@ curl http://localhost:42069/liquidatable-positions
 
 The response's `checked` counts the positions the scan has an answer for and
 `unscanned` the ones it does not: a batch that failed as a whole, plus any probe
-that reverted for a reason other than the position being healthy. The indexer
-probes the table in batches (`POSITION_PROBE_CHUNK_SIZE`, default 25) so one
-node-side `eth_call` gas cap cannot sink the whole scan; a nonzero `unscanned`
-means the candidate list is incomplete for that request.
+that reverted for a reason other than the position being healthy. A nonzero
+`unscanned` means the candidate list is incomplete for that request. `unmapped`
+is different in kind: rows with no proxy mapping, which carry no borrower and so
+could never produce a liquidation call. They are dropped before the scan rather
+than probed, and no later request will make them candidates.
+
+`scanMs` is how long the probes took, and it is the number to watch. The scan is
+linear in `checked` — batches are awaited one wave at a time — while the bot
+reads this route under a fixed 10s per-attempt timeout it cannot be configured
+out of. A `scanMs` climbing toward that is the warning that the candidate feed is
+about to start failing; the bot then skips the cycle and says so, rather than
+reporting an empty market.
 
 A healthy position reverts by design — that is how the lens reports one — and is
 counted as checked. Everything else that reverts is a deployment that cannot
@@ -719,11 +727,17 @@ paused dependency, a `LENS_ADDRESS` pointing at the wrong contract. The indexer
 logs one line per cycle naming the causes and their counts, and the positions go
 to `unscanned`, so a fault of that kind can never present as a quiet market.
 
-The default is measured: ~177k gas per healthy probe against a five-reserve
-spoke, rising ~21k per extra spoke reserve and ~3k per vault on the position,
-with a liquidatable position costing ~247k. Batching does not amortise that, so
-25 keeps a batch near 4.4M gas — inside the 50M cap geth defaults to and the 10M
-some providers enforce. Raise it only against a known node cap.
+Two figures set the shape of the scan, and they do different jobs. One
+`eth_call` carries 15 probes, fixed in code: ~177k gas per healthy probe against
+a five-reserve spoke (rising ~21k per extra reserve and ~3k per vault on the
+position, ~247k for one that is liquidatable), so a call stays near 2.7M gas —
+inside the 50M cap geth defaults to and the 10M some providers enforce.
+`POSITION_PROBE_CHUNK_SIZE` (default 25) is not that budget: it is how many of
+those calls run **concurrently**, since a chunk is issued as one wave and the
+next wave waits for it. Raising it shortens a long scan and spends RPC
+concurrency to do it — the indexer competes with its own event ingestion for the
+same endpoint, and a provider that throttles fails whole batches, which land in
+`unscanned`. Multiples of 15 make the calls in a wave even.
 
 ## 9. Troubleshooting
 
