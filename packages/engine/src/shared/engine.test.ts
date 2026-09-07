@@ -95,15 +95,17 @@ describe("BaseEngine", () => {
     expect(reconciled).toEqual([undefined]);
   });
 
-  it("skips everything but the bookkeeping when the gate is HALTED", async () => {
+  it("keeps the bookkeeping but trades nothing when the gate is HALTED", async () => {
     const { engine, risk, metrics, onPollComplete } = harness();
     risk.halt("test");
 
     await engine.run();
 
-    // Nothing is touched — not even reconcile — but the cycle still stamps itself, so a halted bot
-    // reads as alive rather than wedged.
-    expect(engine.calls).toEqual([]);
+    // A halt stops what this bot sends; it is not a reason to stop looking. Reconcile still resolves
+    // what was already sent, the MANUAL TTL still expires un-actioned proposals, and the stuck alert
+    // still fires — all of which matter more during an incident, not less. The indexer is not asked
+    // and the strategy does not run.
+    expect(engine.calls).toEqual(["reconcile", "resyncNonces"]);
     expect(metrics.recordPollDuration).toHaveBeenCalledOnce();
     expect(onPollComplete).toHaveBeenCalledOnce();
   });
@@ -118,7 +120,9 @@ describe("BaseEngine", () => {
 
     await engine.run();
 
-    expect(engine.calls).toEqual(["revokeApprovals"]);
+    // After the bookkeeping, and after the nonce lease is re-seeded: the withdrawal is a real
+    // transaction and wants a fresh one.
+    expect(engine.calls).toEqual(["reconcile", "resyncNonces", "revokeApprovals"]);
     expect(onPollComplete).toHaveBeenCalledOnce();
   });
 
@@ -130,7 +134,7 @@ describe("BaseEngine", () => {
 
     // The operator stopped trading; they did not say the adapter was compromised. Withdrawing here
     // would make every kill-switch halt cost an approval to undo.
-    expect(engine.calls).toEqual([]);
+    expect(engine.calls).toEqual(["reconcile", "resyncNonces"]);
   });
 
   it("runs the strategy only when the indexer says so", async () => {

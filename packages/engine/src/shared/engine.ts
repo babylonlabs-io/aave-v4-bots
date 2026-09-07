@@ -173,23 +173,33 @@ export abstract class BaseEngine<M extends CycleMetrics> {
     const slots: RiskSlot[] = [];
 
     try {
-      // A HALTED gate (kill switch or tripped breaker) skips the cycle — before reconcile, so the
-      // stop is immediate and touches nothing.
+      // Bookkeeping first, and it runs whether or not the gate is halted.
+      //
+      // A halt stops this bot *sending*; it is not a reason to stop looking. None of this reaches
+      // the chain with a transaction: reconcile resolves in-flight intents against it, expires
+      // un-actioned MANUAL proposals past their TTL, and raises the stuck alert — and every one of
+      // those is wanted more during an incident, not less. Skipping them, as this cycle used to,
+      // meant a halted bot stopped resolving what it had already sent, proposals outlived the TTL an
+      // operator set precisely so they could not linger, and nothing said so.
+      //
+      // Crash-/ambiguous-send-safety: resolve in-flight intents against the chain (no-op without a
+      // store), then re-seed the shared nonce lease from the chain (reclaiming any
+      // reserved-but-not-broadcast nonce). The lease is re-seeded before the halted branch below,
+      // because the withdrawal it may send is a transaction like any other and wants a fresh one.
+      await this.reconcile();
+      await this.executor.resyncNonces();
+
+      // A HALTED gate (kill switch or tripped breaker) ends the cycle here: nothing is fetched, and
+      // nothing is traded.
       if (this.risk.state() === "HALTED") {
         this.logger.warn(`Risk gate is HALTED — skipping ${this.engineName} run`);
-        // The one thing a halted cycle still does, and only for the halt that calls for it: a
+        // The one thing a halted cycle still sends, and only for the halt that calls for it: a
         // pinned target's bytecode changed, so any allowance granted to it is withdrawn. Re-tried
         // every halted cycle — each mode reads the allowance first, so once it is zero this costs a
         // read and sends nothing.
         if (this.risk.codeHashHalted()) await this.revokeApprovals();
         return;
       }
-
-      // Crash-/ambiguous-send-safety: resolve in-flight intents against the chain (no-op without a
-      // store), then re-seed the shared nonce lease from the chain (reclaiming any
-      // reserved-but-not-broadcast nonce).
-      await this.reconcile();
-      await this.executor.resyncNonces();
 
       // Only now the indexer, and deliberately *after* reconcile: the candidate list is what a
       // wedged indexer poisons, but an action stranded as a live intent still has to be resolved in

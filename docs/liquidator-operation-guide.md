@@ -684,6 +684,11 @@ not an outage. If the pinned hash is simply *wrong*, correct
 `RISK_EXPECTED_CODE_HASHES` and restart; no amount of resuming will clear a
 mismatch that is really there.
 
+**A halted bot still keeps its books.** Reconcile, the `MANUAL_INTENT_TTL_MS` proposal sweep and
+the `intent-stuck` alert all run on every cycle whether or not the gate is HALTED — none of them
+sends a transaction, and all of them are wanted more during an incident. What a halt stops is the
+trading half: the indexer is not asked and no candidate is acted on.
+
 **A code-hash halt also withdraws the adapter's allowances.** While that halt
 stands, every poll cycle sends `approve(adapter, 0)` for each token whose
 allowance is not already zero — the debt tokens and WBTC. This is the one
