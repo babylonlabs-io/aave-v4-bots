@@ -1,20 +1,20 @@
 // Pure liquidation-domain logic (no IO).
 
 /**
- * Inflate each reserve's Lens-estimated repay amount by `bufferBps` (default 1%).
+ * Inflate one Lens-estimated amount by `bufferBps` (default 1%).
  *
- * The Lens returns exact debt; interest accrues between the read and execution, so
- * a small buffer avoids `MustNotLeaveDust` reverts (a single mined block of growth
- * is enough on auto-mining chains).
+ * The Lens returns an exact figure for the block it read; interest accrues between that read and
+ * execution, so a small buffer avoids `MustNotLeaveDust` reverts on the debt amounts and
+ * `ExcessiveWbtcPayment` on the payment cap (a single mined block of growth is enough on
+ * auto-mining chains).
  */
-export function bufferAmounts(amounts: readonly bigint[], bufferBps = 100): bigint[] {
-  const numerator = BigInt(10_000 + bufferBps);
-  return amounts.map((amt) => (amt * numerator) / 10_000n);
+export function bufferAmount(amount: bigint, bufferBps = 100): bigint {
+  return (amount * BigInt(10_000 + bufferBps)) / 10_000n;
 }
 
-/** Default sequential reserve priority order `[0, 1, …, length-1]`. */
-export function sequentialPriorityOrder(length: number): bigint[] {
-  return Array.from({ length }, (_, i) => BigInt(i));
+/** `bufferAmount` over a whole estimate. */
+export function bufferAmounts(amounts: readonly bigint[], bufferBps = 100): bigint[] {
+  return amounts.map((amt) => bufferAmount(amt, bufferBps));
 }
 
 /**

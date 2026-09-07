@@ -7,7 +7,8 @@ import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
 import {BtcHelpers} from "test-utils/BtcHelpers.sol";
 import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
-import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
+import {AaveAdapterLiquidationPreview} from "vault-contracts/applications/aave/AaveAdapterLiquidationPreview.sol";
+import {PeginFingerprintLib} from "test-utils/PeginFingerprintLib.sol";
 import {E2EConstants} from "../E2EConstants.sol";
 
 /// @title BaseE2ESetup
@@ -23,10 +24,12 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         hex"5120aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     /// @notice Deploy the Lens the bots use to estimate liquidations.
-    function _deployLens() internal returns (AaveAdapterLens lens) {
+    function _deployLens() internal returns (AaveAdapterLiquidationPreview lens) {
         uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         vm.startBroadcast(adminPrivateKey);
-        lens = new AaveAdapterLens(address(btcVaultRegistry), address(aaveAdapter), address(aaveSpoke), vaultBtcId);
+        lens = new AaveAdapterLiquidationPreview(
+            address(btcVaultRegistry), address(aaveAdapter), address(aaveSpoke), vaultBtcId
+        );
         vm.stopBroadcast();
         console.log("Lens deployed at:", address(lens));
     }
@@ -34,7 +37,10 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
     /// @notice Create a borrower, open a position, and drop the price so it is
     ///         liquidatable — the identical setup both suites run once the
     ///         bot(s) are already polling. Persists the vault id for verify.
-    function _setupLiquidatablePosition(AaveAdapterLens lens) internal returns (address borrower, bytes32 vaultId) {
+    function _setupLiquidatablePosition(AaveAdapterLiquidationPreview lens)
+        internal
+        returns (address borrower, bytes32 vaultId)
+    {
         return _setupLiquidatablePosition(lens, 40);
     }
 
@@ -44,7 +50,7 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
     ///      whole (indivisible) vault leaves any value over once the debt is cleared. Excess is what
     ///      becomes the LLP fairness payment, so a suite that wants to exercise the fairness path
     ///      needs a drop that lands just inside the liquidatable band rather than far past it.
-    function _setupLiquidatablePosition(AaveAdapterLens lens, uint256 dropPercent)
+    function _setupLiquidatablePosition(AaveAdapterLiquidationPreview lens, uint256 dropPercent)
         internal
         returns (address borrower, bytes32 vaultId)
     {
@@ -91,9 +97,10 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         // What the liquidation will actually cost, read before any bot can act on it. `wbtcPayment`
         // is the LLP fairness payment — the value left over once the seized vault has cleared the
         // debt — and it is the only thing that draws on the WBTC flash-loan venue.
-        (uint256[] memory amounts, uint256 wbtcPayment,) = lens.estimateLiquidation(borrowerProxy, false);
-        for (uint256 i = 0; i < amounts.length; i++) {
-            if (amounts[i] > 0) console.log("  reserve", i, "repay:", amounts[i]);
+        (uint256[] memory debtReserveIds, uint256[] memory debtToCoverAmounts, uint256 wbtcPayment,,) =
+            lens.estimateLiquidation(borrowerProxy, false);
+        for (uint256 i = 0; i < debtReserveIds.length; i++) {
+            console.log("  reserve", debtReserveIds[i], "repay:", debtToCoverAmounts[i]);
         }
         console.log("  fairness payment (sats):", wbtcPayment);
     }
@@ -194,7 +201,10 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         bytes32 secret = keccak256(abi.encodePacked("e2e_liq_secret", block.number, depositor));
         bytes32 hashlock = sha256(abi.encodePacked(secret));
 
-        bytes32 vaultProviderBtcKey = btcVaultRegistry.getVaultProviderBTCKey(vp);
+        // The key the validators will re-derive this peg-in against is the provider's *current*
+        // operation key, not its genesis key. They differ once the provider rotates, and a peg-in
+        // built from the genesis key is rejected at that point.
+        bytes32 vaultProviderBtcKey = btcVaultRegistry.getCurrentOperationBtcKey(vp);
         bytes memory btcPopSignature =
             PopHelpers.getBip322P2wpkh(vm, depositorBtcPubKey, PopHelpers.ACTION_PEGIN, address(btcVaultRegistry));
         (bytes memory unsignedPeginTx, string memory prevoutTxid, uint32 prevoutVout, uint64 utxoAmount) =
@@ -216,7 +226,11 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
             hashlock,
             0,
             _E2E_DUMMY_PAYOUT_ADDRESS,
-            _E2E_WOTS_PK_HASH
+            _E2E_WOTS_PK_HASH,
+            // The registry recomputes this from live state and rejects any mismatch, so it has to be
+            // built from the same block the Pre-PegIn above was built against. Read here rather than
+            // earlier for that reason; the suite rotates nothing, so it always matches.
+            PeginFingerprintLib.compute(btcVaultRegistry, applicationRegistry, protocolParams, vp)
         );
         vm.stopBroadcast();
 
@@ -265,10 +279,12 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         vm.writeFile(".e2e-vault-id", vm.toString(vaultId));
     }
 
-    /// @notice Check if a position is liquidatable via the Lens contract.
-    /// @dev Lens.estimateLiquidation reverts when the position is healthy, succeeds when liquidatable.
-    function _isLiquidatable(AaveAdapterLens lens, address borrowerProxy) internal view returns (bool) {
-        try lens.estimateLiquidation(borrowerProxy, false) returns (uint256[] memory, uint256, bytes32[] memory) {
+    /// @notice Check if a position is liquidatable via the liquidation preview contract.
+    /// @dev `estimateLiquidation` reverts when the position is healthy, succeeds when liquidatable.
+    function _isLiquidatable(AaveAdapterLiquidationPreview lens, address borrowerProxy) internal view returns (bool) {
+        try lens.estimateLiquidation(borrowerProxy, false) returns (
+            uint256[] memory, uint256[] memory, uint256, bytes32, uint256
+        ) {
             return true;
         } catch {
             return false;

@@ -114,7 +114,7 @@ The service consists of two components:
                      │
                      ▼
 ┌─────────────────────────────────────────┐
-│            AaveAdapterLens              │
+│      AaveAdapterLiquidationPreview      │
 │  - Pre-computes liquidation amounts     │
 └────────────────────┬────────────────────┘
                      │
@@ -189,7 +189,7 @@ Flash funding repays each debt token through a `LiquidationRouter`, which you de
 
 ```bash
 export LIQUIDATION_ROUTER_OWNER=0x...   # this bot's signer — the only address it will act for
-export LENS_ADDRESS=0x...               # AaveAdapterLens
+export LENS_ADDRESS=0x...               # AaveAdapterLiquidationPreview
 export VAULT_SWAP_ADDRESS=0x...         # the BTCVaultSwap (LLP)
 export DEPLOYER_PRIVATE_KEY=0x...
 
@@ -281,7 +281,7 @@ CLIENT_RPC_URL=https://eth-mainnet.example.com
 
 # Contract addresses
 ADAPTER_ADDRESS=0x...       # AaveAdapter
-LENS_ADDRESS=0x...          # AaveAdapterLens
+LENS_ADDRESS=0x...          # AaveAdapterLiquidationPreview
 WBTC_ADDRESS=0x...
 
 # ====== Funding mode ======
@@ -372,7 +372,7 @@ METRICS_PORT=9090
 | `PONDER_URL` | Indexer API endpoint | Yes | — |
 | `CLIENT_RPC_URL` | RPC for transaction execution | Yes | — |
 | `ADAPTER_ADDRESS` | AaveAdapter address | Yes | — |
-| `LENS_ADDRESS` | AaveAdapterLens address | Yes | — |
+| `LENS_ADDRESS` | AaveAdapterLiquidationPreview address | Yes | — |
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
 | `LIQUIDATION_FUNDING` | `inventory` (repay from own balances) or `flash` (repay via LiquidationRouter) | No | `inventory` |
 | `LIQUIDATION_ROUTER_ADDRESS` | LiquidationRouter; its `owner` must be this bot's signer | flash | — |
@@ -454,7 +454,7 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 |----------|---------|
 | `SPOKE_ADDRESS` | Core Spoke — tracks positions via Supply/Withdraw events |
 | `ADAPTER_ADDRESS` | AaveAdapter — entry point for `liquidate()` / `liquidateWithLLP()` calls |
-| `LENS_ADDRESS` | AaveAdapterLens — pre-computes liquidation amounts via `estimateLiquidation()` |
+| `LENS_ADDRESS` | AaveAdapterLiquidationPreview — pre-computes liquidation amounts via `estimateLiquidation()` |
 | `WBTC_ADDRESS` | WBTC token for balance monitoring |
 
 ## 6. Wallet Setup
@@ -689,7 +689,7 @@ mismatch that is really there.
 curl http://localhost:42069/positions
 
 # Positions for which Lens.estimateLiquidation succeeds, enriched with
-# the amounts/vaults the bot will pass to liquidate / liquidateWithLLP
+# the reserve ids/amounts the bot will pass to liquidate / liquidateWithLLP
 curl http://localhost:42069/liquidatable-positions
 ```
 

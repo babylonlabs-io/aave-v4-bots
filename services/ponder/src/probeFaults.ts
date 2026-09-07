@@ -11,7 +11,7 @@
  * like a quiet market.
  */
 
-import { LENS_HEALTHY_POSITION_REVERT, VAULT_GONE_ERRORS } from "@repo/abis";
+import { LENS_HEALTHY_POSITION_ERROR, VAULT_GONE_ERRORS } from "@repo/abis";
 import { BaseError, ContractFunctionRevertedError } from "viem";
 
 // viem wraps on-chain reverts as ContractFunctionExecutionError whose `.cause` is
@@ -27,17 +27,20 @@ function asRevert(error: unknown): ContractFunctionRevertedError | undefined {
  * Is this revert `estimateLiquidation` reporting a healthy position?
  *
  * That is the expected answer for most of the table on every cycle, so it must be skipped in
- * silence. Matched exactly, because *every other* revert out of that call is a fault wearing the
- * same clothes: `InvalidOraclePrice()` when a reserve's feed reads zero, an empty revert when
- * `lensAddress` points at the wrong contract, whatever a paused dependency raises. Accepting the
- * whole category is how a deployment that can no longer see any position reports that there are
+ * silence. Matched on that one error name, because *every other* revert out of that call is a fault
+ * wearing the same clothes: `InvalidOraclePrice()` when a reserve's feed reads zero, an empty revert
+ * when `lensAddress` points at the wrong contract, whatever a paused dependency raises. Accepting
+ * the whole category is how a deployment that can no longer see any position reports that there are
  * none — and "no candidates" is the one answer a liquidator must never infer from a failure.
  *
- * `"Position must be healthy after liquidation"` is deliberately *not* here: a position too far
- * underwater for this call to restore is a real condition worth surfacing, not a healthy one.
+ * `InvalidPostLiquidationState()` is deliberately *not* here: a position the estimate cannot clear
+ * without leaving debt behind is a real condition worth surfacing, not a healthy one.
+ *
+ * Reading `errorName` means the selector has to be in the ABI the call was made with. It is —
+ * `lensAbi` spreads in `protocolErrorsAbi` — and `lens.test.ts` holds it there.
  */
 export function isHealthyPositionRevert(error: unknown): boolean {
-  return asRevert(error)?.reason === LENS_HEALTHY_POSITION_REVERT;
+  return asRevert(error)?.data?.errorName === LENS_HEALTHY_POSITION_ERROR;
 }
 
 // `previewEscrowedVaults` validates every vault it is given and reverts the whole call if any one

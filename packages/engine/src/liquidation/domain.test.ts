@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  RESERVE_FLAG,
-  bufferAmounts,
-  isBorrowableReserve,
-  sequentialPriorityOrder,
-} from "./domain";
+import { RESERVE_FLAG, bufferAmount, bufferAmounts, isBorrowableReserve } from "./domain";
 
 describe("bufferAmounts", () => {
   it("applies a 1% buffer by default", () => {
@@ -25,13 +20,17 @@ describe("bufferAmounts", () => {
   });
 });
 
-describe("sequentialPriorityOrder", () => {
-  it("produces [0, 1, …, n-1] as bigints", () => {
-    expect(sequentialPriorityOrder(3)).toEqual([0n, 1n, 2n]);
+describe("bufferAmount", () => {
+  it("applies a 1% buffer by default", () => {
+    expect(bufferAmount(10_000n)).toBe(10_100n);
   });
 
-  it("is empty for length 0", () => {
-    expect(sequentialPriorityOrder(0)).toEqual([]);
+  it("supports a custom buffer in bps", () => {
+    expect(bufferAmount(10_000n, 250)).toBe(10_250n);
+  });
+
+  it("truncates like integer division (no rounding up)", () => {
+    expect(bufferAmount(1n)).toBe(1n);
   });
 });
 

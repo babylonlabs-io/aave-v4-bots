@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { LENS_HEALTHY_POSITION_REVERT, lensAbi, vaultSwapAbi } from "@repo/abis";
+import { LENS_HEALTHY_POSITION_ERROR, lensAbi, vaultSwapAbi } from "@repo/abis";
 import {
   ContractFunctionExecutionError,
   ContractFunctionRevertedError,
@@ -54,7 +54,7 @@ const asThrown = (revert: ContractFunctionRevertedError) =>
 
 describe("isHealthyPositionRevert", () => {
   it("recognises the lens's healthy-position revert, wrapped or bare", () => {
-    const revert = stringRevert(LENS_HEALTHY_POSITION_REVERT);
+    const revert = customRevert(lensAbi, LENS_HEALTHY_POSITION_ERROR);
     assert.equal(isHealthyPositionRevert(revert), true);
     assert.equal(isHealthyPositionRevert(asThrown(revert)), true);
   });
@@ -74,13 +74,19 @@ describe("isHealthyPositionRevert", () => {
     assert.equal(isHealthyPositionRevert(asThrown(emptyRevert())), false);
   });
 
-  // Neighbouring `require` in the same function, and a genuinely different condition: a position
-  // too far underwater for this call to restore. Worth surfacing, so it must not be swallowed.
-  it("does not accept the lens's other revert string", () => {
-    assert.equal(
-      isHealthyPositionRevert(stringRevert("Position must be healthy after liquidation")),
-      false
-    );
+  // Neighbouring guard in the same call, and a genuinely different condition: an estimate that
+  // cannot clear the position without leaving debt behind. Worth surfacing, so it must not be
+  // swallowed.
+  it("does not accept the lens's other liquidation-state error", () => {
+    const revert = customRevert(lensAbi, "InvalidPostLiquidationState");
+    assert.equal(isHealthyPositionRevert(revert), false);
+    assert.equal(isHealthyPositionRevert(asThrown(revert)), false);
+  });
+
+  // A `require` string decodes to `errorName: "Error"` with the text in `reason`. The classifier
+  // reads `errorName`, so it must not be reachable by any string — including this one.
+  it("does not accept a require string, whatever it says", () => {
+    assert.equal(isHealthyPositionRevert(stringRevert(LENS_HEALTHY_POSITION_ERROR)), false);
   });
 
   it("does not accept a transport failure", () => {

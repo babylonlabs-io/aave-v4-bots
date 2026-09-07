@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {console} from "forge-std/console.sol";
-import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
+import {AaveAdapterLiquidationPreview} from "vault-contracts/applications/aave/AaveAdapterLiquidationPreview.sol";
 import {BaseE2ESetup} from "./abstract/BaseE2ESetup.sol";
 import {E2EConstants} from "./E2EConstants.sol";
 
@@ -49,7 +49,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
         // and funds the Safe here, before the env file names it. Default: nothing to do.
         _setupExecutor(adminPrivateKey);
 
-        AaveAdapterLens lens = _deployLens();
+        AaveAdapterLiquidationPreview lens = _deployLens();
         string memory startBlock = _getCurrentBlockNumber();
 
         // Write env (arb + liquidation config in one file → Phase A enables the
@@ -82,7 +82,7 @@ contract ArbitrageurE2ESetup is BaseE2ESetup {
     ///      and MANUAL suites use, made liquidatable before we return. The stress suite overrides
     ///      this to build two cohorts and leave them **healthy** — there, the price drops that start
     ///      each wave are fired by the drive script, after the bot is already running.
-    function _createPositions(AaveAdapterLens lens) internal virtual {
+    function _createPositions(AaveAdapterLiquidationPreview lens) internal virtual {
         (address borrower,) = _setupLiquidatablePosition(lens);
         console.log("Borrower address:", borrower);
     }

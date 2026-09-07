@@ -1,6 +1,6 @@
 export { adapterAbi } from "./adapter";
 export { type ProtocolErrorName, protocolErrorsAbi } from "./protocolErrors";
-export { LENS_HEALTHY_POSITION_REVERT, lensAbi } from "./lens";
+export { LENS_HEALTHY_POSITION_ERROR, lensAbi } from "./lens";
 export { type VaultSwapErrorName, VAULT_GONE_ERRORS, vaultSwapAbi } from "./vaultSwap";
 export {
   type FlashData,

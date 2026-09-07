@@ -67,7 +67,7 @@ function artifactSignatures(contract: string): Set<string> | undefined {
 const CASES: ReadonlyArray<[string, readonly AbiEntry[], string]> = [
   ["vaultSwapAbi", vaultSwapAbi, "BTCVaultSwap"],
   ["adapterAbi", adapterAbi, "AaveAdapter"],
-  ["lensAbi", lensAbi, "AaveAdapterLens"],
+  ["lensAbi", lensAbi, "AaveAdapterLiquidationPreview"],
   ["spokeAbi", spokeAbi, "Spoke"],
   ["liquidationRouterAbi", liquidationRouterAbi, "LiquidationRouter"],
   ["arbitrageRouterAbi", arbitrageRouterAbi, "ArbitrageRouter"],
