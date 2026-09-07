@@ -106,7 +106,12 @@ jobs:
           git submodule update --init --recursive
 
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0 https://github.com/foundry-rs/foundry-toolchain/releases/tag/v1.8.0
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1 https://github.com/foundry-rs/foundry-toolchain/releases/tag/v1.9.1
+        with:
+          # Pinned: forge 1.8.0 breaks the E2E deploy scripts. It caps the script
+          # frame at the RPC block gas limit and it does not increment the sender
+          # nonce for broadcast calls made from a nested script contract.
+          version: v1.7.0
 
       # The fork tests pin their blocks, so the state they read is identical on every run and can be
       # served from disk instead of the network. Measured on this suite: 45s cold, 1.6s warm, from a
