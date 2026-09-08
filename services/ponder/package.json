@@ -10,11 +10,12 @@
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/rds-signer": "3.1079.0",
     "@repo/abis": "workspace:*",
     "@repo/logger": "workspace:*",
     "@repo/secrets": "workspace:*",
-    "ponder": "^0.13.6",
     "hono": "^4.5.0",
+    "ponder": "^0.13.6",
     "viem": "^2.37.0"
   },
   "devDependencies": {

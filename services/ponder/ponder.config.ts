@@ -2,6 +2,7 @@ import { adapterAbi, spokeAbi, vaultSwapAbi } from "@repo/abis";
 import { createAwsSecrets } from "@repo/secrets";
 import { createConfig } from "ponder";
 
+import { installDatabaseAuth } from "./src/dbAuth";
 import { INDEX_ARBITRAGE, INDEX_LIQUIDATION } from "./src/flags";
 
 // Secret-bearing values (DB connection, RPC URL) are read from env first; if one is absent
@@ -21,6 +22,12 @@ async function resolveSecret(name: string): Promise<string | undefined> {
 // Shared chain config
 const PONDER_RPC_URL = await resolveSecret("PONDER_RPC_URL");
 const DATABASE_URL = await resolveSecret("DATABASE_URL");
+
+// DB_AUTH=iam: the URL carries no password and every new Ponder connection presents an RDS IAM
+// token minted with this process's AWS credentials. Wired here, before createConfig, so the hook
+// is in place before any pool exists (src/dbAuth.ts explains why it has to be a driver default).
+if (DATABASE_URL) await installDatabaseAuth(DATABASE_URL);
+
 const CHAIN_ID = Number(process.env.CHAIN_ID || 1);
 const START_BLOCK = Number(process.env.START_BLOCK || 0);
 const POLLING_INTERVAL = Number(process.env.PONDER_POLLING_INTERVAL || 4000);
