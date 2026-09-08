@@ -21,7 +21,7 @@ when `RISK_CONTROL_TOKEN_REF` is set.
 |--------|------|--------|-------------|
 | `liquidator_positions_checked` | Gauge | - | Positions checked in the last poll |
 | `liquidator_positions_liquidatable` | Gauge | - | Liquidatable positions found in the last poll |
-| `liquidator_liquidations_total` | Counter | - | Confirmed liquidations by this process |
+| `liquidator_liquidations_total` | Counter | - | Confirmed liquidations, counted in AUTO receipt processing only. Executions confirmed later by reconcile, and every MANUAL execution, are not counted. For a complete total, read the chain or the persisted intents |
 | `liquidator_liquidations_failed_total` | Counter | - | On-chain reverts classified as genuine failures (`tx_reverted`). Not `race_lost`, and not receipt failures |
 | `liquidator_simulations_failed_total` | Counter | - | Inventory: simulations rejected before broadcast. Flash: probes that were unavailable or unprofitable |
 | `liquidator_token_balance` | Gauge | `token`, `address` | Signer balance per ERC-20 in whole tokens. `token` is the symbol, `address` the token contract. Debt tokens and WBTC only; ETH is not exported. Under `LIQUIDATION_FUNDING=flash` these are not funding capacity, see below |

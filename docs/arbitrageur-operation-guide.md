@@ -107,6 +107,9 @@ Compose builds the images from `docker/*.Dockerfile`:
 docker compose build arbitrageur-ponder arbitrageur-bot
 ```
 
+`build` needs no configuration. `docker compose up` reads `.env.arbitrageur` and
+`.env.arbitrageur.indexer` and fails if either is missing, so create them first (§5.1).
+
 ### 4.4. Router contract (router funding only)
 
 Skip this under `ARBITRAGE_FUNDING=inventory`.
@@ -127,11 +130,14 @@ forge script scripts/DeployArbitrageRouter.s.sol:DeployArbitrageRouter \
   --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
 ```
 
-Then the treasury approves the router. The bot cannot do this, and boot fails without it:
+The script prints the router address. The treasury then approves it. The bot cannot do this, and
+boot fails without it:
 
 ```bash
-# AMOUNT in WBTC base units (8 decimals): 100000000 = 1 WBTC
-cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ARBITRAGE_ROUTER_ADDRESS" "$AMOUNT" \
+export ROUTER=0x...   # the ArbitrageRouter the script printed
+export AMOUNT=...     # WBTC base units (8 decimals): 100000000 = 1 WBTC
+
+cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" "$AMOUNT" \
   --rpc-url "$RPC_URL" --private-key "$TREASURY_KEY"
 ```
 
@@ -171,16 +177,16 @@ Keep `VAULT_SWAP_ADDRESS` and the database in step between the two files.
 |-----------|-------------|----------|---------|
 | `PONDER_RPC_URL` | RPC for indexing. May differ from the bot's | Yes | |
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap | Yes | |
-| `DATABASE_URL` | PostgreSQL connection string | Yes | |
+| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
 | `SPOKE_ADDRESS`, `ADAPTER_ADDRESS`, `LENS_ADDRESS` | Position indexing for the optional liquidation engine. Set all or none | liquidation | |
 | `POSITION_PROBE_CHUNK_SIZE` | See the liquidator guide | No | `25` |
 | `CHAIN_ID` | Network chain ID | No | `1` |
 | `START_BLOCK` | First block to index | No | `0` |
 | `PONDER_POLLING_INTERVAL` | Block poll interval (ms) | No | `4000` |
-| `PONDER_PORT` | API port | No | `42070` |
+| `PONDER_PORT` | API port. The `arbitrageur:indexer*` scripts and Compose both set it themselves, so a value here only applies when you run Ponder directly. Compose publishes the host port as `ARBITRAGEUR_PONDER_PORT` | No | `42070` |
 | `MULTICALL3_ADDRESS` | Multicall3 for the API's batched reads. Falls back to single reads when absent on chain | No | `0xcA11bde05977b3631167028862bE2a173976CA11` |
-| `CONFIG_SECRET_ID` | AWS Secrets Manager id holding `PONDER_RPC_URL` and `DATABASE_URL` as JSON, for values not set in the env. Needs `AWS_REGION` | No | |
+| `CONFIG_SECRET_ID` | AWS Secrets Manager id holding `PONDER_RPC_URL` and `DATABASE_URL` as JSON, for values not set in the env | No | |
 
 ### 5.3. Arbitrageur Client Configuration
 
@@ -195,7 +201,7 @@ ARBITRAGEUR_PRIVATE_KEY=0x...
 DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
 ```
 
-Every other variable is optional and off until set. Under Docker, `PONDER_URL` and
+Everything else has a default, listed in the tables below. Under Docker, `PONDER_URL` and
 `METRICS_PORT` are set by Compose, and `DATABASE_URL` must point at `arbitrageur-postgres:5432`,
 not `localhost`.
 
@@ -233,7 +239,7 @@ not `localhost`.
 |-----------|-------------|----------|---------|
 | `ADAPTER_ADDRESS`, `LENS_ADDRESS` | Enable the engine. Set both or neither | liquidation | |
 | `LIQUIDATION_POLLING_INTERVAL_MS` | Its own poll interval | No | `12000` |
-| `IS_DIRECT_REDEMPTION`, `BTC_REDEEM_KEY`, `LLP_ADDRESS` | Redemption mode, as on the liquidator | | |
+| `IS_DIRECT_REDEMPTION`, `BTC_REDEEM_KEY`, `LLP_ADDRESS` | Redemption mode, as on the liquidator | liquidation | `false` |
 | `LIQUIDATION_FUNDING` and the flash variables | As on the liquidator. `flash` without the engine is rejected | No | `inventory` |
 
 See the [liquidator guide](./liquidator-operation-guide.md#53-liquidation-client-configuration)
@@ -265,9 +271,9 @@ As on the liquidator, with two differences:
 receipts.
 
 `MANUAL` is keyless. It requires `DATABASE_URL`, `MANUAL_EXECUTOR_ADDRESS` and
-`MANUAL_EXECUTOR_KIND`, and refuses to boot with any signer variable or the private-key env var
-present. It writes content-hashed proposals to the StateStore and notifies. The operator acts on
-them with `operator-cli`, see the
+`MANUAL_EXECUTOR_KIND`. It refuses to boot with `SIGNER_SOURCE=aws`, `SIGNER_KEY_REF`,
+`KMS_KEY_ID`, `SIGNER_ADDRESS`, or a populated signing-key env var. It writes content-hashed
+proposals to the StateStore and notifies. The operator acts on them with `operator-cli`, see the
 [liquidator guide §8.3](./liquidator-operation-guide.md#83-manual-proposals). Filter with
 `list --action vault-acquisition`; inventory mode also emits `approval` proposals that must be
 signed first.
@@ -297,7 +303,8 @@ Boot fails rather than degrading when:
   to include, and a competitive tip is a market condition. Every private transaction is signed
   with at least this tip.
 - `FLASHBOTS_PROTECT_URL` or `PRIVATE_MIN_PRIORITY_FEE_WEI` is set under `SUBMITTER=public`, or
-  any relay variable is set under `EXECUTION_MODE=MANUAL`.
+  either of those, or `SUBMITTER=flashbots-protect`, is set under `EXECUTION_MODE=MANUAL`. The
+  remaining relay variables carry defaults, so they are accepted and ignored outside private mode.
 
 **Nonce fence.** A dropped private transaction holds its nonce until the chain passes the larger
 of the relay's stated deadline and `head + PRIVATE_RELAY_HORIZON_BLOCKS`, plus the margin. A relay
@@ -357,19 +364,28 @@ Monitoring:
 
 - ETH: the bot does not export its ETH balance. Use an external balance monitor.
 - WBTC: alert on `arbitrageur_funding_wbtc_balance`. It follows whichever account pays.
-  `arbitrageur_wbtc_balance` is always the signer's and sits flat under router funding.
+  `arbitrageur_wbtc_balance` is always the signer's, so under router funding it does not track
+  acquisitions. It still moves when an inventory-funded liquidation engine spends the signer's
+  WBTC, or a flash-funded one sweeps profit there.
 - Router: alert on `arbitrageur_funding_wbtc_allowance` too.
+- The funding gauges refresh only on a cycle that found escrowed vaults, so they go stale during
+  quiet periods. Watch the treasury on chain as well, not only through these gauges.
 - MANUAL: watch `operator-cli list` and the notifier.
 
 ## 7. Starting the Service
 
 ### 7.1. Native
 
+The indexer and the bot are long-running foreground processes. Start each in its own terminal or
+under a supervisor.
+
 ```bash
-pnpm arbitrageur:db:up
-pnpm arbitrageur:indexer:start       # `pnpm arbitrageur:indexer` runs `ponder dev` instead
-curl -f http://localhost:42070/ready # 503 during backfill, 200 when caught up
-pnpm arbitrageur:run
+pnpm arbitrageur:db:up                   # terminal 1, exits when the container is up
+
+pnpm arbitrageur:indexer:start           # terminal 2. `:indexer` runs `ponder dev` instead
+curl -f http://localhost:42070/ready     # 503 during backfill, 200 when caught up
+
+pnpm arbitrageur:run                     # terminal 3, once the indexer answers 200
 curl http://localhost:9091/health
 ```
 
@@ -449,14 +465,16 @@ Acquisition is first-come-first-served. The first successful transaction wins th
 
 ## 10. Incident: signing key compromised
 
-Applies to router funding. The key cannot receive the treasury's WBTC, but it can direct the
-whole allowance into a `vaultSwap` of its choosing.
+Applies to router funding. The router pulls only the preview cost and refunds the residue to the
+treasury, but `vaultSwap` is an argument to each signed call: whoever holds the key can point the
+router at a contract of their choosing and spend the entire allowance into it, including to an
+address they control.
 
 1. **Revoke the approval first.** Do this before stopping the bot; a stopped bot does not stop
    the attacker. Signed batches in flight fail once the allowance is zero.
 
    ```bash
-   cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ARBITRAGE_ROUTER_ADDRESS" 0 \
+   cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" 0 \
      --rpc-url "$RPC_URL" --private-key "$TREASURY_KEY"
    ```
 
@@ -475,7 +493,8 @@ compromised too. Its `owner` is this signer, and it sweeps proceeds there.
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `Configuration validation failed` | Bad or missing env var | The log names the field |
+| `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
+| `Database schema required` from the indexer | `DATABASE_SCHEMA` unset | Set it in `.env.arbitrageur.indexer` |
 | `ARBITRAGE_FUNDING=router requires ...` or `... is set but ARBITRAGE_FUNDING is "inventory"` | Half-configured funding | Set `ARBITRAGE_FUNDING=router` with `ARBITRAGE_ROUTER_ADDRESS` and `VAULT_KEEPER_ADDRESS`, or none |
 | `payer ... has not approved ArbitrageRouter` | Missing treasury allowance | The treasury approves the router (§4.4) |
 | `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |

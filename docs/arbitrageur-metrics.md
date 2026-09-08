@@ -21,8 +21,8 @@ All WBTC amounts are in satoshis.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `arbitrageur_vaults_acquired_total` | Counter | - | Vaults acquired by this process |
-| `arbitrageur_wbtc_spent_total` | Counter | - | Sum of the pre-send preview cost (`amountWbtcToAcquire`) of confirmed acquisitions. Without the slippage buffer, and not the executed `amountWbtcIn` |
+| `arbitrageur_vaults_acquired_total` | Counter | - | Vaults acquired, counted in AUTO receipt processing only. Executions confirmed later by reconcile, and every MANUAL execution, are not counted. For a complete total, read the chain or the persisted intents |
+| `arbitrageur_wbtc_spent_total` | Counter | - | Sum of the pre-send preview cost (`amountWbtcToAcquire`) of those same acquisitions. Without the slippage buffer, and not the executed `amountWbtcIn` |
 | `arbitrageur_funding_wbtc_balance` | Gauge | `owner` | WBTC held by the account that pays: the signer under `inventory`, the treasury under `router` |
 | `arbitrageur_funding_wbtc_allowance` | Gauge | `owner` | WBTC the treasury has approved the router to spend. `router` only; the inventory approval to BTCVaultSwap is not exported |
 | `arbitrageur_funding_wbtc_authorized` | Gauge | `owner` | WBTC held back for signed relay batches that are settled but still executable. `router` only. Capacity is `min(balance, allowance) - authorized`. A figure that stays high means acquisitions are abandoned after signing |
@@ -30,6 +30,10 @@ All WBTC amounts are in satoshis.
 | `arbitrageur_errors_total` | Counter | `type` | Errors by type (see below) |
 | `arbitrageur_poll_duration_seconds` | Histogram | - | Poll cycle duration. Buckets: 0.1, 0.5, 1, 2, 5, 10, 30, 60 |
 | `arbitrageur_last_poll_timestamp` | Gauge | - | Unix time (s) of the last completed cycle, whatever its outcome |
+
+The three `arbitrageur_funding_*` gauges are refreshed only on a cycle where the indexer returned
+at least one escrowed vault. They hold their last value through quiet periods, so pair them with
+an on-chain balance check rather than treating a flat series as current.
 
 With the optional liquidation engine enabled, the same endpoint also serves the `liquidator_*`
 set in [liquidator-metrics.md](liquidator-metrics.md).
@@ -46,14 +50,14 @@ set in [liquidator-metrics.md](liquidator-metrics.md).
 | `vault_skipped` | Vault not in escrow at preview time, or its previewed profit was zero |
 | `risk_blocked` | Risk gate denied the action |
 | `intent_in_flight` | A live persisted intent already exists for the vault |
-| `gas_estimation_failed` | `estimateContractGas` for the swap reverted |
+| `gas_estimation_failed` | Gas estimation for the swap failed and the vault is still in escrow. Covers a revert and an RPC error alike; an estimate that reverts because the vault is gone counts as `race_lost` instead |
 | `swap_send_error` | Executor failed or aborted while committing the swap |
 | `tx_timeout` | Receipt wait exceeded `TX_RECEIPT_TIMEOUT_MS` |
 | `swap_reverted` | Reverted with the vault still in escrow. Feeds the breaker |
 | `race_lost` | The vault was gone before acquisition or after a reverted swap: another arbitrageur won. Breaker-exempt |
 | `authorization_expired` | `router` only. Reverted with the vault still in escrow because the signed batch sat behind a stalled nonce past `ARBITRAGE_RELAY_DEADLINE_SECONDS`. Breaker-exempt. A run of these means the send queue is stalling: look at nonce gaps |
-| `relay_executed_elsewhere` | `router` only. Our swap reverted on a vault already gone, and the router's event shows our authorization acquired it: someone else submitted our signed batch and paid the gas. The spend stays counted |
-| `classification_error` | A read that decides why a revert happened did not answer. The revert is counted as a genuine failure, the safe direction |
+| `relay_executed_elsewhere` | `router` only. The router's event shows our authorization acquired the vault, but another submitter sent it and paid the gas. Raised either after our swap reverted on a vault already gone, or before we broadcast at all, since gas estimation exposes the signed batch to the RPC. The spend stays counted |
+| `classification_error` | Something in receipt handling threw: a read that decides why a revert happened, or persisting the outcome after a settled receipt. An unclassifiable revert is counted as a genuine failure, the safe direction. The rest of the batch is still processed |
 | `spend_check_error` | `router` only. The router's event could not be read, so whether our authorization paid is unknown. The WBTC stays counted as spent until the next balance refresh |
 | `receipt_fetch_error` | No receipt. The transaction's fate is unknown; the intent stays live for reconcile |
 | `contract_revert` | A contract revert escaped acquisition preparation (preview, gas estimate or send), logged with its name |

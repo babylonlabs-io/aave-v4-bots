@@ -100,6 +100,9 @@ Compose builds the images from `docker/*.Dockerfile`:
 docker compose build liquidator-ponder liquidator-bot
 ```
 
+`build` needs no configuration. `docker compose up` reads `.env.liquidator` and
+`.env.liquidator.indexer` and fails if either is missing, so create them first (§5.1).
+
 ### 4.4. Router contract (flash funding only)
 
 Skip this under `LIQUIDATION_FUNDING=inventory`.
@@ -119,15 +122,18 @@ forge script scripts/DeployLiquidationRouter.s.sol:DeployLiquidationRouter \
   --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
 ```
 
-Then deploy one `UniswapV4SwapVenue` bound to that router:
+The script prints the router address. Export it, then deploy one `UniswapV4SwapVenue` bound to it:
 
 ```bash
+export ROUTER=0x...                      # the LiquidationRouter the script printed
+export UNISWAP_V4_POOL_MANAGER=0x...     # the PoolManager on this chain
+
 forge create contracts/WrappedVenue/UniswapV4SwapVenue.sol:UniswapV4SwapVenue \
-  --constructor-args "$UNISWAP_V4_POOL_MANAGER" "$LIQUIDATION_ROUTER_ADDRESS" \
-  --rpc-url "$RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY"
+  --constructor-args "$UNISWAP_V4_POOL_MANAGER" "$ROUTER" \
+  --rpc-url "$RPC_URL" --private-key "$DEPLOYER_PRIVATE_KEY" --broadcast
 ```
 
-Put the two addresses in `LIQUIDATION_ROUTER_ADDRESS` and `FLASH_SWAP_VENUE_ADDRESS`. All
+Put the two printed addresses in `LIQUIDATION_ROUTER_ADDRESS` and `FLASH_SWAP_VENUE_ADDRESS`. All
 constructor arguments are immutable. A router deployed for another signer must be redeployed.
 
 The bot does not verify `owner` at boot. A wrong owner shows as every flash probe reverting.
@@ -163,15 +169,15 @@ Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two 
 | `SPOKE_ADDRESS` | Babylon Core Spoke | Yes | |
 | `ADAPTER_ADDRESS` | AaveAdapter | Yes | |
 | `LENS_ADDRESS` | AaveAdapterLens. The API previews positions through it | Yes | |
-| `DATABASE_URL` | PostgreSQL connection string | Yes | |
+| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
 | `CHAIN_ID` | Network chain ID | No | `1` |
 | `START_BLOCK` | First block to index | No | `0` |
 | `PONDER_POLLING_INTERVAL` | Block poll interval (ms) | No | `4000` |
-| `PONDER_PORT` | API port | No | `42069` |
+| `PONDER_PORT` | API port. The `liquidator:indexer*` scripts and Compose both set it themselves, so a value here only applies when you run Ponder directly. Compose publishes the host port as `LIQUIDATOR_PONDER_PORT` | No | `42069` |
 | `POSITION_PROBE_CHUNK_SIZE` | Positions per batched `eth_call` in `/liquidatable-positions`. A batch over the node's gas cap fails whole and reports its positions as `unscanned`. Raise only against a known cap | No | `25` |
 | `MULTICALL3_ADDRESS` | Multicall3 for the API's batched reads. Falls back to single reads when absent on chain | No | `0xcA11bde05977b3631167028862bE2a173976CA11` |
-| `CONFIG_SECRET_ID` | AWS Secrets Manager id holding `PONDER_RPC_URL` and `DATABASE_URL` as JSON, for values not set in the env. Needs `AWS_REGION` | No | |
+| `CONFIG_SECRET_ID` | AWS Secrets Manager id holding `PONDER_RPC_URL` and `DATABASE_URL` as JSON, for values not set in the env | No | |
 
 ### 5.3. Liquidation Client Configuration
 
@@ -188,7 +194,7 @@ LIQUIDATOR_PRIVATE_KEY=0x...
 DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder
 ```
 
-Every other variable is optional and off until set. Under Docker, `PONDER_URL` and
+Everything else has a default, listed in the tables below. Under Docker, `PONDER_URL` and
 `METRICS_PORT` are set by Compose, and `DATABASE_URL` must point at `liquidator-postgres:5432`,
 not `localhost`.
 
@@ -236,7 +242,7 @@ not `localhost`.
 | `SIGNER_KEY_REF` | Secret reference for the local key | No | `LIQUIDATOR_PRIVATE_KEY` |
 | `KMS_KEY_ID` | KMS key id, ARN or alias. Key spec `ECC_SECG_P256K1`, usage `SIGN_VERIFY`. IAM needs `kms:GetPublicKey` and `kms:Sign` | KMS | |
 | `SIGNER_ADDRESS` | Expected signer address. Boot fails if the key derives another. Set it whenever the key is behind a ref or KMS id | No | |
-| `AWS_REGION` | Region for KMS and Secrets Manager | aws | |
+| `AWS_REGION` | Region for KMS and Secrets Manager. Falls back to the AWS SDK's own resolution (environment or profile) when unset | No | |
 | `MANUAL_EXECUTOR_ADDRESS` | Account the operator executes from. The Safe itself in `safe` custody | MANUAL | |
 | `MANUAL_EXECUTOR_KIND` | `eoa` or `safe`. No default | MANUAL | |
 | `MANUAL_INTENT_TTL_MS` | Expire un-actioned proposals after this. `0` disables | No | `10800000` |
@@ -278,9 +284,10 @@ overrun each other.
 receipts. Under `flash` there are no approvals: the bot never moves its own tokens.
 
 `MANUAL` is keyless. It requires `DATABASE_URL`, `MANUAL_EXECUTOR_ADDRESS` and
-`MANUAL_EXECUTOR_KIND`, and refuses to boot with any signer variable or the private-key env var
-present. Instead of broadcasting, it writes a content-hashed proposal to the StateStore and
-notifies. The operator acts on proposals with `operator-cli`, see §8.3.
+`MANUAL_EXECUTOR_KIND`. It refuses to boot with `SIGNER_SOURCE=aws`, `SIGNER_KEY_REF`,
+`KMS_KEY_ID`, `SIGNER_ADDRESS`, or a populated signing-key env var. Instead of broadcasting, it
+writes a content-hashed proposal to the StateStore and notifies. The operator acts on proposals
+with `operator-cli`, see §8.3.
 
 ### 5.5. Private submission
 
@@ -332,11 +339,16 @@ Monitoring:
 
 ### 7.1. Native
 
+The indexer and the bot are long-running foreground processes. Start each in its own terminal or
+under a supervisor.
+
 ```bash
-pnpm liquidator:db:up
-pnpm liquidator:indexer:start        # `pnpm liquidator:indexer` runs `ponder dev` instead
-curl -f http://localhost:42069/ready # 503 during backfill, 200 when caught up
-pnpm liquidator:run
+pnpm liquidator:db:up                    # terminal 1, exits when the container is up
+
+pnpm liquidator:indexer:start            # terminal 2. `:indexer` runs `ponder dev` instead
+curl -f http://localhost:42069/ready     # 503 during backfill, 200 when caught up
+
+pnpm liquidator:run                      # terminal 3, once the indexer answers 200
 curl http://localhost:9090/health
 ```
 
@@ -391,7 +403,7 @@ other commands are keyless.
 
 ```bash
 CLI="pnpm --filter @services/operator-cli start"
-$CLI list                        # all proposals, including the `approval` ones inventory mode needs first
+$CLI list                        # all proposals. Inventory mode emits `approval` ones first
 $CLI show <id>
 $CLI claim <id>                  # safe custody: prints the safeTxHash to sign externally
 $CLI confirm <id> --tx <hash>    # record an externally signed transaction
@@ -435,7 +447,8 @@ indexer logs the revert reasons once per cycle.
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `Configuration validation failed` | Bad or missing env var | The log names the field |
+| `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
+| `Database schema required` from the indexer | `DATABASE_SCHEMA` unset | Set it in `.env.liquidator.indexer` |
 | `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set all four flash variables, or none |
 | `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |
 | `EXECUTION_MODE=MANUAL is keyless` | A signer variable or the key env var is present | Unset it |
@@ -446,7 +459,7 @@ indexer logs the revert reasons once per cycle.
 | `tx_reverted` | Reverted with the position still open | Inspect the revert. Counts toward the breaker |
 | `race_lost` | Another liquidator took the position | Normal competition |
 | Every flash probe reverts | Router `owner` is not this signer, or a pool is not WBTC/`<token>` | Check the router and `FLASH_SWAP_POOLS` |
-| Bot does nothing under flash | Probes quote unprofitable | Check pool depth and `FLASH_MAX_SLIPPAGE_BPS` |
+| Bot does nothing under flash | Probes quote a profit of zero or less, so the candidate is skipped before any slippage bound applies | Check pool depth and the debt tokens in `FLASH_SWAP_POOLS`. Raising `FLASH_MAX_SLIPPAGE_BPS` does not help here |
 | `EADDRINUSE` on 9095 | Both services on one host with the kill switch on | Set a distinct `RISK_CONTROL_PORT` |
 
 Logs go to stdout. Under Docker: `docker compose logs -f liquidator-bot --tail 100`.
