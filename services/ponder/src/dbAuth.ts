@@ -179,13 +179,21 @@ export interface InstallOptions {
  * rather than the first query.
  */
 export async function installDatabaseAuth(
-  databaseUrl: string,
+  databaseUrl: string | undefined,
   options: InstallOptions = {}
 ): Promise<DbAuthMode> {
   const env = options.env ?? process.env;
   const log = options.log ?? ((line: string) => console.log(line));
   const mode = parseDbAuthMode(env.DB_AUTH);
   if (mode !== "iam") return mode;
+
+  // Without a URL Ponder falls back to local storage. In iam mode that would
+  // silently drop the shared database the operator asked for, so refuse.
+  if (!databaseUrl) {
+    throw new Error(
+      "DB_AUTH=iam: DATABASE_URL is not set (neither in the environment nor in the resolved secret); iam mode needs the shared Postgres, refusing to start on local storage"
+    );
+  }
 
   if (env.PGPASSWORD !== undefined) {
     throw new Error("DB_AUTH=iam: PGPASSWORD is set; it would override the IAM token, unset it");

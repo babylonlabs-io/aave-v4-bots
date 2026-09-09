@@ -181,6 +181,27 @@ describe("installDatabaseAuth", () => {
     assert.equal(entry.user, "liquidation_indexer");
   });
 
+  it("refuses iam mode without a DATABASE_URL instead of falling back to local storage", async () => {
+    await assert.rejects(
+      installDatabaseAuth(undefined, {
+        env: { DB_AUTH: "iam" },
+        pgModules: [fakePg()],
+        signerFactory: countingSigner,
+        log: () => {},
+      }),
+      /DATABASE_URL is not set/
+    );
+  });
+
+  it("is a no-op without a DATABASE_URL in password mode", async () => {
+    const mod = fakePg();
+    assert.equal(
+      await installDatabaseAuth(undefined, { env: {}, pgModules: [mod], log: () => {} }),
+      "password"
+    );
+    assert.equal(mod.defaults.password, undefined);
+  });
+
   it("refuses PGPASSWORD alongside iam", async () => {
     await assert.rejects(
       installDatabaseAuth(goodUrl, {
