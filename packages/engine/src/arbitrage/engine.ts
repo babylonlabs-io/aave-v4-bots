@@ -11,7 +11,7 @@ import { waitForReceiptWithTimeout } from "@repo/execution";
 import type { ActionOutcome } from "@repo/risk";
 import type { RiskSlot } from "@repo/risk";
 import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
-import { maxWbtcInWithSlippage } from "./domain";
+import { isUsableVault, maxWbtcInWithSlippage } from "./domain";
 import { type ArbitrageFunding, type FundingParams, createArbitrageFunding } from "./funding";
 import type { EscrowedVault, PonderResponse } from "./types";
 
@@ -292,7 +292,19 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           `Indexer could not read ${data.failedVaultsCount} escrowed vault(s) this cycle — the escrow list is incomplete`
         );
       }
-      return { kind: "ok", vaults: data.vaults, dataTimestampMs: data.dataTimestampMs };
+      // Element shapes, not just the array's. A malformed entry used to reach `prepareAndSend` and
+      // throw on its `BigInt` conversion, which aborted every remaining send in the cycle — so one
+      // bad row from the indexer cost all the good ones behind it. Dropped here instead, named and
+      // counted, on the same principle as `failedVaultsCount`: report the gap, act on the rest.
+      const vaults = data.vaults.filter(isUsableVault);
+      const malformed = data.vaults.length - vaults.length;
+      if (malformed > 0) {
+        this.metrics.recordError("vaults_malformed");
+        this.logger.warn(
+          `Indexer described ${malformed} escrowed vault(s) in a shape this bot cannot use — dropped. Expect a decimal \`btcAmount\`/\`currentDebt\` and a hex \`vaultId\`; a persistent count here means the indexer's wire format changed.`
+        );
+      }
+      return { kind: "ok", vaults, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
       this.logger.error("Failed to fetch escrowed vaults:", error);
       this.metrics.recordError("ponder_fetch_error");
@@ -466,8 +478,6 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     dataTimestampMs?: number
   ): Promise<PrepareResult> {
     const { vaultId, btcAmount, currentDebt } = vault;
-    const currentDebtBigInt = BigInt(currentDebt);
-    const btcAmountBigInt = BigInt(btcAmount);
     // Assigned once the risk gate allows this acquisition; from then on every exit must settle it
     // (the `finally` is the backstop). Stays undefined if we bail before ever asking the gate.
     let slot: RiskSlot | undefined;
@@ -478,12 +488,18 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     // unexpected throw still has to be handed over to the funding mode's own accounting.
     let authorizationId: Hex | undefined;
 
-    this.logger.info("Attempting to acquire vault:");
-    this.logger.info(`   Vault ID: ${vaultId}`);
-    this.logger.info(`   BTC Amount: ${formatUnits(btcAmountBigInt, 8)} WBTC`);
-    this.logger.info(`   Current Debt (indexer): ${formatUnits(currentDebtBigInt, 8)} WBTC`);
-
     try {
+      // Inside the `try`, so a value that survived `isUsableVault` but still cannot convert costs
+      // this vault rather than the cycle. The fetch boundary is what makes that rare; this is what
+      // makes it harmless — every exit from here is settled, and the loop moves to the next vault.
+      const currentDebtBigInt = BigInt(currentDebt);
+      const btcAmountBigInt = BigInt(btcAmount);
+
+      this.logger.info("Attempting to acquire vault:");
+      this.logger.info(`   Vault ID: ${vaultId}`);
+      this.logger.info(`   BTC Amount: ${formatUnits(btcAmountBigInt, 8)} WBTC`);
+      this.logger.info(`   Current Debt (indexer): ${formatUnits(currentDebtBigInt, 8)} WBTC`);
+
       const previewResults = await this.publicClient.readContract({
         address: this.vaultSwapAddress,
         abi: vaultSwapAbi,

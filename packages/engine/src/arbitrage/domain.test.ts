@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { maxWbtcInWithSlippage } from "./domain";
+import { isUsableVault, maxWbtcInWithSlippage } from "./domain";
 
 describe("maxWbtcInWithSlippage", () => {
   it("adds a bps buffer over the current debt", () => {
@@ -31,4 +31,58 @@ describe("maxWbtcInWithSlippage", () => {
       expect(() => maxWbtcInWithSlippage(1_000_000n, bps)).toThrow(/integer in \[0, 10000\]/);
     }
   );
+});
+
+// The escrow feed crosses an unauthenticated wire and is cast to its type, never parsed, so this is
+// the only thing standing between the indexer's bytes and a `BigInt` conversion.
+describe("isUsableVault", () => {
+  const vault = {
+    vaultId: `0x${"1".repeat(64)}`,
+    btcAmount: "100000000",
+    currentDebt: "50000000",
+    createdAt: "2024-01-01T00:00:00Z",
+  };
+
+  it("accepts a well-formed vault", () => {
+    expect(isUsableVault(vault)).toBe(true);
+  });
+
+  // `createdAt` is in the type but nothing reads it, so a vault must not be dropped over it.
+  it("ignores fields the engine never consumes", () => {
+    expect(isUsableVault({ ...vault, createdAt: undefined })).toBe(true);
+  });
+
+  // The case that motivates checking the shape rather than trying the conversion: `BigInt("")` is
+  // `0n`, so an empty debt converts cleanly and reads as a vault with nothing owed on it — the most
+  // profitable thing on the list. "Does not throw" is the wrong bar.
+  it("rejects an empty amount, which BigInt would read as zero", () => {
+    expect(BigInt("")).toBe(0n); // the trap this guard exists for
+    expect(isUsableVault({ ...vault, currentDebt: "" })).toBe(false);
+  });
+
+  it.each([
+    ["a non-numeric amount", { currentDebt: "abc" }],
+    ["a hex amount", { currentDebt: "0x1f" }],
+    ["scientific notation", { currentDebt: "1e9" }],
+    ["a decimal", { btcAmount: "1.5" }],
+    ["a signed amount", { btcAmount: "-1" }],
+    ["a padded amount", { btcAmount: " 1 " }],
+    ["a number instead of a string", { btcAmount: 100_000_000 }],
+    ["a null field", { currentDebt: null }],
+    ["a missing field", { currentDebt: undefined }],
+    ["a non-hex vaultId", { vaultId: "nope" }],
+    ["a bare 0x vaultId", { vaultId: "0x" }],
+  ])("rejects %s", (_label, over) => {
+    expect(isUsableVault({ ...vault, ...over })).toBe(false);
+  });
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["a string", "nope"],
+    ["a number", 1],
+    ["an array", []],
+  ])("rejects an element that is %s", (_label, element) => {
+    expect(isUsableVault(element)).toBe(false);
+  });
 });

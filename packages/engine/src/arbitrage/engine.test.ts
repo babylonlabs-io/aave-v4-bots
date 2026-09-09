@@ -563,6 +563,69 @@ describe("ArbitrageEngine", () => {
       });
     });
 
+    // The response is cast to its type, never parsed, so nothing upstream has established that a
+    // field is even a string. A bad element used to reach `prepareAndSend` and throw on its
+    // `BigInt` conversion, which aborted every remaining send in the cycle.
+    describe("when the indexer describes a vault in an unusable shape", () => {
+      const withPoison = (poison: unknown) =>
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ vaults: [mockVault, poison], total: 2 }),
+        });
+
+      // The regression itself: the good vault ahead of the bad one must still be acquired.
+      it("still sends the vaults it can read", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = withPoison({ ...mockVault, currentDebt: "abc" });
+
+        await bot.run();
+
+        expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      });
+
+      it("says how many it dropped", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = withPoison({ ...mockVault, currentDebt: "abc" });
+
+        await bot.run();
+
+        expect(metrics.recordError).toHaveBeenCalledWith("vaults_malformed");
+      });
+
+      // `BigInt("")` is `0n`, so an empty debt would convert without throwing and read as a vault
+      // with nothing owed on it — the most profitable thing on the list. "Does not throw" is
+      // therefore the wrong bar, and this is the case that proves the check is stricter than that.
+      it("drops an empty amount rather than reading it as zero", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = withPoison({
+          ...mockVault,
+          vaultId: `0x${"b".repeat(64)}`,
+          currentDebt: "",
+        });
+
+        await bot.run();
+
+        expect(metrics.recordError).toHaveBeenCalledWith("vaults_malformed");
+        expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      });
+
+      it("says nothing when every vault is usable", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+        });
+
+        await bot.run();
+
+        expect(metrics.recordError).not.toHaveBeenCalledWith("vaults_malformed");
+      });
+    });
+
     it("handles empty vault list gracefully", async () => {
       const clients = createMockClients();
       const bot = createBot(clients);
@@ -1548,7 +1611,11 @@ describe("ArbitrageEngine + router funding", () => {
     };
   }
 
-  function routerBot(clients: ReturnType<typeof routerClients>, risk = createRiskGate()) {
+  function routerBot(
+    clients: ReturnType<typeof routerClients>,
+    risk = createRiskGate(),
+    over: Partial<ArbitrageEngineConfig> = {}
+  ) {
     return new ArbitrageEngine({
       publicClient: clients.publicClient as unknown as ArbitrageEngineConfig["publicClient"],
       vaultSwapAddress: VAULT_SWAP,
@@ -1570,6 +1637,7 @@ describe("ArbitrageEngine + router funding", () => {
         txReceiptTimeoutMs: 1000,
         logger: silentLogger,
       }),
+      ...over,
     });
   }
 
@@ -1605,22 +1673,29 @@ describe("ArbitrageEngine + router funding", () => {
     expect(clients.sender.send).not.toHaveBeenCalled();
   });
 
-  // A throw between the broadcast and the classification — here a malformed indexer row, whose
-  // `BigInt` conversion happens before `prepareAndSend` can guard it — leaves the batch broadcast
-  // and its slot unsettled. The cycle's own backstop settles such a slot through the gate alone,
-  // which releases the reservation and tells the funding mode nothing: the treasury's WBTC would
-  // read as spendable while a signed batch could still take it.
+  // A throw between the broadcast and the classification leaves the batch broadcast and its slot
+  // unsettled. The cycle's own backstop settles such a slot through the gate alone, which releases
+  // the reservation and tells the funding mode nothing: the treasury's WBTC would read as spendable
+  // while a signed batch could still take it.
+  //
+  // The throw is injected at the inter-send throttle. It used to come from a malformed indexer row,
+  // whose `BigInt` conversion ran before `prepareAndSend` could guard it — but that row is now
+  // dropped at the fetch boundary and the conversion sits inside the `try`, so it no longer reaches
+  // here. What is under test is the hand-off, not the thing that tripped it, and the throttle is a
+  // real path between one broadcast and the next.
   it("hands a live batch over when the cycle throws after broadcasting it", async () => {
     const clients = routerClients(CAPACITY * 2n);
-    const bot = routerBot(clients);
+    const bot = routerBot(clients, createRiskGate(), { vaultProcessingDelayMs: 1 });
     await bot.prepare();
+    (bot as unknown as { sleep: () => Promise<void> }).sleep = () =>
+      Promise.reject(new Error("interrupted between broadcast and classification"));
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: () =>
         Promise.resolve({
           vaults: [
             { ...mockVault, vaultId: `0x${"a".repeat(64)}` },
-            { ...mockVault, vaultId: `0x${"b".repeat(64)}`, btcAmount: "not-a-number" },
+            { ...mockVault, vaultId: `0x${"b".repeat(64)}` },
           ],
         }),
     }) as unknown as typeof fetch;
