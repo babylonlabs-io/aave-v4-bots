@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {console} from "forge-std/console.sol";
-import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
+import {AaveAdapterLiquidationPreview} from "vault-contracts/applications/aave/AaveAdapterLiquidationPreview.sol";
 import {BaseE2ESetup} from "./abstract/BaseE2ESetup.sol";
 import {FlashVenueSetup} from "./abstract/FlashVenueSetup.sol";
 import {E2EConstants} from "./E2EConstants.sol";
@@ -37,7 +37,7 @@ contract LiquidationE2ESetup is BaseE2ESetup, FlashVenueSetup {
         vm.stopBroadcast();
         console.log("Liquidator funded with 10,000 USDC and 1 WBTC");
 
-        AaveAdapterLens lens = _deployLens();
+        AaveAdapterLiquidationPreview lens = _deployLens();
 
         // The flash venues have to exist before the env that points at them is written, and before
         // the bot boots and reads it.

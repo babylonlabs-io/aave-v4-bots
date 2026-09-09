@@ -42,7 +42,10 @@ remappings = [
     "script/utils/=lib/tbv-contracts/script/utils/",
     "lib/aave-v4/=lib/tbv-contracts/lib/aave-v4/",
     "test-utils/=lib/tbv-contracts/test/utils/",
-    "test-e2e-base/=lib/tbv-contracts/test/e2e/base/"
+    "test-e2e-base/=lib/tbv-contracts/test/e2e/base/",
+    # The contracts repo's own Aave test bases. The fork tests build a liquidatable position on top
+    # of them rather than pinning one from a live deployment — see `test/fork/base/TBVForkFixture.sol`.
+    "tbv-test/=lib/tbv-contracts/test/"
 ]
 
 # E2E test profile - requires Bitcoin regtest and Postgres running

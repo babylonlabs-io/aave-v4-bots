@@ -89,7 +89,8 @@ function harness(
   const publicClient = {
     simulateContract,
     readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
-      if (functionName === "estimateLiquidation") return [[100n], 50n, []];
+      if (functionName === "estimateLiquidation")
+        return [[0n], [100n], 50n, `0x${"0".repeat(64)}`, 0n];
       if (functionName === "balanceOf") {
         if (opts.balanceError) throw new Error("connect ECONNREFUSED");
         return opts.routerBalance ?? 0n; // by default the router holds nothing

@@ -412,7 +412,7 @@ TX_RECEIPT_TIMEOUT_MS=120000
 | `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
 | `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
 | `ADAPTER_ADDRESS` | Enables the optional liquidation engine when set with `LENS_ADDRESS` | Liquidation only | — |
-| `LENS_ADDRESS` | AaveAdapterLens for optional liquidation mode; requires `ADAPTER_ADDRESS` | Liquidation only | — |
+| `LENS_ADDRESS` | AaveAdapterLiquidationPreview for optional liquidation mode; requires `ADAPTER_ADDRESS` | Liquidation only | — |
 | `LIQUIDATION_POLLING_INTERVAL_MS` | Poll interval for the optional liquidation engine | No | `12000` |
 | `LIQUIDATION_FUNDING` | Funding mode for the optional liquidation engine: `inventory` or `flash`. `flash` requires the engine to be enabled | No | `inventory` |
 | `LIQUIDATION_ROUTER_ADDRESS`, `FLASH_SWAP_VENUE_ADDRESS`, `FLASH_SWAP_POOLS`, `WBTC_FLASH_LOAN_ADDRESS` | Required together under `LIQUIDATION_FUNDING=flash`; see the [liquidator guide](./liquidator-operation-guide.md#53-liquidation-client-configuration) | flash | — |

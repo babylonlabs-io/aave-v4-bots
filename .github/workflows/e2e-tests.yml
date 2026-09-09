@@ -86,6 +86,12 @@ jobs:
       NUM_UNIVERSAL_CHALLENGERS: "1"
       UC_0_ETH_ADDRESS: "0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
       UC_0_BTC_PUBLIC_KEY: "0x7962d45b38e8bcf82fa8efa8432a01f20c9a53e24c7d3f11df197cb8e70926da"
+      # Security Council. Both required with no default: a defaulted quorum silently installs a
+      # 1-of-N council, and a placeholder key is a valid curve point nobody controls. The key must be
+      # a real x-only point and distinct from the other council keys — `BTC_PUBKEY_BOB` from the
+      # contracts repo's `TestKeys`, used by no other role here.
+      COUNCIL_QUORUM: "1"
+      SECURITY_COUNCIL_KEY: "0x5ab4689e400a4a160cf01cd44730845a54768df8547dcdf073d964f109f18c30"
       # Aave Application
       APPLICATION_NAME: "Aave v4"
       NUM_APP_OPERATORS: "2"
