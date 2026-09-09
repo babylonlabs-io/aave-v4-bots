@@ -554,3 +554,67 @@ describe("the default pool's deadlines", () => {
     );
   });
 });
+
+// The recorded relay horizon is what releases a privately-submitted nonce, so a write that
+// shortened one would free a nonce the relay can still spend. Two writers reach the same row from
+// different directions — the submission-time resolver, and reconcile's repair of a row that
+// resolver never reached — and neither carries an expectation the other would lose a race to.
+describe("relay horizon is monotonic (memory model)", () => {
+  const HASH = "0xhash" as Hex;
+
+  /** One submitted intent, optionally already carrying a horizon. */
+  async function submitted(relayMaxBlock?: number) {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    await store.transition(id, "submitted", { nonce: 5, txHash: HASH, relayMaxBlock });
+    return { store, id };
+  }
+
+  it("fills in a horizon a row does not have", async () => {
+    const { store, id } = await submitted();
+
+    await store.transition(id, "submitted", { relayMaxBlock: 125 });
+
+    expect(store.get(id)?.relayMaxBlock).toBe(125);
+  });
+
+  it("lengthens a horizon when a later writer knows a longer deadline", async () => {
+    const { store, id } = await submitted(125);
+
+    await store.transition(id, "submitted", { relayMaxBlock: 200 });
+
+    expect(store.get(id)?.relayMaxBlock).toBe(200);
+  });
+
+  // The race this rule exists for: one writer observed the relay's declared deadline of 200, the
+  // other could not and recorded a shorter one. Whichever lands second, 200 must stand — the
+  // alternative frees nonce 5 at block 128 for a transaction the relay may include until 200.
+  it("refuses to shorten one, whichever writer lands last", async () => {
+    const { store, id } = await submitted(200);
+
+    await store.transition(id, "submitted", { relayMaxBlock: 125 });
+
+    expect(store.get(id)?.relayMaxBlock).toBe(200);
+  });
+
+  it("leaves the horizon alone when a transition carries none", async () => {
+    const { store, id } = await submitted(200);
+
+    await store.transition(id, "confirmed", { txHash: HASH });
+
+    expect(store.get(id)?.relayMaxBlock).toBe(200);
+  });
+
+  // Reviving a terminal row is a different write and deliberately outside the rule: the new attempt
+  // is a new transaction, and inheriting the old one's deadline would fence it against the wrong
+  // block. See `recordIntent`.
+  it("clears the horizon when the row is revived for a fresh attempt", async () => {
+    const { store, id } = await submitted(200);
+    await store.transition(id, "failed", { error: "dropped" });
+
+    await store.recordIntent(input("p"));
+
+    expect(store.get(id)?.relayMaxBlock).toBeNull();
+  });
+});

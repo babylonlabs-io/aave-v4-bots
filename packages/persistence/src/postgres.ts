@@ -378,7 +378,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
            nonce = COALESCE($3, nonce),
            tx_hash = COALESCE($4, tx_hash),
            error = COALESCE($5, error),
-           relay_max_block = COALESCE($9, relay_max_block),
+           relay_max_block = GREATEST(relay_max_block, $9),
            updated_at = $6
          WHERE id = $1
            AND ($7::text IS NULL OR tx_hash = $7)

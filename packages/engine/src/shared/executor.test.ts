@@ -1002,7 +1002,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
         submitter,
         reader: createChainReader(publicClient),
         reclaimMarginBlocks: 3,
-        horizon: async () => 125,
+        horizon: { resolve: async () => 125, repair: async () => 125 },
         minPriorityFeeWei: 5n,
       },
     });
@@ -1045,7 +1045,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
         submitter: { send: async () => "0xprivate" as Hex },
         reader: createChainReader(publicClient),
         reclaimMarginBlocks: 3,
-        horizon: async () => 125,
+        horizon: { resolve: async () => 125, repair: async () => 125 },
         minPriorityFeeWei: 5n,
       },
     });
@@ -1098,7 +1098,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
           submitter: { send: over.submitterSend ?? (async () => "0xprivate" as Hex) },
           reader: createChainReader(publicClient),
           reclaimMarginBlocks: 3,
-          horizon: async () => 125,
+          horizon: { resolve: async () => 125, repair: async () => 125 },
           minPriorityFeeWei: 5n,
         },
       });

@@ -209,33 +209,119 @@ export function createRelayHorizon(
   relay: RelayStatusSource,
   horizonBlocks: number,
   logger?: Pick<Logger, "warn">
-): (hash: Hex) => Promise<number> {
-  return async (hash) => {
+): Horizon {
+  return { resolve, repair };
+
+  async function resolve(hash: Hex): Promise<number> {
     const [head, status] = await Promise.all([
       node.getBlockNumber(),
       relay.status(hash).catch(() => null),
     ]);
     const fallback = head + horizonBlocks;
-    const declared = status?.maxBlockNumber ?? 0;
-    const ceiling = head + MAX_RELAY_HORIZON_BLOCKS;
-    if (declared > ceiling) {
-      // Said rather than silently clamped: a relay naming a deadline a day out is either broken or
-      // not the relay we think we are talking to, and the operator cannot infer either from a nonce
-      // that simply takes longer to come back.
-      logger?.warn(
-        `Relay declared a deadline of block ${declared} for ${hash}, beyond the ${MAX_RELAY_HORIZON_BLOCKS} blocks this bot will fence for — fencing to ${ceiling} instead.`
-      );
-    }
     // Never shorter than either input: the cap only trims a declaration that is implausible on its
     // face, and the configured window is a floor rather than a competing answer. A relay that
     // reports a longer deadline than we expected is telling us something we cannot learn any other
     // way, and the safe reading of a disagreement here is always the later block.
-    const trusted = Math.min(declared, ceiling);
+    //
     // A relay that says nothing reports 0 — see `flashbots.ts`. The fallback carries it then, and
     // is the only bound in that case, which is why the configured window has to describe the real
     // relay rather than however long the operator would like to wait.
-    return Math.max(trusted, fallback);
-  };
+    return Math.max(clampDeclared(status?.maxBlockNumber ?? 0, head, hash, logger), fallback);
+  }
+
+  /**
+   * Recover the horizon of an already-submitted transaction whose own submission never recorded one —
+   * the write is best-effort (`horizonFor` in `./executor`), so a failed head read or a crash between
+   * the pre-broadcast record and the horizon write leaves a row carrying a nonce and a hash but no
+   * deadline. Nothing else ever fills that column, and `couldBeInFlight` cannot release without it, so
+   * such a row fences its nonce forever and every later send queues behind the gap.
+   *
+   * `null` means **do not repair** — keep fencing, and try again next pass. Every branch that cannot
+   * *prove* the deadline it would record resolves that way, because the cost of the two mistakes is
+   * not symmetric: fencing longer than needed costs throughput an operator can see, while recording a
+   * deadline shorter than the relay's real one hands out a nonce the relay can still spend.
+   *
+   * Unlike `createRelayHorizon` this never falls back to the configured window. That fallback is only
+   * sound at submission, where the transaction is known to be ours, freshly sent, and sent *privately*.
+   * At repair time none of the three is given:
+   *
+   * - A `null` horizon is also what an ordinary **public** submission leaves behind (see
+   *   `TxIntent.relayMaxBlock`), and `reclaimMarginBlocks` describes the process reading the row, not
+   *   the process that wrote it. A bot restarted into private submission would otherwise stamp a relay
+   *   deadline onto a public transaction, and then release its nonce while it still sat in the public
+   *   mempool — where a transaction may legitimately linger forever. A relay that has never received
+   *   a hash answers `UNKNOWN`, so requiring a positive answer is what proves the row is ours *and*
+   *   private.
+   * - `UNKNOWN` is equally the answer for a hash the relay has simply forgotten. Recording the
+   *   configured window then would overwrite a real, longer, no-longer-observable deadline with a
+   *   short guess — the one direction this must never move in.
+   * - A declaration of `0` means the relay is holding the transaction but naming no deadline
+   *   (`flashbots.ts`), which is no more evidence than `UNKNOWN` is.
+   *
+   * So the only horizon this records is the relay's own, for that exact hash. A probe that throws
+   * propagates: the caller warns and leaves the row fenced.
+   */
+  async function repair(hash: Hex): Promise<number | null> {
+    const status = await relay.status(hash);
+    // Never received, or no longer held — either way the relay is not evidence of a deadline.
+    if (status.status === "UNKNOWN") return null;
+    // The relay is holding it, but it is also in the public mempool, so the relay's deadline does
+    // not bound when it can be included. A public transaction outlives any horizon we could record.
+    if (status.seenInMempool) return null;
+    // Held, but with no deadline of its own to report.
+    if (status.maxBlockNumber <= 0) return null;
+    return clampDeclared(status.maxBlockNumber, await node.getBlockNumber(), hash, logger);
+  }
+}
+
+/**
+ * A relay route's two answers about one transaction's deadline: the block past which the relay can
+ * no longer include it, which is the only thing that releases a privately-submitted nonce.
+ *
+ * One port rather than two functions because they are only correct as a pair, and because both must
+ * be backed by the *same* relay. `repair` proves a row is ours-and-private by asking the relay
+ * whether it holds the hash, so a `repair` pointed at a different relay than the one `resolve`
+ * submitted through would be answering about a transaction that relay never saw. Building both from
+ * one adapter is what makes that unwireable.
+ *
+ * Consumers narrow to the half they use — `Pick<Horizon, "repair">` and so on — the same way they
+ * narrow `Logger`.
+ */
+export interface Horizon {
+  /**
+   * The deadline to record at submission, for a transaction we know we just sent privately. Falls
+   * back to the configured window when the relay declares nothing; see `createRelayHorizon`.
+   */
+  resolve(hash: Hex): Promise<number>;
+  /**
+   * The deadline to record at reconcile, for an already-submitted row whose own horizon write never
+   * landed. `null` means the relay cannot vouch for the hash, so nothing is recorded and the row
+   * stays fenced. Never falls back to the configured window — see `createRelayHorizon`.
+   */
+  repair(hash: Hex): Promise<number | null>;
+}
+
+/**
+ * Trim a relay's declared deadline to `MAX_RELAY_HORIZON_BLOCKS` past `head`, saying so when it
+ * bites. Shared by the submission-time resolver and the reconcile-time repair so one cap governs
+ * every horizon this bot will ever record.
+ */
+function clampDeclared(
+  declared: number,
+  head: number,
+  hash: Hex,
+  logger?: Pick<Logger, "warn">
+): number {
+  const ceiling = head + MAX_RELAY_HORIZON_BLOCKS;
+  if (declared > ceiling) {
+    // Said rather than silently clamped: a relay naming a deadline a day out is either broken or
+    // not the relay we think we are talking to, and the operator cannot infer either from a nonce
+    // that simply takes longer to come back.
+    logger?.warn(
+      `Relay declared a deadline of block ${declared} for ${hash}, beyond the ${MAX_RELAY_HORIZON_BLOCKS} blocks this bot will fence for — fencing to ${ceiling} instead.`
+    );
+  }
+  return Math.min(declared, ceiling);
 }
 
 /**

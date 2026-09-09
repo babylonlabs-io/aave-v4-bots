@@ -117,6 +117,35 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
     TIMEOUT
   );
 
+  // `GREATEST` against a NULL column is the half of this that SQL and the in-memory model could
+  // most easily disagree on: Postgres ignores nulls, so the first write must still land. The rest
+  // is the safety rule itself — a horizon may lengthen, never shorten, whichever writer is last.
+  it(
+    "only ever moves the relay horizon later",
+    async () => {
+      const id = idempotencyKey(input("horizon-2"));
+      await store.recordIntent(input("horizon-2"));
+      await store.transition(id, "submitted", { nonce: 7, txHash: "0xbeef" as Hex });
+
+      const horizon = async () =>
+        (await store.reconcile()).find((i) => i.subject === "horizon-2")?.relayMaxBlock;
+
+      // NULL + a value: the value stands, or no horizon would ever be recorded at all.
+      await store.transition(id, "submitted", { relayMaxBlock: 125 });
+      expect(await horizon()).toBe(125);
+
+      // A writer that learned the relay's real, longer deadline.
+      await store.transition(id, "submitted", { relayMaxBlock: 200 });
+      expect(await horizon()).toBe(200);
+
+      // And the one this rule exists for: a writer that could not reach the relay and fell back to
+      // a shorter window must not free nonce 7 while the relay may still include it.
+      await store.transition(id, "submitted", { relayMaxBlock: 125 });
+      expect(await horizon()).toBe(200);
+    },
+    TIMEOUT
+  );
+
   const HASH_A = `0x${"a".repeat(64)}` as Hex;
   const HASH_B = `0x${"b".repeat(64)}` as Hex;
   const TX = `0x${"c".repeat(64)}` as Hex;

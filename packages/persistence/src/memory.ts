@@ -39,6 +39,23 @@ function clone(row: TxIntent): TxIntent {
 }
 
 /**
+ * The recorded relay horizon only ever moves later. A horizon is the block past which a
+ * transaction can no longer be included, and it is what releases a privately-submitted nonce, so a
+ * write that *shortened* one would free a nonce the relay can still spend. Writers reach the same
+ * row from more than one direction — the submission-time resolver, and reconcile's repair of a row
+ * that resolver never got to — and neither carries an expectation the other would lose a race to.
+ * Taking the maximum makes their order stop mattering.
+ *
+ * Mirrors `GREATEST(relay_max_block, $9)` in the Postgres store, including its treatment of nulls:
+ * an absent value on either side leaves the other standing. Reviving a row clears the column
+ * outright, which is a different write and deliberately not bound by this rule.
+ */
+function maxHorizon(current: number | null, next: number | undefined): number | null {
+  if (next === undefined) return current;
+  return current === null ? next : Math.max(current, next);
+}
+
+/**
  * Build a non-durable in-memory `StateStore`. `now` is injectable so tests can drive the TTL clock
  * `expireProposals` reads without mutating stored rows (Postgres uses wall-clock; both agree that
  * time only advances between calls).
@@ -191,7 +208,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
         nonce: meta?.nonce ?? row.nonce,
         txHash: meta?.txHash ?? row.txHash,
         error: meta?.error ?? row.error,
-        relayMaxBlock: meta?.relayMaxBlock ?? row.relayMaxBlock,
+        relayMaxBlock: maxHorizon(row.relayMaxBlock, meta?.relayMaxBlock),
         updatedAt: now(),
       });
       return true;

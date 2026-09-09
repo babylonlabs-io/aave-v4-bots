@@ -46,6 +46,7 @@ export {
 // submitter without it is what turns MEV protection into nonce reuse.
 export {
   type ChainReader,
+  type Horizon,
   type RelayStatusSource,
   createChainReader,
   createRelayAwareReader,

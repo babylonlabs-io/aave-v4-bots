@@ -28,7 +28,7 @@ import {
 } from "viem";
 
 import { type CrashSafety, createCrashSafety } from "./crashSafety";
-import { type ChainReader, createChainReader } from "./liveness";
+import { type ChainReader, type Horizon, createChainReader } from "./liveness";
 import { reconcilePending } from "./reconcile";
 
 // The **execution mode seam**. An engine finds opportunities the same way in both modes — risk gate,
@@ -190,7 +190,7 @@ export function createAutoExecutor(deps: {
    * recorded on its intent at submission. Absent under public submission, where the node's own
    * answer about a transaction is authoritative and nothing has to expire.
    */
-  horizon?: (hash: Hex) => Promise<number>;
+  horizon?: Pick<Horizon, "resolve">;
   /**
    * Last word before anything is broadcast: throw to stop it. Supplied by the composition root, and
    * deliberately a bare callback rather than the risk gate — this seam signs and sends, and knows
@@ -226,7 +226,7 @@ export function createAutoExecutor(deps: {
   const horizonFor = async (hash: Hex): Promise<{ relayMaxBlock?: number }> => {
     if (!horizon) return {};
     try {
-      return { relayMaxBlock: await horizon(hash) };
+      return { relayMaxBlock: await horizon.resolve(hash) };
     } catch (error) {
       logger.warn(`Could not resolve the relay horizon for ${hash}: ${error}`);
       return {};
@@ -487,8 +487,13 @@ export interface Submission {
   reader: ChainReader;
   /** See `CrashSafetyConfig.reclaimMarginBlocks` — with the recorded horizon, what frees a nonce. */
   reclaimMarginBlocks: number;
-  /** Stamps each submitted transaction with the block past which it can no longer be included. */
-  horizon: (hash: Hex) => Promise<number>;
+  /**
+   * The block past which a transaction can no longer be included — stamped at submission, and
+   * recovered at reconcile for a row whose submission-time write never landed. Part of the same
+   * value for the same reason as the rest: a `reader` that fails closed and a horizon nothing can
+   * recover is a fence with no key. See `Horizon`.
+   */
+  horizon: Horizon;
   /**
    * Floor for the tip on every transaction this executor signs. Travels with the relay route for
    * the same reason the reader does: a private transaction the node priced for the public mempool
@@ -536,6 +541,7 @@ export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecut
     store: deps.store,
     reader: reader ?? createChainReader(deps.publicClient),
     reclaimMarginBlocks,
+    horizon,
     // The allocator is mandatory (the arbitrageur's two engines share one). A service that runs a
     // single engine off one signer can omit it; we mint a per-signer allocator here.
     nonces: deps.nonces ?? createNonceAllocator(createNonceLease(), sender.identity.from),
