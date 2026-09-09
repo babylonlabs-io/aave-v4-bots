@@ -23,6 +23,10 @@ addresses); `PONDER_PORT` selects the port.
   the process's AWS credentials (on EKS the ServiceAccount's IAM role, allowed
   `rds-db:connect` as this database user). Checked at boot: no password in the
   URL and no `PGPASSWORD` in the environment (either would override the token);
+  no `NODE_TLS_REJECT_UNAUTHORIZED=0` (it turns off the certificate check and
+  the token would reach an unverified server); a port in the URL whenever
+  `PGPORT` is set (the driver takes the port from `PGPORT` when the URL has
+  none, and the token is signed for one port);
   `sslmode=verify-full&sslrootcert=<path>` pointing at
   `certs/rds-global-bundle.pem` (`/app/services/ponder/certs/rds-global-bundle.pem`
   in the image); AWS credentials and a region the SDK can resolve (`AWS_REGION`).

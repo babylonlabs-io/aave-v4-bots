@@ -77,10 +77,25 @@ describe("iamTargetFromUrl", () => {
 
   it("defaults the port to 5432 and decodes the user", () => {
     const t = iamTargetFromUrl(
-      `postgresql://a%5Fb@host/db?sslmode=verify-full&sslrootcert=${caFile}`
+      `postgresql://a%5Fb@host/db?sslmode=verify-full&sslrootcert=${caFile}`,
+      {}
     );
     assert.equal(t.port, 5432);
     assert.equal(t.username, "a_b");
+  });
+
+  it("rejects PGPORT when the URL has no port, which the driver would take from it", () => {
+    assert.throws(
+      () =>
+        iamTargetFromUrl(`postgresql://u@host/db?sslmode=verify-full&sslrootcert=${caFile}`, {
+          PGPORT: "5433",
+        }),
+      /has no port and PGPORT is set/
+    );
+  });
+
+  it("keeps the URL's own port when PGPORT is set; the driver prefers it too", () => {
+    assert.equal(iamTargetFromUrl(goodUrl, { PGPORT: "5433" }).port, 5432);
   });
 
   it("rejects a password in the URL, which would override the token", () => {
@@ -214,6 +229,30 @@ describe("installDatabaseAuth", () => {
     );
   });
 
+  it("refuses NODE_TLS_REJECT_UNAUTHORIZED=0 alongside iam", async () => {
+    await assert.rejects(
+      installDatabaseAuth(goodUrl, {
+        env: { DB_AUTH: "iam", NODE_TLS_REJECT_UNAUTHORIZED: "0" },
+        pgModules: [fakePg()],
+        signerFactory: countingSigner,
+        log: () => {},
+      }),
+      /NODE_TLS_REJECT_UNAUTHORIZED=0 is set/
+    );
+  });
+
+  it("accepts NODE_TLS_REJECT_UNAUTHORIZED=1, which keeps the certificate check on", async () => {
+    assert.equal(
+      await installDatabaseAuth(goodUrl, {
+        env: { DB_AUTH: "iam", NODE_TLS_REJECT_UNAUTHORIZED: "1" },
+        pgModules: [fakePg()],
+        signerFactory: countingSigner,
+        log: () => {},
+      }),
+      "iam"
+    );
+  });
+
   it("fails the boot when the signer cannot mint", async () => {
     await assert.rejects(
       installDatabaseAuth(goodUrl, {
@@ -271,6 +310,24 @@ describe("iamTargetFromUrl query parameters", () => {
       "ssl=0",
     ]) {
       assert.throws(() => iamTargetFromUrl(`${goodUrl}&${extra}`), /must not carry/, extra);
+    }
+  });
+
+  it("positive control: a portless URL lets PGPORT choose the port pg connects to", () => {
+    const ponderDir = fs.realpathSync(path.join(testRoot, "node_modules", "ponder"));
+    const fromPonder = createRequire(path.join(ponderDir, "package.json"));
+    const { Client } = fromPonder("pg") as { Client: new (c: object) => { port: number } };
+    const portless = `postgresql://u@host/db?sslmode=verify-full&sslrootcert=${caFile}`;
+    const before = process.env.PGPORT;
+    process.env.PGPORT = "5433";
+    try {
+      assert.equal(new Client({ connectionString: portless }).port, 5433);
+      assert.equal(new Client({ connectionString: goodUrl }).port, 5432);
+    } finally {
+      // Reflect, not `delete`: biome forbids the operator, and assigning
+      // undefined would leave the string "undefined" in the environment.
+      if (before === undefined) Reflect.deleteProperty(process.env, "PGPORT");
+      else process.env.PGPORT = before;
     }
   });
 

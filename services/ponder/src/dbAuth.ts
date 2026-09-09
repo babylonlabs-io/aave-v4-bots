@@ -16,7 +16,10 @@
 // resolves, found from the real path of node_modules/ponder (Ponder's package exports carry no
 // `require` condition and no `./package.json` subpath, so a bare specifier cannot anchor it).
 // The same resolution rules make a password in the URL and a set PGPASSWORD override the hook,
-// which is why both are refused below.
+// which is why both are refused below. NODE_TLS_REJECT_UNAUTHORIZED=0 is refused for the same
+// reason: pg-connection-string turns sslmode=verify-full into `ssl = { ca }` and leaves
+// `rejectUnauthorized` unset, so Node takes the value from that environment variable and the
+// server certificate goes unchecked.
 
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -59,10 +62,13 @@ export function parseDbAuthMode(raw: string | undefined): DbAuthMode {
 /**
  * The connection target for the token signer, taken from DATABASE_URL, with the shape checks that
  * make the token path safe: no password (it would override the token), a user (the token is bound
- * to it), TLS with server verification (the token is a bearer credential) against a CA file that
- * exists in this container.
+ * to it), a port the environment cannot move (the token is signed for one), TLS with server
+ * verification (the token is a bearer credential) against a CA file that exists in this container.
  */
-export function iamTargetFromUrl(databaseUrl: string): IamTarget {
+export function iamTargetFromUrl(
+  databaseUrl: string,
+  env: Record<string, string | undefined> = process.env
+): IamTarget {
   let url: URL;
   try {
     url = new URL(databaseUrl);
@@ -121,6 +127,16 @@ export function iamTargetFromUrl(databaseUrl: string): IamTarget {
   }
   if (!fs.existsSync(sslrootcert)) {
     throw new Error(`DB_AUTH=iam: sslrootcert file not found: ${sslrootcert}`);
+  }
+  // A URL without a port parses to port = "", and node-postgres resolves the
+  // port as `config.port || PGPORT || 5432`, so PGPORT would move the
+  // connection away from the port the token is signed for. The host and the
+  // user cannot drift the same way: both are non-empty here, so they win over
+  // PGHOST and PGUSER.
+  if (!url.port && env.PGPORT !== undefined) {
+    throw new Error(
+      "DB_AUTH=iam: DATABASE_URL has no port and PGPORT is set; the driver would connect to the PGPORT port while the token is signed for another, put the port in the URL"
+    );
   }
   return {
     hostname: url.hostname,
@@ -198,7 +214,12 @@ export async function installDatabaseAuth(
   if (env.PGPASSWORD !== undefined) {
     throw new Error("DB_AUTH=iam: PGPASSWORD is set; it would override the IAM token, unset it");
   }
-  const target = iamTargetFromUrl(databaseUrl);
+  if (env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+    throw new Error(
+      "DB_AUTH=iam: NODE_TLS_REJECT_UNAUTHORIZED=0 is set; it turns off the certificate check that sslmode=verify-full asks for and would send the IAM token to an unverified server, unset it"
+    );
+  }
+  const target = iamTargetFromUrl(databaseUrl, env);
   target.region = env.AWS_REGION ?? env.AWS_DEFAULT_REGION;
 
   const signer = await (options.signerFactory ?? defaultSignerFactory)(target);
