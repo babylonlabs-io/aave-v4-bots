@@ -189,10 +189,7 @@ describe("verifyProposal (tamper check)", () => {
     await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/baseGas 21000.*gasPrice 1/);
   });
 
-  // The last field the policy cannot hold: a nonce is not a gas field, so any value is structurally
-  // valid, and rewriting it with its hash leaves the record self-consistent like the case above. It
-  // does not change what executes — it changes WHEN, to a moment the operator never approved. The
-  // chain is the one party to this that a modified record cannot write.
+  // A rewritten nonce keeps the record consistent but moves when the SafeTx can execute.
   it("refuses an envelope moved to a future nonce, however consistent", async () => {
     const c = ctx({
       signer: safeSigner(4),
@@ -220,9 +217,7 @@ describe("verifyProposal (tamper check)", () => {
     await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/ahead of the chain/);
   });
 
-  // The other direction, and not a tamper at all: the SafeTx executed, or the Safe did something
-  // else. It is reported rather than refused — this is the window an operator runs `show` in, after
-  // execution and before `confirm`, and a diagnostic that throws there tells them nothing.
+  // A nonce behind the chain means the SafeTx executed or was replaced, so `show` reports it.
   it("reports, without refusing, a claim the Safe has already moved past", async () => {
     const c = ctx({
       signer: safeSigner(4),
@@ -256,7 +251,7 @@ describe("verifyProposal (tamper check)", () => {
 
     const view = await ops.showProposal(c, id);
 
-    // The nonce travels with the hash: it is what an operator can check against the Safe UI.
+    // The operator checks the nonce against the Safe UI.
     expect(view.safeNonce).toBe(4);
     expect(view.safeTxIsNext).toBe(true);
     expect(view.safeTxHash).toBe((await c.store.getIntent(id))?.safeEnvelope?.safeTxHash);
@@ -571,10 +566,8 @@ describe("release + fail (recovery)", () => {
     expect((await c.store.getIntent(id))?.status).toBe("proposed");
   });
 
-  // The gap release leaves behind, and the reason the envelope now survives it. Owners sign the hash
-  // off chain, where nothing here can see it, and from that moment anyone can execute that SafeTx
-  // until its nonce is consumed. Reserving a second envelope over the same payload is what turns
-  // that into two executions.
+  // Owners may have signed the released SafeTx off chain, so a second envelope would authorize
+  // the same payload twice.
   describe("an envelope released without being resolved", () => {
     const safeCtx = (safeNonce = 4, over: Parameters<typeof fakeClient>[0] = {}) =>
       ctx({
@@ -604,9 +597,7 @@ describe("release + fail (recovery)", () => {
       expect(row?.safeEnvelope).toEqual(envelope);
     });
 
-    // Nothing to decide: the payload and the gas policy are fixed, so a re-claim at the same nonce
-    // computes the very hash that is already outstanding. Handing it back is what keeps the count of
-    // executable authorizations at one.
+    // Same payload and gas policy give the same hash, so the outstanding envelope is reused.
     it("is handed back by the next claim while its nonce still stands", async () => {
       const c = safeCtx();
       const { id, envelope } = await claimedThenReleased(c);
@@ -617,13 +608,12 @@ describe("release + fail (recovery)", () => {
       expect((await c.store.getIntent(id))?.safeEnvelope).toEqual(envelope);
     });
 
-    // The sequence this exists for: released, executed by anyone watching the queue, then claimed
-    // again. A second envelope here is the same payload authorized twice.
+    // Released, then executed by someone else, then claimed again: no second envelope.
     it("refuses the next claim when it executed after the release", async () => {
       const c = safeCtx();
       const { id, envelope } = await claimedThenReleased(c);
 
-      // The Safe moved on, and it moved on by executing exactly our SafeTx.
+      // The Safe moved on by executing our SafeTx.
       c.publicClient = fakeClient({
         safeNonce: 5n,
         safeLogs: [
@@ -638,7 +628,7 @@ describe("release + fail (recovery)", () => {
       await expect(ops.claimProposal(c, id)).rejects.toThrow(/already executed/);
     });
 
-    // Its nonce is spent by something else, so it can never execute. Dead, and the way is clear.
+    // Another transaction spent its nonce, so it can never execute.
     it("is replaced once its nonce is spent by another transaction", async () => {
       const c = safeCtx();
       const { id, envelope } = await claimedThenReleased(c);
@@ -654,8 +644,7 @@ describe("release + fail (recovery)", () => {
       expect(replaced?.safeTxHash).not.toBe(envelope.safeTxHash);
     });
 
-    // `broadcast` claims too, so it can duplicate a reservation exactly as `claim` can — and it
-    // sends what it reserves, which makes it the worse of the two paths to leave open.
+    // `broadcast` also claims, and it sends what it reserves.
     it("is handed back by broadcast rather than reserved a second time", async () => {
       const c = safeCtx();
       const { id, envelope } = await claimedThenReleased(c);
@@ -683,8 +672,7 @@ describe("release + fail (recovery)", () => {
       await expect(ops.broadcastProposal(c, id)).rejects.toThrow(/already executed/);
     });
 
-    // `fail` is what strands it: the row goes terminal and the next proposal for the subject revives
-    // it, clearing the envelope and with it the only record of what is still outstanding.
+    // A failed row can be revived, which would clear the envelope.
     it("cannot be failed away while it still stands", async () => {
       const c = safeCtx();
       const { id } = await claimedThenReleased(c);

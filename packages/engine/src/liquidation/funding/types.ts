@@ -62,16 +62,9 @@ export interface LiquidationFunding {
   refreshInventory(): Promise<void>;
 
   /**
-   * Take back every standing allowance this mode has granted. Called on a code-hash halt, and only
-   * then — from the halted branch of the cycle, which is the one place a stopped engine still runs.
-   *
-   * A halt stops what this bot sends. It does nothing about a spender that is already allowed to
-   * pull, and a code-hash halt is precisely the case where that spender is the suspect contract:
-   * the bytecode at a pinned address changed, and whatever the old code was approved for, the new
-   * code inherits. The allowance is the exposure, so withdrawing it is the stop.
-   *
-   * Best-effort per token: one that cannot be withdrawn must not stop the others, and every halted
-   * cycle re-attempts, so a failure retries and a completed withdrawal costs one allowance read.
+   * Revoke every allowance this mode granted. Called only on a code-hash halt: the spender's code
+   * changed, and the allowance still lets it pull funds. Best-effort per token; every halted cycle
+   * retries.
    */
   revokeApprovals(): Promise<void>;
 

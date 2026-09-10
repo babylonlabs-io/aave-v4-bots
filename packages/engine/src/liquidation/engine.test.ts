@@ -297,10 +297,7 @@ describe("LiquidationEngine", () => {
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
     });
 
-    // The cycle ends either way, so what this pins is what is *said* about it. A candidate list we
-    // never received is not a market with nothing in it, and the gauge is what an operator reads to
-    // tell an idle bot from a blind one — a zero written from a failed read says the one thing that
-    // is never safe to infer from a failure.
+    // A failed read must not write a zero to the candidate gauge.
     it("does not record an empty market when the candidate list cannot be read", async () => {
       const clients = createMockClients();
       const bot = createBot(clients);

@@ -393,9 +393,7 @@ describe("@repo/execution", () => {
       expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
     });
 
-    // The gate the caller cannot place itself: everything between admitting a send and this point —
-    // the nonce lock, the pricing reads, the signature, the durable write — is awaited, and a halt
-    // that lands in it would otherwise reach the wire.
+    // The guard runs after all awaited work, so a halt that lands during it is still caught.
     it("asks beforeBroadcast last, after the durable record and before the wire", async () => {
       const { walletClient, publicClient } = txClients();
       const order: string[] = [];

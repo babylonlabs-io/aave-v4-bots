@@ -190,14 +190,8 @@ export interface RiskGate {
    */
   haltReason(): string;
   /**
-   * Is the standing halt the code-hash guard's — a pinned target whose bytecode changed, or one
-   * that has never been readable?
-   *
-   * Separate from `haltReason` because that is prose: it is overwritten by whichever halt came
-   * last, and reading a safety decision out of a string is how the two drift apart. This is the
-   * same flag `resume` refuses on, exposed because a halt with this cause says something no other
-   * halt does — the target itself is suspect, not the market — and a caller may have standing
-   * permissions granted to that target to take back.
+   * Is the standing halt from the code-hash guard (a pinned target's bytecode changed or is
+   * unreadable)? A typed flag, not `haltReason` text. It is the flag `resume` refuses on.
    */
   codeHashHalted(): boolean;
   /** Kill-switch — trip to `HALTED` with a reason. */

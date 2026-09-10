@@ -252,10 +252,7 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
   });
 
   describe("release + fail (recovery)", () => {
-    // The envelope outlives the claim on purpose. A threshold-signed SafeTx is executable by anyone
-    // until its nonce is consumed, and those signatures are off chain — so giving up the claim
-    // cannot give up the authorization, and the record of it is the only thing that stops the next
-    // claim reserving a second one over the same payload.
+    // Owners may have signed the SafeTx off chain, so release keeps its envelope.
     it("release reverts claimed → proposed and keeps the envelope", async () => {
       const store = createMemoryStateStore();
       const id = idempotencyKey(input("p"));
@@ -266,8 +263,7 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
       expect(store.get(id)).toMatchObject({ status: "proposed", safeEnvelope: SAFE_ENV });
     });
 
-    // Expiry is a timer, and a signed SafeTx does not expire with it. Sweeping the row would make it
-    // terminal, and the next proposal for the subject would revive it and clear the envelope.
+    // A signed SafeTx does not expire with a timer, so a row with an envelope is never swept.
     it("does not expire a released row that still carries an envelope", async () => {
       let clock = 1_000_000;
       const store = createMemoryStateStore(() => clock);
@@ -555,10 +551,7 @@ describe("the default pool's deadlines", () => {
   });
 });
 
-// The recorded relay horizon is what releases a privately-submitted nonce, so a write that
-// shortened one would free a nonce the relay can still spend. Two writers reach the same row from
-// different directions — the submission-time resolver, and reconcile's repair of a row that
-// resolver never reached — and neither carries an expectation the other would lose a race to.
+// A shorter horizon would free a nonce the relay can still spend, so the horizon only grows.
 describe("relay horizon is monotonic (memory model)", () => {
   const HASH = "0xhash" as Hex;
 
@@ -587,9 +580,7 @@ describe("relay horizon is monotonic (memory model)", () => {
     expect(store.get(id)?.relayMaxBlock).toBe(200);
   });
 
-  // The race this rule exists for: one writer observed the relay's declared deadline of 200, the
-  // other could not and recorded a shorter one. Whichever lands second, 200 must stand — the
-  // alternative frees nonce 5 at block 128 for a transaction the relay may include until 200.
+  // One writer saw the relay's deadline of 200, another fell back to 125. 200 stands either way.
   it("refuses to shorten one, whichever writer lands last", async () => {
     const { store, id } = await submitted(200);
 
@@ -606,9 +597,7 @@ describe("relay horizon is monotonic (memory model)", () => {
     expect(store.get(id)?.relayMaxBlock).toBe(200);
   });
 
-  // Reviving a terminal row is a different write and deliberately outside the rule: the new attempt
-  // is a new transaction, and inheriting the old one's deadline would fence it against the wrong
-  // block. See `recordIntent`.
+  // A revived row is a new transaction, so it starts with no horizon.
   it("clears the horizon when the row is revived for a fresh attempt", async () => {
     const { store, id } = await submitted(200);
     await store.transition(id, "failed", { error: "dropped" });

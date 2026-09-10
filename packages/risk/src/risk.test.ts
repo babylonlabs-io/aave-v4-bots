@@ -724,8 +724,7 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.openSlot(action()).allowed).toBe(false);
     });
 
-    // The flag a caller reads to tell this halt from an operator's: only here is the *spender* the
-    // suspect, so only here is there anything to take back from it.
+    // Only a code-hash halt makes the spender suspect.
     it("reports a code-hash halt apart from any other halt", async () => {
       const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
       expect(gate.codeHashHalted()).toBe(false);
@@ -744,8 +743,7 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.codeHashHalted()).toBe(true);
 
       await gate.verifyCode(reader({ "0xadapter": "0xabc" }));
-      // Still HALTED — resuming is the operator's decision — but the cause is cleared, so there is
-      // no longer a changed contract to withdraw from.
+      // Still HALTED until the operator resumes, but the code-hash cause is cleared.
       expect(gate.state()).toBe("HALTED");
       expect(gate.codeHashHalted()).toBe(false);
     });
@@ -851,9 +849,7 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.haltReason()).toMatch(/code hash mismatch/);
     });
 
-    // Passes are not serialised: `startCodeHashGuard` ticks on an interval, so a probe slower than
-    // that interval overlaps its successor. A clean answer is evidence about the chain the pass
-    // read, not about the chain now — so the pass that finishes last must not be the one that wins.
+    // Guard passes can overlap. A pass that read before a mismatch must not clear it.
     it("refuses when a stale clean pass lands after a newer mismatch", async () => {
       const gate = createRiskGate(pinned);
       let releaseStale: (hash: string) => void = () => {};
@@ -867,7 +863,7 @@ describe("@repo/risk createRiskGate", () => {
       await gate.verifyCode(async () => "0xtampered");
       expect(gate.resume()).toBe(false);
 
-      // A now returns the pre-upgrade hash. It answers a question about a chain that has moved.
+      // A now returns the pre-upgrade hash.
       releaseStale("0xgood");
       await stale;
 
@@ -876,8 +872,7 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.openSlot(action()).allowed).toBe(false);
     });
 
-    // The other side of the same rule: once a pass that started *after* the mismatch reads clean,
-    // the halt is about a state that no longer holds and the operator may act on that.
+    // A pass that started after the mismatch and reads clean does clear it.
     it("lets a pass started after the mismatch retire it", async () => {
       const gate = createRiskGate(pinned);
       await gate.verifyCode(async () => "0xtampered");

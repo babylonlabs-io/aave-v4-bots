@@ -148,14 +148,11 @@ app.get("/liquidatable-positions", async (c) => {
   const blockRef = await readBlockRef(publicClient);
   const dataTimestampMs = blockRef?.dataTimestampMs;
 
-  // Probe only rows a liquidation could actually be built for, with their borrower resolved here
-  // rather than after the estimate — see `selectProbeCandidates`.
+  // Probe only rows with a borrower. See `selectProbeCandidates`.
   const { candidates, unmapped } = selectProbeCandidates(positions, proxyMappings);
 
-  // Reported per cycle rather than per row: these are permanently unactionable, so one line saying
-  // how many there are informs an operator, while one line each would drown the log. A count that
-  // climbs on a deployment whose users all go through the adapter is worth looking at — it means
-  // proxy mappings are missing, not that strangers are supplying.
+  // One line per cycle. A rising count on an adapter-only deployment means proxy mappings are
+  // missing.
   if (unmapped > 0) {
     logger.warn(
       `${unmapped} position row(s) have no proxy mapping and were not probed — no borrower means no liquidation call can be built for them`
@@ -197,8 +194,7 @@ app.get("/liquidatable-positions", async (c) => {
             })),
             allowFailure: true,
             multicallAddress: MULTICALL3_ADDRESS,
-            // Stated rather than inherited: viem's default splits by 1024 calldata bytes, which is
-            // a per-call gas budget arrived at by accident. See `PROBES_PER_CALL`.
+            // Explicit, not viem's 1024-byte default. See `PROBES_PER_CALL`.
             batchSize: MULTICALL_BATCH_BYTES,
             blockNumber: blockRef?.blockNumber,
           });
@@ -239,7 +235,7 @@ app.get("/liquidatable-positions", async (c) => {
         probeChunkSize
       );
 
-  // Measured across the probes alone, before anything is made of their results.
+  // Probe time only.
   const scanMs = Date.now() - scanStartedAt;
 
   const liquidatable: Array<{
@@ -280,10 +276,8 @@ app.get("/liquidatable-positions", async (c) => {
     });
   }
 
-  // The one line that says where this deployment sits on the curve. The scan is linear in the
-  // number of candidates — chunks are awaited one wave at a time — while the bot reads this route
-  // under a fixed per-attempt timeout, so "how long did it take, over how many" is what decides
-  // whether the candidate feed is about to start timing out. Nothing else measures it.
+  // Scan time grows with the candidate count, and the bot reads this route under a fixed timeout.
+  // This line shows how close the scan is to that limit.
   logger.info(
     `Probed ${candidates.length} candidate(s) in ${scanMs}ms: ${liquidatable.length} liquidatable, ${unscanned} unscanned, ${unmapped} unmapped`
   );
@@ -306,12 +300,9 @@ app.get("/liquidatable-positions", async (c) => {
       // and "no candidates" is exactly the answer a liquidator must not infer from a failure.
       checked: candidates.length - unknown,
       unscanned: unknown,
-      // Rows that carry no borrower, so nothing could have been built from them. Apart from
-      // `unscanned` on purpose: those are positions this cycle has no answer for, while these are
-      // not candidates at all and no later cycle will make them one.
+      // Rows with no borrower. Unlike `unscanned`, a later cycle does not change them.
       unmapped,
-      // How long the probes took. Read it against `checked`: the scan is linear in that number and
-      // the bot's own read of this route is not patient.
+      // Probe time. Read it against `checked`: the scan is linear in it.
       scanMs,
       dataTimestampMs,
     })

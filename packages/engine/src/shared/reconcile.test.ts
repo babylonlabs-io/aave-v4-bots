@@ -1024,10 +1024,7 @@ describe("reconcilePending — an in-progress claim is not another engine's to r
   });
 });
 
-// A privately-submitted intent records its relay horizon on a best-effort write, so a failed head
-// read or a crash in that window leaves a row carrying a nonce and a hash but no deadline. Nothing
-// else ever fills that column, and `couldBeInFlight` cannot release without one — so the row fences
-// its nonce forever and every later send from either engine queues behind the gap, silently.
+// A private intent whose horizon write failed has no deadline, so its nonce is never released.
 describe("reconcilePending — recovering a missing relay horizon", () => {
   const HASH = "0xhash" as Hex;
 
@@ -1063,14 +1060,13 @@ describe("reconcilePending — recovering a missing relay horizon", () => {
 
     const summary = await pass(store, async () => 200);
 
-    // Still in flight — the horizon only decides anything from the next pass, which re-reads it.
+    // Still in flight: the horizon takes effect on the next pass.
     expect(summary).toMatchObject({ stillInFlight: 1, failed: 0, confirmed: 0 });
     expect(horizonOf(store, id)).toBe(200);
     expect(store.all().find((r) => r.id === id)?.status).toBe("submitted");
   });
 
-  // The whole point of the repair, end to end: the nonce must actually come back. Asserting only
-  // that the column is non-null would pass for a horizon that never releases anything.
+  // End to end: the nonce is released once the chain passes the recovered horizon.
   it("lets the fence release the nonce once the chain passes the recovered horizon", async () => {
     const { store, id } = await unfenced();
     await pass(store, async () => 100);
@@ -1085,11 +1081,7 @@ describe("reconcilePending — recovering a missing relay horizon", () => {
     ).toBe(false);
   });
 
-  // The migration case, and the reason the repair asks the relay rather than computing a horizon.
-  // A public submission leaves `relayMaxBlock` null too, and `reclaimMarginBlocks` describes the
-  // process reading the row, not the one that wrote it. Stamping a relay deadline on a public
-  // transaction would release its nonce while it still sat in the mempool, where it may linger
-  // forever. A relay that never received the hash is what says so.
+  // A public submission also leaves a null horizon; the relay cannot vouch for its hash.
   it("leaves the row fenced when the relay cannot vouch for the hash", async () => {
     const { store, id } = await unfenced();
 
@@ -1111,8 +1103,7 @@ describe("reconcilePending — recovering a missing relay horizon", () => {
     expect(horizonOf(store, id)).toBeNull();
   });
 
-  // Public submission: a null horizon is normal there, nothing releases by one, and the relay is
-  // not even wired. The repair must not run at all.
+  // Under public submission a null horizon is normal, so no repair runs.
   it("does not touch a row when no reclaim margin is configured", async () => {
     const { store, id } = await unfenced();
     const probe = vi.fn(async () => 200);
@@ -1123,8 +1114,7 @@ describe("reconcilePending — recovering a missing relay horizon", () => {
     expect(horizonOf(store, id)).toBeNull();
   });
 
-  // The row moved between this pass's read and the write — another engine resolved it and a later
-  // cycle revived it under the same id. This pass's answer is about the old attempt.
+  // The row changed after this pass read it, so the write is refused.
   it("refuses to stamp a row that advanced under it", async () => {
     const { store, id } = await unfenced();
 

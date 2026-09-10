@@ -25,9 +25,8 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 ///        and derived contracts are expected to relay only actions that are naturally non-repeatable (the
 ///        target state is consumed) or economically neutral when repeated. Derived contracts whose actions
 ///        do not have that property must add their own replay protection.
-///      - Submission is permissionless by default. A derived contract narrows that by overriding
-///        {_checkExecutor}, which is the one place where "who may submit" is decided; see the hook for what
-///        that buys and what it costs.
+///      - Submission is permissionless by default. A derived contract restricts it by overriding
+///        {_checkExecutor}.
 ///      - `deadline` has no upper bound. Signing `type(uint256).max` creates a standing authorization.
 ///
 ///      EIP-712: the digest follows the spec exactly, so `signTypedData` from any standard wallet or client
@@ -77,10 +76,8 @@ abstract contract SelfCallRelayer is EIP712 {
     }
 
     /// @notice Executes a signer-authorized batch of self-calls.
-    /// @dev Permissionless unless a derived contract overrides {_checkExecutor}: by default anyone holding a
-    ///      valid `(message, signature)` pair may submit it, and both are public once the transaction is
-    ///      broadcast. The batch is atomic — the first failing call reverts everything, bubbling up the
-    ///      callee's original revert data.
+    /// @dev Anyone may submit unless {_checkExecutor} is overridden. The batch is atomic: the first
+    ///      failing call reverts everything with the callee's revert data.
     ///
     ///      Each call's `data` must be at least 4 bytes; shorter calldata reverts with a panic on the
     ///      selector slice below.
@@ -116,19 +113,9 @@ abstract contract SelfCallRelayer is EIP712 {
         emit RelayerMessageExecuted(msg.sender, block.timestamp, message);
     }
 
-    /// @dev Decides who may submit a batch, from `msg.sender` — the hook is internal, so the caller of
-    ///      {relay} is still the sender here. The default accepts everyone, which is the permissionless model
-    ///      the trust notes above describe.
-    ///
-    ///      Overriding it is how a derived contract stops a signed message from being a bearer capability.
-    ///      A batch is public before it is mined — an `eth_estimateGas` call hands it to the node, and a
-    ///      broadcast hands it to the mempool — so with the default hook anyone who sees one may execute it
-    ///      until its `deadline`, whatever the signer meant to do with it afterwards. Binding the submitter
-    ///      makes the leaked bytes inert instead, and it is the only bound that holds without state: a nonce
-    ///      stops a *second* execution, not the first one taken by whoever saw the message first.
-    ///
-    ///      The cost is that the batch can then only be paid for by an address the override admits, so a
-    ///      third-party gas payer is no longer possible for that contract.
+    /// @dev Decides who may submit a batch, from `msg.sender` (the caller of {relay}). The default
+    ///      accepts everyone. A batch is public before it is mined, so an override that binds the
+    ///      submitter makes a leaked batch unusable. The cost: only admitted addresses can pay its gas.
     function _checkExecutor() internal view virtual {}
 
     /// @dev Reverts unless `message` is unexpired and `signature` recovers to `signer`.

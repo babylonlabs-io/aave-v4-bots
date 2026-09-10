@@ -69,15 +69,9 @@ contract ArbitrageRouter is SelfCallRelayer {
     }
 
     /// @notice Restricts submission of a relayed batch to `signer`.
-    /// @dev The authorization this router checks is an argument to a call rather than a transaction of its
-    ///      own, so it is visible before it executes: the arbitrage bot has to hand the batch to a node to
-    ///      estimate its gas, and to the mempool to broadcast it. Without this the batch would stay
-    ///      executable by whoever saw it, for its whole `deadline`, even after the bot decided not to
-    ///      broadcast — an acquisition the bot never made, paid for out of `payer`'s allowance.
-    ///
-    ///      Binding costs nothing here because the two addresses are the same one already: the bot signs
-    ///      the authorization and the transaction carrying it with one key, and pays that transaction's gas.
-    ///      A deployment that wants a separate gas payer needs a different router.
+    /// @dev The batch is visible before it executes (gas estimation and broadcast expose it), so an
+    ///      unbound batch could be executed by anyone until its `deadline` and paid from `payer`'s
+    ///      allowance. The bot signs and submits with the same key, so this costs nothing.
     function _checkExecutor() internal view override {
         require(msg.sender == signer, "ArbitrageRouter: unauthorized submitter");
     }

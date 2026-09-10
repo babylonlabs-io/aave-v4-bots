@@ -443,9 +443,7 @@ describe("createAutoExecutor", () => {
       const result = await exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n });
 
       expect(result).toEqual({ kind: "satisfied" });
-      // Three arguments: the call, the `onSigned` hook that durably records nonce + hash before the
-      // approval reaches the chain, and the last-word broadcast guard — the same pre-broadcast
-      // record and the same guard `commit` sends under.
+      // The call, the `onSigned` pre-broadcast record, and the broadcast guard, as `commit` uses.
       expect(sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           address: WBTC,
@@ -577,8 +575,7 @@ describe("createAutoExecutor", () => {
     });
   });
 
-  // The counterpart of `ensureAllowance`, and the one send that is not asked whether it may go out:
-  // it is called *because* the gate halted, and what it does is take a permission away.
+  // Runs because the gate halted, so it skips the broadcast guard.
   describe("revokeAllowance", () => {
     const WBTC = "0x0000000000000000000000000000000000000abc" as Address;
     const SPENDER = "0x0000000000000000000000000000000000000def" as Address;
@@ -600,13 +597,12 @@ describe("createAutoExecutor", () => {
           args: [SPENDER, 0n],
         }),
         expect.any(Function),
-        // No guard: the third argument the approval carries is deliberately absent here.
+        // Two arguments: no broadcast guard.
         undefined
       );
     });
 
-    // What makes it safe to re-attempt on every halted cycle: once the allowance is gone there is
-    // nothing to send, so the retry costs one read.
+    // A zero allowance sends nothing, so a retry costs one read.
     it("sends nothing when the spender can already pull nothing", async () => {
       const sender = autoSender();
       const { exec } = autoExecutor(sender, undefined, autoPublicClient(allowanceReader(0n)));
@@ -617,8 +613,7 @@ describe("createAutoExecutor", () => {
       expect(sender.send).not.toHaveBeenCalled();
     });
 
-    // The whole point. A halted gate refuses every other transaction this executor sends, and this
-    // one has to go out anyway — refusing it would leave the gate protecting the changed contract.
+    // A halted gate refuses every other send; this one must still go out.
     it("goes out while the broadcast guard is refusing everything", async () => {
       const sender = autoSender();
       const exec = createAutoExecutor({
@@ -644,8 +639,7 @@ describe("createAutoExecutor", () => {
       expect(sender.send).toHaveBeenCalledOnce();
     });
 
-    // A distinct action from `approval`, so a live grant does not make the withdrawal a duplicate
-    // of it — the two are opposite transactions and the withdrawal is the one that must not wait.
+    // Its own action, so a live grant does not block the revoke as a duplicate.
     it("records its intent under its own action", async () => {
       const store = createMemoryStateStore();
       const { exec } = autoExecutor(autoSender(), store, autoPublicClient(allowanceReader(500n)));
@@ -1179,10 +1173,7 @@ describe("createAutoExecutor — the broadcast guard", () => {
     expect(sender.send).not.toHaveBeenCalled();
   });
 
-  // The window the first check cannot cover. A send that is admitted still has to wait for the
-  // shared nonce lock, price itself against the node, be signed (a KMS round trip in production)
-  // and be durably recorded — seconds, under load — and a kill switch or a code-hash tick can land
-  // anywhere in it. Only the check the sender makes against the wire sees that.
+  // A halt can land after the first check, during locking, pricing, or signing.
   const haltsMidSend = () => {
     let halted = false;
     const broadcast = vi.fn(async () => "0xhash" as Hex);

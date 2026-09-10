@@ -117,9 +117,7 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
     TIMEOUT
   );
 
-  // `GREATEST` against a NULL column is the half of this that SQL and the in-memory model could
-  // most easily disagree on: Postgres ignores nulls, so the first write must still land. The rest
-  // is the safety rule itself — a horizon may lengthen, never shorten, whichever writer is last.
+  // `GREATEST` ignores NULL, so the first write lands; after that the horizon only grows.
   it(
     "only ever moves the relay horizon later",
     async () => {
@@ -130,7 +128,7 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
       const horizon = async () =>
         (await store.reconcile()).find((i) => i.subject === "horizon-2")?.relayMaxBlock;
 
-      // NULL + a value: the value stands, or no horizon would ever be recorded at all.
+      // NULL + a value: the value stands.
       await store.transition(id, "submitted", { relayMaxBlock: 125 });
       expect(await horizon()).toBe(125);
 
@@ -138,8 +136,7 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
       await store.transition(id, "submitted", { relayMaxBlock: 200 });
       expect(await horizon()).toBe(200);
 
-      // And the one this rule exists for: a writer that could not reach the relay and fell back to
-      // a shorter window must not free nonce 7 while the relay may still include it.
+      // A shorter fallback must not shorten the horizon.
       await store.transition(id, "submitted", { relayMaxBlock: 125 });
       expect(await horizon()).toBe(200);
     },

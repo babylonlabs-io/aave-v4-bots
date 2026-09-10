@@ -39,15 +39,8 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   // an already-HALTED gate is indistinguishable from the manual halt it replaced.
   let codeHashHalt = false;
   /**
-   * Bumped every time a code-hash halt is recorded, so a `verifyCode` pass can tell whether the
-   * ground moved under it while it was reading.
-   *
-   * Passes are not serialised — `startCodeHashGuard` ticks on an interval and a probe slower than
-   * that interval overlaps its successor — and a clean result says only that the targets were sound
-   * when *that* pass read them. Without this, the later-finishing pass wins: one that read before an
-   * upgrade can land after one that saw it and clear the halt it raised, leaving `resume` free to
-   * admit trading against bytecode the guard already rejected. Reading the counter is how a pass
-   * asks "is my answer still about the current state of the world".
+   * Incremented on every code-hash halt. `verifyCode` passes can overlap, so a pass clears the halt
+   * only if no newer halt was recorded while it read.
    */
   let codeHashHaltSeq = 0;
   let everVerified = false;
@@ -390,8 +383,7 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       const expected = config.expectedCodeHashes;
       if (!expected) return;
 
-      // Captured before the first read: a clean result is evidence about the chain as it was at this
-      // moment, and it may only retire a halt that was already standing then.
+      // Before the first read: a clean pass may only clear a halt that already stood then.
       const seq = codeHashHaltSeq;
 
       const addresses = Object.keys(expected);
@@ -436,13 +428,9 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       // — an operator cannot assert it, and the state the periodic guard's fail-open rests on is
       // now actually true. The gate stays HALTED: proving the target is sound is not the same as
       // deciding to trade again, and that decision stays with the operator.
-      //
-      // Unless a mismatch was recorded while this pass was reading, in which case this answer is
-      // about a chain state that no longer holds and the newer one stands.
+      // Unless a newer halt was recorded while this pass read.
       if (codeHashHaltSeq === seq) codeHashHalt = false;
-      // Not gated the same way: a clean pass did see every pinned target sound at the block it read,
-      // which is all this claims. It decides whether a later *probe failure* halts, and one blip
-      // after one good read is a blip whenever that read happened.
+      // Ungated: this pass did read every target as sound, which is all this records.
       everVerified = true;
     },
   };

@@ -141,8 +141,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     // Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
     const feed = await this.fetchEscrowedVaults();
 
-    // The same distinction the liquidation engine keeps, for the same reason: a failed read is not
-    // an empty escrow. Both end the cycle, and only one of them is a statement about the market.
+    // A failed read is not an empty escrow. Both end the cycle, with different logs.
     if (feed.kind === "unavailable") {
       this.logger.warn("Skipping cycle: the escrow list could not be read (not an empty escrow)");
       return;
@@ -180,14 +179,9 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     try {
       await this.sendAndSettle(vaults, sent, dataTimestampMs, cycleSlots);
     } finally {
-      // Backstop for everything broadcast this cycle, in the engine's own words rather than the
-      // cycle's. `run()`'s backstop settles a leftover slot through the gate alone, which releases
-      // the reservation and tells the funding mode nothing — so a signed batch would be held by
-      // neither, and the treasury's WBTC would read as spendable while a live authorization could
-      // still take it. `settle` is idempotent on both halves, so every real outcome above wins.
-      //
-      // `unresolved`, not `abandoned`: these transactions ARE on the chain, whatever went wrong
-      // while we were classifying them.
+      // Backstop for every broadcast this cycle. `unresolved` keeps the WBTC held, because these
+      // transactions are on the wire. `this.settle` also informs the funding mode, which `run()`'s
+      // backstop does not. Idempotent, so the real outcomes above win.
       for (const entry of sent) {
         this.settle(
           entry.slot,
@@ -198,14 +192,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     }
   }
 
-  /**
-   * The send loop and the receipt phase — one poll cycle's acquisitions, from broadcast to
-   * classification.
-   *
-   * Split out of `poll` so the backstop there wraps both halves: an acquisition is the receipt
-   * phase's responsibility from the moment it is pushed onto `sent`, and a throw anywhere after
-   * that must not leave its authorization unaccounted.
-   */
+  /** Send every acquisition, then classify the receipts. `poll`'s backstop wraps both. */
   private async sendAndSettle(
     vaults: EscrowedVault[],
     sent: SentAcquisition[],
@@ -292,10 +279,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           `Indexer could not read ${data.failedVaultsCount} escrowed vault(s) this cycle — the escrow list is incomplete`
         );
       }
-      // Element shapes, not just the array's. A malformed entry used to reach `prepareAndSend` and
-      // throw on its `BigInt` conversion, which aborted every remaining send in the cycle — so one
-      // bad row from the indexer cost all the good ones behind it. Dropped here instead, named and
-      // counted, on the same principle as `failedVaultsCount`: report the gap, act on the rest.
+      // Drop malformed entries, count them, and act on the rest.
       const vaults = data.vaults.filter(isUsableVault);
       const malformed = data.vaults.length - vaults.length;
       if (malformed > 0) {
@@ -350,9 +334,8 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   private settle(slot: RiskSlot, outcome: ActionOutcome, authorizationId?: Hex): void {
     slot.settle(outcome);
     // Only a confirmed acquisition proves the money moved; everything else leaves the batch live
-    // until it expires or is observed executing. The height travels with it because "the money
-    // moved" is not yet "a balance read reports it gone" — the mode holds the outflow until one
-    // taken at or above this block can.
+    // until it expires or is observed executing. The mined block tells the mode when a balance
+    // read reflects the payment.
     this.funding.settleAuthorization(authorizationId, {
       consumed: outcome.ok === true,
       minedAtBlock: outcome.minedAtBlock,
@@ -489,9 +472,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     let authorizationId: Hex | undefined;
 
     try {
-      // Inside the `try`, so a value that survived `isUsableVault` but still cannot convert costs
-      // this vault rather than the cycle. The fetch boundary is what makes that rare; this is what
-      // makes it harmless — every exit from here is settled, and the loop moves to the next vault.
+      // Inside the `try`, so a failed conversion skips only this vault.
       const currentDebtBigInt = BigInt(currentDebt);
       const btcAmountBigInt = BigInt(btcAmount);
 
@@ -733,17 +714,9 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         return "skipped";
       }
 
-      // A receipt for a different transaction. Viem resolves `waitForTransactionReceipt` with the
-      // receipt of whatever took our nonce — a cancellation, a repricing, an unrelated send by
-      // another process holding this key — so `status` on its own says what THAT transaction did.
-      // Reading it as ours would report an acquisition nobody made: the vault is still in escrow,
-      // the intent would be confirmed under a hash that never mined, and the authorization would be
-      // retired as consumed while the batch it signed is still executable until its deadline.
-      //
-      // `unresolved`, not a failure: our transaction never reached the chain on its merits, so it
-      // must not feed the breaker — and its WBTC stays counted as spent, because the batch can
-      // still pay. The gate's hold is keyed by our own hash, which `retireSettledOutflows` releases
-      // once reconcile stops listing it as in flight.
+      // Viem returns the receipt of whatever took our nonce, so this one may not be ours, and its
+      // status says nothing about our acquisition. Settle `unresolved`: no breaker hit, and the
+      // WBTC stays held under our hash, because the signed batch can still pay.
       if (receipt.transactionHash !== hash) {
         this.settle(slot, { ok: false, unresolved: true, txHash: hash }, authorizationId);
         this.logger.warn(

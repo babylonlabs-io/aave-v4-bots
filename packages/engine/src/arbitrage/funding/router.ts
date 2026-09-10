@@ -47,37 +47,22 @@ export type RouterFundingDeps = Pick<
   };
 
 /**
- * How far a block's timestamp may lead this host's clock before we refuse to sign against it.
+ * How far a block's timestamp may lead this host's clock before signing is refused.
  *
- * The deadline is deliberately chain time — the router compares `block.timestamp > deadline`, so a
- * host clock that disagrees would otherwise expire batches early or leave them live too long. That
- * makes the computation self-consistent, and it also means one RPC answer decides how long a
- * treasury-spending signature lives: `SelfCallRelayer` carries no nonce, so the deadline is the
- * *entire* replay bound on the message. `ArbitrageRouter` admits only its own signer as submitter,
- * which is what keeps the batch from being spendable by whoever sees it; the deadline is still what
- * bounds a batch this process signed and then abandoned.
+ * The deadline is chain time (`block.timestamp` plus `deadlineSeconds`), so one RPC answer sets
+ * how long a treasury-spending signature lives, and `SelfCallRelayer` has no nonce to bound
+ * replay. Any lead accepted here extends that lifetime. Chain time tracks real time within
+ * seconds, so a minute allows honest skew and caps what a hostile endpoint can add.
  *
- * This is the local floor under that, and it doubles as a bound on the lifetime itself: whatever
- * lead is tolerated here is added to the configured window, because the deadline is that timestamp
- * plus `deadlineSeconds`. A minute is already far outside honest behaviour — chain timestamps track
- * real time within seconds — while leaving any legitimate skew room, and it keeps the worst case a
- * hostile endpoint can buy to a fraction of the configured window rather than a multiple of it.
- *
- * It refuses rather than silently shortening the deadline: a quietly clipped batch expires in
- * flight, which this design already classifies as *not our failure*, so the symptom would hide.
+ * Exceeding it throws, so the fault stays visible: a shortened batch would expire in flight,
+ * which reads as not our failure.
  */
 const MAX_CHAIN_TIME_LEAD_SECONDS = 60n;
 
 /**
- * How far past its deadline an authorization is held before it is forgotten.
- *
- * Expiry is judged from one block header, and a header is not proof of the canonical chain: a
- * shallow reorg can replace it, and behind a load-balanced pool the endpoint answering may sit a
- * block or two from the one that answered last. Either way a batch this map has dropped can still
- * be inside its window on the chain that survives — and an authorization nobody is accounting for
- * is treasury capacity committed twice. Two block times covers both; anything longer only delays
- * releasing capacity nothing can spend. The nonce fence keeps `PRIVATE_RECLAIM_MARGIN_BLOCKS` for
- * the same reason, in the unit that mechanism reasons in.
+ * How long past its deadline an authorization is still held. Expiry is read from one block
+ * header, which a shallow reorg or a lagging pool member can contradict. Releasing too early lets
+ * the same treasury WBTC be committed twice. Two block times covers both cases.
  */
 const AUTHORIZATION_EXPIRY_MARGIN_SECONDS = 24n;
 
@@ -116,33 +101,15 @@ export class RouterFunding implements ArbitrageFunding {
   private payer?: Address;
 
   /**
-   * Every signed batch this process has created and not yet retired, keyed by its EIP-712 digest.
+   * Every signed batch this process has created and not yet retired, keyed by EIP-712 digest. The
+   * relay has no nonce, so one vault can have several live batches.
    *
-   * Keyed by digest rather than by vault because the relay carries no nonce: more than one batch
-   * for the same vault can be live at once, and a vault-keyed record loses all but the last — its
-   * search anchor, its deadline, and the fact that it can still spend.
-   *
-   * `block` anchors the search for an execution — derived rather than guessed, since converting the
-   * deadline to blocks needs a block time we do not know, and guessing it in the fast direction
-   * searches too narrow a window and reports "not spent" for money that left. It is an anchor
-   * rather than the lower bound itself: `spentWithoutUs` reads from below it, because the height a
-   * block was observed at is not where its execution is guaranteed to appear.
-   *
-   * `deadline` is what the router itself compares against, and is how a revert caused by the batch
-   * timing out is told apart from one caused by the acquisition being rejected on its merits.
-   *
-   * `backed` is the accounting hand-off. While the risk slot that opened this acquisition is still
-   * open, its `maxWbtcIn` is `reserved` in the gate and counting it here too would deduct it twice.
-   * Once that slot settles the gate forgets it, and a batch that can still execute becomes an
-   * off-chain claim on the treasury that this map accounts for from that moment on — which is why
-   * `settleAuthorization` republishes capacity in the same breath rather than waiting for the next
-   * cycle's refresh, and why the flag flips for an *executed* batch too.
-   *
-   * `executedAt` is where our own acquisition mined, for a batch whose money provably moved. It is
-   * the height at which the treasury's own balance starts reporting the payment: a read below it
-   * still contains the WBTC, so dropping the record any earlier would count the same money as
-   * spendable twice. Between that settlement and that height the claim is held here exactly as an
-   * unexecuted batch's is.
+   * - `block`: anchor for the execution search. `spentWithoutUs` reads from below it.
+   * - `deadline`: the router's own expiry. It tells a timed-out batch from a rejected one.
+   * - `backed`: true while the gate still reserves `maxWbtcIn`. After settlement this map holds
+   *   the claim, so it is never counted twice.
+   * - `executedAt`: the block our acquisition mined in. Balance reads below it still include the
+   *   WBTC, so the record stays until a read at or above it.
    */
   private authorizations = new Map<
     Hex,
@@ -157,16 +124,9 @@ export class RouterFunding implements ArbitrageFunding {
   >();
 
   /**
-   * The treasury's last read capacity, and the height it was read at.
-   *
-   * Kept so a settlement can republish `capacity - held` synchronously. The gate's figure is only
-   * as good as the last thing that wrote it, and the send loop settles many acquisitions between
-   * refreshes: an authorization that starts being held after `refreshInventory` has already run
-   * would otherwise not reach the gate until the next cycle, and every vault judged in between
-   * would be admitted against WBTC a live batch can still take.
-   *
-   * The block travels with it because `setAvailable` orders writers by height — republishing at the
-   * height the balance was actually read at is what keeps a concurrent, fresher refresh winning.
+   * The treasury's last read balance and allowance, and the block of that read. Settlements
+   * republish capacity from it between refreshes. The block lets a fresher refresh win in
+   * `setAvailable`, which orders writes by height.
    */
   private inventory?: { balance: bigint; allowance: bigint; block: bigint };
 
@@ -245,11 +205,8 @@ export class RouterFunding implements ArbitrageFunding {
         `ArbitrageRouter ${routerAddress} pays from ${payer}, which is this bot's own signer. Router funding exists to separate the treasury from the signing key; with one address it also cannot account for signed batches separately from the signer's balance. Use a treasury the bot does not sign for, or ARBITRAGE_FUNDING=inventory.`
       );
     }
-    // The router admits one submitter — its own `signer` — so the account that authorizes and the
-    // account the transaction is sent from have to be the same one. They are, for every executor
-    // that signs with the key it sends from; an executor built over a custom sender is the case
-    // this catches, and on a router that binds the submitter it would revert every acquisition
-    // on-chain with nothing naming the cause.
+    // The router accepts only its signer as submitter, so the sending and authorizing accounts
+    // must match. An executor over a custom sender can differ; every acquisition would revert.
     if (!same(executor.identity.from, executor.account.address)) {
       throw new Error(
         `router funding sends from ${executor.identity.from} but authorizes as ${executor.account.address}. ArbitrageRouter ${routerAddress} only relays batches submitted by its signer, so these must be one account.`
@@ -285,12 +242,8 @@ export class RouterFunding implements ArbitrageFunding {
         `payer ${payer} has not approved ArbitrageRouter ${routerAddress} to spend its WBTC. Only the payer can grant this; the bot cannot approve on its behalf.`
       );
     }
-    // Warned, not refused, and the difference is deliberate. An empty approval is an operator
-    // action that has not happened — the mode cannot work until it does, and it cannot become true
-    // on its own. An empty treasury is an ordinary operating state that fixes itself with a
-    // transfer: a drained balance is exactly what a boot after a busy window looks like, and
-    // failing here would crash-loop the service over a condition the gate already handles by
-    // admitting nothing. `refreshInventory` publishes the zero, so no acquisition is attempted.
+    // An empty treasury is a normal state that a transfer fixes, so this only warns.
+    // `refreshInventory` publishes the zero, and the gate admits nothing.
     if (balance === 0n) {
       this.deps.logger.warn(
         `payer ${payer} holds no WBTC — no acquisition can be funded until the treasury is topped up`
@@ -326,20 +279,11 @@ export class RouterFunding implements ArbitrageFunding {
   }
 
   /**
-   * Hand the gate what the treasury may still commit: its capacity minus every live batch.
+   * Publish to the gate the treasury capacity minus every settled, unexpired batch: WBTC the gate
+   * no longer reserves but a signed batch can still take.
    *
-   * What is left is the treasury's own capacity minus every batch that is settled, unexpired and
-   * unaccounted anywhere else — money the gate has stopped reserving but that a signed
-   * authorization can still take. Published rather than merely logged, because the gate's admission
-   * check is the only thing standing between a live batch and a second commitment of the same WBTC.
-   *
-   * Called from `refreshInventory` with a fresh read, and again from every settlement that changes
-   * what is held. A settlement has no new balance to read — it is synchronous, and the gate must
-   * see the change before the send loop judges the next vault — so it republishes the last read
-   * against the new set of holds.
-   *
-   * A no-op before the first refresh: with no balance ever read there is nothing to subtract from,
-   * and publishing a guess would be worse than the gate's own fail-closed answer.
+   * Runs after each refresh, and after each settlement with the last read, so the gate sees a new
+   * hold before the send loop judges the next vault. Does nothing before the first refresh.
    */
   private publishCapacity(): void {
     const { risk, metrics, wbtcAddress } = this.deps;
@@ -378,11 +322,8 @@ export class RouterFunding implements ArbitrageFunding {
    * **Executed**: the money already moved, so the balance read at this same block reports it and
    * holding it as well would subtract it twice — which is why the caller pins both to one height.
    *
-   * Execution is proved two ways, and both are pinned to `head` for that reason: the router's event
-   * in the window below, and — for our own confirmed acquisition — the height its receipt named.
-   * The second exists because a settlement happens between refreshes, where there is no balance
-   * read to pin anything to: the record is kept until a read is taken at or above the height that
-   * reports the payment, which is exactly this call.
+   * Execution is proved by the router's event in the window below or, for our own confirmed
+   * acquisition, by `executedAt` at or below `head`.
    *
    * One `getLogs` for every live vault rather than one per authorization: the filter is an OR over
    * the indexed `vaultId`, and the window is short because nothing outlives its deadline.
@@ -390,18 +331,12 @@ export class RouterFunding implements ArbitrageFunding {
   private async retireAuthorizations(head: bigint, chainTime: bigint): Promise<void> {
     const { publicClient, routerAddress, vaultSwapAddress, vaultKeeperAddress } = this.deps;
     for (const [id, a] of this.authorizations) {
-      // Our own acquisition mined at or below the height this refresh reads, so the balance it
-      // reads already has the WBTC gone. Nothing left to hold.
+      // Our acquisition mined at or below this read, so the balance already excludes its WBTC.
       if (a.executedAt !== undefined && a.executedAt <= head) {
         this.authorizations.delete(id);
         continue;
       }
-      // Past the deadline *and* past the margin. Retiring on the first header that reports expiry
-      // trusts one timestamp to be canonical, and the two ordinary ways it is not — a shallow reorg
-      // that replaces it, and a load-balanced pool whose members disagree by a block — both put a
-      // batch back inside its window after this map has forgotten it. The treasury capacity it was
-      // holding is then republished and can be committed to a second vault while the first is still
-      // executable by anyone holding it.
+      // Expired, with margin. See `AUTHORIZATION_EXPIRY_MARGIN_SECONDS`.
       if (a.deadline + AUTHORIZATION_EXPIRY_MARGIN_SECONDS < chainTime) {
         this.authorizations.delete(id);
       }
@@ -447,25 +382,17 @@ export class RouterFunding implements ArbitrageFunding {
   }
 
   /**
-   * Nothing to withdraw: the allowance this mode spends through is the treasury's, granted by an
-   * operator to the router. This process never held the right to grant it and cannot take it back.
+   * No-op. The allowance is the treasury's, granted by an operator; this process cannot revoke it.
    */
   async revokeApprovals(): Promise<void> {}
 
   /**
-   * The payment is authorized separately from the transaction, and the batch is visible before we
-   * broadcast anything — gas estimation already put it in front of an RPC provider. Another
-   * submission of the same authorization can therefore execute first, leaving our own transaction
-   * to revert on a vault that is already gone. From the receipt alone that is indistinguishable
-   * from an ordinary lost race, except that the treasury's WBTC *did* leave under our signature.
+   * Did our authorization pay for the vault in another transaction? The batch is public before we
+   * broadcast (gas estimation shows it to the RPC provider), so another submission of it can
+   * execute first. Our transaction then reverts like a lost race, but the treasury paid.
    *
-   * Who can make that submission is the deployed router's answer, not this mode's: `ArbitrageRouter`
-   * admits only its signer, so there the batch is ours alone to submit. This check does not rest on
-   * that — a router that relays for anyone is the case it is written for, and the reasoning holds
-   * either way.
-   *
-   * The router's own event settles it: it fires only on a completed acquisition, and only this
-   * signer can authorize this router, so a matching entry means our authorization paid.
+   * The router's event decides it: it fires only on a completed acquisition, and only this signer
+   * authorizes this router.
    */
   async spentWithoutUs(authorizationId: Hex | undefined): Promise<boolean> {
     const { publicClient, routerAddress, vaultSwapAddress, vaultKeeperAddress } = this.deps;
@@ -613,22 +540,14 @@ export class RouterFunding implements ArbitrageFunding {
     if (authorizationId === undefined) return;
     const authorization = this.authorizations.get(authorizationId);
     if (authorization === undefined) return; // already retired, or never ours
-    // The gate has released this acquisition's reservation, so from here the claim on the treasury
-    // is this map's to carry — whether the batch executed or is still executable. Both cases are
-    // the same subtraction: an executed one leaves the WBTC gone from a balance nobody has re-read
-    // yet, and an unexecuted one leaves it takeable.
+    // The gate no longer reserves this spend, so this map holds it, executed or not.
     authorization.backed = false;
-    // Where our own acquisition mined, so `retireAuthorizations` can drop the record against a
-    // balance read that actually reports the payment. Recorded only for a consumed batch, and never
-    // cleared by a later settlement — the idempotent `finally` backstops settle again with
-    // `consumed: false`, and losing the height there would hold retired money for the whole
-    // deadline.
+    // For `retireAuthorizations`. Never cleared: the `finally` backstops settle again with
+    // `consumed: false`.
     if (outcome.consumed && outcome.minedAtBlock !== undefined) {
       authorization.executedAt = outcome.minedAtBlock;
     }
-    // Synchronously, because the send loop judges its next vault before the next refresh: the gate
-    // has just stopped reserving this spend, and unless the hold reaches it in the same breath the
-    // treasury's WBTC is spendable twice inside one cycle.
+    // Now, not at the next refresh: the send loop judges the next vault before then.
     this.publishCapacity();
   }
 

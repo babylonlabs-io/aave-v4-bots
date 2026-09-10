@@ -98,19 +98,15 @@ export class InventoryFunding implements LiquidationFunding {
           logger.warn(`Revocation for ${symbol} ${result.kind} — awaiting operator signature`);
         }
       } catch (error) {
-        // Per token, because the next one is a different allowance and a different transaction: a
-        // revert or an RPC failure on this one is no reason to leave the rest granted.
+        // Per token: one failure must not leave the other allowances granted.
         logger.error(`Could not revoke the adapter's ${symbol} allowance:`, error);
       }
     }
   }
 
   /**
-   * The tokens this mode approves the adapter for: every borrowable reserve, plus WBTC.
-   *
-   * Read fresh when the cycle has not published a topology — `revokeApprovals` runs from a halted
-   * cycle, which is exactly when no `refreshInventory` has been reached, and a bot that halted at
-   * boot would otherwise have no list to withdraw against.
+   * The tokens this mode approves the adapter for: every borrowable reserve, plus WBTC. Reads the
+   * reserves when no topology is cached, as in a cycle that halted at boot.
    */
   private async approvedTokens(): Promise<Address[]> {
     const topology = this.topology ?? (await this.deps.reserves());

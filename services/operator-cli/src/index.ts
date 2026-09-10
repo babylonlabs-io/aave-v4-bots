@@ -123,8 +123,7 @@ async function dispatch(command: string, args: string[], ctx: ops.OperatorContex
         return;
       }
       const envelope = result.row.safeEnvelope;
-      // The nonce alongside the hash: it is what the Safe UI shows for the transaction the owners
-      // are about to sign, and the only part of this line they can check against another source.
+      // The Safe UI shows the nonce, so owners can check it against this line.
       console.log(
         `claimed ${result.row.id}${
           envelope

@@ -49,10 +49,7 @@ interface Resolution {
   meta?: TransitionMeta;
   bucket: "confirmed" | "failed" | "stillInFlight";
   warn?: string;
-  /**
-   * This intent is in flight but carries no relay horizon, so nothing can ever release its nonce.
-   * The loop repairs it — the probe and the write are side-effects, which resolvers do not do.
-   */
+  /** In flight with no relay horizon. The loop recovers one, because resolvers do no I/O. */
   repairHorizon?: true;
 }
 
@@ -70,7 +67,7 @@ const failedAs = (meta: TransitionMeta): Resolution => ({
 /** Genuinely in flight — leave the row as-is, just count it. */
 const stillInFlight: Resolution = { bucket: "stillInFlight" };
 
-/** In flight, and missing the horizon that is the only thing able to release its nonce. */
+/** In flight, with no horizon to release its nonce. */
 const stillInFlightUnfenced: Resolution = { bucket: "stillInFlight", repairHorizon: true };
 
 /**
@@ -223,9 +220,7 @@ async function resolveBroadcastIntent(
   ) {
     return failedAs({ txHash, error: "not accepted (reconciled)" });
   }
-  // Still out there — and under private submission, a row with no recorded horizon is one whose
-  // nonce nothing can ever release: `couldBeInFlight` has no deadline to pass, and the relay-aware
-  // reader fails closed on every answer. Ask the loop to fill it in. See `createHorizonRepair`.
+  // Under private submission a row without a horizon never releases its nonce. See `Horizon`.
   if (liveness.reclaimMarginBlocks !== undefined && intent.relayMaxBlock == null) {
     return stillInFlightUnfenced;
   }
@@ -274,16 +269,9 @@ function resolveUnbroadcastIntent(
 }
 
 /**
- * Fill in the missing relay horizon of an in-flight intent, or say why it could not be.
- *
- * Nothing here is fatal. A repair that does not happen leaves the row exactly as it was — fenced —
- * and every later pass tries again, so a relay outage costs nothing but the wait. Errors are
- * swallowed for the same reason the Safe scan swallows its own: one unrepairable intent must not
- * stop a reconcile pass that has other rows to resolve.
- *
- * The warning is the only signal an operator gets. `intent-stuck` is raised by the MANUAL executor
- * alone, so in AUTO mode a nonce fenced forever is otherwise silent — the bot simply stops landing
- * transactions.
+ * Record the missing relay horizon of an in-flight intent, or warn why not. Never throws: a
+ * failed repair leaves the row fenced, and the next pass retries. In AUTO mode the warning is the
+ * only signal of a fenced nonce.
  */
 async function recoverHorizon(
   horizon: Pick<Horizon, "repair"> | undefined,
@@ -293,8 +281,7 @@ async function recoverHorizon(
   logger?: Pick<Logger, "warn" | "info">
 ): Promise<void> {
   const describe = `${intent.action} ${intent.subject} (${intent.id}) at nonce ${intent.nonce}`;
-  // Private submission is configured — `resolveBroadcastIntent` checked — but no resolver was
-  // wired. Worth saying: the fence cannot release this row, and no amount of waiting will change it.
+  // Private submission is on but no `horizon` is wired, so this row can never be released.
   if (!horizon) {
     logger?.warn(
       `Reconcile: ${describe} has no recorded relay horizon and no way to recover one, so its nonce stays fenced. Pass \`horizon\` alongside \`reclaimMarginBlocks\`.`
@@ -310,8 +297,7 @@ async function recoverHorizon(
       return;
     }
     if (!(await store.transition(intent.id, intent.status, { relayMaxBlock: recovered }, expect))) {
-      // Another writer moved the row between this pass's read and now. Its resolution is newer than
-      // ours, so there is nothing to fix and nothing to warn about beyond the trace.
+      // Another writer changed the row after this pass read it. Its state is newer.
       logger?.info(`Reconcile: ${describe} advanced while its horizon was being recovered.`);
       return;
     }
@@ -358,11 +344,7 @@ export async function reconcilePending(args: {
    * empty, so nothing here keeps a crash leftover alive.
    */
   isSending?: (id: string) => boolean;
-  /**
-   * Recover the relay horizon of a privately-submitted intent whose own submission never recorded
-   * one. `repair` returns `null` rather than guess; see `Horizon`. Omitted under public submission,
-   * where a missing horizon is normal and nothing needs releasing by one.
-   */
+  /** Recovers a missing relay horizon; see `Horizon`. Omitted under public submission. */
   horizon?: Pick<Horizon, "repair">;
 }): Promise<ReconcileSummary> {
   const { store, reader, signer, logger, graceMs, reclaimMarginBlocks, isSending } = args;
@@ -450,9 +432,7 @@ export async function reconcilePending(args: {
     if (resolution.status) {
       await store.transition(intent.id, resolution.status, resolution.meta, asRead(intent));
     } else if (resolution.repairHorizon && isBroadcast(intent)) {
-      // Bound to `asRead(intent)` like every other write here, so a row another engine has since
-      // resolved and revived is not stamped with this pass's answer. The row stays in flight for
-      // this pass either way: the horizon only takes effect from the next one, which re-reads it.
+      // Guarded by `asRead`, like every write here. The horizon takes effect on the next pass.
       await recoverHorizon(args.horizon, store, intent, asRead(intent), logger);
     }
     if (resolution.warn) logger?.warn(resolution.warn);

@@ -33,8 +33,7 @@ describe("maxWbtcInWithSlippage", () => {
   );
 });
 
-// The escrow feed crosses an unauthenticated wire and is cast to its type, never parsed, so this is
-// the only thing standing between the indexer's bytes and a `BigInt` conversion.
+// The escrow feed is cast, not parsed, so this guard runs before any `BigInt` conversion.
 describe("isUsableVault", () => {
   const vault = {
     vaultId: `0x${"1".repeat(64)}`,
@@ -47,14 +46,12 @@ describe("isUsableVault", () => {
     expect(isUsableVault(vault)).toBe(true);
   });
 
-  // `createdAt` is in the type but nothing reads it, so a vault must not be dropped over it.
+  // Nothing reads `createdAt`, so it is not checked.
   it("ignores fields the engine never consumes", () => {
     expect(isUsableVault({ ...vault, createdAt: undefined })).toBe(true);
   });
 
-  // The case that motivates checking the shape rather than trying the conversion: `BigInt("")` is
-  // `0n`, so an empty debt converts cleanly and reads as a vault with nothing owed on it — the most
-  // profitable thing on the list. "Does not throw" is the wrong bar.
+  // `BigInt("")` is `0n`, so an empty debt would read as nothing owed.
   it("rejects an empty amount, which BigInt would read as zero", () => {
     expect(BigInt("")).toBe(0n); // the trap this guard exists for
     expect(isUsableVault({ ...vault, currentDebt: "" })).toBe(false);

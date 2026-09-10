@@ -158,9 +158,7 @@ describe("RouterFunding", () => {
       );
     });
 
-    // Not fatal, unlike a missing approval: a drained treasury is refilled by a transfer, and an
-    // acquisition that empties it right before a restart would otherwise crash-loop the service.
-    // The gate admits nothing against zero capacity, so idling is the same safety with a way back.
+    // A drained treasury is refilled by a transfer. The gate admits nothing against zero.
     it("starts with an empty treasury, publishing nothing to spend", async () => {
       const h = build({ balance: 0n });
       await h.funding.prepare();
@@ -336,9 +334,7 @@ describe("RouterFunding", () => {
       return { ...h, authorizationId };
     }
 
-    // The batch outlives the transaction meant to carry it, and it is visible before we broadcast —
-    // gas estimation puts it in front of an RPC first — so another send of it can execute and leave
-    // our own tx reverting. A router that relays for anyone lets a third party make that send.
+    // The batch is public before we broadcast, so another send of it can execute first.
     it("reports a spend when the router shows our authorization acquired the vault", async () => {
       const { funding, getLogs, authorizationId } = await authorized({
         swapLogs: [{ blockNumber: 99n }],
@@ -464,25 +460,20 @@ describe("RouterFunding", () => {
       expect(published(h)).toMatchObject({ authorized: 90n });
     });
 
-    // The confirmed acquisition's WBTC has already left, and the refresh below reads at block 100 —
-    // at or above where it mined, so that balance reports it. Holding it as well would subtract the
-    // same money twice and shrink capacity for no reason.
+    // The refresh reads at block 100, at or above where the acquisition mined, so the balance
+    // already shows the payment.
     it("holds nothing for a batch whose acquisition confirmed below the refresh height", async () => {
       const h = await authorizedThen({ consumed: true, minedAtBlock: 99n });
       expect(published(h)).toMatchObject({ authorized: 0n });
     });
 
-    // The other half, and the one that costs money to get wrong: mined is not the same as visible.
-    // A balance read from a height below the acquisition still contains the WBTC, so dropping the
-    // record against it would publish the same money as spendable a second time.
+    // A balance read below the mined block still includes the WBTC, so the hold stays.
     it("keeps holding a confirmed acquisition the refresh height cannot report yet", async () => {
       const h = await authorizedThen({ consumed: true, minedAtBlock: 150n }, { blockNumber: 100n });
       expect(published(h)).toMatchObject({ authorized: 90n });
     });
 
-    // The whole point of holding it at all. `refreshInventory` runs once per cycle, before the send
-    // loop, and the loop settles acquisitions as it goes — a hold that waits for the next refresh
-    // reaches the gate a cycle after the vault it was supposed to stop was already admitted.
+    // The hold reaches the gate at settlement, before the send loop judges the next vault.
     it("republishes capacity the moment a batch becomes held, not at the next refresh", async () => {
       const h = build({ balance: 1_000n, allowance: 1_000n });
       await h.funding.prepare();
@@ -555,9 +546,7 @@ describe("RouterFunding", () => {
       expect(published(h)).toMatchObject({ authorized: 0n });
     });
 
-    // Expiry is judged from one header, and a header is not the canonical chain: a shallow reorg or
-    // a pool member a block behind can put the batch back inside its window after this map has
-    // dropped it — and an authorization nobody accounts for is treasury capacity committed twice.
+    // One header can be contradicted by a reorg or a lagging node, so expiry waits for the margin.
     it("keeps holding through the first header that reports expiry", async () => {
       const h = build({ balance: 1_000n, allowance: 1_000n });
       await h.funding.prepare();
@@ -568,8 +557,7 @@ describe("RouterFunding", () => {
       });
       h.funding.settleAuthorization(authorizationId, { consumed: false });
 
-      // One second past the deadline: expired by this header, and a block or two of disagreement
-      // away from not being.
+      // One second past the deadline, inside the margin.
       h.getBlock.mockResolvedValue({ timestamp: 1_700_000_121n, number: 200n });
       await h.funding.refreshInventory();
 
@@ -622,8 +610,7 @@ describe("RouterFunding", () => {
       expect(signTypedData).toHaveBeenCalled();
     });
 
-    // The bound itself, not just a value under it: a lead this size is minutes of chain time out of
-    // step with the host, which is not skew — and every second of it would be added to the window.
+    // A lead of minutes is not skew, and all of it would extend the batch's lifetime.
     it("refuses a lead of minutes, however plausible the block otherwise looks", async () => {
       const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 299n });
 
@@ -634,9 +621,7 @@ describe("RouterFunding", () => {
       expect(signTypedData).not.toHaveBeenCalled();
     });
 
-    // Whatever lead is tolerated is added to the configured window, because the deadline is that
-    // timestamp plus `deadlineSeconds`. The bound therefore decides the worst-case lifetime of a
-    // bearer signature, and it has to stay a fraction of the window rather than a multiple of it.
+    // The accepted lead extends the deadline, so it must stay a fraction of the window.
     it("bounds the lifetime a tolerated lead can buy", async () => {
       const now = nowSeconds();
       const { funding, signTypedData } = build({ blockTimestamp: now + 59n });

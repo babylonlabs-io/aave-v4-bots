@@ -131,15 +131,11 @@ interface BaseExecutor {
   }): Promise<AllowanceResult>;
 
   /**
-   * Set `spender`'s allowance on `token` back to zero. AUTO **broadcasts** `approve(spender, 0)` and
-   * waits the receipt; MANUAL proposes it. Returns `satisfied` when the spender can already pull
-   * nothing.
+   * Set `spender`'s allowance on `token` to zero. AUTO broadcasts `approve(spender, 0)` and waits
+   * for the receipt; MANUAL proposes it. Returns `satisfied` when the allowance is already zero.
    *
-   * It is the counterpart of `ensureAllowance`, and it is the one transaction the broadcast guard is
-   * **not** asked about. A halt stops what this bot sends; an allowance is a permission that already
-   * left, and the spender needs nothing from us to use it. Refusing to withdraw it while halted
-   * would leave the gate protecting the spender it halted for. The only call this can produce sets
-   * an allowance to zero, so there is nothing else a bypass here could be used to send.
+   * It skips the broadcast guard: it runs while halted, to withdraw a permission the spender could
+   * still use. It can only send a zero approval.
    */
   revokeAllowance(input: {
     token: Address;
@@ -202,11 +198,8 @@ export function createAutoExecutor(deps: {
    * go through it too — an approval is a transaction, and the same halt that stops a liquidation
    * has no reason to permit granting an allowance to the contract that caused it.
    *
-   * Called twice per send, and both are needed. The first is before the claim is signed, so a gate
-   * already halted costs nothing — no nonce, no signature, no durable row. The second is the
-   * `TxSender`'s `beforeBroadcast`, which runs synchronously against the wire: everything between
-   * the two — waiting for the shared nonce lock, the pricing reads, a KMS signature, the durable
-   * write — is time a halt can land in, and only the second one sees it.
+   * Called twice per send: before the claim, so a halted gate costs nothing, and as the
+   * `TxSender`'s `beforeBroadcast`, to catch a halt that lands during locking, pricing or signing.
    *
    * Throw `PreBroadcastError` (the runtime does): the engines already read that as "nothing reached
    * the chain", so the slot settles `abandoned` and the breaker is left alone.
@@ -234,14 +227,9 @@ export function createAutoExecutor(deps: {
   };
 
   /**
-   * The one send path for an ERC-20 `approve`, at whatever amount. Granting a spender the right to
-   * pull and taking it back are the same transaction with a different argument, and they stay the
-   * same crash-safe send: one claim, one durable pre-broadcast record, one receipt, one nonce.
-   *
-   * The two callers differ in exactly two places, and both are parameters. `action` is what the
-   * claim is keyed by, so a grant and a withdrawal of the same allowance are two rows rather than
-   * one refusing the other. `guard` is the broadcast guard, which only the grant passes — see
-   * `revokeAllowance`.
+   * Crash-safe send of an ERC-20 `approve` for any amount: one claim, one pre-broadcast record, one
+   * receipt. `action` keys the claim, so a grant and a revoke are separate rows. `guard` is the
+   * broadcast guard; only the grant passes one.
    */
   const sendApprove = async (input: {
     token: Address;
@@ -319,10 +307,8 @@ export function createAutoExecutor(deps: {
       }
       throw error;
     } finally {
-      // The send is over either way, and the row now carries what reconcile needs to judge it on
-      // its own. Releasing here rather than after the receipt keeps the set to the one window it
-      // is for: a claimed row with no nonce and no hash, which nothing else can tell apart from a
-      // dead process's leftover.
+      // The row now carries what reconcile needs. The set covers only the send window: a claimed
+      // row with no nonce or hash, which looks like a dead process's leftover.
       if (intentId) crash.endSend(intentId);
     }
     if (intentId) {
@@ -390,12 +376,11 @@ export function createAutoExecutor(deps: {
 
     async revokeAllowance({ token, spender, label }) {
       const allowance = await readAllowance(publicClient, token, identity.from, spender);
-      // Nothing granted, nothing to take back — and the read is what makes this safe to re-attempt
-      // every cycle for as long as the halt stands.
+      // Already zero. The read makes the retry on every halted cycle cheap.
       if (allowance === 0n) return { kind: "satisfied" };
 
       logger.warn(`Revoking ${label ?? token} allowance for ${spender}...`);
-      // No `guard`: this runs while the gate is HALTED, which is the only time it is called.
+      // Called only while HALTED, where the guard would refuse it.
       const result = await sendApprove({
         token,
         spender,
@@ -488,10 +473,8 @@ export interface Submission {
   /** See `CrashSafetyConfig.reclaimMarginBlocks` — with the recorded horizon, what frees a nonce. */
   reclaimMarginBlocks: number;
   /**
-   * The block past which a transaction can no longer be included — stamped at submission, and
-   * recovered at reconcile for a row whose submission-time write never landed. Part of the same
-   * value for the same reason as the rest: a `reader` that fails closed and a horizon nothing can
-   * recover is a fence with no key. See `Horizon`.
+   * Records each private transaction's deadline at submission, and recovers a missing one at
+   * reconcile. See `Horizon`.
    */
   horizon: Horizon;
   /**
@@ -605,10 +588,8 @@ export function createManualExecutor(deps: {
     if (intentStuckMs <= 0) return;
     const at = now();
     const candidates = [
-      // `claimed` is the obvious one. A `proposed` row still carrying a Safe envelope is the other:
-      // it was claimed once and released without the reservation being resolved, and that row is
-      // deliberately never swept by the TTL — a signed SafeTx does not expire with a timer. Nothing
-      // else would ever mention it, and until an operator settles it no other Safe intent may claim.
+      // Also a `proposed` row with a Safe envelope: released without resolving its SafeTx. The TTL
+      // never sweeps it, and it blocks every other Safe claim until an operator settles it.
       ...(await store.proposals()).filter((r) => r.status === "claimed" || r.safeEnvelope !== null),
       ...(await store.reconcile()).filter((r) => r.status === "submitted"),
     ];
@@ -732,9 +713,7 @@ export function createManualExecutor(deps: {
     async revokeAllowance({ token, spender }) {
       const allowance = await readAllowance(publicClient, token, identity.from, spender);
       if (allowance === 0n) return { kind: "satisfied" };
-      // A distinct `action` from the approval above, so a proposal to grant that the operator has
-      // not signed does not make the proposal to withdraw a duplicate of it. Which one they sign is
-      // then their decision, on two alerts that say opposite things — which is the honest state.
+      // Its own `action`, so a pending grant proposal does not make this one a duplicate.
       return propose(
         { address: token, abi: erc20Abi, functionName: "approve", args: [spender, 0n] },
         { target: token, action: "revoke", subject: spender }

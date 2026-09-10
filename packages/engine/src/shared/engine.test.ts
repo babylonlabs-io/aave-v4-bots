@@ -101,18 +101,13 @@ describe("BaseEngine", () => {
 
     await engine.run();
 
-    // A halt stops what this bot sends; it is not a reason to stop looking. Reconcile still resolves
-    // what was already sent, the MANUAL TTL still expires un-actioned proposals, and the stuck alert
-    // still fires — all of which matter more during an incident, not less. The indexer is not asked
-    // and the strategy does not run.
+    // Halted: bookkeeping still runs, but the indexer and the strategy do not.
     expect(engine.calls).toEqual(["reconcile", "resyncNonces"]);
     expect(metrics.recordPollDuration).toHaveBeenCalledOnce();
     expect(onPollComplete).toHaveBeenCalledOnce();
   });
 
-  // A halt stops what the bot sends. An allowance is a permission that already left, and a
-  // code-hash halt is the one that says the holder of it changed under us — so the halted cycle
-  // takes it back, and does nothing else.
+  // A code-hash halt revokes allowances in the halted cycle, and does nothing else.
   it("withdraws its allowances when the halt says a pinned target changed", async () => {
     const risk = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
     await risk.verifyCode(async () => "0xdead");
@@ -120,8 +115,7 @@ describe("BaseEngine", () => {
 
     await engine.run();
 
-    // After the bookkeeping, and after the nonce lease is re-seeded: the withdrawal is a real
-    // transaction and wants a fresh one.
+    // After reconcile and the nonce resync: the revocation needs a fresh nonce.
     expect(engine.calls).toEqual(["reconcile", "resyncNonces", "revokeApprovals"]);
     expect(onPollComplete).toHaveBeenCalledOnce();
   });
@@ -132,8 +126,7 @@ describe("BaseEngine", () => {
 
     await engine.run();
 
-    // The operator stopped trading; they did not say the adapter was compromised. Withdrawing here
-    // would make every kill-switch halt cost an approval to undo.
+    // A kill-switch halt revokes nothing: the operator stopped trading, not the adapter.
     expect(engine.calls).toEqual(["reconcile", "resyncNonces"]);
   });
 

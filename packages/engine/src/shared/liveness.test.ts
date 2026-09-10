@@ -108,10 +108,7 @@ describe("createRelayHorizon — what the relay is allowed to claim", () => {
     );
   });
 
-  // A cap derived from the configured window would point the wrong way: a short declaration would
-  // shrink the cap with it and truncate the relay's true, longer deadline, freeing the nonce while
-  // the transaction could still be included. The cap bounds a broken relay; it does not overrule an
-  // honest one.
+  // The cap is absolute, so a small configured window does not truncate an honest deadline.
   it("honours a deadline past a multiple of a small configured window", async () => {
     const horizon = createRelayHorizon(node(100), relay({ maxBlockNumber: 125 }), 1, {
       warn,
@@ -121,8 +118,7 @@ describe("createRelayHorizon — what the relay is allowed to claim", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  // Both directions of the same rule: the configured window is a floor under the relay's answer,
-  // never a competing one. Whichever is later is the one that keeps the nonce fenced.
+  // The configured window is a floor under the relay's deadline: the later block wins.
   it("keeps the configured window when the relay declares something shorter", async () => {
     const horizon = createRelayHorizon(node(100), relay({ maxBlockNumber: 105 }), 25, {
       warn,
@@ -182,15 +178,8 @@ describe("createRelayHorizon", () => {
   });
 });
 
-// Recovering the horizon of a transaction whose own submission never recorded one. Every branch
-// that cannot *prove* the deadline it would record declines, because the two mistakes cost
-// differently: fencing too long stalls the bot visibly, while recording a deadline shorter than the
-// relay's real one hands out a nonce the relay can still spend.
-//
-// Built through the same bundle production wires, and the window it is given is load-bearing: at
-// head 100 a configured 25 would surface as a horizon of 125, which no assertion below expects. So
-// every `toBeNull` here also proves the repair never falls back to the window the way submission
-// does — the asymmetry that makes it safe to run against a row of unproven provenance.
+// `repair` records only a deadline the relay proves, and never falls back to the configured
+// window. At head 100 a fallback would return 125, which no assertion below expects.
 describe("repairHorizon", () => {
   const warn = vi.fn();
   beforeEach(() => warn.mockReset());
@@ -203,11 +192,7 @@ describe("repairHorizon", () => {
     expect(await repair(HASH)).toBe(200);
   });
 
-  // The migration case. A public submission leaves `relayMaxBlock` null exactly as a lost horizon
-  // write does, and the reading process's own config cannot tell the two apart. A relay that never
-  // received the hash can: it answers UNKNOWN. Repairing anyway would stamp a relay deadline on a
-  // public transaction and then release its nonce while it still sat in the mempool — where it may
-  // legitimately linger forever.
+  // A public submission also leaves a null horizon, and the relay has never received its hash.
   it("declines a hash the relay has never received", async () => {
     const repair = createRelayHorizon(node(100), relay({ status: "UNKNOWN" }), 25, {
       warn,
@@ -216,8 +201,7 @@ describe("repairHorizon", () => {
     expect(await repair(HASH)).toBeNull();
   });
 
-  // The same UNKNOWN also means "held once, since forgotten". Falling back to a configured window
-  // there would overwrite a real, longer, no-longer-observable deadline with a short guess.
+  // UNKNOWN can also mean the relay forgot the hash, and with it the real, longer deadline.
   it("declines rather than guessing a window for a forgotten hash", async () => {
     const repair = createRelayHorizon(
       node(100),
@@ -231,8 +215,7 @@ describe("repairHorizon", () => {
     expect(await repair(HASH)).toBeNull();
   });
 
-  // Held by the relay AND in the public mempool, so the relay's deadline does not bound when the
-  // transaction can be included. `seenInMempool` is the leak the private route is meant to prevent.
+  // A transaction in the public mempool is not bounded by the relay's deadline.
   it("declines a transaction that leaked to the public mempool", async () => {
     const repair = createRelayHorizon(
       node(100),
@@ -244,8 +227,7 @@ describe("repairHorizon", () => {
     expect(await repair(HASH)).toBeNull();
   });
 
-  // Held, but naming no deadline of its own — `maxBlockNumber` is absent and parses as 0. That is
-  // no more evidence than UNKNOWN, and a fresh window here would recreate the same asymmetry.
+  // A held transaction with no declared deadline (`maxBlockNumber` 0) proves nothing.
   it("declines when the relay names no deadline", async () => {
     const repair = createRelayHorizon(node(100), relay({ maxBlockNumber: 0 }), 25, {
       warn,
@@ -254,8 +236,7 @@ describe("repairHorizon", () => {
     expect(await repair(HASH)).toBeNull();
   });
 
-  // Terminal statuses still carry a real deadline, and a terminal answer is not what releases a
-  // nonce — the horizon is. See `createRelayAwareReader`.
+  // Terminal statuses still carry a real deadline.
   it.each(["INCLUDED", "FAILED", "CANCELLED"] as const)("repairs on %s", async (status) => {
     const repair = createRelayHorizon(node(100), relay({ status, maxBlockNumber: 150 }), 25, {
       warn,
@@ -264,7 +245,7 @@ describe("repairHorizon", () => {
     expect(await repair(HASH)).toBe(150);
   });
 
-  // Fails closed like every other relay read: the caller keeps the row fenced and tries next pass.
+  // Fails closed: the caller keeps the row fenced.
   it("propagates a failed probe rather than reporting no deadline", async () => {
     const repair = createRelayHorizon(
       node(100),

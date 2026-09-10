@@ -9,10 +9,8 @@ import {SelfCallRelayer} from "../../contracts/base/SelfCallRelayer.sol";
 
 /// @title ArbitrageRouterRelayTest
 /// @notice Covers who may submit a relayed batch.
-/// @dev The submitter check runs before signature recovery, so both cases below are decided without a
-///      valid signature, an LLP, or WBTC: the revert string says which check the call reached. That is the
-///      whole property under test — an authorization the bot leaks while estimating gas must be inert in
-///      anyone else's hands.
+/// @dev The submitter check runs before signature recovery, so the revert string shows which check
+///      stopped the call. A batch leaked during gas estimation must be inert for anyone but the signer.
 contract ArbitrageRouterRelayTest is Test {
     ArbitrageRouter internal router;
 

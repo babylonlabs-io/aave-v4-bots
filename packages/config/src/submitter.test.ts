@@ -54,7 +54,7 @@ describe("buildSubmitterConfig", () => {
     ).toThrow(/requires FLASHBOTS_PROTECT_URL, PRIVATE_MIN_PRIORITY_FEE_WEI/);
   });
 
-  // §4.2: a private tx is invisible to our own node, so the persisted intents are the only thing
+  // A private tx is invisible to our own node, so the persisted intents are the only thing
   // left holding the nonce. Without a store this is not a degraded mode, it is nonce reuse.
   it("refuses private submission without a store to fence the nonce", () => {
     expect(() => buildSubmitterConfig(privateEnv({ DATABASE_URL: undefined }))).toThrow(
@@ -62,7 +62,7 @@ describe("buildSubmitterConfig", () => {
     );
   });
 
-  // §4.3: the failure this prevents is silent — protection that never lands a transaction.
+  // The failure this prevents is silent — protection that never lands a transaction.
   it("refuses private submission without a priority-fee floor", () => {
     expect(() =>
       buildSubmitterConfig(privateEnv({ PRIVATE_MIN_PRIORITY_FEE_WEI: undefined }))
@@ -184,10 +184,7 @@ describe("submission is an AUTO-only decision", () => {
   });
 });
 
-// The declared window is the only thing fencing a nonce when the relay says nothing about a
-// transaction's own deadline — a probe that fails, answers UNKNOWN, or under-reports leaves it
-// carrying the whole weight. Too long only delays reclaiming a nonce nobody will spend; too short
-// hands one out while the relay can still spend it, which is the failure the fence exists for.
+// With no relay deadline, the declared window alone fences the nonce, so too short is unsafe.
 describe("the declared relay window, where the relay is known", () => {
   const PROTECT_STATUS = "https://protect.flashbots.net";
 
@@ -199,8 +196,7 @@ describe("the declared relay window, where the relay is known", () => {
     ).toThrow(/below the ~25 blocks Flashbots Protect keeps offering/);
   });
 
-  // The check recognises a relay, so a trailing slash is still Protect. Matching on the exact
-  // string would let a shade of spelling turn the floor off without changing anything real.
+  // Matched by origin, so a trailing slash is still Protect.
   it.each(["https://protect.flashbots.net/", "https://Protect.Flashbots.net"])(
     "recognises %s as Protect",
     (statusUrl) => {
@@ -222,9 +218,7 @@ describe("the declared relay window, where the relay is known", () => {
     }
   });
 
-  // A relay this bot knows nothing about: its window is a fact only its operator has, and a bot
-  // that guessed Protect's number for it would be asserting something it cannot know. The e2e's
-  // fake relay is exactly this — a genuine 4-block window, declared honestly.
+  // A custom relay's window is its operator's to declare. The e2e fake relay uses 4 blocks.
   it("leaves a custom relay's window to the operator who named it", () => {
     expect(
       buildSubmitterConfig(

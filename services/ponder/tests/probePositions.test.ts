@@ -159,10 +159,7 @@ describe("resolveChunkSize", () => {
   });
 });
 
-// A row exists for the `user` of any `Spoke:Supply`, and that argument is the supplier's choice — so
-// the table holds addresses nobody can liquidate, and anyone can add more of them cheaply. They are
-// dropped before the scan because probing one costs almost as much as probing a real position and
-// can only produce a result the endpoint would throw away.
+// Rows without a borrower cannot be liquidated but cost nearly a full probe, so they are dropped.
 describe("selectProbeCandidates", () => {
   const position = (proxyAddress: string) => ({ proxyAddress, suppliedShares: 1n });
   const mapping = (proxyAddress: string, borrower: string) => ({ proxyAddress, borrower });
@@ -183,7 +180,7 @@ describe("selectProbeCandidates", () => {
     assert.equal(unmapped, 1);
   });
 
-  // The two tables are filled from different events, and nothing makes them agree on checksumming.
+  // The two tables come from different events and can differ in checksum casing.
   it("matches addresses whatever their case", () => {
     const { candidates, unmapped } = selectProbeCandidates(
       [position("0xAbCd")],
@@ -202,8 +199,7 @@ describe("selectProbeCandidates", () => {
     assert.equal(unmapped, 1);
   });
 
-  // The pairing is what the probe results are indexed by, so an order that did not follow the input
-  // would attribute one position's estimate to another's borrower.
+  // Probe results are indexed by this order, so it must follow the input.
   it("keeps the input order", () => {
     const { candidates } = selectProbeCandidates(
       [position("0xccc"), position("0xaaa"), position("0xbbb")],
@@ -217,23 +213,19 @@ describe("selectProbeCandidates", () => {
   });
 });
 
-// viem splits a multicall by calldata bytes and awaits the pieces together, so this constant — not
-// the chunk size — is what decides one `eth_call`'s gas. The route passes it as `batchSize`, and
-// viem starts a new call only once the accumulated size *exceeds* the limit, so the arithmetic has
-// to land exactly on the probe count rather than one either side of it.
+// viem splits a multicall by calldata bytes, so `MULTICALL_BATCH_BYTES` sets one call's size. It
+// must land exactly on the probe count: viem starts a new call when the size exceeds the limit.
 describe("MULTICALL_BATCH_BYTES", () => {
   const CALLDATA_BYTES = 68; // estimateLiquidation(address,bool): selector + two words
 
   it("admits exactly PROBES_PER_CALL probes per eth_call", () => {
     assert.equal(MULTICALL_BATCH_BYTES, PROBES_PER_CALL * CALLDATA_BYTES);
-    // viem's condition is `currentChunkSize > batchSize`, so the last probe that fits must not
-    // exceed the limit and the next one must.
+    // viem starts a new call when `currentChunkSize > batchSize`.
     assert.ok(PROBES_PER_CALL * CALLDATA_BYTES <= MULTICALL_BATCH_BYTES);
     assert.ok((PROBES_PER_CALL + 1) * CALLDATA_BYTES > MULTICALL_BATCH_BYTES);
   });
 
-  // ~177k gas for a healthy probe, which is the case that sets the price; a liquidatable one is
-  // ~247k. The cap this has to stay under is the 10M some providers enforce.
+  // ~177k gas per healthy probe, ~247k per liquidatable one; the cap is 10M on some providers.
   it("keeps one call inside the tightest provider gas cap", () => {
     assert.ok(PROBES_PER_CALL * 247_000 < 10_000_000);
   });

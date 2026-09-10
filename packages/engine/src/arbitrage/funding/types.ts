@@ -49,13 +49,8 @@ export interface ArbitrageFunding {
   refreshInventory(): Promise<void>;
 
   /**
-   * Take back every standing allowance this mode has granted. Called on a code-hash halt, and only
-   * then — from the halted branch of the cycle, which is the one place a stopped engine still runs.
-   *
-   * A halt stops what this bot sends. It does nothing about a spender that is already allowed to
-   * pull, and a code-hash halt is precisely the case where that spender is the suspect contract:
-   * the bytecode at a pinned address changed, and whatever the old code was approved for, the new
-   * code inherits. The allowance is the exposure, so withdrawing it is the stop.
+   * Revoke every allowance this mode granted. Called only on a code-hash halt: the spender's code
+   * changed, and the allowance still lets it pull funds.
    */
   revokeApprovals(): Promise<void>;
 
@@ -98,10 +93,9 @@ export interface ArbitrageFunding {
    * execute is a claim on the treasury that nothing else is counting — see
    * `RouterFunding.refreshInventory`.
    *
-   * `consumed` means the money provably moved (our own acquisition confirmed), and `minedAtBlock`
-   * is where — the height a balance read has to reach before it reports the payment. Until it does,
-   * the outflow is still the mode's to account for, exactly as an unexecuted batch is. Anything
-   * else leaves the authorization live until it expires or is observed executing.
+   * `consumed` means the money provably moved (our acquisition confirmed). `minedAtBlock` is the
+   * block a balance read must reach to show it; until then the mode keeps the outflow. Anything else
+   * leaves the authorization live until it expires or is observed executing.
    *
    * Idempotent, and a no-op for a mode whose payment cannot outlive its transaction.
    */

@@ -39,16 +39,9 @@ function clone(row: TxIntent): TxIntent {
 }
 
 /**
- * The recorded relay horizon only ever moves later. A horizon is the block past which a
- * transaction can no longer be included, and it is what releases a privately-submitted nonce, so a
- * write that *shortened* one would free a nonce the relay can still spend. Writers reach the same
- * row from more than one direction — the submission-time resolver, and reconcile's repair of a row
- * that resolver never got to — and neither carries an expectation the other would lose a race to.
- * Taking the maximum makes their order stop mattering.
- *
- * Mirrors `GREATEST(relay_max_block, $9)` in the Postgres store, including its treatment of nulls:
- * an absent value on either side leaves the other standing. Reviving a row clears the column
- * outright, which is a different write and deliberately not bound by this rule.
+ * The relay horizon only moves later. A shorter one would free a nonce the relay can still spend,
+ * and two writers (submission and reconcile repair) can reach one row. Mirrors
+ * `GREATEST(relay_max_block, $9)` in Postgres, where a null on either side leaves the other value.
  */
 function maxHorizon(current: number | null, next: number | undefined): number | null {
   if (next === undefined) return current;
@@ -156,8 +149,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       return true;
     },
 
-    // Keeps the Safe envelope — see the Postgres store, which explains why an unresolved
-    // authorization outlives the claim that reserved it.
+    // Keeps the Safe envelope. See the Postgres store.
     async release(id, expectedPayloadHash) {
       const row = rows.get(id);
       if (!row || row.status !== "claimed" || row.payloadHash !== expectedPayloadHash) return false;

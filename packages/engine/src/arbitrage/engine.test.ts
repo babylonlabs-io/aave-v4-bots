@@ -563,9 +563,7 @@ describe("ArbitrageEngine", () => {
       });
     });
 
-    // The response is cast to its type, never parsed, so nothing upstream has established that a
-    // field is even a string. A bad element used to reach `prepareAndSend` and throw on its
-    // `BigInt` conversion, which aborted every remaining send in the cycle.
+    // The feed is cast, not parsed, so an element can have any shape.
     describe("when the indexer describes a vault in an unusable shape", () => {
       const withPoison = (poison: unknown) =>
         vi.fn().mockResolvedValue({
@@ -573,7 +571,7 @@ describe("ArbitrageEngine", () => {
           json: () => Promise.resolve({ vaults: [mockVault, poison], total: 2 }),
         });
 
-      // The regression itself: the good vault ahead of the bad one must still be acquired.
+      // The good vault ahead of the bad one is still acquired.
       it("still sends the vaults it can read", async () => {
         const clients = createMockClients();
         const bot = createBot(clients);
@@ -594,9 +592,7 @@ describe("ArbitrageEngine", () => {
         expect(metrics.recordError).toHaveBeenCalledWith("vaults_malformed");
       });
 
-      // `BigInt("")` is `0n`, so an empty debt would convert without throwing and read as a vault
-      // with nothing owed on it — the most profitable thing on the list. "Does not throw" is
-      // therefore the wrong bar, and this is the case that proves the check is stricter than that.
+      // `BigInt("")` is `0n`, so an empty debt would read as nothing owed.
       it("drops an empty amount rather than reading it as zero", async () => {
         const clients = createMockClients();
         const bot = createBot(clients);
@@ -1028,11 +1024,8 @@ describe("ArbitrageEngine", () => {
       ).toBe(false);
     });
 
-    // Under router funding the payment is authorized separately from the transaction and outlives
-    // it, so another send of the same signed batch can execute first. Our transaction then reverts
-    // on a vault that is already gone, which looks exactly like a lost race, except the treasury's
-    // WBTC left under our own signature. Releasing the reservation would hand the same balance out
-    // twice in one cycle.
+    // Under router funding another send of the same signed batch can execute first. Our
+    // transaction then reverts like a lost race, but the treasury paid, so the WBTC stays reserved.
     it("keeps the spend counted when our own authorization acquired the vault", async () => {
       const clients = createMockClients();
       fundedWith(clients, balanceFor(1n));
@@ -1468,10 +1461,8 @@ describe("ArbitrageEngine", () => {
     });
   });
 
-  // Viem answers a receipt lookup with whatever took the transaction's nonce, so a receipt is only
-  // ours when its hash is. Everything downstream reads a successful one as proof the acquisition
-  // happened: the intent is confirmed, the vault counted, and — under router funding — the signed
-  // batch retired as consumed while it is still executable until its deadline.
+  // Viem returns the receipt of whatever took the nonce, so a receipt is ours only when its hash
+  // matches. Read as ours, it would confirm an acquisition that never happened.
   describe("a receipt for a replacement transaction", () => {
     const replaced = (clients: ReturnType<typeof createMockClients>) => {
       clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
@@ -1491,8 +1482,7 @@ describe("ArbitrageEngine", () => {
       expect(metrics.recordError).toHaveBeenCalledWith("tx_replaced");
     });
 
-    // The batch a replacement did not carry is still signed, still unexpired, and still able to
-    // spend the treasury. Reporting it as consumed is what deletes the only record holding it.
+    // The signed batch is still live. Marking it consumed would drop its hold.
     it("does not report the authorization as consumed", async () => {
       const clients = createMockClients();
       replaced(clients);
@@ -1537,10 +1527,8 @@ describe("ArbitrageEngine", () => {
   });
 });
 
-// A real `RouterFunding`, because the hazard is in the hand-off between the gate and the mode's own
-// ledger: the treasury's capacity is published once per cycle, before the send loop, while the loop
-// signs batches and abandons them as it goes. A stub with an overridden `spentWithoutUs` cannot show
-// that — it has no ledger to leave stale.
+// A real `RouterFunding`: the hazard is in the hand-off between the gate and the mode's ledger,
+// which a stub cannot show.
 describe("ArbitrageEngine + router funding", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1654,11 +1642,9 @@ describe("ArbitrageEngine + router funding", () => {
     }) as unknown as typeof fetch;
   };
 
-  // The exit the report is about. The batch for the first vault is signed — gas estimation is what
-  // puts it in front of an RPC — and then the estimate reverts on a vault that is still acquirable,
-  // so the acquisition is abandoned. Its treasury WBTC is no longer reserved by the gate, and the
-  // batch can still be executed until its deadline: the second vault must not be admitted against
-  // the same money just because no refresh has run since.
+  // The first vault's batch is signed, then its gas estimate reverts and the acquisition is
+  // abandoned. The batch can still execute, so the second vault must not be funded from the same
+  // WBTC before the next refresh.
   it("does not fund a second vault against WBTC a signed batch can still take", async () => {
     const clients = routerClients();
     clients.publicClient.estimateContractGas.mockRejectedValue(new Error("insufficient profit"));
@@ -1673,16 +1659,8 @@ describe("ArbitrageEngine + router funding", () => {
     expect(clients.sender.send).not.toHaveBeenCalled();
   });
 
-  // A throw between the broadcast and the classification leaves the batch broadcast and its slot
-  // unsettled. The cycle's own backstop settles such a slot through the gate alone, which releases
-  // the reservation and tells the funding mode nothing: the treasury's WBTC would read as spendable
-  // while a signed batch could still take it.
-  //
-  // The throw is injected at the inter-send throttle. It used to come from a malformed indexer row,
-  // whose `BigInt` conversion ran before `prepareAndSend` could guard it — but that row is now
-  // dropped at the fetch boundary and the conversion sits inside the `try`, so it no longer reaches
-  // here. What is under test is the hand-off, not the thing that tripped it, and the throttle is a
-  // real path between one broadcast and the next.
+  // A throw after a broadcast must still hand the live batch to the funding mode, so the treasury's
+  // WBTC is not reported as spendable. The throw is injected at the inter-send throttle.
   it("hands a live batch over when the cycle throws after broadcasting it", async () => {
     const clients = routerClients(CAPACITY * 2n);
     const bot = routerBot(clients, createRiskGate(), { vaultProcessingDelayMs: 1 });
@@ -1708,8 +1686,7 @@ describe("ArbitrageEngine + router funding", () => {
     });
   });
 
-  // Positive control for the same fixture: with capacity for two, the second vault is funded.
-  // Without it the test above would pass on a bot that simply never acquires anything.
+  // Positive control: with capacity for two, the second vault is funded.
   it("funds a second vault when the treasury can cover both", async () => {
     const clients = routerClients(CAPACITY * 2n);
     clients.publicClient.estimateContractGas.mockRejectedValue(new Error("insufficient profit"));

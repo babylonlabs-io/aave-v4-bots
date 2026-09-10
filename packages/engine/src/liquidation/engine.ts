@@ -214,11 +214,8 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     // Fetch liquidatable positions from Ponder (with the freshness stamp of its reads)
     const feed = await this.fetchLiquidatablePositions();
 
-    // Asking and failing is not the same as asking and being told nothing is liquidatable. The
-    // cycle ends either way, but only one of them may be recorded as a market with no candidates:
-    // the gauge below drives the dashboards an operator reads to decide whether the bot is idle
-    // because there is nothing to do, and a zero written from a failed read says exactly the wrong
-    // thing about the one condition this bot exists for.
+    // A failed read is not an empty market. Skip the cycle without writing the candidate gauge,
+    // which would report a quiet market.
     if (feed.kind === "unavailable") {
       this.logger.warn(
         "Skipping cycle: the candidate list could not be read (not an empty market)"
@@ -467,11 +464,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
    * doesn't report it).
    */
   /**
-   * The candidate list, or the fact that there is none to be had this cycle.
-   *
-   * Two outcomes rather than one list, because an empty list and a failed read are opposite
-   * answers: one says the market is quiet, the other says we do not know what the market is. See
-   * `probeInChunks` in the indexer, which keeps the same distinction on the other side of the wire.
+   * The candidate list, or `unavailable` when the read failed. An empty list means a quiet market.
    */
   private async fetchLiquidatablePositions(): Promise<
     | { kind: "ok"; positions: LiquidatablePosition[]; dataTimestampMs?: number }

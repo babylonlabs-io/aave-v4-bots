@@ -145,11 +145,8 @@ export interface TxSender {
    * pre-broadcast record), then broadcast. A throwing `onSigned` aborts the send — nothing
    * reaches the chain — so the caller may treat it as a plain send failure.
    *
-   * `beforeBroadcast` is the last word before the wire, and it is **synchronous** for that reason:
-   * no `await` separates its verdict from the submitter call, so nothing — a kill-switch request, a
-   * code-hash timer — can run in between. A caller that only checks before signing is checking
-   * across the nonce lock, the pricing reads, the signature and the durable write, any of which can
-   * take seconds. A throw aborts the send like `onSigned`'s: nothing was broadcast.
+   * `beforeBroadcast` runs synchronously just before the broadcast, with no `await` in between.
+   * A throw aborts the send; nothing was broadcast.
    */
   send(
     call: ContractCall,
@@ -286,8 +283,7 @@ export function createTxSender(
         signed = await signContractCall(walletClient, call, options.minPriorityFeeWei);
         // Durable BEFORE the tx can exist on chain.
         await onSigned?.(signed);
-        // Last, and with nothing awaited between here and `broadcast` below: this is the only point
-        // where "may this go out?" and "it is going out" cannot be separated by anything else.
+        // Nothing is awaited between this check and the broadcast.
         beforeBroadcast?.();
       } catch (error) {
         // Nothing was broadcast — say so, rather than letting the caller assume the worst.

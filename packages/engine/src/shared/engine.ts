@@ -154,14 +154,9 @@ export abstract class BaseEngine<M extends CycleMetrics> {
   protected abstract poll(slots: RiskSlot[]): Promise<void>;
 
   /**
-   * Take back every standing allowance this engine's funding has granted. Nothing granted by
-   * default; an engine whose funding approves a spender overrides it.
-   *
-   * Called only from the halted branch of `run`, and only on a code-hash halt. It is in the cycle
-   * because the cycle is the one thing still running when the gate is HALTED — and it is *this*
-   * halt because only this one says the spender itself changed under us. A halt stops what this bot
-   * sends; an allowance is a permission that already left, and the contract holding it needs
-   * nothing further from us to use it.
+   * Revoke every allowance this engine's funding granted. No-op by default. Runs only in a halted
+   * cycle after a code-hash halt: the spender's code changed, and the allowance lets it pull funds
+   * without us.
    */
   protected async revokeApprovals(): Promise<void> {}
 
@@ -173,30 +168,21 @@ export abstract class BaseEngine<M extends CycleMetrics> {
     const slots: RiskSlot[] = [];
 
     try {
-      // Bookkeeping first, and it runs whether or not the gate is halted.
-      //
-      // A halt stops this bot *sending*; it is not a reason to stop looking. None of this reaches
-      // the chain with a transaction: reconcile resolves in-flight intents against it, expires
-      // un-actioned MANUAL proposals past their TTL, and raises the stuck alert — and every one of
-      // those is wanted more during an incident, not less. Skipping them, as this cycle used to,
-      // meant a halted bot stopped resolving what it had already sent, proposals outlived the TTL an
-      // operator set precisely so they could not linger, and nothing said so.
+      // Bookkeeping runs even when halted. A halt stops sending, not reconciling, TTL expiry, or
+      // stuck alerts, and an incident needs those most.
       //
       // Crash-/ambiguous-send-safety: resolve in-flight intents against the chain (no-op without a
       // store), then re-seed the shared nonce lease from the chain (reclaiming any
-      // reserved-but-not-broadcast nonce). The lease is re-seeded before the halted branch below,
-      // because the withdrawal it may send is a transaction like any other and wants a fresh one.
+      // reserved-but-not-broadcast nonce). It runs before the halted branch, because a revocation
+      // needs a fresh nonce too.
       await this.reconcile();
       await this.executor.resyncNonces();
 
-      // A HALTED gate (kill switch or tripped breaker) ends the cycle here: nothing is fetched, and
-      // nothing is traded.
+      // A HALTED gate (kill switch or tripped breaker) ends the cycle here.
       if (this.risk.state() === "HALTED") {
         this.logger.warn(`Risk gate is HALTED — skipping ${this.engineName} run`);
-        // The one thing a halted cycle still sends, and only for the halt that calls for it: a
-        // pinned target's bytecode changed, so any allowance granted to it is withdrawn. Re-tried
-        // every halted cycle — each mode reads the allowance first, so once it is zero this costs a
-        // read and sends nothing.
+        // A code-hash halt revokes allowances to the changed contract. Retried every halted cycle;
+        // once the allowance is zero, it costs one read.
         if (this.risk.codeHashHalted()) await this.revokeApprovals();
         return;
       }

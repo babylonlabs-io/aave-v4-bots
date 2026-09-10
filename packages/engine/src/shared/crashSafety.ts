@@ -42,11 +42,7 @@ export interface CrashSafetyConfig {
   reader: ChainReader;
   /** See `LivenessCheck.reclaimMarginBlocks`. Travels with `reader`, which fails closed without it. */
   reclaimMarginBlocks?: number;
-  /**
-   * Recovers the relay horizon of a privately-submitted intent whose own submission never recorded
-   * one — without which that intent's nonce is fenced forever. Travels with `reclaimMarginBlocks`
-   * for the same reason `reader` does: they are only correct together. See `Horizon`.
-   */
+  /** Recovers a missing relay horizon; see `Horizon`. Set together with `reclaimMarginBlocks`. */
   horizon?: Pick<Horizon, "repair">;
   /** The sending address whose nonce sequence anchors reconcile's "was this broadcast?" checks. */
   signer: Address;

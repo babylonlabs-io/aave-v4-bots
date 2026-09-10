@@ -317,13 +317,8 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       return (res.rowCount ?? 0) > 0;
     },
 
-    // The envelope deliberately survives. Releasing gives up the *claim*, and a Safe envelope is not
-    // part of the claim: once a threshold of owners has signed its hash — off chain, where nothing
-    // here can see it — that SafeTx is executable by anyone until its nonce is consumed. Dropping the
-    // record would leave that authorization live with nothing pointing at it, and the next claim
-    // would reserve a second one over the same payload. `claimProposal` in the operator CLI is what
-    // resolves it: the same envelope while its nonce stands, a new one only once the old is provably
-    // dead. See `expireProposals`, which for the same reason will not sweep a row still carrying one.
+    // Keeps the Safe envelope. Owners may have signed its SafeTx off chain, so it stays executable
+    // until its nonce is spent. The operator CLI's next claim resolves it.
     async release(id, expectedPayloadHash) {
       await ensureReady();
       const res = await client.query(
@@ -354,11 +349,8 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       return (res.rowCount ?? 0) > 0;
     },
 
-    // A row still carrying a Safe envelope is never swept. Expiry is a *timer*, and a signed SafeTx
-    // does not expire with it — the authorization stays executable until its nonce is consumed. Left
-    // to the timer, the row would go terminal and the next proposal for the subject would revive it,
-    // clearing the envelope (see `recordIntent`) and taking with it the only record of what is still
-    // outstanding. The row stays until an operator resolves it.
+    // Rows with a Safe envelope are never swept: a signed SafeTx does not expire with a timer, and
+    // a revived row would lose the envelope.
     async expireProposals(ttlMs, action) {
       await ensureReady();
       const res = await client.query(
