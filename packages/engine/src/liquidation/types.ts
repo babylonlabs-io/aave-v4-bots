@@ -3,8 +3,12 @@ import type { Address } from "viem";
 export interface LiquidatablePosition {
   proxyAddress: Address;
   borrower: Address;
-  amounts: string[];
-  vaults: string[];
+  /** Reserve ids the indexer's estimate covers debt on. Paired with `debtToCoverAmounts`. */
+  debtReserveIds: string[];
+  /** Debt to cover, one per entry of `debtReserveIds`. */
+  debtToCoverAmounts: string[];
+  /** The head vault the liquidation would seize. */
+  vaultId: string;
   suppliedShares: string;
 }
 

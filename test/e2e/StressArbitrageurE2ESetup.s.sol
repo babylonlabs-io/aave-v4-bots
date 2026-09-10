@@ -2,7 +2,7 @@
 pragma solidity 0.8.28;
 
 import {console} from "forge-std/console.sol";
-import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
+import {AaveAdapterLiquidationPreview} from "vault-contracts/applications/aave/AaveAdapterLiquidationPreview.sol";
 import {ArbitrageRouter} from "../../contracts/ArbitrageRouter.sol";
 import {DeployArbitrageRouter} from "../../scripts/DeployArbitrageRouter.s.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
@@ -151,7 +151,7 @@ contract StressArbitrageurE2ESetup is ArbitrageurE2ESetup {
     ///      start healthy and there is no work until the drive script fires the first price drop.
     function _startBot(address) internal pure override {}
 
-    function _createPositions(AaveAdapterLens lens) internal override {
+    function _createPositions(AaveAdapterLiquidationPreview lens) internal override {
         _lensAddress = address(lens);
         console.log("\n=== Building cohorts (A=%s, B=%s) ===", COHORT_A, COHORT_B);
 

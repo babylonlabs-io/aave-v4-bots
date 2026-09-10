@@ -3,18 +3,21 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { LENS_HEALTHY_POSITION_REVERT } from "./lens";
+import { LENS_HEALTHY_POSITION_ERROR } from "./lens";
+import { protocolErrorsAbi } from "./protocolErrors";
 
-// The healthy-position revert is a `require` string, so it has no selector and neither the ABI nor
-// `artifacts.test.ts` can pin it — a contracts bump that reworded it would compile, deploy, and
-// break nothing until the indexer's next scan, at which point every healthy position in the table
-// reads as an unexplained fault and the bot reports a candidate list it does not trust.
+// Which error means "healthy" is a choice made in one `require` in the preview, and every other
+// revert out of `estimateLiquidation` means the deployment could not answer. Nothing else pins the
+// two together: swapping the error in that guard for another one that is equally present in
+// `protocolErrorsAbi` would compile, deploy, and break nothing until the indexer's next scan, at
+// which point every healthy position in the table reads as an unexplained fault and the bot reports
+// a candidate list it does not trust.
 //
 // Read from the Solidity source, like `liquidationRouter.test.ts` does for the probe sentinel: the
-// source is the definition, and the string never reaches the compiled ABI at all.
+// guard is the definition, and the artifact only says the error exists, not what it means.
 //
 // Skips when the contracts submodule is absent, which is the case in the `pnpm test` CI job.
-const LENS_SOURCE = join(
+const PREVIEW_SOURCE = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",
@@ -24,29 +27,39 @@ const LENS_SOURCE = join(
   "src",
   "applications",
   "aave",
-  "AaveAdapterLens.sol"
+  "AaveAdapterLiquidationPreview.sol"
 );
 
 const haveSource = (() => {
   try {
-    return statSync(LENS_SOURCE).isFile();
+    return statSync(PREVIEW_SOURCE).isFile();
   } catch {
     return false;
   }
 })();
 
 describe("lens constants match the contracts", () => {
-  it.skipIf(!haveSource)("reverts healthy positions with the string we match on", () => {
-    const source = readFileSync(LENS_SOURCE, "utf8");
+  it.skipIf(!haveSource)("reverts healthy positions with the error we match on", () => {
+    const source = readFileSync(PREVIEW_SOURCE, "utf8");
 
-    // Anchored on the health-factor check itself, so a *moved* or re-worded require fails here
-    // rather than passing because the same words survive somewhere else in the file.
+    // Anchored on the health-factor check itself, so a *moved* guard fails here rather than passing
+    // because the same error name survives somewhere else in the file.
     const guard = source.match(
-      /require\(\s*healthFactorInit < AaveAdapterLiquidationMathLib\.HEALTH_FACTOR_LIQUIDATION_THRESHOLD,\s*"([^"]+)"/
+      /healthFactor\s*<\s*AaveAdapterLiquidationMathLib\.HEALTH_FACTOR_LIQUIDATION_THRESHOLD,\s*AdapterErrors\.(\w+)\(\)/
     )?.[1];
     if (!guard)
-      throw new Error("could not find the healthFactorInit require in AaveAdapterLens.sol");
+      throw new Error(
+        "could not find the health-factor require in AaveAdapterLiquidationPreview.sol"
+      );
 
-    expect(guard).toBe(LENS_HEALTHY_POSITION_REVERT);
+    expect(guard).toBe(LENS_HEALTHY_POSITION_ERROR);
+  });
+
+  it("declares that error, so viem can name it", () => {
+    // `isHealthyPositionRevert` matches on the decoded `errorName`, which viem only produces for a
+    // selector it finds in the ABI it was handed. Missing here, every healthy position decodes to a
+    // bare selector and is counted as a fault instead.
+    const names = protocolErrorsAbi.map((e) => e.name);
+    expect(names).toContain(LENS_HEALTHY_POSITION_ERROR);
   });
 });

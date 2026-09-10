@@ -113,7 +113,7 @@ Flash funding repays each debt token through a `LiquidationRouter`. Deploy it on
 git submodule update --init --recursive
 
 export LIQUIDATION_ROUTER_OWNER=0x...   # this bot's signer: the only address the router acts for
-export LENS_ADDRESS=0x...               # AaveAdapterLens
+export LENS_ADDRESS=0x...               # AaveAdapterLiquidationPreview
 export VAULT_SWAP_ADDRESS=0x...         # BTCVaultSwap (LLP)
 export DEPLOYER_PRIVATE_KEY=0x...
 export RPC_URL=https://...
@@ -168,7 +168,7 @@ Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two 
 | `PONDER_RPC_URL` | RPC for indexing. May differ from the bot's | Yes | |
 | `SPOKE_ADDRESS` | Babylon Core Spoke | Yes | |
 | `ADAPTER_ADDRESS` | AaveAdapter | Yes | |
-| `LENS_ADDRESS` | AaveAdapterLens. The API previews positions through it | Yes | |
+| `LENS_ADDRESS` | AaveAdapterLiquidationPreview. The API previews positions through it | Yes | |
 | `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
 | `CHAIN_ID` | Network chain ID | No | `1` |
@@ -205,7 +205,7 @@ not `localhost`.
 | `PONDER_URL` | Indexer API endpoint | Yes | |
 | `CLIENT_RPC_URL` | RPC for execution | Yes | |
 | `ADAPTER_ADDRESS` | AaveAdapter | Yes | |
-| `LENS_ADDRESS` | AaveAdapterLens | Yes | |
+| `LENS_ADDRESS` | AaveAdapterLiquidationPreview | Yes | |
 | `WBTC_ADDRESS` | WBTC token | Yes | |
 | `POLLING_INTERVAL_MS` | Poll interval | No | `12000` |
 | `TX_RECEIPT_TIMEOUT_MS` | Receipt wait per transaction | No | `120000` |
@@ -304,7 +304,7 @@ Testnet addresses are provided during onboarding.
 |----------|----------|
 | `SPOKE_ADDRESS` | Core Spoke. Source of the position set (indexer only) |
 | `ADAPTER_ADDRESS` | AaveAdapter. Entry point for `liquidate` and `liquidateWithLLP` |
-| `LENS_ADDRESS` | AaveAdapterLens. `estimateLiquidation` |
+| `LENS_ADDRESS` | AaveAdapterLiquidationPreview. `estimateLiquidation` |
 | `WBTC_ADDRESS` | WBTC token |
 | `LLP_ADDRESS` | BTCVaultSwap, for LLP-mode redemption under inventory funding |
 
@@ -435,7 +435,7 @@ halt. That clears itself on the next successful check. If the pinned hash is wro
 
 ```bash
 curl http://localhost:42069/positions               # every position in the table
-curl http://localhost:42069/liquidatable-positions  # positions the Lens can liquidate, with amounts
+curl http://localhost:42069/liquidatable-positions  # positions the Lens can liquidate, with reserve ids and amounts
 ```
 
 In `/liquidatable-positions`, `checked` counts positions with an answer and `unscanned` those

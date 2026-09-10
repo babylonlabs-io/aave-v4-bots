@@ -13,63 +13,45 @@ abstract contract TestSuites {
 
     address internal constant MORPHO_BLUE = address(0xd011EE229E7459ba1ddd22631eF7bF528d424A14);
 
-    address internal constant WBTC = address(0x504579d0424B7B7cB4b17e16626f6A2f67bCa054);
+    /// @notice The block every scenario forks at.
+    /// @dev One block for all of them, and deliberately one that was already pinned before the TBV
+    ///      protocol moved into the fixture: the only thing the fork still has to provide is the
+    ///      venue bytecode above, which does not change between these heights. Sharing it means
+    ///      foundry serves every suite from a single `~/.foundry/cache/rpc` entry.
+    uint256 internal constant SEPOLIA_FORK_BLOCK = 11141103;
 
-    address internal constant TESTNET_VK = address(0x9814d7f1B125bDB4fcEd6234439dD73fa14473a6);
-
-    address[] internal DEBT_TOKENS_TESTNET = [
-        address(0xB588C1bd8A6cd3F114A52a0AD916778B419ECf48), // USDC
-        address(0xCFf21358114814258635524588f74521762A6c04) // USDT
-    ];
-
-    Types.TBVContracts internal TBV_CONTRACTS_TESTNET = Types.TBVContracts({
-        btcVaultSwap: address(0xCaf3DE0ec631e2DEB3b4A33679037488B545f5a2),
-        aaveAdapter: address(0xb08dfb1D04373a30A33CA64Ae85061e452E5CeF7),
-        lens: address(0xF76c3E3A7c94E73497fdA00CbcDE56dbdcdDD8da),
-        debtTokens: DEBT_TOKENS_TESTNET
-    });
-
-    Types.LiquidationTestParams[] internal LIQUIDATION_TESTS = [
-        Types.LiquidationTestParams({
-            tbvContracts: TBV_CONTRACTS_TESTNET,
-            liquidation: Types.Liquidation({
-                network: "sepolia",
-                blockNumber: 11141103,
-                borrower: address(0x4D1Ef18305EAe34Eaf3A7c227715A42813d667dA),
-                hasFairnessPayment: false
-            })
+    /// @dev The positions the liquidation suites build. Both borrow evenly across USDC and USDT, so
+    ///      each exercises two flash venues, and between them they cover the fairness payment in both
+    ///      directions — which is what decides whether the WBTC venue is drawn on at all.
+    ///
+    ///      The ratios are what separate them. `80 / 60` is borrowed near the 80% collateral factor,
+    ///      so once the price falls far enough to make it liquidatable the debt consumes essentially
+    ///      the whole vault and nothing is left over. `100 / 40` is borrowed well inside the factor
+    ///      and pushed only just past the threshold, so seizing the whole (indivisible) vault takes
+    ///      far more value than the debt needs and the excess comes back as a fairness payment.
+    ///
+    ///      That second drop sits inside a band with an edge on either side, which is why it is 53
+    ///      and not a round number. Below 50% the position is still healthy and nothing can liquidate
+    ///      it; above ~56% the debt plus the 10% liquidation bonus consumes the whole vault and the
+    ///      excess — and with it the fairness payment, and with it the only draw on the WBTC flash
+    ///      venue — disappears. `TESTALL` asserts the payment in both directions, so a scenario that
+    ///      drifted out of the band fails loudly rather than silently testing one venue less.
+    Types.LiquidationScenario[] internal LIQUIDATION_SCENARIOS = [
+        Types.LiquidationScenario({
+            network: "sepolia",
+            blockNumber: SEPOLIA_FORK_BLOCK,
+            collateralValueUsd: 80_000,
+            borrowValueUsd: 60_000,
+            dropPercent: 30,
+            hasFairnessPayment: false
         }),
-        Types.LiquidationTestParams({
-            tbvContracts: TBV_CONTRACTS_TESTNET,
-            liquidation: Types.Liquidation({
-                network: "sepolia",
-                blockNumber: 11130814,
-                borrower: address(0x0F586D04909546079FecddFB09d0Bb3d50871261),
-                hasFairnessPayment: true
-            })
+        Types.LiquidationScenario({
+            network: "sepolia",
+            blockNumber: SEPOLIA_FORK_BLOCK,
+            collateralValueUsd: 100_000,
+            borrowValueUsd: 40_000,
+            dropPercent: 53,
+            hasFairnessPayment: true
         })
     ];
-
-    Types.ArbitrageTestParams[] internal ARBITRAGE_TESTS = [Types.ArbitrageTestParams({
-            tbvContracts: TBV_CONTRACTS_TESTNET,
-            arbitrage: Types.Arbitrage({
-                network: "sepolia",
-                blockNumber: 11130572,
-                vaultIds: _packBytes32(
-                    bytes32(0xa3294989d32183ed173cae7c4d3f8ead982133350a44160dc593d0640b6c64eb),
-                    bytes32(0x7ad0bd5d0344bd467f9d58f7107ab96fd079ac930f761a083f444ccd4099347a)
-                )
-            })
-        })];
-
-    function _packBytes32(bytes32 a) internal pure returns (bytes32[] memory arr) {
-        arr = new bytes32[](1);
-        arr[0] = a;
-    }
-
-    function _packBytes32(bytes32 a, bytes32 b) internal pure returns (bytes32[] memory arr) {
-        arr = new bytes32[](2);
-        arr[0] = a;
-        arr[1] = b;
-    }
 }

@@ -1,20 +1,27 @@
 // Pure liquidation-domain logic (no IO).
 
 /**
- * Inflate each reserve's Lens-estimated repay amount by `bufferBps` (default 1%).
+ * Inflate one Lens-estimated amount by `bufferBps` (default 1%), rounding up.
  *
- * The Lens returns exact debt; interest accrues between the read and execution, so
- * a small buffer avoids `MustNotLeaveDust` reverts (a single mined block of growth
- * is enough on auto-mining chains).
+ * The Lens returns an exact figure for the block it read; interest accrues between that read and
+ * execution, so a small buffer avoids `MustNotLeaveDust` reverts on the debt amounts and
+ * `ExcessiveWbtcPayment` on the payment cap (a single mined block of growth is enough on
+ * auto-mining chains).
+ *
+ * Rounded up so that every nonzero amount is buffered by at least one unit. Truncating instead
+ * leaves any amount below `10_000 / bufferBps` exactly where it was, and every value this produces
+ * is a cap the adapter enforces: on a fairness payment of 99 sats that means an upward oracle tick
+ * of a single sat between simulate and mine reverts the liquidation, and the revert is charged to
+ * the breaker. Over-buffering by a unit costs nothing — the adapter refunds unconsumed debt cover
+ * and charges the recomputed payment, never the cap. Zero stays zero.
  */
-export function bufferAmounts(amounts: readonly bigint[], bufferBps = 100): bigint[] {
-  const numerator = BigInt(10_000 + bufferBps);
-  return amounts.map((amt) => (amt * numerator) / 10_000n);
+export function bufferAmount(amount: bigint, bufferBps = 100): bigint {
+  return (amount * BigInt(10_000 + bufferBps) + 9_999n) / 10_000n;
 }
 
-/** Default sequential reserve priority order `[0, 1, …, length-1]`. */
-export function sequentialPriorityOrder(length: number): bigint[] {
-  return Array.from({ length }, (_, i) => BigInt(i));
+/** `bufferAmount` over a whole estimate. */
+export function bufferAmounts(amounts: readonly bigint[], bufferBps = 100): bigint[] {
+  return amounts.map((amt) => bufferAmount(amt, bufferBps));
 }
 
 /**

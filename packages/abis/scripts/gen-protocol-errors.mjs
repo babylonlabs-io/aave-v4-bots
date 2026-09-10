@@ -26,7 +26,7 @@ const OUT = join(PKG, "..", "..", "out");
 const CONTRACTS = [
   "BTCVaultSwap",
   "AaveAdapter",
-  "AaveAdapterLens",
+  "AaveAdapterLiquidationPreview",
   "LiquidationRouter",
   "ArbitrageRouter",
   "Spoke",

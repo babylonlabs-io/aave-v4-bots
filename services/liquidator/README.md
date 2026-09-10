@@ -25,29 +25,33 @@ against the AaveAdapter contract.
 3. **Poll** — fetches `/liquidatable-positions` from the indexer every
    `POLLING_INTERVAL_MS`.
 4. **Estimate** — for each candidate, calls
-   `AaveAdapterLens.estimateLiquidation(proxy, isDirectRedemption)` to get
-   `(uint256[] amounts, uint256 wbtcPayment, bytes32[] vaults)`. `amounts`
-   are bumped by 1% to absorb interest accrued between estimate and
-   broadcast. `wbtcPayment` is informational — the adapter pulls it from
-   `msg.sender`, so the bot only needs sufficient WBTC balance and approval.
+   `AaveAdapterLiquidationPreview.estimateLiquidation(proxy, isDirectRedemption)`
+   to get `(uint256[] debtReserveIds, uint256[] debtToCoverAmounts,
+   uint256 wbtcPayment, bytes32 vaultId, uint256 amountCollateralToSeize)`.
+   Only the reserves carrying debt are listed, each paired with its reserve id;
+   the amount at a given position belongs to the reserve at the *paired id*,
+   never to the reserve at that position. Every amount and `wbtcPayment` are
+   bumped by 1% to absorb interest accrued between estimate and broadcast.
+   `wbtcPayment` is both what the adapter pulls from `msg.sender` and the
+   `maxWbtcPayment` cap the call carries, so the bot needs sufficient WBTC
+   balance and approval, and a payment that drifts past the buffer reverts
+   on-chain rather than being charged.
 5. **Vet** — under `inventory` funding, simulates every candidate against the
    adapter and drops any that revert. Under `flash` funding this is a probe of
    `LiquidationRouter` that also returns the WBTC profit the candidate yields.
 6. **Liquidate** — calls one of two adapter functions depending on
-   `IS_DIRECT_REDEMPTION`:
+   `IS_DIRECT_REDEMPTION`. Both seize exactly one vault: the head of the
+   borrower's ordered list.
    - `IS_DIRECT_REDEMPTION=true` →
-     `AaveAdapter.liquidate(borrower, BTC_REDEEM_KEY, amounts, priorityOrder, minVaultBtcOut, numVaultsToLiquidate)`.
-     Seized vaults are redeemed directly to `BTC_REDEEM_KEY`. The bot passes
-     `minVaultBtcOut=0` (no slippage protection — simulation catches bad
-     liquidations) and `numVaultsToLiquidate=type(uint256).max` (unbounded
-     vault prefix).
+     `AaveAdapter.liquidate(borrower, debtReserveIds, debtToCoverAmounts, minVaultBtcOut, maxWbtcPayment, BTC_REDEEM_KEY)`.
+     The seized vault is redeemed directly to `BTC_REDEEM_KEY`. The bot passes
+     `minVaultBtcOut=0` (no BTC-out slippage protection — simulation catches
+     bad liquidations) and the buffered estimate as `maxWbtcPayment`.
    - default (`false`) →
-     `AaveAdapter.liquidateWithLLP(borrower, LLP_ADDRESS, amounts, priorityOrder, [])`.
-     Seized vaults are escrowed in the LLP (BTCVaultSwap) for an arbitrageur
+     `AaveAdapter.liquidateWithLLP(borrower, LLP_ADDRESS, debtReserveIds, debtToCoverAmounts, maxWbtcPayment, [])`.
+     The seized vault is escrowed in the LLP (BTCVaultSwap) for an arbitrageur
      to acquire later. The empty `requestedTokens` array means the liquidator
      does not request any LLP-side payout in this tx.
-
-`priorityOrder` is always `[0, 1, …, n-1]`.
 
 Under `LIQUIDATION_FUNDING=flash` step 6 targets `LiquidationRouter.liquidate`
 instead of the adapter. The router borrows each debt token, performs the same
@@ -58,11 +62,11 @@ The redemption mode still applies; it is what the router calls underneath.
 ## Liquidation Flow
 
 ```
-Bot                Lens                AaveAdapter           Spoke / LLP
+Bot          LiquidationPreview        AaveAdapter           Spoke / LLP
  │                   │                       │                     │
  │ estimateLiquidation()                                            │
  │ ──────────────────▶                                              │
- │ ◀── amounts[], wbtcPayment, vaults[]                             │
+ │ ◀── debtReserveIds[], debtToCoverAmounts[], wbtcPayment, vaultId │
  │                                                                  │
  │ liquidate(...) ───────────────────────────▶                      │
  │   OR liquidateWithLLP(...)                │                      │
@@ -104,7 +108,7 @@ CLIENT_RPC_URL=http://localhost:8545
 # AaveAdapter address
 ADAPTER_ADDRESS=0x...
 
-# AaveAdapterLens address
+# AaveAdapterLiquidationPreview address
 LENS_ADDRESS=0x...
 
 # WBTC token address
