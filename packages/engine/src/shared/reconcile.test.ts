@@ -1072,10 +1072,10 @@ describe("reconcilePending — recovering a missing relay horizon", () => {
     await pass(store, async () => 100);
 
     const intent = store.all().find((r) => r.id === id) as TxIntent;
-    // head 110 > 100 + margin 3 — the transaction can no longer be included, whatever the relay says.
+    // head 110 > 100 + margin 3, and the node does not hold the transaction.
     expect(
       await couldBeInFlight(
-        { reader: reader({ known: true }), now: Date.now, reclaimMarginBlocks: 3, head: 110 },
+        { reader: reader({ known: false }), now: Date.now, reclaimMarginBlocks: 3, head: 110 },
         { txHash: HASH, updatedAt: 0, relayMaxBlock: intent.relayMaxBlock }
       )
     ).toBe(false);
@@ -1125,5 +1125,44 @@ describe("reconcilePending — recovering a missing relay horizon", () => {
 
     expect(horizonOf(store, id)).toBeNull();
     expect(store.all().find((r) => r.id === id)?.status).toBe("confirmed");
+  });
+});
+
+// Past the relay's deadline the relay can no longer include a transaction, but a copy the node
+// holds still can: leaked, or reinserted by a reorg. A stale `pending` read must not fail it.
+describe("reconcilePending — past the relay deadline", () => {
+  const HASH = "0xhash" as Hex;
+
+  async function expired() {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    await store.transition(id, "submitted", { nonce: 5, txHash: HASH, relayMaxBlock: 100 });
+    return { store, id };
+  }
+
+  // `pending` 5 does not cover nonce 5, as on a stale backend; head 110 is past 100 + margin 3.
+  const pass = (store: StateStore, known: boolean) =>
+    reconcilePending({
+      store,
+      signer: SIGNER,
+      reader: reader({ receipts: { [HASH]: null }, latest: 5, pending: 5, known, head: 110 }),
+      now: aged(UNKNOWN_TX_GRACE_MS + 1),
+      reclaimMarginBlocks: 3,
+    });
+
+  it("keeps an intent in flight while the node still holds the transaction", async () => {
+    const { store, id } = await expired();
+
+    const summary = await pass(store, true);
+
+    expect(summary).toMatchObject({ stillInFlight: 1, failed: 0 });
+    expect(store.all().find((r) => r.id === id)?.status).toBe("submitted");
+  });
+
+  it("fails it once the node does not hold the transaction either", async () => {
+    const { store } = await expired();
+
+    expect(await pass(store, false)).toMatchObject({ failed: 1, stillInFlight: 0 });
   });
 });
