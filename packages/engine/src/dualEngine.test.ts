@@ -209,7 +209,10 @@ function setup(
       return {
         ok: true,
         json: async () => ({
-          liquidatable: [position("0xp1", "0xb1"), position("0xp2", "0xb2")],
+          liquidatable: [
+            position("0x00000000000000000000000000000000000000a1", "0xb1"),
+            position("0x00000000000000000000000000000000000000a2", "0xb2"),
+          ],
           total: 2,
           checked: 2,
         }),

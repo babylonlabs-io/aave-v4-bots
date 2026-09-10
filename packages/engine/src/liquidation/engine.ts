@@ -3,7 +3,7 @@ import { type Address, type Hex, formatUnits } from "viem";
 import { adapterAbi, lensAbi } from "@repo/abis";
 import { type RiskSlot, settleUnfinished } from "@repo/risk";
 import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
-import { bufferAmount, bufferAmounts } from "./domain";
+import { LENS_ESTIMATE_CHUNK, bufferAmount, bufferAmounts, selectPositions } from "./domain";
 import {
   type FundedCandidate,
   type FundingParams,
@@ -222,9 +222,23 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
       );
       return;
     }
-    const { positions, dataTimestampMs } = feed;
+    const { dataTimestampMs } = feed;
+    // The feed is untrusted: drop unusable and repeated entries, and cap the rest, before any RPC.
+    const { positions, malformed, duplicates, truncated } = selectPositions(feed.positions);
+    if (malformed + duplicates > 0) {
+      this.metrics.recordError("positions_malformed");
+      this.logger.warn(
+        `Indexer candidate list had ${malformed} unusable and ${duplicates} repeated entries — dropped`
+      );
+    }
+    if (truncated > 0) {
+      this.metrics.recordError("positions_truncated");
+      this.logger.warn(
+        `Indexer returned ${positions.length + truncated} liquidatable positions — acting on the first ${positions.length}; the rest wait for later cycles`
+      );
+    }
 
-    this.metrics.recordPositionsLiquidatable(positions.length);
+    this.metrics.recordPositionsLiquidatable(positions.length + truncated);
 
     if (positions.length === 0) {
       this.logger.info("No liquidatable positions found");
@@ -233,17 +247,19 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
 
     this.logger.info(`Found ${positions.length} liquidatable position(s)`);
 
-    // Estimate liquidation inputs via Lens for each position
-    const estimateResults = await Promise.allSettled(
-      positions.map((p) =>
-        this.publicClient.readContract({
-          address: this.lensAddress,
-          abi: lensAbi,
-          functionName: "estimateLiquidation",
-          args: [p.proxyAddress, this.isDirectRedemption],
-        })
-      )
-    );
+    // Estimate liquidation inputs via Lens, `LENS_ESTIMATE_CHUNK` at a time.
+    const estimate = (p: LiquidatablePosition) =>
+      this.publicClient.readContract({
+        address: this.lensAddress,
+        abi: lensAbi,
+        functionName: "estimateLiquidation",
+        args: [p.proxyAddress, this.isDirectRedemption],
+      });
+    const estimateResults: PromiseSettledResult<Awaited<ReturnType<typeof estimate>>>[] = [];
+    for (let i = 0; i < positions.length; i += LENS_ESTIMATE_CHUNK) {
+      const chunk = positions.slice(i, i + LENS_ESTIMATE_CHUNK);
+      estimateResults.push(...(await Promise.allSettled(chunk.map(estimate))));
+    }
 
     // Build position + amounts pairs, filter failed estimates
     const candidates: LiquidationCandidate[] = [];

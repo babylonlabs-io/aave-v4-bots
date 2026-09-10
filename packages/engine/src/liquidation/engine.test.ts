@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createManualExecutor } from "../shared/executor";
 import { createAutoExecutorWithSender } from "../shared/executorTestKit";
 import { createIndexerClient } from "../shared/indexerClient";
+import { LENS_ESTIMATE_CHUNK, MAX_LIQUIDATION_CANDIDATES } from "./domain";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
 
@@ -1619,5 +1620,40 @@ describe("LiquidationEngine", () => {
       expect(store.all()).toHaveLength(1);
       expect(events).toHaveLength(1);
     });
+  });
+});
+
+// The indexer is untrusted, so its candidate list is trimmed before any RPC and estimated in chunks.
+describe("LiquidationEngine candidate intake", () => {
+  it("estimates at most the capped number of distinct positions, a chunk at a time", async () => {
+    const clients = createMockClients();
+    const base = clients.publicClient.readContract;
+    let calls = 0;
+    let active = 0;
+    let peak = 0;
+    clients.publicClient.readContract = vi.fn(async (args: { functionName: string }) => {
+      if (args.functionName !== "estimateLiquidation") return base(args);
+      calls++;
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active--;
+      // No candidate proceeds: this test is about the fan-out, not what follows it.
+      throw new Error("healthy position");
+    });
+    const distinct = Array.from({ length: MAX_LIQUIDATION_CANDIDATES + 100 }, (_, i) => ({
+      ...mockPosition,
+      proxyAddress: `0x${(i + 1).toString(16).padStart(40, "0")}`,
+    }));
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({ liquidatable: [...distinct, ...distinct], total: 0, checked: 0 }),
+    });
+
+    await createBot(clients).run();
+
+    expect(calls).toBe(MAX_LIQUIDATION_CANDIDATES);
+    expect(peak).toBeLessThanOrEqual(LENS_ESTIMATE_CHUNK);
   });
 });

@@ -38,3 +38,42 @@ export const RESERVE_FLAG = {
 export function isBorrowableReserve(flags: number): boolean {
   return (flags & RESERVE_FLAG.BORROWABLE) !== 0;
 }
+
+/** Most liquidation candidates one cycle takes from the indexer. The rest wait for later cycles. */
+export const MAX_LIQUIDATION_CANDIDATES = 500;
+
+/** Lens estimates run this many at a time, so a long candidate list cannot flood the RPC. */
+export const LENS_ESTIMATE_CHUNK = 25;
+
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * The positions one cycle acts on: the first entry for each proxy (case-insensitive), in feed
+ * order, capped at `max`. The feed is cast, not parsed, so this runs before any RPC call and drops
+ * entries without a usable `proxyAddress`.
+ */
+export function selectPositions<P extends { proxyAddress: string }>(
+  positions: readonly P[],
+  max = MAX_LIQUIDATION_CANDIDATES
+): { positions: P[]; malformed: number; duplicates: number; truncated: number } {
+  const seen = new Set<string>();
+  const unique: P[] = [];
+  let malformed = 0;
+  for (const p of positions) {
+    const proxy = (p as { proxyAddress?: unknown } | null)?.proxyAddress;
+    if (typeof proxy !== "string" || !ADDRESS.test(proxy)) {
+      malformed++;
+      continue;
+    }
+    const k = proxy.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    unique.push(p);
+  }
+  return {
+    positions: unique.slice(0, max),
+    malformed,
+    duplicates: positions.length - malformed - unique.length,
+    truncated: Math.max(0, unique.length - max),
+  };
+}
