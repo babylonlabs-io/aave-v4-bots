@@ -1,5 +1,10 @@
 import { createRiskGate } from "@repo/risk";
-import { type Hex, type PublicClient, TransactionReceiptNotFoundError } from "viem";
+import {
+  type Hex,
+  type PublicClient,
+  TransactionNotFoundError,
+  TransactionReceiptNotFoundError,
+} from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Executor } from "./executor";
@@ -23,17 +28,30 @@ function held(outcome: { minedAtBlock?: bigint } = {}) {
   return risk;
 }
 
-/** `receipt` undefined ⇒ viem's "not found"; `receiptFails` ⇒ any other RPC failure. */
+/**
+ * `receipt` undefined ⇒ viem's "not found"; `receiptFails` ⇒ any other RPC failure. `node` is
+ * what `getTransaction` answers: the tx is known, unknown, or the lookup fails.
+ */
 const clients = (
-  over: { receipt?: unknown; receiptFails?: boolean; inFlight?: ReadonlySet<string> } = {}
+  over: {
+    receipt?: unknown;
+    receiptFails?: boolean;
+    inFlight?: ReadonlySet<string>;
+    node?: "known" | "unknown" | "fails";
+  } = {}
 ) => {
   const getTransactionReceipt = vi.fn(async () => {
     if (over.receiptFails) throw new Error("rpc down");
     if (over.receipt === undefined) throw new TransactionReceiptNotFoundError({ hash: TX as Hex });
     return over.receipt;
   });
+  const getTransaction = vi.fn(async () => {
+    if (over.node === "fails") throw new Error("rpc down");
+    if (over.node === "unknown") throw new TransactionNotFoundError({ hash: TX as Hex });
+    return { hash: TX };
+  });
   return {
-    publicClient: { getTransactionReceipt } as unknown as PublicClient,
+    publicClient: { getTransactionReceipt, getTransaction } as unknown as PublicClient,
     executor: {
       inFlightTxHashes: vi.fn(async () => over.inFlight),
     } as unknown as Executor,
@@ -87,12 +105,37 @@ describe("settledOutflows", () => {
     expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
   });
 
-  // Without a store, "not in flight" is unanswerable, and an unanswered question is not "gone".
-  it("keeps one when in-flight cannot be answered at all", async () => {
-    const risk = held();
-    const { publicClient, executor } = clients({ inFlight: undefined });
+  // No store means public submission, where the node's answer is authoritative.
+  describe("without a store", () => {
+    it("settles one the node no longer knows, and capacity returns to the balance", async () => {
+      const risk = held();
+      const { publicClient, executor } = clients({ inFlight: undefined, node: "unknown" });
 
-    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
+      const settled = await settledOutflows({ publicClient, risk, executor, block: 11n });
+      expect(settled).toEqual([TX]);
+
+      risk.applySnapshot([{ account: { owner: SIGNER, token: WBTC }, amount: 100n }], 11n, settled);
+      const full = risk.openSlot({
+        kind: "liquidation",
+        subject: "0xother",
+        spend: [{ owner: SIGNER, token: WBTC, amount: 100n }],
+      });
+      expect(full.allowed).toBe(true);
+    });
+
+    it("keeps one the node still knows", async () => {
+      const risk = held();
+      const { publicClient, executor } = clients({ inFlight: undefined, node: "known" });
+
+      expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
+    });
+
+    it("keeps one when the node lookup fails", async () => {
+      const risk = held();
+      const { publicClient, executor } = clients({ inFlight: undefined, node: "fails" });
+
+      expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
+    });
   });
 
   it("uses the height the receipt already gave the engine, without asking again", async () => {

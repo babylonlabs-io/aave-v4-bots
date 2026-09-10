@@ -1,3 +1,4 @@
+import { isTxKnown } from "@repo/chain";
 import type { RiskGate } from "@repo/risk";
 import { type Hex, type PublicClient, TransactionReceiptNotFoundError } from "viem";
 
@@ -17,7 +18,9 @@ type InFlightSource = Pick<Executor, "inFlightTxHashes">;
  * - **A receipt at or below `block`.** Whatever the transaction did, a read at that height reports
  *   it. A receipt from a later block retires nothing: the read predates it.
  * - **The transaction is no longer in flight.** A dropped or replaced transaction never gets a
- *   receipt; `reconcile` has already judged those rows this cycle.
+ *   receipt; `reconcile` has already judged those rows this cycle. Without a store, a transaction
+ *   the node no longer knows counts instead: only public submission runs without one, and there
+ *   the node's answer is authoritative.
  *
  * Only a receipt lookup that answers "not found" counts as no receipt. Any other failure proves
  * nothing, so that hold stays. Elapsed time is not evidence either: a transaction that mines an
@@ -38,7 +41,7 @@ export async function settledOutflows(deps: {
   if (outflows.length === 0) return [];
 
   // Read once for the whole pass rather than per hold. `undefined` means this process keeps no
-  // store and cannot answer, in which case a hold is retired only by a receipt.
+  // store; the node answers instead.
   const inFlight = await executor.inFlightTxHashes();
 
   const settled = await Promise.all(
@@ -54,8 +57,15 @@ export async function settledOutflows(deps: {
         receipt = null;
       }
       if (receipt) return receipt.blockNumber <= block;
-      // No receipt: mined nowhere yet. Only the intent record can say whether it still could be.
-      return inFlight !== undefined && !inFlight.has(txHash as Hex);
+      // No receipt: mined nowhere yet. The intent record says whether it still could be.
+      if (inFlight !== undefined) return !inFlight.has(txHash as Hex);
+      // No store, so public submission: a transaction the node does not know is gone. A failed
+      // lookup proves nothing, so the hold stays.
+      try {
+        return !(await isTxKnown(publicClient, txHash as Hex));
+      } catch {
+        return false;
+      }
     })
   );
 
