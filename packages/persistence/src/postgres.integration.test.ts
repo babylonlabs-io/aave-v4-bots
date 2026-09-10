@@ -223,6 +223,35 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
     TIMEOUT
   );
 
+  // Revival would clear the envelope of a SafeTx owners may have signed.
+  it(
+    "supersede refuses a released proposal that still carries a Safe envelope",
+    async () => {
+      const zero = "0x0000000000000000000000000000000000000000" as Address;
+      const envelope = {
+        safeNonce: 7,
+        operation: 0 as const,
+        safeTxGas: "0",
+        baseGas: "0",
+        gasPrice: "0",
+        gasToken: zero,
+        refundReceiver: zero,
+        safeVersion: "1.4.1",
+        safeTxHash: `0x${"e".repeat(64)}` as Hex,
+        claimBlock: 1000,
+      };
+      const id = idempotencyKey(input("prop-env"));
+      await store.propose(input("prop-env"), payload({ value: "1" }), HASH_A);
+      expect((await store.claimProposal(id, HASH_A, envelope)).claimed).toBe(true);
+      expect(await store.release(id, HASH_A)).toBe(true);
+
+      expect(await store.supersede(id)).toBe(false);
+      const row = (await store.proposals()).find((r) => r.id === id);
+      expect(row).toMatchObject({ status: "proposed", safeEnvelope: envelope });
+    },
+    TIMEOUT
+  );
+
   it(
     "expireProposals sweeps exactly the past-TTL proposals in its action scope",
     async () => {

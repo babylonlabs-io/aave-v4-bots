@@ -783,6 +783,46 @@ describe("createManualExecutor (keyless)", () => {
     expect(events).toHaveLength(2); // the fresh proposal re-notifies
   });
 
+  // The payload changes almost every cycle, so a supersede here would drop a released SafeTx's
+  // envelope within one poll. The operator resolves it through the CLI instead.
+  it("does not supersede a released row that carries a Safe envelope", async () => {
+    const store = createMemoryStateStore();
+    const { notifier, events } = fakeNotifier();
+    const exec = manualExecutor(store, notifier);
+    const zero = "0x0000000000000000000000000000000000000000" as Address;
+    const envelope = {
+      safeNonce: 7,
+      operation: 0 as const,
+      safeTxGas: "0",
+      baseGas: "0",
+      gasPrice: "0",
+      gasToken: zero,
+      refundReceiver: zero,
+      safeVersion: "1.4.1",
+      safeTxHash: `0x${"e".repeat(64)}` as Hex,
+      claimBlock: 1000,
+    };
+
+    await exec.commit(CALL, claim("p"));
+    const id = idempotencyKey(claim("p"));
+    const hash = store.get(id)?.payloadHash as Hex;
+    await store.claimProposal(id, hash, envelope);
+    await store.release(id, hash);
+
+    const out = await exec.commit(
+      { ...CALL, address: "0x00000000000000000000000000000000000000ff" as Address },
+      claim("p")
+    );
+
+    expect(out.kind).toBe("duplicate");
+    expect(store.get(id)).toMatchObject({
+      status: "proposed",
+      payloadHash: hash,
+      safeEnvelope: envelope,
+    });
+    expect(events).toHaveLength(1);
+  });
+
   describe("ensureAllowance (keyless)", () => {
     const TOKEN = "0x0000000000000000000000000000000000000abc" as Address;
     const SPENDER = "0x0000000000000000000000000000000000000def" as Address;

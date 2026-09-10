@@ -10,7 +10,7 @@ import {
   maxUint256,
 } from "viem";
 import { retireSettledOutflows } from "../../shared/outflows";
-import { type SpokeReserves, borrowableTokens } from "../reserves";
+import { type SpokeReserves, borrowableTokens, reserveTokens } from "../reserves";
 import type {
   FundedCandidate,
   FundingContext,
@@ -81,11 +81,14 @@ export class InventoryFunding implements LiquidationFunding {
     }
   }
 
-  /** Take the adapter's allowance back to zero on every token this mode approves. */
+  /**
+   * Revoke the adapter's allowance on every reserve token plus WBTC. This is wider than the
+   * approved set: a reserve that stopped being borrowable keeps the allowance it was granted.
+   */
   async revokeApprovals(): Promise<void> {
     const { adapterAddress, executor, logger } = this.deps;
 
-    for (const token of await this.approvedTokens()) {
+    for (const token of await this.revocableTokens()) {
       const { symbol } = await this.deps.tokenMeta.get(this.deps.publicClient, token);
       try {
         const result = await executor.revokeAllowance({
@@ -104,13 +107,19 @@ export class InventoryFunding implements LiquidationFunding {
     }
   }
 
-  /**
-   * The tokens this mode approves the adapter for: every borrowable reserve, plus WBTC. Reads the
-   * reserves when no topology is cached, as in a cycle that halted at boot.
-   */
+  /** The tokens this mode approves the adapter for: every borrowable reserve, plus WBTC. */
   private async approvedTokens(): Promise<Address[]> {
     const topology = this.topology ?? (await this.deps.reserves());
     return Array.from(new Set<Address>([...borrowableTokens(topology), this.deps.wbtcAddress]));
+  }
+
+  /**
+   * Every token the adapter can hold an allowance on: all reserve tokens, plus WBTC. Reads the
+   * reserves when no topology is cached, as in a cycle that halted at boot.
+   */
+  private async revocableTokens(): Promise<Address[]> {
+    const topology = this.topology ?? (await this.deps.reserves());
+    return Array.from(new Set<Address>([...reserveTokens(topology), this.deps.wbtcAddress]));
   }
 
   /**

@@ -341,9 +341,11 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
 
     async supersede(id) {
       await ensureReady();
+      // A row with a Safe envelope is never superseded: revival would clear the only record of a
+      // SafeTx owners may have signed. The operator CLI resolves it, as for `expireProposals`.
       const res = await client.query(
         `UPDATE ${intents} SET status = 'superseded', updated_at = $2
-         WHERE id = $1 AND status = 'proposed'`,
+         WHERE id = $1 AND status = 'proposed' AND safe_envelope IS NULL`,
         [id, Date.now()]
       );
       return (res.rowCount ?? 0) > 0;

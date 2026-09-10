@@ -27,8 +27,8 @@ export function maxWbtcInWithSlippage(currentDebt: bigint, slippageBps: number):
  */
 const UINT_STRING = /^[0-9]+$/;
 
-/** A hex `vaultId`. viem's encoder checks its width when it is sent. */
-const HEX_STRING = /^0x[0-9a-fA-F]+$/;
+/** A `vaultId`: a `bytes32`, as `previewEscrowedVaults` takes it. */
+const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 
 /**
  * Can the engine act on this escrow feed element? The response is cast, not parsed, so this
@@ -39,7 +39,7 @@ export function isUsableVault(vault: unknown): vault is EscrowedVault {
   const { vaultId, btcAmount, currentDebt } = vault as Partial<EscrowedVault>;
   return (
     typeof vaultId === "string" &&
-    HEX_STRING.test(vaultId) &&
+    BYTES32.test(vaultId) &&
     typeof btcAmount === "string" &&
     UINT_STRING.test(btcAmount) &&
     typeof currentDebt === "string" &&

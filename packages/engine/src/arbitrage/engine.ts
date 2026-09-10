@@ -285,7 +285,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       if (malformed > 0) {
         this.metrics.recordError("vaults_malformed");
         this.logger.warn(
-          `Indexer described ${malformed} escrowed vault(s) in a shape this bot cannot use — dropped. Expect a decimal \`btcAmount\`/\`currentDebt\` and a hex \`vaultId\`; a persistent count here means the indexer's wire format changed.`
+          `Indexer described ${malformed} escrowed vault(s) in a shape this bot cannot use — dropped. Expect a decimal \`btcAmount\`/\`currentDebt\` and a 32-byte hex \`vaultId\`; a persistent count here means the indexer's wire format changed.`
         );
       }
       return { kind: "ok", vaults, dataTimestampMs: data.dataTimestampMs };

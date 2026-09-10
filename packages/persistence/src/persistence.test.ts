@@ -355,6 +355,18 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
       expect(await store.supersede(id)).toBe(false);
       expect(store.get(id)?.status).toBe("submitted");
     });
+
+    // Revival would clear the envelope of a SafeTx owners may have signed.
+    it("will not supersede a released row that still carries a Safe envelope", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A, SAFE_ENV);
+      await store.release(id, HASH_A);
+
+      expect(await store.supersede(id)).toBe(false);
+      expect(store.get(id)).toMatchObject({ status: "proposed", safeEnvelope: SAFE_ENV });
+    });
   });
 
   describe("expireProposals", () => {

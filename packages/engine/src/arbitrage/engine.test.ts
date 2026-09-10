@@ -592,6 +592,19 @@ describe("ArbitrageEngine", () => {
         expect(metrics.recordError).toHaveBeenCalledWith("vaults_malformed");
       });
 
+      // In production a wrong-width id fails ABI encoding and is counted as `acquire_error`.
+      it("counts a wrong-width vaultId as malformed, not as an acquisition error", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = withPoison({ ...mockVault, vaultId: "0xaabbccdd" });
+
+        await bot.run();
+
+        expect(metrics.recordError).toHaveBeenCalledWith("vaults_malformed");
+        expect(metrics.recordError).not.toHaveBeenCalledWith("acquire_error");
+        expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      });
+
       // `BigInt("")` is `0n`, so an empty debt would read as nothing owed.
       it("drops an empty amount rather than reading it as zero", async () => {
         const clients = createMockClients();
@@ -710,8 +723,8 @@ describe("ArbitrageEngine", () => {
           Promise.resolve({
             vaults: [
               mockVault,
-              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
-              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"de".repeat(32)}` as `0x${string}` },
             ],
             total: 3,
           }),
@@ -737,8 +750,8 @@ describe("ArbitrageEngine", () => {
           Promise.resolve({
             vaults: [
               mockVault,
-              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
-              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"de".repeat(32)}` as `0x${string}` },
             ],
             total: 3,
           }),
@@ -1093,7 +1106,7 @@ describe("ArbitrageEngine", () => {
       const clients = createMockClients();
       const bot = createBot(clients);
 
-      const vault2 = { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` };
+      const vault2 = { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` };
 
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
@@ -1108,7 +1121,7 @@ describe("ArbitrageEngine", () => {
 
     it("continues to next vault when one fails", async () => {
       const clients = createMockClients();
-      const vault2 = { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` };
+      const vault2 = { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` };
 
       // First vault fails gas estimation, second succeeds
       clients.publicClient.estimateContractGas
@@ -1234,9 +1247,9 @@ describe("ArbitrageEngine", () => {
           Promise.resolve({
             vaults: [
               mockVault,
-              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
-              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
-              { ...mockVault, vaultId: "0xfeedface" as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"de".repeat(32)}` as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"fe".repeat(32)}` as `0x${string}` },
             ],
             total: 4,
           }),

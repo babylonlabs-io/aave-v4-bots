@@ -167,7 +167,8 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
 
     async supersede(id) {
       const row = rows.get(id);
-      if (!row || row.status !== "proposed") return false;
+      // Never a row still carrying an envelope — see the Postgres store.
+      if (!row || row.status !== "proposed" || row.safeEnvelope !== null) return false;
       rows.set(id, { ...row, status: "superseded", updatedAt: now() });
       return true;
     },

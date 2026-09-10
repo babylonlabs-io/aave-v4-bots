@@ -69,6 +69,9 @@ describe("isUsableVault", () => {
     ["a missing field", { currentDebt: undefined }],
     ["a non-hex vaultId", { vaultId: "nope" }],
     ["a bare 0x vaultId", { vaultId: "0x" }],
+    ["a short vaultId", { vaultId: "0xaabbccdd" }],
+    ["a 33-byte vaultId", { vaultId: `0x${"ab".repeat(33)}` }],
+    ["an odd-length vaultId", { vaultId: `0x${"a".repeat(63)}` }],
   ])("rejects %s", (_label, over) => {
     expect(isUsableVault({ ...vault, ...over })).toBe(false);
   });
