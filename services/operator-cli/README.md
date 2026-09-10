@@ -83,10 +83,13 @@ Secrets Manager id.
 ## Run
 
 ```bash
-pnpm --filter @services/operator-cli operator-cli list
-pnpm --filter @services/operator-cli operator-cli show <id>
-pnpm --filter @services/operator-cli operator-cli broadcast <id>
+pnpm --filter @services/operator-cli start list
+pnpm --filter @services/operator-cli start show <id>
+pnpm --filter @services/operator-cli start broadcast <id>
 ```
+
+The CLI reads `.env` from `services/operator-cli/` (via `dotenv/config`); exported variables take
+precedence over it.
 
 The e2e suites `manual-arbitrageur` and `manual-safe-arbitrageur` drive this CLI end to end (see
 `scripts/e2e-local.sh` and `test/e2e/scripts/operator-confirm.sh`).
