@@ -152,7 +152,8 @@ describe("createAutoExecutor", () => {
       store
     );
     const out = await exec.commit(CALL, claim("p"));
-    expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: true });
+    // The signed hash travels with it: the engine holds the declared spend by it.
+    expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: true, txHash: "0xhash" });
     // The intent stays live (submitted), never terminal — reconcile decides later.
     expect(store.get(idempotencyKey(claim("p")))?.status).toBe("submitted");
   });

@@ -505,18 +505,33 @@ describe("LiquidationEngine", () => {
       expect(risk.inFlight()).toBe(0); // and the exposure slot was still released
     });
 
-    // The counterpart: an ambiguous *broadcast* failure may be on chain, so it IS a real
-    // failure signal and must feed the breaker.
-    it("trips the breaker when the broadcast itself fails (ambiguous)", async () => {
+    // The counterpart: an ambiguous *broadcast* may be on chain, so its spend stays held under the
+    // signed hash. Its fate is unknown, which is not evidence the chain rejected us, so the breaker
+    // does not count it.
+    it("holds the spend of an ambiguous broadcast failure without tripping the breaker", async () => {
       const clients = createMockClients();
-      clients.sender.send = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+      clients.sender.send = vi.fn(
+        async (
+          call: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          await onSigned?.({ hash: "0xambiguous", nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new Error("rpc timeout");
+        }
+      );
       const risk = createRiskGate({ maxConsecutiveFailures: 1 });
       const bot = createBot(clients, { risk });
       global.fetch = vi.fn().mockResolvedValue(liquidatable());
 
       await bot.run();
 
-      expect(risk.state()).toBe("HALTED");
+      expect(clients.sender.send).toHaveBeenCalled();
+      expect(risk.state()).not.toBe("HALTED");
+      expect(risk.outflows().map((o) => o.txHash)).toContain("0xambiguous");
     });
 
     const NOW = 1_000_000_000;

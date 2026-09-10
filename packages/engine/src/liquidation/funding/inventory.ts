@@ -9,7 +9,7 @@ import {
   type PublicClient,
   maxUint256,
 } from "viem";
-import { retireSettledOutflows } from "../../shared/outflows";
+import { settledOutflows } from "../../shared/outflows";
 import { type SpokeReserves, borrowableTokens, reserveTokens } from "../reserves";
 import type {
   FundedCandidate,
@@ -152,14 +152,12 @@ export class InventoryFunding implements LiquidationFunding {
     const balances = await Promise.all(
       tokens.map((token) => readBalance(publicClient, token, owner, block))
     );
-    await retireSettledOutflows({ publicClient, risk, executor, block });
-
-    // Synchronous from here: retiring a hold and publishing the read that covers it must not be
-    // separated by an await, or the other engine can be judged in between — against a balance that
-    // has dropped the hold and not yet gained the spend it was holding.
-    for (let i = 0; i < tokens.length; i++) {
-      risk.setAvailable({ owner, token: tokens[i] }, balances[i], block);
-    }
+    const settled = await settledOutflows({ publicClient, risk, executor, block });
+    risk.applySnapshot(
+      tokens.map((token, i) => ({ account: { owner, token }, amount: balances[i] })),
+      block,
+      settled
+    );
   }
 
   /** Viable iff the adapter call simulates from the signer's balances. */

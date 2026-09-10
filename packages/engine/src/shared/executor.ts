@@ -53,11 +53,15 @@ export type CommitResult =
   /** A live intent for this subject already exists — skip. `existing` is that intent. */
   | { kind: "duplicate"; existing: TxIntent }
   /**
-   * AUTO — the send failed. `broadcastAttempted` distinguishes a failed *broadcast* (ambiguous —
-   * the tx may be on the wire) from a pre-broadcast failure (nothing reached the chain), so the
-   * engine settles the risk slot `abandoned` only for the latter.
+   * AUTO — the send failed before the tx reached the chain. The engine settles the slot
+   * `abandoned`.
    */
-  | { kind: "aborted"; broadcastAttempted: boolean; error: string };
+  | { kind: "aborted"; broadcastAttempted: false; error: string }
+  /**
+   * AUTO — the broadcast failed, so the tx may be on the wire. `txHash` is the signed hash, which
+   * the engine holds the declared spend by until the chain settles it.
+   */
+  | { kind: "aborted"; broadcastAttempted: true; txHash: Hex; error: string };
 
 /** The only `commit` outcomes `ensureAllowance` can produce for a not-yet-approved allowance. */
 export type ProposalResult = Extract<CommitResult, { kind: "proposed" | "duplicate" }>;
@@ -102,7 +106,7 @@ interface BaseExecutor {
    *
    * It exists for the risk gate's outflow holds. A held outflow whose transaction never mines has
    * no receipt to retire it, and only the intent record can say the chain has moved past it. See
-   * `retireSettledOutflows`.
+   * `settledOutflows`.
    */
   inFlightTxHashes(): Promise<ReadonlySet<Hex> | undefined>;
 
@@ -447,11 +451,11 @@ export function createAutoExecutor(deps: {
             signedHash ? undefined : { updatedAt: claimed.attemptAt }
           );
         }
-        return {
-          kind: "aborted",
-          broadcastAttempted: !(error instanceof PreBroadcastError),
-          error: message,
-        };
+        // No hash means `onSigned` never ran, and a `TxSender` broadcasts only after it has.
+        if (!(error instanceof PreBroadcastError) && signedHash) {
+          return { kind: "aborted", broadcastAttempted: true, txHash: signedHash, error: message };
+        }
+        return { kind: "aborted", broadcastAttempted: false, error: message };
       } finally {
         if (intentId) crash.endSend(intentId);
       }

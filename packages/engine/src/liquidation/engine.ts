@@ -367,9 +367,13 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
           case "aborted":
             this.metrics.recordError("tx_send_error");
             this.logger.error(`Failed to send liquidation for ${position.borrower}: ${out.error}`);
-            // Only a failed *broadcast* is a real failure signal for the breaker; a pre-broadcast
-            // failure reached no chain, so an RPC/database blip cannot trip it.
-            slot.settle({ ok: false, abandoned: !out.broadcastAttempted });
+            // A failed broadcast may still land. Its fate is unknown, so the spend stays held under
+            // its hash and the breaker does not count it. A pre-broadcast failure moved nothing.
+            slot.settle(
+              out.broadcastAttempted
+                ? { ok: false, unresolved: true, txHash: out.txHash }
+                : { ok: false, abandoned: true }
+            );
             // The send left a possible nonce gap — stop the cycle; the next resync reclaims it.
             break sendLoop;
 

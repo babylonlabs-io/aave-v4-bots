@@ -1400,6 +1400,33 @@ describe("ArbitrageEngine", () => {
       expect(intent?.txHash).toBe("0xtxhash");
     });
 
+    // An ambiguous send may still land, so its spend stays held under the signed hash.
+    it("holds the spend of an ambiguous send under its hash", async () => {
+      const store = createMemoryStateStore();
+      const clients = createMockClients();
+      (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
+      const nonces = createNonceAllocator(createNonceLease(), "0xarbitrageur");
+      const risk = createRiskGate();
+      const bot = createBot(clients, { store, nonces, risk });
+      await nonces.resync(() => Promise.resolve(5));
+      clients.sender.send = vi.fn(
+        async (
+          call: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new Error("rpc timeout");
+        }
+      );
+
+      expect(await bot.acquireVault(mockVault)).toBe("send-error");
+      expect(risk.outflows().map((o) => o.txHash)).toContain("0xtxhash");
+    });
+
     it("run() stops the cycle after a send error (does not process later vaults)", async () => {
       const store = createMemoryStateStore();
       const { bot, clients } = storeBot(store);

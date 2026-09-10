@@ -1,4 +1,5 @@
 import { createRiskGate } from "@repo/risk";
+import { TransactionReceiptNotFoundError } from "viem";
 import { describe, expect, it, vi } from "vitest";
 import type { Executor } from "../../shared/executor";
 import { InventoryFunding } from "./inventory";
@@ -18,7 +19,9 @@ function build(overrides: Partial<FundingContext> = {}) {
       readContract: vi.fn().mockResolvedValue(500n),
       getBlockNumber: vi.fn().mockResolvedValue(1n),
       // Nothing has mined in this fixture: an outflow is held until something says otherwise.
-      getTransactionReceipt: vi.fn().mockRejectedValue(new Error("not found")),
+      getTransactionReceipt: vi
+        .fn()
+        .mockRejectedValue(new TransactionReceiptNotFoundError({ hash: "0xtx" })),
     } as unknown as FundingContext["publicClient"],
     risk,
     metrics: { recordFundingCapacity: vi.fn() },

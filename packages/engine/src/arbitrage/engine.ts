@@ -626,10 +626,15 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           case "aborted":
             this.logger.error(`Failed to send swap for vault ${vaultId}: ${out.error}`);
             this.metrics.recordError("swap_send_error");
-            // Only a failed *broadcast* is a real failure signal for the breaker; a pre-broadcast
-            // failure reached no chain, so an RPC/database blip cannot trip it.
-            if (out.broadcastAttempted) this.settle(slot, { ok: false }, authorizationId);
-            else await this.abandonAfterAuthorizing(slot, vaultId as Hex, authorizationId);
+            // A failed broadcast may still land. Its fate is unknown, so the spend stays held under
+            // its hash and the breaker does not count it. A pre-broadcast failure moved nothing.
+            if (out.broadcastAttempted) {
+              this.settle(
+                slot,
+                { ok: false, unresolved: true, txHash: out.txHash },
+                authorizationId
+              );
+            } else await this.abandonAfterAuthorizing(slot, vaultId as Hex, authorizationId);
             // The send left a possible nonce gap — stop the cycle; the next resync reclaims it.
             return { kind: "send-error" };
           default:
