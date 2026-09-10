@@ -463,6 +463,36 @@ describe("reconcilePending — Safe custody (resolves by the Execution event, no
       expect(store.get(id)?.txHash).toBe(ELSEWHERE);
     });
 
+    // A failed scan cannot rule out that another transaction executed our SafeTx, so it must not
+    // fail the intent and free its subject for a second proposal.
+    it("keeps the intent in flight when the recorded tx reverted and the scan fails", async () => {
+      const store = createMemoryStateStore();
+      const id = await submittedSafeIntent(store);
+
+      const summary = await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: reader({ safeExec: { [EXEC_TX]: "reverted" }, scanThrows: true }),
+      });
+
+      expect(summary).toMatchObject({ stillInFlight: 1, failed: 0 });
+      expect(store.get(id)?.status).toBe("submitted");
+    });
+
+    it("fails the intent when the recorded tx reverted and a clean scan finds nothing", async () => {
+      const store = createMemoryStateStore();
+      const id = await submittedSafeIntent(store);
+
+      const summary = await reconcilePending({
+        store,
+        signer: SAFE,
+        reader: reader({ safeExec: { [EXEC_TX]: "reverted" }, found: null }),
+      });
+
+      expect(summary).toMatchObject({ failed: 1, stillInFlight: 0 });
+      expect(store.get(id)?.status).toBe("failed");
+    });
+
     it("fails when the scan finds the SafeTx executed and its inner call reverted", async () => {
       const store = createMemoryStateStore();
       const id = await submittedSafeIntent(store);
