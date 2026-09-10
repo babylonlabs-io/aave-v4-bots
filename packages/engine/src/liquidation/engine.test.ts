@@ -47,13 +47,17 @@ let metrics: ReturnType<typeof createMetrics>;
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
+const mockReserveIds = [0n] as const;
 const mockAmounts = [1000000n] as const;
+/** The fairness payment the preview quotes; buffered like the debt before it becomes the cap. */
+const mockWbtcPayment = 5000n;
 
 const mockPosition: LiquidatablePosition = {
   proxyAddress: "0x1234567890123456789012345678901234567890",
   borrower: "0xborrower0000000000000000000000000000000001",
-  amounts: ["1000000"],
-  vaults: ["0xvault1"],
+  debtReserveIds: ["0"],
+  debtToCoverAmounts: ["1000000"],
+  vaultId: "0xvault1",
   suppliedShares: "1000000000",
 };
 
@@ -82,6 +86,25 @@ function mockSender(identity = { from: "0xliquidator" as `0x${string}`, chainId:
   };
 }
 
+/**
+ * Replace the answer for ONE `readContract` function, leaving every other read at its default.
+ *
+ * Overriding the whole implementation is how these tests go wrong quietly: an override that omits
+ * `adapter`, `spoke` or `getReserveCount` makes boot throw, so the cycle sends nothing at all — and
+ * a test asserting the breaker did NOT trip then passes without ever having liquidated anything.
+ */
+function overrideRead(
+  clients: ReturnType<typeof createMockClients>,
+  functionName: string,
+  value: unknown
+): void {
+  const base = clients.publicClient.readContract.getMockImplementation();
+  if (!base) throw new Error("readContract has no default implementation to fall back to");
+  clients.publicClient.readContract.mockImplementation((args: { functionName: string }) =>
+    args.functionName === functionName ? Promise.resolve(value) : base(args)
+  );
+}
+
 function createMockClients() {
   return {
     sender: mockSender(),
@@ -106,9 +129,10 @@ function createMockClients() {
           return Promise.resolve({ flags: 0x04, underlying: "0xdebt" });
         }
         if (functionName === "estimateLiquidation") {
-          // [amounts, wbtcPayment, vaults] — wbtcPayment is the WBTC the
-          // adapter pulls from msg.sender for fairness + redemption fee.
-          return Promise.resolve([mockAmounts, 0n, ["0xvault1"]]);
+          // [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId, amountCollateralToSeize] —
+          // wbtcPayment is the WBTC the adapter pulls from msg.sender for fairness + redemption
+          // fee, and doubles as the `maxWbtcPayment` cap on the call.
+          return Promise.resolve([mockReserveIds, mockAmounts, mockWbtcPayment, "0xvault1", 0n]);
         }
         // Default: the position still holds collateral, so a reverted liquidation reads as a genuine
         // failure (a lost-race test overrides this with totalCollateralBTC 0n).
@@ -407,25 +431,46 @@ describe("LiquidationEngine", () => {
         logs: [],
       });
       // The liquidation reverted because another liquidator already cleared the position: no
-      // collateral left. The engine reads getPosition and sees totalCollateralBTC 0n → lost race.
-      clients.publicClient.readContract.mockImplementation(
-        ({ functionName }: { functionName: string }) => {
-          if (functionName === "estimateLiquidation")
-            return Promise.resolve([mockAmounts, 0n, ["0xvault1"]]);
-          if (functionName === "getPosition")
-            return Promise.resolve({
-              vaultIds: [],
-              totalCollateralBTC: 0n,
-              proxyContract: "0xproxy",
-            });
-          return Promise.resolve(BigInt("1000000000000000000"));
-        }
-      );
+      // collateral left, no vaults. The engine reads getPosition and sees both → lost race.
+      overrideRead(clients, "getPosition", {
+        vaultIds: [],
+        totalCollateralBTC: 0n,
+        proxyContract: "0xproxy",
+      });
       const risk = createRiskGate({ maxConsecutiveFailures: 1 });
       const bot = createBot(clients, { risk });
       global.fetch = vi.fn().mockResolvedValue(liquidatable());
 
       await bot.run(); // reverts, but lost race → contended → breaker untouched
+      // Asserted alongside the state: "RUNNING" is also what a cycle that never got as far as
+      // sending would leave behind, so without this the test cannot tell the two apart.
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      expect(risk.state()).toBe("RUNNING");
+    });
+
+    it("does NOT trip the breaker when a competitor took our vault but left collateral", async () => {
+      const clients = createMockClients();
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "reverted",
+        blockNumber: 1n,
+        logs: [],
+      });
+      // The case single-vault seizure makes ordinary. The adapter takes exactly the head vault, so
+      // a competitor liquidating a borrower who holds two leaves the second one behind. Judged on
+      // collateral alone this reads as "still there to take", and every lost race against a
+      // multi-vault borrower would be charged to the breaker. The mirror case — our vault still in
+      // the list, so nobody outran us — is the default mock, asserted as HALTED above.
+      overrideRead(clients, "getPosition", {
+        vaultIds: ["0xvault2"], // ours is gone; the borrower's other vault is not
+        totalCollateralBTC: 500n,
+        proxyContract: "0xproxy",
+      });
+      const risk = createRiskGate({ maxConsecutiveFailures: 1 });
+      const bot = createBot(clients, { risk });
+      global.fetch = vi.fn().mockResolvedValue(liquidatable());
+
+      await bot.run();
+      expect(clients.sender.send).toHaveBeenCalledTimes(1);
       expect(risk.state()).toBe("RUNNING");
     });
 
@@ -678,16 +723,24 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      // Bot adds 1% buffer to Lens-returned amounts to cover interest accrual
-      const bufferedAmounts = mockAmounts.map((amt) => (amt * 10100n) / 10000n);
+      // Bot adds 1% buffer to the preview's figures to cover interest accrual — to the debt so it
+      // does not leave dust, and to the payment because that figure is also the cap the adapter
+      // checks its own recomputed payment against.
+      const buffer = (amt: bigint) => (amt * 10100n) / 10000n;
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
-          // minVaultBtcOut=0n disables BTC-out slippage protection; numVaultsToLiquidate=
-          // maxUint256 is the sentinel for "unbounded prefix" (the new params from the
-          // bumped adapter).
-          args: [mockPosition.borrower, nonZeroRedeemKey, bufferedAmounts, [0n], 0n, maxUint256],
+          // minVaultBtcOut=0n disables BTC-out slippage protection; the reserve ids are passed
+          // through unbuffered, since they name reserves rather than amounts.
+          args: [
+            mockPosition.borrower,
+            [...mockReserveIds],
+            mockAmounts.map(buffer),
+            0n,
+            buffer(mockWbtcPayment),
+            nonZeroRedeemKey,
+          ],
         }),
         expect.any(Function),
         expect.any(Function)

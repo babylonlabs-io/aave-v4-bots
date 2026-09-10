@@ -3,54 +3,45 @@
 pragma solidity 0.8.28;
 
 import {Types} from "./base/Types.sol";
-import {IBTCVaultSwap} from "../../lib/tbv-contracts/src/applications/aave/interfaces/IBTCVaultSwap.sol";
-import {AaveAdapter} from "../../lib/tbv-contracts/src/applications/aave/AaveAdapter.sol";
-import {IAaveOracle} from "../../lib/tbv-contracts/lib/aave-v4/src/spoke/interfaces/IAaveOracle.sol";
 import {LiquidationRouter, Types as LiquidationTypes} from "../../contracts/LiquidationRouter.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {UniswapV4Base} from "./base/UniswapV4Base.sol";
-import {console} from "forge-std/console.sol";
-import {
-    PoolKey,
-    Currency,
-    IHooks,
-    IPoolManager
-} from "../../lib/v4-periphery/lib/v4-core/src/interfaces/IPoolManager.sol";
+import {TBVForkFixture} from "./base/TBVForkFixture.sol";
+import {PoolKey} from "../../lib/v4-periphery/lib/v4-core/src/interfaces/IPoolManager.sol";
 import {TBVHelper} from "./base/TBVHelper.sol";
-import {LiquidationRouter, Types as LiquidationTypes} from "../../contracts/LiquidationRouter.sol";
 
-contract MorphoFlashLoanTest is UniswapV4Base, TBVHelper {
+contract MorphoFlashLoanTest is UniswapV4Base, TBVForkFixture, TBVHelper {
     address internal ADMIN = vm.addr(69420);
 
     function test_MORPHO_LIQUIDATION_TEST0() external {
-        Types.LiquidationTestParams memory params = LIQUIDATION_TESTS[0];
-        vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
+        Types.LiquidationScenario memory scenario = LIQUIDATION_SCENARIOS[0];
+        vm.createSelectFork(vm.rpcUrl(scenario.network), scenario.blockNumber);
 
-        address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
+        // Order matters: the fork switch above discards anything deployed before it, so the protocol
+        // is deployed onto the fork and only then is the position built on top of it.
+        _deployTbvOnFork();
+        address who = _createLiquidatablePosition(scenario);
 
-        _setUpMorphoBlue(params.tbvContracts.debtTokens);
-        _setUpUniswap(
-            params.tbvContracts.debtTokens,
-            _getWbtcPriceAgainstTokens(params.tbvContracts.aaveAdapter, params.tbvContracts.debtTokens),
-            wbtc
-        );
+        address[] memory debtTokens = _debtTokens();
+        address wbtc = address(vaultSwap.WBTC());
+
+        _setUpMorphoBlue(debtTokens);
+        _setUpUniswap(debtTokens, _getWbtcPriceAgainstTokens(address(adapter), debtTokens), wbtc);
 
         PoolKey[] memory poolKeys = _getPoolKeys();
-        LiquidationRouter router =
-            new LiquidationRouter(ADMIN, params.tbvContracts.lens, params.tbvContracts.btcVaultSwap);
+        LiquidationRouter router = new LiquidationRouter(ADMIN, address(preview), address(vaultSwap));
 
         LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](2);
         flashDatas[0] = LiquidationTypes.FlashData({
             venueType: LiquidationTypes.VenueType.Morpho,
             venueAddress: MORPHO_BLUE,
-            token: params.tbvContracts.debtTokens[0],
+            token: debtTokens[0],
             swapData: abi.encode()
         });
 
         flashDatas[1] = LiquidationTypes.FlashData({
             venueType: LiquidationTypes.VenueType.Morpho,
             venueAddress: MORPHO_BLUE,
-            token: params.tbvContracts.debtTokens[1],
+            token: debtTokens[1],
             swapData: abi.encode()
         });
 
@@ -61,9 +52,7 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVHelper {
             bytes[] memory datas = new bytes[](1);
             datas[0] = abi.encodeWithSelector(
                 router.liquidate.selector,
-                LiquidationTypes.LiquidationData({
-                    borrower: params.liquidation.borrower, minWbtcProfit: type(uint256).max
-                }),
+                LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: type(uint256).max}),
                 flashDatas,
                 new LiquidationTypes.SwapData[](0)
             );
@@ -91,11 +80,7 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVHelper {
         swapDatas[1] = _encodeSwapWbtcExactDebtOut(poolKeys[1], wbtc, venueDebts[1].amount);
 
         vm.prank(ADMIN);
-        router.liquidate(
-            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: 0}),
-            flashDatas,
-            swapDatas
-        );
+        router.liquidate(LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: 0}), flashDatas, swapDatas);
     }
 
     function _setUpMorphoBlue(address[] memory debtTokens) internal {

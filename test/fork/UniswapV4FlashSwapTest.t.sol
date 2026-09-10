@@ -4,70 +4,70 @@ pragma solidity ^0.8.0;
 
 import {Types} from "./base/Types.sol";
 import {UniswapV4Base} from "./base/UniswapV4Base.sol";
-import {Test} from "forge-std/Test.sol";
-import {
-    PoolKey,
-    Currency,
-    IHooks,
-    IPoolManager
-} from "../../lib/v4-periphery/lib/v4-core/src/interfaces/IPoolManager.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {IPoolInitializer_v4} from "../../lib/v4-periphery/src/interfaces/IPoolInitializer_v4.sol";
-import {Actions} from "../../lib/v4-periphery/src/libraries/Actions.sol";
-import {TickMath} from "../../lib/v4-periphery/lib/v4-core/src/libraries/TickMath.sol";
-import {LiquidityAmounts} from "../../lib/v4-periphery/src/libraries/LiquidityAmounts.sol";
-import {IPositionManager} from "../../lib/v4-periphery/src/interfaces/IPositionManager.sol";
+import {TBVForkFixture} from "./base/TBVForkFixture.sol";
+import {PoolKey} from "../../lib/v4-periphery/lib/v4-core/src/interfaces/IPoolManager.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IAllowanceTransfer} from "../../lib/v4-periphery/lib/permit2/src/interfaces/IAllowanceTransfer.sol";
-import {IBTCVaultSwap} from "../../lib/tbv-contracts/src/applications/aave/interfaces/IBTCVaultSwap.sol";
-import {AaveAdapter} from "../../lib/tbv-contracts/src/applications/aave/AaveAdapter.sol";
-import {IAaveOracle} from "../../lib/tbv-contracts/lib/aave-v4/src/spoke/interfaces/IAaveOracle.sol";
 import {LiquidationRouter, Types as LiquidationTypes} from "../../contracts/LiquidationRouter.sol";
 import {UniswapV4SwapVenue} from "../../contracts/WrappedVenue/UniswapV4SwapVenue.sol";
 import {TBVHelper} from "./base/TBVHelper.sol";
-import {console} from "forge-std/console.sol";
 
-contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
+contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
     address internal ADMIN = vm.addr(69420);
 
-    function setUp() public {
+    /// @dev Deliberately empty, overriding the fixture's already-empty `setUp`: the protocol is
+    ///      deployed after the fork is selected, from inside each test. See `TBVForkFixture`.
+    function setUp() public override {}
+
+    /// @notice Fork, deploy, build the position, and stand the venue pools up around it.
+    /// @dev Every test in this file needs the same four steps in the same order; `wbtc` is returned
+    ///      because it is the token the profit is measured in and the assertions all need it.
+    function _prepare(Types.LiquidationScenario memory scenario)
+        internal
+        returns (address who, address wbtcAddr, PoolKey[] memory poolKeys)
+    {
+        who = _forkAndBuild(scenario);
         vm.deal(ADMIN, 100 ether);
+
+        address[] memory debtTokens = _debtTokens();
+        wbtcAddr = address(vaultSwap.WBTC());
+        _setUpUniswap(debtTokens, _getWbtcPriceAgainstTokens(address(adapter), debtTokens), wbtcAddr);
+        poolKeys = _getPoolKeys();
+    }
+
+    /// @notice The two USDC/USDT flash-swap venues every scenario draws its debt from.
+    function _debtFlashDatas(UniswapV4SwapVenue venue, PoolKey[] memory poolKeys)
+        internal
+        view
+        returns (LiquidationTypes.FlashData[] memory flashDatas)
+    {
+        address[] memory debtTokens = _debtTokens();
+        flashDatas = new LiquidationTypes.FlashData[](2);
+        for (uint256 i = 0; i < 2; i++) {
+            flashDatas[i] = LiquidationTypes.FlashData({
+                venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
+                venueAddress: address(venue),
+                token: debtTokens[i],
+                swapData: abi.encode(poolKeys[i])
+            });
+        }
     }
 
     function test_UNISWAPV4_LIQUIDATION_TESTALL() external {
-        for (uint256 i = 0; i < LIQUIDATION_TESTS.length; i++) {
-            Types.LiquidationTestParams memory params = LIQUIDATION_TESTS[i];
-            vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
-
-            address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
+        for (uint256 i = 0; i < LIQUIDATION_SCENARIOS.length; i++) {
+            Types.LiquidationScenario memory scenario = LIQUIDATION_SCENARIOS[i];
+            (address who, address wbtc, PoolKey[] memory poolKeys) = _prepare(scenario);
 
             deal(wbtc, MORPHO_BLUE, 2 ** 96);
-            _setUpUniswap(
-                params.tbvContracts.debtTokens,
-                _getWbtcPriceAgainstTokens(params.tbvContracts.aaveAdapter, params.tbvContracts.debtTokens),
-                wbtc
-            );
 
-            PoolKey[] memory poolKeys = _getPoolKeys();
+            (LiquidationRouter router, UniswapV4SwapVenue venue) = _setUpRouter();
 
-            (LiquidationRouter router, UniswapV4SwapVenue venue) =
-                _setUpRouter(params.tbvContracts.lens, params.tbvContracts.btcVaultSwap);
-
-            // Init liquidation calldata
+            // Three venues: the two debt tokens by flash swap, and WBTC by flash loan for the
+            // fairness payment. The WBTC entry is passed either way — the router skips a venue whose
+            // token is owed nothing, so the no-fairness scenario simply never draws on it.
+            LiquidationTypes.FlashData[] memory debtDatas = _debtFlashDatas(venue, poolKeys);
             LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](3);
-            flashDatas[0] = LiquidationTypes.FlashData({
-                venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
-                venueAddress: address(venue),
-                token: params.tbvContracts.debtTokens[0],
-                swapData: abi.encode(poolKeys[0])
-            });
-            flashDatas[1] = LiquidationTypes.FlashData({
-                venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
-                venueAddress: address(venue),
-                token: params.tbvContracts.debtTokens[1],
-                swapData: abi.encode(poolKeys[1])
-            });
+            flashDatas[0] = debtDatas[0];
+            flashDatas[1] = debtDatas[1];
             flashDatas[2] = LiquidationTypes.FlashData({
                 venueType: LiquidationTypes.VenueType.Morpho,
                 venueAddress: MORPHO_BLUE,
@@ -75,58 +75,38 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
                 swapData: abi.encode()
             });
 
-            uint256 balanceWbtcBefore = IERC20(wbtc).balanceOf(params.liquidation.borrower);
+            uint256 balanceWbtcBefore = IERC20(wbtc).balanceOf(who);
 
             vm.prank(ADMIN);
             router.liquidate(
-                LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: 0}),
+                LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: 0}),
                 flashDatas,
                 new LiquidationTypes.SwapData[](0)
             );
 
-            if (params.liquidation.hasFairnessPayment) {
-                uint256 balanceWbtcAfter = IERC20(wbtc).balanceOf(params.liquidation.borrower);
-                vm.assertGt(balanceWbtcAfter, balanceWbtcBefore, "Expected WBTC balance to increase after liquidation");
+            // Asserted in both directions. The fairness payment is the only thing that draws on the
+            // WBTC venue, so a scenario that quietly stopped producing one — or started producing one
+            // where none was intended — would leave that venue untested while still passing.
+            uint256 balanceWbtcAfter = IERC20(wbtc).balanceOf(who);
+            if (scenario.hasFairnessPayment) {
+                vm.assertGt(balanceWbtcAfter, balanceWbtcBefore, "expected a fairness payment to the borrower");
+            } else {
+                vm.assertEq(balanceWbtcAfter, balanceWbtcBefore, "expected no fairness payment for this scenario");
             }
         }
     }
 
     function test_UNISWAPV4_LIQUIDATION_TEST0() external {
-        Types.LiquidationTestParams memory params = LIQUIDATION_TESTS[0];
-        vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
+        Types.LiquidationScenario memory scenario = LIQUIDATION_SCENARIOS[0];
+        (address who, address wbtc, PoolKey[] memory poolKeys) = _prepare(scenario);
 
-        address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
-
-        _setUpUniswap(
-            params.tbvContracts.debtTokens,
-            _getWbtcPriceAgainstTokens(params.tbvContracts.aaveAdapter, params.tbvContracts.debtTokens),
-            wbtc
-        );
-
-        PoolKey[] memory poolKeys = _getPoolKeys();
-
-        (LiquidationRouter router, UniswapV4SwapVenue venue) =
-            _setUpRouter(params.tbvContracts.lens, params.tbvContracts.btcVaultSwap);
-
-        // Init liquidation calldata
-        LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](2);
-        flashDatas[0] = LiquidationTypes.FlashData({
-            venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
-            venueAddress: address(venue),
-            token: params.tbvContracts.debtTokens[0],
-            swapData: abi.encode(poolKeys[0])
-        });
-        flashDatas[1] = LiquidationTypes.FlashData({
-            venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
-            venueAddress: address(venue),
-            token: params.tbvContracts.debtTokens[1],
-            swapData: abi.encode(poolKeys[1])
-        });
+        (LiquidationRouter router, UniswapV4SwapVenue venue) = _setUpRouter();
+        LiquidationTypes.FlashData[] memory flashDatas = _debtFlashDatas(venue, poolKeys);
 
         bytes[] memory datas = new bytes[](1);
         datas[0] = abi.encodeWithSelector(
             router.liquidate.selector,
-            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: type(uint256).max}),
+            LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: type(uint256).max}),
             flashDatas,
             new LiquidationTypes.SwapData[](0)
         );
@@ -159,7 +139,7 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
         // Execute the liquidation
         vm.prank(ADMIN);
         router.liquidate(
-            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: 0}),
+            LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: 0}),
             flashDatas,
             new LiquidationTypes.SwapData[](0)
         );
@@ -179,33 +159,15 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
     ///         this floor is the whole of the slippage protection, and the off-chain
     ///         `minWbtcProfitFloor` derives it from the probe exactly as done here.
     function test_UNISWAPV4_LIQUIDATION_MIN_PROFIT_FLOOR() external {
-        Types.LiquidationTestParams memory params = LIQUIDATION_TESTS[0];
-        vm.createSelectFork(vm.rpcUrl(params.liquidation.network), params.liquidation.blockNumber);
+        Types.LiquidationScenario memory scenario = LIQUIDATION_SCENARIOS[0];
+        (address who, address wbtc, PoolKey[] memory poolKeys) = _prepare(scenario);
 
-        address wbtc = address(IBTCVaultSwap(params.tbvContracts.btcVaultSwap).WBTC());
-        _setUpUniswap(
-            params.tbvContracts.debtTokens,
-            _getWbtcPriceAgainstTokens(params.tbvContracts.aaveAdapter, params.tbvContracts.debtTokens),
-            wbtc
-        );
-
-        PoolKey[] memory poolKeys = _getPoolKeys();
-        (LiquidationRouter router, UniswapV4SwapVenue venue) =
-            _setUpRouter(params.tbvContracts.lens, params.tbvContracts.btcVaultSwap);
-
-        LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](2);
-        for (uint256 i = 0; i < 2; i++) {
-            flashDatas[i] = LiquidationTypes.FlashData({
-                venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
-                venueAddress: address(venue),
-                token: params.tbvContracts.debtTokens[i],
-                swapData: abi.encode(poolKeys[i])
-            });
-        }
+        (LiquidationRouter router, UniswapV4SwapVenue venue) = _setUpRouter();
+        LiquidationTypes.FlashData[] memory flashDatas = _debtFlashDatas(venue, poolKeys);
 
         // Step 1 — probe, exactly as the bot does: run the liquidation with the sentinel and read
         // the realised WBTC and the venue debts back out of the deliberate revert.
-        uint256 achievable = _probeAchievableProfit(router, params.liquidation.borrower, flashDatas, wbtc);
+        uint256 achievable = _probeAchievableProfit(router, who, flashDatas, wbtc);
         vm.assertGt(achievable, 0, "fixture must be profitable for this test to mean anything");
 
         uint256 snapshot = vm.snapshotState();
@@ -214,7 +176,7 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
         uint256 floor = (achievable * 8_000) / 10_000;
         vm.prank(ADMIN);
         uint256 profit = router.liquidate(
-            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: floor}),
+            LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: floor}),
             flashDatas,
             new LiquidationTypes.SwapData[](0)
         );
@@ -229,7 +191,7 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
         vm.prank(ADMIN);
         vm.expectRevert("LiquidationRouter: Insufficient WBTC profit");
         router.liquidate(
-            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: achievable + 1}),
+            LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: achievable + 1}),
             flashDatas,
             new LiquidationTypes.SwapData[](0)
         );
@@ -246,7 +208,7 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
         vm.prank(ADMIN);
         vm.expectRevert("LiquidationRouter: Insufficient WBTC profit");
         router.liquidate(
-            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: achievable + 1}),
+            LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: achievable + 1}),
             flashDatas,
             new LiquidationTypes.SwapData[](0)
         );
@@ -256,7 +218,7 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
         // router is not a vault, and leaving it there would weaken the next call's fence too.
         vm.prank(ADMIN);
         uint256 donatedProfit = router.liquidate(
-            LiquidationTypes.LiquidationData({borrower: params.liquidation.borrower, minWbtcProfit: floor}),
+            LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: floor}),
             flashDatas,
             new LiquidationTypes.SwapData[](0)
         );
@@ -304,11 +266,8 @@ contract UniswapV4FlashSwapTest is Test, UniswapV4Base, TBVHelper {
         return netWbtcBeforePayment - owed;
     }
 
-    function _setUpRouter(address _lens, address _btcVaultSwap)
-        internal
-        returns (LiquidationRouter router, UniswapV4SwapVenue venue)
-    {
-        router = new LiquidationRouter(ADMIN, _lens, _btcVaultSwap);
+    function _setUpRouter() internal returns (LiquidationRouter router, UniswapV4SwapVenue venue) {
+        router = new LiquidationRouter(ADMIN, address(preview), address(vaultSwap));
         venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(router));
     }
 }

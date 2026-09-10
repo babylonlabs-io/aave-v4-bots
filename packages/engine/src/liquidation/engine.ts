@@ -3,7 +3,7 @@ import { type Address, type Hex, formatUnits } from "viem";
 import { adapterAbi, lensAbi } from "@repo/abis";
 import { type RiskSlot, settleUnfinished } from "@repo/risk";
 import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
-import { bufferAmounts } from "./domain";
+import { bufferAmount, bufferAmounts } from "./domain";
 import {
   type FundedCandidate,
   type FundingParams,
@@ -139,14 +139,27 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   }
 
   /**
-   * Whether the position has been fully liquidated — i.e. another liquidator got there first. Used
-   * only to classify a reverted liquidation. `getPosition` returns a value, so a genuine RPC failure
-   * throws and is caught as `false` (position still there ⇒ treat the revert as a real failure).
-   * Failing toward "not a lost race" is deliberate: a blip must never exempt a real failure from the
-   * breaker. Only a *full* clear (collateral 0) counts as taken; a partial competitor liquidation
-   * leaves collateral and is treated conservatively as our failure.
+   * Whether another liquidator took the vault we were going for. Used only to classify a reverted
+   * liquidation, so that losing a race does not feed the breaker as a malfunction.
+   *
+   * Matched on the *vault*, not on the collateral reaching zero. The adapter seizes exactly one
+   * vault — the head of the borrower's ordered list — so a competitor liquidating a borrower who
+   * holds several leaves the rest of the collateral behind. Against a collateral-zero test that
+   * reads as "still there to take", and every such race would be charged to the breaker; on a
+   * multi-vault borrower that is the normal outcome of competition, not an edge case. Our target
+   * leaving the borrower's list is the thing that actually happened, at any collateral level.
+   *
+   * Collateral zero is still accepted, and is not redundant: the borrower's list is emptied on a
+   * full clear, and reading it as taken costs nothing when there is no vault left to seize.
+   *
+   * `getPosition` returns a value, so a genuine RPC failure throws and is caught as `false`
+   * (treat the revert as a real failure). Failing toward "not a lost race" is deliberate: a blip
+   * must never exempt a real failure from the breaker.
+   *
+   * @param borrower The account the reverted liquidation targeted.
+   * @param vaultId The head vault that liquidation would have seized, from our own estimate.
    */
-  private async wasPositionTaken(borrower: Address): Promise<boolean> {
+  private async wasPositionTaken(borrower: Address, vaultId: Hex): Promise<boolean> {
     try {
       const position = await this.publicClient.readContract({
         address: this.adapterAddress,
@@ -154,7 +167,8 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
         functionName: "getPosition",
         args: [borrower],
       });
-      return position.totalCollateralBTC === 0n;
+      if (position.totalCollateralBTC === 0n) return true;
+      return !position.vaultIds.some((id) => id.toLowerCase() === vaultId.toLowerCase());
     } catch {
       return false;
     }
@@ -242,14 +256,21 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
       const pos = positions[i];
 
       if (result.status === "fulfilled") {
-        const [amounts, wbtcPayment] = result.value;
-        // Buffer each amount (default 1%) to cover interest accrual between the Lens read and
-        // execution. `wbtcPayment` (fairness top-up +, in direct-redemption mode, the redemption fee) is
-        // pulled from msg.sender by the adapter, so it is a real outflow even though it is not
-        // threaded into the call — it is carried here to be declared to the risk gate, which
+        const [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId] = result.value;
+        // Buffer every figure (default 1%) to cover interest accrual between the Lens read and
+        // execution. `wbtcPayment` (fairness top-up +, in direct-redemption mode, the redemption
+        // fee) is pulled from msg.sender by the adapter on top of the debt, and it is also the
+        // `maxWbtcPayment` cap the call carries — so it is buffered on the same grounds as the debt
+        // rather than left bare, and declared at the buffered figure to the risk gate, which
         // reserves it against the WBTC the arbitrage engine is spending from the same signer.
         // Already mode-correct: the Lens was asked with `isDirectRedemption`.
-        candidates.push({ position: pos, amounts: bufferAmounts(amounts), wbtcPayment });
+        candidates.push({
+          position: pos,
+          debtReserveIds,
+          debtToCoverAmounts: bufferAmounts(debtToCoverAmounts),
+          wbtcPayment: bufferAmount(wbtcPayment),
+          vaultId,
+        });
       } else {
         this.metrics.recordError("lens_estimate_error");
         const reason = result.reason;
@@ -299,9 +320,11 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
         intentId?: string;
         slot: RiskSlot;
         position: LiquidatablePosition;
+        /** The vault this tx meant to seize — what tells a lost race from a real revert. */
+        vaultId: Hex;
       }> = [];
       sendLoop: for (let i = 0; i < validCandidates.length; i++) {
-        const { position, call, risk } = validCandidates[i];
+        const { position, call, risk, vaultId } = validCandidates[i];
 
         // Risk gate — per-candidate check just before submit. An allowed check reserves an
         // exposure slot that MUST be settled on every path below (see `RiskSlot`).
@@ -356,7 +379,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
           case "broadcast":
             // The intent is already `submitted` (recorded inside `commit`).
             this.logger.info(`Sent liquidation for ${position.borrower}: ${out.hash}`);
-            sent.push({ hash: out.hash, intentId: out.intentId, slot, position });
+            sent.push({ hash: out.hash, intentId: out.intentId, slot, position, vaultId });
             continue;
 
           default:
@@ -379,7 +402,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
 
       for (let i = 0; i < receipts.length; i++) {
         const result = receipts[i];
-        const { hash, intentId, slot, position } = sent[i];
+        const { hash, intentId, slot, position, vaultId } = sent[i];
         if (result.status === "fulfilled") {
           const receipt = result.value;
           if (receipt.status === "success") {
@@ -392,15 +415,15 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
             if (intentId)
               await this.executor.recordOutcome(intentId, { kind: "confirmed", txHash: hash });
           } else {
-            // A reverted liquidation is only *our* failure if the position is still there to take.
-            // If it has been cleared, another liquidator got there first — a lost race, normal
-            // competition, which must not feed the breaker (settle `contended`).
-            const lostRace = await this.wasPositionTaken(position.borrower);
+            // A reverted liquidation is only *our* failure if the vault we were going for is still
+            // there to take. If it is gone, another liquidator got there first — a lost race,
+            // normal competition, which must not feed the breaker (settle `contended`).
+            const lostRace = await this.wasPositionTaken(position.borrower, vaultId);
             if (lostRace) {
               slot.settle({ ok: false, contended: true });
               this.metrics.recordError("race_lost");
               this.logger.info(
-                `Position ${position.borrower} already liquidated by another bot — not a failure`
+                `Vault ${vaultId} of ${position.borrower} already seized by another bot — not a failure`
               );
             } else {
               slot.settle({ ok: false });

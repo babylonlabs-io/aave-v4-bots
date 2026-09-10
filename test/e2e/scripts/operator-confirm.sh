@@ -45,9 +45,15 @@ cli() { node_modules/.bin/tsx services/operator-cli/src/index.ts "$@"; }
 # separate program from the CLI — it holds `SIGN_KEY`; operator-cli never sees a key here.
 sign() { node_modules/.bin/tsx services/operator-cli/scripts/e2e-external-sign.ts "$@"; }
 
-# Both legs plus their approvals have to clear, and each one waits on a full claim/sign/confirm
-# round-trip, so this budget is deliberately larger than a single-leg suite would need.
-deadline=$((SECONDS + 600))
+# Six proposals have to clear before this suite is done: an approval per debt token, the
+# liquidation, the arbitrage engine's own approval once a vault is escrowed, and the acquisition.
+# Each is a full claim/sign/confirm round-trip costing several process spawns, and the Safe variant
+# serialises them — one live claim at a time — so they cannot overlap.
+#
+# The budget is generous because it is not the real backstop: the CI job's own timeout is, and it is
+# hours. Overshooting here costs only a slower failure when something is genuinely stuck, while
+# undershooting on a slow runner fails a suite that was working and says nothing about why.
+deadline=$((SECONDS + 1800))
 while ((SECONDS < deadline)); do
   # First proposed row: "<id>  [proposed]  <action>  subject=<s>  hash=<h>"
   line="$(cli list 2>/dev/null | awk '$2=="[proposed]"{print; exit}')" || line=""

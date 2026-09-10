@@ -117,8 +117,9 @@ app.use("/sql/*", client({ db, schema }));
  * GET /liquidatable-positions
  *
  * Returns all positions that are liquidatable by calling estimateLiquidation
- * on the AaveAdapterLens contract. The call reverts for healthy positions
- * and succeeds for liquidatable ones, returning the required inputs and vaults.
+ * on the AaveAdapterLiquidationPreview contract. The call reverts for healthy
+ * positions and succeeds for liquidatable ones, returning the required inputs
+ * and the vault that will be seized.
  */
 app.get("/liquidatable-positions", async (c) => {
   const publicClient = Object.values(publicClients)[0] as PublicClient | undefined;
@@ -162,13 +163,14 @@ app.get("/liquidatable-positions", async (c) => {
   }
 
   // estimateLiquidation reverts for healthy positions and returns
-  // [amounts, wbtcPayment, vaults] for liquidatable ones. The wbtcPayment is
-  // pulled directly from msg.sender by the adapter at liquidation time, so the
-  // API response doesn't need to expose it — the client just needs enough WBTC
+  // [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId,
+  // amountCollateralToSeize] for liquidatable ones. The wbtcPayment is pulled
+  // directly from msg.sender by the adapter at liquidation time, so the API
+  // response doesn't need to expose it — the client just needs enough WBTC
   // approved + balance. We unify both paths to a
   // { status: "success" | "failure", value/error } shape so the loop below
   // doesn't care which one ran.
-  type Estimate = readonly [readonly bigint[], bigint, readonly `0x${string}`[]];
+  type Estimate = readonly [readonly bigint[], readonly bigint[], bigint, `0x${string}`, bigint];
 
   // A batch that fails as a whole costs its own positions and nothing more, and `unscanned` says
   // how many that was — see `probeInChunks`.
@@ -243,8 +245,9 @@ app.get("/liquidatable-positions", async (c) => {
   const liquidatable: Array<{
     proxyAddress: string;
     borrower: string;
-    amounts: string[];
-    vaults: string[];
+    debtReserveIds: string[];
+    debtToCoverAmounts: string[];
+    vaultId: string;
     suppliedShares: string;
   }> = [];
 
@@ -265,13 +268,14 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
-    const [amounts, , vaults] = probe.value;
+    const [debtReserveIds, debtToCoverAmounts, , vaultId] = probe.value;
 
     liquidatable.push({
       proxyAddress: position.proxyAddress,
       borrower,
-      amounts: amounts.map((amt) => amt.toString()),
-      vaults: vaults as string[],
+      debtReserveIds: debtReserveIds.map((id) => id.toString()),
+      debtToCoverAmounts: debtToCoverAmounts.map((amt) => amt.toString()),
+      vaultId,
       suppliedShares: position.suppliedShares.toString(),
     });
   }

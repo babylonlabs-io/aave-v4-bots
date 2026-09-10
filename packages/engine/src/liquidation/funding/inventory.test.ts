@@ -18,10 +18,14 @@ const position = {
   proxyAddress: "0xproxy",
   borrower: "0xborrower",
 } as unknown as LiquidatablePosition;
-const candidate = (amounts: bigint[], wbtcPayment = 0n): LiquidationCandidate => ({
+/** A candidate from `(reserve id, debt to cover)` pairs — the shape the preview answers in. */
+const VAULT = `0x${"11".repeat(32)}` as const;
+const candidate = (debt: Array<[bigint, bigint]>, wbtcPayment = 0n): LiquidationCandidate => ({
   position,
-  amounts,
+  debtReserveIds: debt.map(([id]) => id),
+  debtToCoverAmounts: debt.map(([, amount]) => amount),
   wbtcPayment,
+  vaultId: VAULT,
 });
 
 const reserve = (id: number, token: Address, borrowable = true): SpokeReserve => ({
@@ -81,22 +85,26 @@ async function reservedFor(
 }
 
 describe("InventoryFunding spend attribution", () => {
-  // The defect this exists for. `estimateLiquidation` fills one slot per *reserve id*, and the
-  // adapter pulls amounts[i] in reserve i's underlying — so a list that skips the non-borrowable
-  // reserve does not describe that array. Here VaultBTC is reserve 0, which shifts every borrowable
-  // token by one: indexing by the borrowable subset charges USDC's debt to USDT's balance.
-  it("charges each amount to the token of the reserve it is indexed by", async () => {
+  // The defect this exists for. Each amount is paired with a *reserve id*, and the adapter pulls it
+  // in that reserve's underlying — not in the underlying of the reserve at the same position in the
+  // borrowable list. Here VaultBTC is reserve 0, which shifts every borrowable token by one:
+  // resolving the pairs against the borrowable subset charges USDC's debt to USDT's balance.
+  it("charges each amount to the token of the reserve id it is paired with", async () => {
     const { funding, risk } = build([
       reserve(0, VAULT_BTC, false), // collateral, sorts FIRST
       reserve(1, USDC),
       reserve(2, USDT),
     ]);
 
-    const reserved = await reservedFor(funding, risk, candidate([0n, 500n, 700n]), [
-      USDC,
-      USDT,
-      VAULT_BTC,
-    ]);
+    const reserved = await reservedFor(
+      funding,
+      risk,
+      candidate([
+        [1n, 500n],
+        [2n, 700n],
+      ]),
+      [USDC, USDT, VAULT_BTC]
+    );
 
     expect(reserved).toEqual({ [USDC]: 500n, [USDT]: 700n, [VAULT_BTC]: 0n });
   });
@@ -105,7 +113,12 @@ describe("InventoryFunding spend attribution", () => {
     const { funding } = build([reserve(0, USDC), reserve(1, USDT)]);
     await funding.refreshInventory();
 
-    const [vetted] = await funding.vet([candidate([500n, 0n])]);
+    const [vetted] = await funding.vet([
+      candidate([
+        [0n, 500n],
+        [1n, 0n],
+      ]),
+    ]);
 
     // Absent, not zero. The gate checks that it knows a balance *before* it looks at the amount, so
     // a declared zero for a token whose balance was never published blocks the action outright —
@@ -116,7 +129,18 @@ describe("InventoryFunding spend attribution", () => {
   it("sums the fairness payment onto a WBTC repayment rather than declaring half of it", async () => {
     const { funding, risk } = build([reserve(0, USDC), reserve(1, WBTC)]);
 
-    const reserved = await reservedFor(funding, risk, candidate([100n, 300n], 50n), [USDC, WBTC]);
+    const reserved = await reservedFor(
+      funding,
+      risk,
+      candidate(
+        [
+          [0n, 100n],
+          [1n, 300n],
+        ],
+        50n
+      ),
+      [USDC, WBTC]
+    );
 
     expect(reserved).toEqual({ [USDC]: 100n, [WBTC]: 350n });
   });
@@ -124,22 +148,47 @@ describe("InventoryFunding spend attribution", () => {
   it("sums two reserves that share an underlying", async () => {
     const { funding, risk } = build([reserve(0, USDC), reserve(1, USDC)]);
 
-    const reserved = await reservedFor(funding, risk, candidate([100n, 200n]), [USDC]);
+    const reserved = await reservedFor(
+      funding,
+      risk,
+      candidate([
+        [0n, 100n],
+        [1n, 200n],
+      ]),
+      [USDC]
+    );
 
     expect(reserved).toEqual({ [USDC]: 300n });
   });
 
-  // A length that disagrees means the array is keyed by a reserve list we do not have, so every
-  // index in it is a guess. The adapter accepts a short array happily, silently skipping the
-  // reserves past its end — so this cannot be papered over by truncating.
+  // The pairing *is* the token mapping, so a length that disagrees leaves every pair past the
+  // shorter array a guess — it cannot be papered over by zipping to the shorter of the two.
   it.each([
-    ["short", [500n]],
-    ["long", [500n, 600n, 700n]],
-  ])("refuses a %s amounts vector rather than attributing it", async (_label, amounts) => {
+    ["short", [0n, 1n], [500n]],
+    ["long", [0n], [500n, 600n]],
+  ])(
+    "refuses a %s amounts vector rather than attributing it",
+    async (_label, debtReserveIds, debtToCoverAmounts) => {
+      const { funding, risk } = build([reserve(0, USDC), reserve(1, USDT)]);
+      await funding.refreshInventory();
+
+      await expect(
+        funding.vet([
+          { position, debtReserveIds, debtToCoverAmounts, wbtcPayment: 0n, vaultId: VAULT },
+        ])
+      ).rejects.toThrow(/refusing to attribute/);
+      expect(risk.reserved({ owner: SIGNER, token: USDC })).toBe(0n);
+    }
+  );
+
+  // An id the Spoke does not list means the preview and the Spoke are not describing the same
+  // deployment. There is no token to charge it to, and the whole point of resolving through the
+  // reserve list is to never guess one.
+  it("refuses a reserve id the Spoke does not list", async () => {
     const { funding, risk } = build([reserve(0, USDC), reserve(1, USDT)]);
     await funding.refreshInventory();
 
-    await expect(funding.vet([candidate(amounts)])).rejects.toThrow(/refusing to attribute/);
+    await expect(funding.vet([candidate([[2n, 500n]])])).rejects.toThrow(/refusing to attribute/);
     expect(risk.reserved({ owner: SIGNER, token: USDC })).toBe(0n);
   });
 
@@ -152,7 +201,12 @@ describe("InventoryFunding spend attribution", () => {
       const { funding } = build([reserve(0, USDC), reserve(1, USDT, false)]);
       await funding.refreshInventory();
 
-      const [vetted] = await funding.vet([candidate([100n, 900n])]);
+      const [vetted] = await funding.vet([
+        candidate([
+          [0n, 100n],
+          [1n, 900n],
+        ]),
+      ]);
 
       expect(vetted.risk.spend).toEqual([
         { owner: SIGNER, token: USDC, amount: 100n },
@@ -165,7 +219,12 @@ describe("InventoryFunding spend attribution", () => {
     it("is blocked by the gate when the signer does not hold that token", async () => {
       const { funding, risk } = build([reserve(0, USDC), reserve(1, USDT, false)]);
       await funding.refreshInventory();
-      const [vetted] = await funding.vet([candidate([100n, 900n])]);
+      const [vetted] = await funding.vet([
+        candidate([
+          [0n, 100n],
+          [1n, 900n],
+        ]),
+      ]);
 
       const slot = risk.openSlot({ kind: "liquidation", subject: "0xproxy", ...vetted.risk });
 
@@ -179,7 +238,15 @@ describe("InventoryFunding spend attribution", () => {
     it("is fundable when another reserve lists the same token", async () => {
       const { funding, risk } = build([reserve(0, USDC), reserve(1, USDC, false)]);
 
-      const reserved = await reservedFor(funding, risk, candidate([100n, 900n]), [USDC]);
+      const reserved = await reservedFor(
+        funding,
+        risk,
+        candidate([
+          [0n, 100n],
+          [1n, 900n],
+        ]),
+        [USDC]
+      );
 
       expect(reserved).toEqual({ [USDC]: 1000n });
     });
@@ -188,7 +255,7 @@ describe("InventoryFunding spend attribution", () => {
   it("refuses to vet before the Spoke has been read", async () => {
     const { funding } = build([reserve(0, USDC)]);
 
-    await expect(funding.vet([candidate([100n])])).rejects.toThrow(/before refreshInventory/);
+    await expect(funding.vet([candidate([[0n, 100n]])])).rejects.toThrow(/before refreshInventory/);
   });
 });
 

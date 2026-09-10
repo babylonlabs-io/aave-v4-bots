@@ -6,14 +6,13 @@ import { isBorrowableReserve } from "./domain";
 /**
  * One Spoke reserve, at the id the protocol knows it by.
  *
- * The id is the whole point of this type. `AaveAdapterLens.estimateLiquidation` returns repay
- * amounts indexed by reserve id over **every** reserve, and the adapter pulls `amounts[i]` in
- * reserve `i`'s underlying (`_getAllReserves` → `__transferIn_liquidationAmounts`). A list of
- * *tokens* cannot express that mapping once any reserve is skipped, which is why nothing that has
- * to name the token behind an amount may work from a filtered list.
+ * The id is the whole point of this type. `AaveAdapterLiquidationPreview.estimateLiquidation`
+ * returns repay amounts paired with the reserve ids they belong to, and the adapter pulls each in
+ * that reserve's underlying. A list of *tokens* cannot express that mapping, which is why nothing
+ * that has to name the token behind an amount may work from a filtered list.
  */
 export interface SpokeReserve {
-  /** Reserve id — the index `estimateLiquidation`'s amounts are keyed by. */
+  /** Reserve id — what `estimateLiquidation` pairs each of its amounts with. */
   id: number;
   /** The ERC-20 the adapter pulls for this reserve. */
   token: Address;
@@ -33,7 +32,7 @@ export interface SpokeReserve {
 }
 
 /**
- * Every reserve the Spoke lists, in id order — the index space `estimateLiquidation` speaks in.
+ * Every reserve the Spoke lists, in id order — the id space `estimateLiquidation` speaks in.
  *
  * Dense and complete by construction: `Spoke.addReserve` assigns `reserveId = _reserveCount++` and
  * writes the reserve once, so ids run `0..count-1`, are never reused, and a reserve's underlying

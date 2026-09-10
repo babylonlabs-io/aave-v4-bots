@@ -40,8 +40,9 @@ function tick() {
 const position = (proxy: string, borrower: string): LiquidatablePosition => ({
   proxyAddress: proxy as `0x${string}`,
   borrower: borrower as `0x${string}`,
-  amounts: ["1000000"],
-  vaults: ["0xvault1"],
+  debtReserveIds: ["0"],
+  debtToCoverAmounts: ["1000000"],
+  vaultId: "0xvault1",
   suppliedShares: "1000000000",
 });
 
@@ -98,12 +99,16 @@ function setup(
     getBlockNumber: vi.fn(async () => 1n),
     readContract: vi.fn(
       async ({ functionName, args }: { functionName: string; args: unknown[] }) => {
-        // One reserve, so the Lens amounts vector and the Spoke's reserve list line up — the
-        // liquidation engine refuses to attribute a spend when they disagree.
+        // One reserve, so the only id the Lens can name is one the Spoke lists — the liquidation
+        // engine refuses to attribute a spend for an id it cannot resolve to a token.
         if (functionName === "BTC_VAULT_CORE_SPOKE") return "0xspoke";
         if (functionName === "getReserveCount") return 1n;
         if (functionName === "getReserve") return { flags: 0x04, underlying: "0xdebt" };
-        if (functionName === "estimateLiquidation") return [[1000000n], 0n, ["0xvault1"]];
+        // A NON-ZERO wbtcPayment on purpose: it is the one part of the liquidation's spend that
+        // lands on the same WBTC balance the arbitrage engine draws from, so a zero here would let
+        // the engine drop it entirely without any assertion below noticing.
+        if (functionName === "estimateLiquidation")
+          return [[0n], [1000000n], 40_000n, "0xvault1", 0n];
         if (functionName === "previewEscrowedVaults") {
           const ids = args[0] as `0x${string}`[];
           return ids.map((vaultId) => ({
@@ -302,8 +307,14 @@ describe("dual-engine shared risk gate", () => {
     const liquidation = declared.find((a) => a.kind === "liquidation");
     const acquisition = declared.find((a) => a.kind === "vault-acquisition");
 
-    // Every debt repayment plus the adapter's WBTC pull.
-    expect(liquidation?.spend?.length).toBeGreaterThan(0);
+    // Every debt repayment plus the adapter's WBTC pull, both at the 1% buffered figure the call
+    // actually carries — the debt as `debtToCoverAmounts`, the payment as `maxWbtcPayment`.
+    // Asserted exactly: a length check cannot tell a missing WBTC entry from a present one, and
+    // that entry is what stops this liquidation and the acquisition below double-spending WBTC.
+    expect(liquidation?.spend).toEqual([
+      { owner: SIGNER, token: "0xdebt", amount: 1_010_000n },
+      { owner: SIGNER, token: "0xwbtc", amount: 40_400n },
+    ]);
     // The worst case the swap may charge, not the preview cost.
     expect(acquisition?.spend).toEqual([{ owner: SIGNER, token: "0xwbtc", amount: 50_500_000n }]);
 

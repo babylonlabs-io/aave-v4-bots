@@ -85,12 +85,37 @@ export interface LiquidationFunding {
   vet(candidates: readonly LiquidationCandidate[]): Promise<FundedCandidate[]>;
 }
 
-/** A liquidatable position priced by the Lens, before any funding decision. */
+/** A liquidatable position priced by the liquidation preview, before any funding decision. */
 export interface LiquidationCandidate {
   position: LiquidatablePosition;
-  /** Per-reserve repay amounts, already buffered for interest accrual. */
-  amounts: readonly bigint[];
-  /** The LLP fairness payment (plus, in direct-redemption mode, the redemption fee). */
+  /**
+   * The Spoke reserve ids whose debt this liquidation covers, in the order the preview costed
+   * them.
+   *
+   * Only the reserves that carry debt: the preview leaves out every reserve it covers nothing on,
+   * and the adapter rejects both an empty list and a zero amount. So the token behind an amount is
+   * the token of the reserve at the *paired id*, never at its position in the array.
+   */
+  debtReserveIds: readonly bigint[];
+  /** Debt to cover, one per entry of `debtReserveIds`, already buffered for interest accrual. */
+  debtToCoverAmounts: readonly bigint[];
+  /**
+   * The head vault this liquidation would seize — the one the adapter takes, not a prefix.
+   *
+   * Carried so a reverted tx can be told apart from a lost race. The adapter seizes exactly this
+   * vault, so a competitor that got there first is visible as this id leaving the borrower's list,
+   * whatever collateral it left behind. See `LiquidationEngine.wasPositionTaken`.
+   */
+  vaultId: Hex;
+  /**
+   * The LLP fairness payment (plus, in direct-redemption mode, the redemption fee), buffered the
+   * same way the debt amounts are.
+   *
+   * Buffered because it is also the `maxWbtcPayment` cap sent on-chain: the adapter recomputes the
+   * payment at execution and reverts with `ExcessiveWbtcPayment` if it exceeds the cap, so passing
+   * the bare estimate would fail every liquidation that drifted upward between the read and the
+   * send. The gate is told this figure too, since it is what the call can actually pull.
+   */
   wbtcPayment: bigint;
 }
 

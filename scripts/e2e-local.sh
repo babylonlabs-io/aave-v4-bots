@@ -143,6 +143,14 @@ export NUM_UNIVERSAL_CHALLENGERS="1"
 export UC_0_ETH_ADDRESS="0x6813Eb9362372EEF6200f3b1dbC3f819671cBA69"
 export UC_0_BTC_PUBLIC_KEY="0x7962d45b38e8bcf82fa8efa8432a01f20c9a53e24c7d3f11df197cb8e70926da"
 
+# One key, one signature. Both are required with no default on purpose: a defaulted quorum would
+# silently install a 1-of-N council, and a placeholder key is a valid curve point nobody controls.
+# The key must be a real x-only point (`BIP341.isValidXOnlyKey`) and distinct from the other council
+# keys, so this is `BTC_PUBKEY_BOB` from the contracts repo's `TestKeys` — valid, and used by no
+# other role in this file.
+export COUNCIL_QUORUM="1"
+export SECURITY_COUNCIL_KEY="0x5ab4689e400a4a160cf01cd44730845a54768df8547dcdf073d964f109f18c30"
+
 export APPLICATION_NAME="Aave v4"
 export NUM_APP_OPERATORS="2"
 export APP_OPERATOR_0_ETH_ADDRESS="0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
