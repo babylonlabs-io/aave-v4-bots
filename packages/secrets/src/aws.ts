@@ -40,12 +40,12 @@ export function createAwsSecrets(config: AwsSecretsConfig = {}): SecretsProvider
       // checked BEFORE the fetch, because this id becomes the `SecretId` of a `GetSecretValue`
       // request — which AWS records in CloudTrail, where nothing this process does can redact it.
       assertUsableRef(secretId, label);
+      if (jsonKey !== undefined) assertUsableRef(jsonKey, `${label} (JSON key)`);
 
       let out: { SecretString?: string; SecretBinary?: Uint8Array };
       try {
         out = await client.send(new GetSecretValueCommand({ SecretId: secretId }));
       } catch (error) {
-        // `assertUsableRef` above has established that this is a name, not a value.
         throw new Error(
           `${label}: failed to fetch secret ${describeRef(secretId)} from AWS Secrets Manager: ${(error as Error).message}`
         );
@@ -54,29 +54,32 @@ export function createAwsSecrets(config: AwsSecretsConfig = {}): SecretsProvider
       const raw =
         out.SecretString ??
         (out.SecretBinary ? Buffer.from(out.SecretBinary).toString("utf8") : undefined);
-      if (raw === undefined) throw new Error(`${label}: secret "${secretId}" has no value`);
+      if (raw === undefined)
+        throw new Error(`${label}: secret ${describeRef(secretId)} has no value`);
 
       // No selector → return the whole secret value verbatim (a plain-string secret).
       if (jsonKey === undefined) return raw;
 
-      // `#jsonKey` → the secret must be a JSON object; return the named field. Error
-      // messages name the secret and key but never echo the value.
+      // `#jsonKey` → the secret must be a JSON object; return the named field. Errors never echo
+      // the secret id, the key, or the value.
       let parsed: unknown;
       try {
         parsed = JSON.parse(raw);
       } catch {
         throw new Error(
-          `${label}: secret "${secretId}" is not valid JSON (needed to read key "${jsonKey}")`
+          `${label}: secret ${describeRef(secretId)} is not valid JSON (needed to read key ${describeRef(jsonKey)})`
         );
       }
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error(
-          `${label}: secret "${secretId}" is not a JSON object (needed to read key "${jsonKey}")`
+          `${label}: secret ${describeRef(secretId)} is not a JSON object (needed to read key ${describeRef(jsonKey)})`
         );
       }
       const value = (parsed as Record<string, unknown>)[jsonKey];
       if (value === undefined) {
-        throw new Error(`${label}: secret "${secretId}" has no JSON key "${jsonKey}"`);
+        throw new Error(
+          `${label}: secret ${describeRef(secretId)} has no JSON key ${describeRef(jsonKey)}`
+        );
       }
       return typeof value === "string" ? value : JSON.stringify(value);
     },

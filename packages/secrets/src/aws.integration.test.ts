@@ -31,12 +31,12 @@ describe.runIf(!!SECRET_ID)("createAwsSecrets (integration — real AWS Secrets 
   );
 
   it(
-    "wraps a not-found error with the ref (never the value)",
+    "wraps a not-found error without echoing the ref",
     async () => {
       const secrets = createAwsSecrets({ region: REGION });
       const missing = `does-not-exist-${Date.now()}`;
       await expect(secrets.get(missing, "SECRETS_E2E_SECRET_ID")).rejects.toThrow(
-        new RegExp(`failed to fetch secret "${missing}"`)
+        new RegExp(`failed to fetch secret <${missing.length} chars>`)
       );
     },
     TIMEOUT
