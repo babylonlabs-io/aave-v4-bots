@@ -23,6 +23,7 @@ with Babylon's Trustless Bitcoin Vaults protocol.
    - [MEV protection (private submission)](#55-mev-protection-private-submission)
    - [Execution Modes](#54-execution-modes)
    - [Contract Addresses](#55-contract-addresses)
+   - [Database roles](#57-database-roles)
 6. [Wallet Setup](#6-wallet-setup)
    - [Funding Requirements](#61-funding-requirements)
 7. [Starting the Service](#7-starting-the-service)
@@ -325,6 +326,8 @@ ARBITRAGEUR_PRIVATE_KEY=0x...
 # Persistence / crash-safety. Required in MANUAL; optional in AUTO.
 DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
 # PERSISTENCE_SCHEMA=bot
+# Production: the bot's own role, never the indexer's. See "Database roles".
+# DATABASE_URL=postgresql://arbitrageur_bot:<password>@<host>:5432/arbitrageur_ponder
 
 # Notifications (default: log-only)
 NOTIFIER=none
@@ -573,6 +576,28 @@ Testnet contract addresses are provided as part of the onboarding requirements.
 |----------|---------|
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap — `swapWbtcForVault()` and `previewEscrowedVaults()` |
 | `WBTC_ADDRESS` | WBTC token for acquisition payments |
+
+### 5.7. Database roles
+
+The indexer is untrusted: it only decides which candidates the bot looks at, and the bot checks
+every candidate on chain. The bot's crash-safety schema (`PERSISTENCE_SCHEMA`, default `bot`) is
+trusted: it holds the intents that fence the signer's nonce, so write access to it can stall
+trading. In production, the two services therefore connect as separate roles:
+
+- The bot connects as its own role, which owns `PERSISTENCE_SCHEMA`. `operator-cli` uses the same
+  role.
+- The indexer connects as `arbitrageur_indexer`. That role must not be a superuser, own the bot's schema, or
+  be a member of the bot's role.
+
+Run this once in the bot's database, as an administrator:
+
+```sql
+CREATE ROLE arbitrageur_bot LOGIN PASSWORD '<password>';
+CREATE SCHEMA bot AUTHORIZATION arbitrageur_bot;
+```
+
+A schema created this way grants nothing to other roles. The local Docker setup uses one superuser
+for both services, which is acceptable for development only.
 
 ## 6. Wallet Setup
 
