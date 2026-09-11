@@ -6,13 +6,13 @@ import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
 import type { Address, Hex, PublicClient } from "viem";
 import { previewInChunks } from "../previewVaults";
-import { FaultTally, isHealthyPositionRevert } from "../probeFaults";
 import {
   MULTICALL_BATCH_BYTES,
   type Probe,
   probeInChunks,
   resolveChunkSize,
   selectProbeCandidates,
+  summarizeProbes,
 } from "../probePositions";
 
 const logger = createLogger();
@@ -179,7 +179,7 @@ app.get("/liquidatable-positions", async (c) => {
     );
 
   const scanStartedAt = Date.now();
-  const { probes, unscanned } = (await isMulticallSupported(publicClient))
+  const probes = (await isMulticallSupported(publicClient))
     ? // One aggregate over every position would be one `eth_call`: past the node's gas cap the
       // whole thing reverts, viem throws, and this endpoint 500s while real unhealthy positions
       // exist. `PROBES_PER_CALL` is what bounds a call; the chunk is how many of them run at once.
@@ -239,43 +239,20 @@ app.get("/liquidatable-positions", async (c) => {
   // Probe time only.
   const scanMs = Date.now() - scanStartedAt;
 
-  const liquidatable: Array<{
-    proxyAddress: string;
-    borrower: string;
-    debtReserveIds: string[];
-    debtToCoverAmounts: string[];
-    vaultId: string;
-    suppliedShares: string;
-  }> = [];
-
-  // Probes that came back with something other than the healthy-position revert. They are reported
-  // with the batch failures rather than counted as checked: in both cases this cycle has no answer
-  // for those positions, and the difference between "probed and could not tell" and "never probed"
-  // is not one a liquidator can act on differently.
-  const faults = new FaultTally();
-
-  for (let i = 0; i < probes.length; i++) {
-    const probe = probes[i];
-    const { position, borrower } = candidates[i];
-
-    if (probe.status === "failure") {
-      // A healthy position is the lens answering the question, and it is most of the table on every
-      // cycle — skipped in silence. Every other revert is the deployment failing to answer it.
-      if (!isHealthyPositionRevert(probe.error)) faults.record(probe.error);
-      continue;
-    }
-
-    const [debtReserveIds, debtToCoverAmounts, , vaultId] = probe.value;
-
-    liquidatable.push({
+  // Each candidate counts once: a success or a healthy revert is checked, anything else is
+  // unscanned. See `summarizeProbes`.
+  const { succeeded, checked, unscanned, faults } = summarizeProbes(candidates, probes);
+  const liquidatable = succeeded.map(({ candidate: { position, borrower }, value }) => {
+    const [debtReserveIds, debtToCoverAmounts, , vaultId] = value;
+    return {
       proxyAddress: position.proxyAddress,
       borrower,
       debtReserveIds: debtReserveIds.map((id) => id.toString()),
       debtToCoverAmounts: debtToCoverAmounts.map((amt) => amt.toString()),
       vaultId,
       suppliedShares: position.suppliedShares.toString(),
-    });
-  }
+    };
+  });
 
   // Scan time grows with the candidate count, and the bot reads this route under a fixed timeout.
   // This line shows how close the scan is to that limit.
@@ -289,8 +266,6 @@ app.get("/liquidatable-positions", async (c) => {
     );
   }
 
-  const unknown = unscanned + faults.count;
-
   return c.json(
     replaceBigInts({
       liquidatable,
@@ -299,8 +274,8 @@ app.get("/liquidatable-positions", async (c) => {
       // everything else — a batch that failed as a whole, or a probe that reverted for a reason
       // that is not "healthy". Without it a partial scan is indistinguishable from a quiet market,
       // and "no candidates" is exactly the answer a liquidator must not infer from a failure.
-      checked: candidates.length - unknown,
-      unscanned: unknown,
+      checked,
+      unscanned,
       // Rows with no borrower. Unlike `unscanned`, a later cycle does not change them.
       unmapped,
       // Probe time. Read it against `checked`: the scan is linear in it.
