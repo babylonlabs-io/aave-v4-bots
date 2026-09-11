@@ -20,6 +20,7 @@ import {
   createFlashbotsProtectSubmitter,
   createNonceAllocator,
   createNonceLease,
+  describeEndpoint,
 } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type Notifier, buildNotifier, riskEventSink } from "@repo/notifications";
@@ -131,8 +132,9 @@ function buildSubmission(
   // carries a default that is right for Flashbots and silently wrong for anything else — a
   // divergence that is otherwise invisible, since nothing downstream fails when the status feed
   // does (every probe failure reads as still-in-flight, and the declared horizon still releases).
+  // Origins only: a custom relay can carry its key in the URL.
   logger.info(
-    `Submission: Flashbots Protect — sending to ${settings.rpcUrl}, status from ${settings.statusUrl}`
+    `Submission: Flashbots Protect — sending to ${describeEndpoint(settings.rpcUrl)}, status from ${describeEndpoint(settings.statusUrl)}`
   );
   const relay = createFlashbotsProtectSubmitter({
     rpcUrl: settings.rpcUrl,

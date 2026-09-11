@@ -167,6 +167,18 @@ export const DEFAULT_SUBMIT_TIMEOUT_MS = 8_000;
  */
 export const DEFAULT_STATUS_TIMEOUT_MS = 2_000;
 
+/**
+ * A relay endpoint as it may appear in a log: its origin only. A custom relay can carry an API key
+ * in the userinfo, path, or query, and a log line copies it to wherever logs are kept.
+ */
+export function describeEndpoint(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "<unparseable URL>";
+  }
+}
+
 /** `AbortSignal.timeout` rewrapped so the thrown error names the endpoint and the budget. */
 async function fetchWithin(
   doFetch: FetchLike,
