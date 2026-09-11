@@ -630,6 +630,7 @@ listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
 | `eth_rpc_calls_total` | Counter | Outbound JSON-RPC attempts by `method` (retries counted separately) |
 | `submitter_send_total` | Counter | Broadcast attempts by `result` (`accepted`/`rejected`/`ambiguous`) — private submission only; see §5.5 |
 | `relay_tx_status_total` | Counter | Relay status by `status`, plus `sim_error` (our tx is unviable) and `probe_error` (relay unreachable) |
+| `risk_gate_halted` | Gauge | 1 while the risk gate is HALTED, else 0 — alert on it; `/health` does not reflect a halt |
 | `liquidator_positions_checked` | Gauge | Positions checked in last poll |
 | `liquidator_positions_liquidatable` | Gauge | Liquidatable positions found |
 | `liquidator_liquidations_total` | Counter | Successful liquidations |

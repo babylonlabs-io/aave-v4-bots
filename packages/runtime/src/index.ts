@@ -82,15 +82,19 @@ export interface BootConfig extends RiskSettings {
 /** The per-service knobs the shared boot can't derive: the metric recorders and the tagged logger. */
 export interface BootDeps {
   /**
-   * The process-level recorders this boot wires up: the RPC transport counter, and — in private
-   * submission — how the relay answered each broadcast and what it later said about it.
+   * The process-level recorders this boot wires up: the RPC transport counter, the risk gate's
+   * state, and — in private submission — how the relay answered each broadcast and what it later
+   * said about it.
    *
    * One object rather than loose callbacks, matching how engines and the indexer take their metrics.
-   * All three are required: an operator's only view of "the relay is refusing us" or "our
-   * transactions are unviable" is these counters, and a service that quietly passed none of them
-   * would look healthy while landing nothing.
+   * All are required: an operator's only view of "the relay is refusing us", "our transactions are
+   * unviable" or "the gate is halted" is these metrics, and a service that quietly passed none of
+   * them would look healthy while landing nothing.
    */
-  metrics: Pick<MetricsRegistry, "recordRpcCall" | "recordSubmit" | "recordRelayStatus">;
+  metrics: Pick<
+    MetricsRegistry,
+    "recordRpcCall" | "recordSubmit" | "recordRelayStatus" | "trackRiskGate"
+  >;
   logger: Logger;
 }
 
@@ -221,6 +225,9 @@ export async function bootstrapService(config: BootConfig, deps: BootDeps): Prom
     onEvent: riskEventSink(notifier),
     logger,
   });
+  // `/health` does not reflect a halt: a halt lives only in memory, and a liveness probe that
+  // restarted the process would clear it. The gauge is what an alert reads.
+  metrics.trackRiskGate(risk);
 
   const executor = await buildExecutor(
     config,

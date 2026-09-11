@@ -10,6 +10,7 @@ when `RISK_CONTROL_TOKEN_REF` is set; it is not mounted on the metrics port.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `eth_rpc_calls_total` | Counter | `method` | Outbound JSON-RPC **attempts**, incremented by the instrumented HTTP transport. Counted per HTTP request, so a call the transport retries increments once per attempt — which is what the provider bills, and what makes a flapping endpoint visible |
+| `risk_gate_halted` | Gauge | - | 1 while the risk gate is HALTED (kill switch, breaker, code-hash or indexer halt), else 0. Alert on it. `/health` stays healthy while HALTED: a halt lives only in memory, so a probe that restarted the process would clear it |
 
 ## Arbitrageur Metrics
 

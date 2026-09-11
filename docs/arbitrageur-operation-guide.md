@@ -745,6 +745,7 @@ listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
 | `eth_rpc_calls_total` | Counter | Outbound JSON-RPC attempts by `method` (retries counted separately) |
 | `submitter_send_total` | Counter | Broadcast attempts by `result` (`accepted`/`rejected`/`ambiguous`) — private submission only; see §5.5 |
 | `relay_tx_status_total` | Counter | Relay status by `status`, plus `sim_error` (our tx is unviable) and `probe_error` (relay unreachable) |
+| `risk_gate_halted` | Gauge | 1 while the risk gate is HALTED, else 0 — alert on it; `/health` does not reflect a halt |
 | `arbitrageur_vaults_acquired_total` | Counter | Total vaults acquired |
 | `arbitrageur_wbtc_spent_total` | Counter | Total WBTC spent (satoshis) |
 | `arbitrageur_wbtc_balance` | Gauge | Current WBTC balance (satoshis) |
