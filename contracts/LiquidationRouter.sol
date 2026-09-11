@@ -328,20 +328,36 @@ contract LiquidationRouter is VenueManager {
         }
     }
 
-    /// @notice Approves the Aave adapter to pull exactly the repayment amount of each reserve token, plus the fairness payment
-    ///         in WBTC on top of the WBTC entry.
+    /// @notice Approves the Aave adapter to pull exactly the repayment amount of each token, plus the fairness payment
+    ///         in WBTC on top of the WBTC amount.
+    /// @dev Reserves can share an underlying (one token listed from two Hubs), and an approval replaces an allowance
+    ///      rather than adding to it, so each token is approved once, for the sum over its reserves.
     function _approveForAdapter(address[] memory reserveTokens, uint256[] memory reservePayments, uint256 wbtcPayment)
         internal
     {
         for (uint256 i = 0; i < reserveTokens.length; i++) {
             address token = reserveTokens[i];
-            uint256 amountPayment = reservePayments[i] + (token == wbtc ? wbtcPayment : 0);
+            if (_listedBefore(reserveTokens, i)) {
+                continue;
+            }
+            uint256 amountPayment =
+                _getReserveDebtAmount(reserveTokens, reservePayments, token) + (token == wbtc ? wbtcPayment : 0);
 
             if (amountPayment == 0) {
                 continue;
             }
             IERC20(token).forceApprove(aaveAdapter, amountPayment);
         }
+    }
+
+    /// @notice Whether `reserveTokens[i]` already appears at a lower index.
+    function _listedBefore(address[] memory reserveTokens, uint256 i) internal pure returns (bool) {
+        for (uint256 j = 0; j < i; j++) {
+            if (reserveTokens[j] == reserveTokens[i]) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// @notice Drops the adapter's allowance on every reserve token back to zero, so no approval outlives the call.
@@ -378,18 +394,18 @@ contract LiquidationRouter is VenueManager {
     // ---------------------- MISC ----------------------
 
     /// @notice Looks up how much of `ofToken` the liquidation has to repay.
-    /// @dev `reserveDebts` is indexed by `reserveTokens`. Returns 0 for a token that is not a reserve.
+    /// @dev `reserveDebts` is indexed by `reserveTokens`. Sums every reserve that lists `ofToken`, since reserves can
+    ///      share an underlying. Returns 0 for a token that is not a reserve.
     function _getReserveDebtAmount(address[] memory reserveTokens, uint256[] memory reserveDebts, address ofToken)
         internal
         pure
-        returns (uint256)
+        returns (uint256 amount)
     {
         for (uint256 i = 0; i < reserveTokens.length; i++) {
             if (reserveTokens[i] == ofToken) {
-                return reserveDebts[i];
+                amount += reserveDebts[i];
             }
         }
-        return 0;
     }
 
     /// @notice Folds the per-reserve debt array back into the `(ids, amounts)` pair the adapter takes.
