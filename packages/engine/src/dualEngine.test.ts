@@ -37,6 +37,13 @@ function tick() {
   return new Promise((r) => setTimeout(r, 0));
 }
 
+const PROXY_1 = "0x00000000000000000000000000000000000000a1";
+const PROXY_2 = "0x00000000000000000000000000000000000000a2";
+const BORROWER_1 = "0x00000000000000000000000000000000000000b1";
+const BORROWER_2 = "0x00000000000000000000000000000000000000b2";
+/** The adapter's borrower → proxy mapping for the two positions the feed serves. */
+const PROXY_OF: Record<string, string> = { [BORROWER_1]: PROXY_1, [BORROWER_2]: PROXY_2 };
+
 const position = (proxy: string, borrower: string): LiquidatablePosition => ({
   proxyAddress: proxy as `0x${string}`,
   borrower: borrower as `0x${string}`,
@@ -128,6 +135,15 @@ function setup(
         // number still triggers an approval — and these tests are about nonce sharing and the
         // breaker, not about the first cycle's approval (which has its own tests).
         if (functionName === "allowance") return 2n ** 256n - 1n;
+        // The adapter maps each borrower to its proxy, which the liquidation engine checks. Collateral
+        // stays nonzero with the estimated vault still listed, so a revert reads as a real failure.
+        if (functionName === "getPosition") {
+          return {
+            vaultIds: ["0xvault1"],
+            totalCollateralBTC: 1n,
+            proxyContract: PROXY_OF[args[0] as string],
+          };
+        }
         return 0n;
       }
     ),
@@ -209,7 +225,7 @@ function setup(
       return {
         ok: true,
         json: async () => ({
-          liquidatable: [position("0xp1", "0xb1"), position("0xp2", "0xb2")],
+          liquidatable: [position(PROXY_1, BORROWER_1), position(PROXY_2, BORROWER_2)],
           total: 2,
           checked: 2,
         }),

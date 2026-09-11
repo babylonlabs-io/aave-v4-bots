@@ -1,9 +1,14 @@
 import { createRiskGate } from "@repo/risk";
-import type { PublicClient } from "viem";
+import {
+  type Hex,
+  type PublicClient,
+  TransactionNotFoundError,
+  TransactionReceiptNotFoundError,
+} from "viem";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Executor } from "./executor";
-import { retireSettledOutflows } from "./outflows";
+import { settledOutflows } from "./outflows";
 
 const SIGNER = "0xsigner";
 const WBTC = "0xwbtc";
@@ -23,13 +28,30 @@ function held(outcome: { minedAtBlock?: bigint } = {}) {
   return risk;
 }
 
-const clients = (over: { receipt?: unknown; inFlight?: ReadonlySet<string> | undefined } = {}) => {
+/**
+ * `receipt` undefined ⇒ viem's "not found"; `receiptFails` ⇒ any other RPC failure. `node` is
+ * what `getTransaction` answers: the tx is known, unknown, or the lookup fails.
+ */
+const clients = (
+  over: {
+    receipt?: unknown;
+    receiptFails?: boolean;
+    inFlight?: ReadonlySet<string>;
+    node?: "known" | "unknown" | "fails";
+  } = {}
+) => {
   const getTransactionReceipt = vi.fn(async () => {
-    if (over.receipt === undefined) throw new Error("not found");
+    if (over.receiptFails) throw new Error("rpc down");
+    if (over.receipt === undefined) throw new TransactionReceiptNotFoundError({ hash: TX as Hex });
     return over.receipt;
   });
+  const getTransaction = vi.fn(async () => {
+    if (over.node === "fails") throw new Error("rpc down");
+    if (over.node === "unknown") throw new TransactionNotFoundError({ hash: TX as Hex });
+    return { hash: TX };
+  });
   return {
-    publicClient: { getTransactionReceipt } as unknown as PublicClient,
+    publicClient: { getTransactionReceipt, getTransaction } as unknown as PublicClient,
     executor: {
       inFlightTxHashes: vi.fn(async () => over.inFlight),
     } as unknown as Executor,
@@ -37,39 +59,26 @@ const clients = (over: { receipt?: unknown; inFlight?: ReadonlySet<string> | und
   };
 };
 
-/** Can the account still afford `amount` under the gate's current view? */
-const affords = (risk: ReturnType<typeof createRiskGate>, amount: bigint) =>
-  risk.openSlot({
-    kind: "liquidation",
-    subject: "0xother",
-    spend: [{ owner: SIGNER, token: WBTC, amount }],
-  }).allowed;
-
-describe("retireSettledOutflows", () => {
+describe("settledOutflows", () => {
   it("keeps a hold whose transaction has no receipt and is still in flight", async () => {
     const risk = held();
     const { publicClient, executor } = clients({ inFlight: new Set([TX]) });
 
-    await retireSettledOutflows({ publicClient, risk, executor, block: 11n });
-
-    expect(risk.outflows()).toHaveLength(1);
-    expect(affords(risk, 60n)).toBe(false);
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
   });
 
-  it("retires one whose receipt is at or below the height being published", async () => {
+  it("settles one whose receipt is at or below the height being published", async () => {
     const risk = held();
     const { publicClient, executor } = clients({
       receipt: { blockNumber: 11n },
       inFlight: new Set([TX]),
     });
 
-    await retireSettledOutflows({ publicClient, risk, executor, block: 11n });
-
-    expect(risk.outflows()).toEqual([]);
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([TX]);
   });
 
-  // The direction that matters: a receipt from a block the read has not reached yet proves the
-  // money moved, and equally proves this read cannot be reporting it.
+  // A receipt from a block the read has not reached proves the money moved, and equally proves
+  // this read cannot be reporting it.
   it("keeps one whose receipt is above that height", async () => {
     const risk = held();
     const { publicClient, executor } = clients({
@@ -77,41 +86,63 @@ describe("retireSettledOutflows", () => {
       inFlight: new Set([TX]),
     });
 
-    await retireSettledOutflows({ publicClient, risk, executor, block: 11n });
-
-    expect(risk.outflows()).toHaveLength(1);
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
   });
 
-  // Dropped or replaced: no receipt will ever exist, so without this the hold would outlive the
-  // transaction and quietly shrink the account for the life of the process.
-  it("retires one the chain has moved past, with no receipt", async () => {
+  // Dropped or replaced: no receipt will ever exist, and reconcile no longer lists it.
+  it("settles one the chain has moved past, with no receipt", async () => {
     const risk = held();
     const { publicClient, executor } = clients({ inFlight: new Set() });
 
-    await retireSettledOutflows({ publicClient, risk, executor, block: 11n });
-
-    expect(risk.outflows()).toEqual([]);
-    expect(affords(risk, 100n)).toBe(true);
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([TX]);
   });
 
-  // Without a store nothing recorded what was broadcast, so "not in flight" is unanswerable — and
-  // an unanswered question must not read as "gone".
-  it("keeps one when in-flight cannot be answered at all", async () => {
+  // A failed lookup is not "no receipt": the tx may have mined above the read's height.
+  it("keeps one whose receipt lookup fails, even when it is no longer in flight", async () => {
     const risk = held();
-    const { publicClient, executor } = clients({ inFlight: undefined });
+    const { publicClient, executor } = clients({ receiptFails: true, inFlight: new Set() });
 
-    await retireSettledOutflows({ publicClient, risk, executor, block: 11n });
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
+  });
 
-    expect(risk.outflows()).toHaveLength(1);
+  // No store means public submission, where the node's answer is authoritative.
+  describe("without a store", () => {
+    it("settles one the node no longer knows, and capacity returns to the balance", async () => {
+      const risk = held();
+      const { publicClient, executor } = clients({ inFlight: undefined, node: "unknown" });
+
+      const settled = await settledOutflows({ publicClient, risk, executor, block: 11n });
+      expect(settled).toEqual([TX]);
+
+      risk.applySnapshot([{ account: { owner: SIGNER, token: WBTC }, amount: 100n }], 11n, settled);
+      const full = risk.openSlot({
+        kind: "liquidation",
+        subject: "0xother",
+        spend: [{ owner: SIGNER, token: WBTC, amount: 100n }],
+      });
+      expect(full.allowed).toBe(true);
+    });
+
+    it("keeps one the node still knows", async () => {
+      const risk = held();
+      const { publicClient, executor } = clients({ inFlight: undefined, node: "known" });
+
+      expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
+    });
+
+    it("keeps one when the node lookup fails", async () => {
+      const risk = held();
+      const { publicClient, executor } = clients({ inFlight: undefined, node: "fails" });
+
+      expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
+    });
   });
 
   it("uses the height the receipt already gave the engine, without asking again", async () => {
     const risk = held({ minedAtBlock: 11n });
     const { publicClient, executor, getTransactionReceipt } = clients({ inFlight: new Set([TX]) });
 
-    await retireSettledOutflows({ publicClient, risk, executor, block: 11n });
-
-    expect(risk.outflows()).toEqual([]);
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([TX]);
     expect(getTransactionReceipt).not.toHaveBeenCalled();
   });
 
@@ -119,17 +150,24 @@ describe("retireSettledOutflows", () => {
     const risk = held({ minedAtBlock: 12n });
     const { publicClient, executor } = clients({ inFlight: new Set([TX]) });
 
-    await retireSettledOutflows({ publicClient, risk, executor, block: 11n });
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
+  });
 
-    expect(risk.outflows()).toHaveLength(1);
+  // The caller applies the result and the fresh balances in one synchronous `applySnapshot`, so no
+  // action can be judged against a balance that lost the hold before gaining the read.
+  it("never changes the gate itself", async () => {
+    const risk = held();
+    const { publicClient, executor } = clients({ inFlight: new Set() });
+
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([TX]);
+    expect(risk.outflows()).toEqual([{ txHash: TX }]);
   });
 
   it("asks nothing when there is nothing held", async () => {
     const risk = createRiskGate();
     const { publicClient, executor, getTransactionReceipt } = clients({});
 
-    await retireSettledOutflows({ publicClient, risk, executor, block: 11n });
-
+    expect(await settledOutflows({ publicClient, risk, executor, block: 11n })).toEqual([]);
     expect(getTransactionReceipt).not.toHaveBeenCalled();
     expect(executor.inFlightTxHashes).not.toHaveBeenCalled();
   });

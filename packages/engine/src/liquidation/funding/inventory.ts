@@ -9,8 +9,8 @@ import {
   type PublicClient,
   maxUint256,
 } from "viem";
-import { retireSettledOutflows } from "../../shared/outflows";
-import { type SpokeReserves, borrowableTokens, reserveTokens } from "../reserves";
+import { settledOutflows } from "../../shared/outflows";
+import { type SpokeReserves, repayableTokens, reserveTokens } from "../reserves";
 import type {
   FundedCandidate,
   FundingContext,
@@ -83,7 +83,7 @@ export class InventoryFunding implements LiquidationFunding {
 
   /**
    * Revoke the adapter's allowance on every reserve token plus WBTC. This is wider than the
-   * approved set: a reserve that stopped being borrowable keeps the allowance it was granted.
+   * approved set: a reserve nobody owes any more keeps the allowance it was granted.
    */
   async revokeApprovals(): Promise<void> {
     const { adapterAddress, executor, logger } = this.deps;
@@ -107,10 +107,10 @@ export class InventoryFunding implements LiquidationFunding {
     }
   }
 
-  /** The tokens this mode approves the adapter for: every borrowable reserve, plus WBTC. */
+  /** The tokens this mode approves the adapter for: every reserve a borrower can owe, plus WBTC. */
   private async approvedTokens(): Promise<Address[]> {
     const topology = this.topology ?? (await this.deps.reserves());
-    return Array.from(new Set<Address>([...borrowableTokens(topology), this.deps.wbtcAddress]));
+    return Array.from(new Set<Address>([...repayableTokens(topology), this.deps.wbtcAddress]));
   }
 
   /**
@@ -133,7 +133,7 @@ export class InventoryFunding implements LiquidationFunding {
     const owner = executor.identity.from;
 
     // The reserve list for this cycle, revalidated against the chain — the one source for both
-    // questions asked below: what the signer must hold and approve (the borrowable tokens), and
+    // questions asked below: what the signer must hold and approve (the repayable tokens), and
     // which token each repay amount belongs to (`spendFor`, by reserve id). Held for the cycle so
     // every candidate is judged against the same topology the balances were published for.
     this.topology = await this.deps.reserves();
@@ -152,14 +152,12 @@ export class InventoryFunding implements LiquidationFunding {
     const balances = await Promise.all(
       tokens.map((token) => readBalance(publicClient, token, owner, block))
     );
-    await retireSettledOutflows({ publicClient, risk, executor, block });
-
-    // Synchronous from here: retiring a hold and publishing the read that covers it must not be
-    // separated by an await, or the other engine can be judged in between — against a balance that
-    // has dropped the hold and not yet gained the spend it was holding.
-    for (let i = 0; i < tokens.length; i++) {
-      risk.setAvailable({ owner, token: tokens[i] }, balances[i], block);
-    }
+    const settled = await settledOutflows({ publicClient, risk, executor, block });
+    risk.applySnapshot(
+      tokens.map((token, i) => ({ account: { owner, token }, amount: balances[i] })),
+      block,
+      settled
+    );
   }
 
   /** Viable iff the adapter call simulates from the signer's balances. */

@@ -38,3 +38,54 @@ export const RESERVE_FLAG = {
 export function isBorrowableReserve(flags: number): boolean {
   return (flags & RESERVE_FLAG.BORROWABLE) !== 0;
 }
+
+/** Most liquidation candidates one cycle takes from the indexer. Later cycles cover the rest. */
+export const MAX_LIQUIDATION_CANDIDATES = 500;
+
+/** Lens estimates run this many at a time, so a long candidate list cannot flood the RPC. */
+export const LENS_ESTIMATE_CHUNK = 25;
+
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * The positions one cycle acts on: the first entry for each proxy (case-insensitive), in feed
+ * order, capped at `max`. The feed is cast, not parsed, so this runs before any RPC call and drops
+ * entries without a usable `proxyAddress` or `borrower`.
+ *
+ * A list longer than `max` is read as a window that starts at `offset` and wraps around the end.
+ * The caller moves the offset each cycle, so positions the bot cannot clear do not hold the window.
+ */
+export function selectPositions<P extends { proxyAddress: string }>(
+  positions: readonly P[],
+  max = MAX_LIQUIDATION_CANDIDATES,
+  offset = 0
+): { positions: P[]; malformed: number; duplicates: number; truncated: number } {
+  const seen = new Set<string>();
+  const unique: P[] = [];
+  let malformed = 0;
+  for (const p of positions) {
+    const entry = p as { proxyAddress?: unknown; borrower?: unknown } | null;
+    const proxy = entry?.proxyAddress;
+    const borrower = entry?.borrower;
+    if (
+      typeof proxy !== "string" ||
+      !ADDRESS.test(proxy) ||
+      typeof borrower !== "string" ||
+      !ADDRESS.test(borrower)
+    ) {
+      malformed++;
+      continue;
+    }
+    const k = proxy.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    unique.push(p);
+  }
+  const start = unique.length > max ? offset % unique.length : 0;
+  return {
+    positions: [...unique.slice(start), ...unique.slice(0, start)].slice(0, max),
+    malformed,
+    duplicates: positions.length - malformed - unique.length,
+    truncated: Math.max(0, unique.length - max),
+  };
+}

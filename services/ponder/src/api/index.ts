@@ -4,14 +4,15 @@ import { lensAbi, vaultSwapAbi } from "@repo/abis";
 import { createLogger } from "@repo/logger";
 import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
-import type { Address, PublicClient } from "viem";
-import { FaultTally, isHealthyPositionRevert, isVaultGoneRevert } from "../probeFaults";
+import type { Address, Hex, PublicClient } from "viem";
+import { previewInChunks } from "../previewVaults";
 import {
   MULTICALL_BATCH_BYTES,
   type Probe,
   probeInChunks,
   resolveChunkSize,
   selectProbeCandidates,
+  summarizeProbes,
 } from "../probePositions";
 
 const logger = createLogger();
@@ -178,7 +179,7 @@ app.get("/liquidatable-positions", async (c) => {
     );
 
   const scanStartedAt = Date.now();
-  const { probes, unscanned } = (await isMulticallSupported(publicClient))
+  const probes = (await isMulticallSupported(publicClient))
     ? // One aggregate over every position would be one `eth_call`: past the node's gas cap the
       // whole thing reverts, viem throws, and this endpoint 500s while real unhealthy positions
       // exist. `PROBES_PER_CALL` is what bounds a call; the chunk is how many of them run at once.
@@ -238,43 +239,20 @@ app.get("/liquidatable-positions", async (c) => {
   // Probe time only.
   const scanMs = Date.now() - scanStartedAt;
 
-  const liquidatable: Array<{
-    proxyAddress: string;
-    borrower: string;
-    debtReserveIds: string[];
-    debtToCoverAmounts: string[];
-    vaultId: string;
-    suppliedShares: string;
-  }> = [];
-
-  // Probes that came back with something other than the healthy-position revert. They are reported
-  // with the batch failures rather than counted as checked: in both cases this cycle has no answer
-  // for those positions, and the difference between "probed and could not tell" and "never probed"
-  // is not one a liquidator can act on differently.
-  const faults = new FaultTally();
-
-  for (let i = 0; i < probes.length; i++) {
-    const probe = probes[i];
-    const { position, borrower } = candidates[i];
-
-    if (probe.status === "failure") {
-      // A healthy position is the lens answering the question, and it is most of the table on every
-      // cycle — skipped in silence. Every other revert is the deployment failing to answer it.
-      if (!isHealthyPositionRevert(probe.error)) faults.record(probe.error);
-      continue;
-    }
-
-    const [debtReserveIds, debtToCoverAmounts, , vaultId] = probe.value;
-
-    liquidatable.push({
+  // Each candidate counts once: a success or a healthy revert is checked, anything else is
+  // unscanned. See `summarizeProbes`.
+  const { succeeded, checked, unscanned, faults } = summarizeProbes(candidates, probes);
+  const liquidatable = succeeded.map(({ candidate: { position, borrower }, value }) => {
+    const [debtReserveIds, debtToCoverAmounts, , vaultId] = value;
+    return {
       proxyAddress: position.proxyAddress,
       borrower,
       debtReserveIds: debtReserveIds.map((id) => id.toString()),
       debtToCoverAmounts: debtToCoverAmounts.map((amt) => amt.toString()),
       vaultId,
       suppliedShares: position.suppliedShares.toString(),
-    });
-  }
+    };
+  });
 
   // Scan time grows with the candidate count, and the bot reads this route under a fixed timeout.
   // This line shows how close the scan is to that limit.
@@ -288,8 +266,6 @@ app.get("/liquidatable-positions", async (c) => {
     );
   }
 
-  const unknown = unscanned + faults.count;
-
   return c.json(
     replaceBigInts({
       liquidatable,
@@ -298,8 +274,8 @@ app.get("/liquidatable-positions", async (c) => {
       // everything else — a batch that failed as a whole, or a probe that reverted for a reason
       // that is not "healthy". Without it a partial scan is indistinguishable from a quiet market,
       // and "no candidates" is exactly the answer a liquidator must not infer from a failure.
-      checked: candidates.length - unknown,
-      unscanned: unknown,
+      checked,
+      unscanned,
       // Rows with no borrower. Unlike `unscanned`, a later cycle does not change them.
       unmapped,
       // Probe time. Read it against `checked`: the scan is linear in it.
@@ -336,7 +312,7 @@ app.get("/positions", async (c) => {
  * GET /escrowed-vaults
  *
  * Returns all escrowed vaults with live debt data from VaultSwap contract.
- * Uses a single batch call to previewEscrowedVaults for efficiency.
+ * Reads previewEscrowedVaults in chunks, so the RPC work per call and in flight stays bounded.
  * This is the main endpoint the arbitrageur client will poll.
  */
 app.get("/escrowed-vaults", async (c) => {
@@ -383,88 +359,44 @@ app.get("/escrowed-vaults", async (c) => {
     createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
   });
 
-  try {
-    // Single batch RPC call to get info for all vaults
-    const vaultsInfo = await publicClient.readContract({
-      address: vaultSwapAddress,
-      abi: vaultSwapAbi,
-      functionName: "previewEscrowedVaults",
-      args: [vaultIds],
-      blockNumber: blockRef?.blockNumber,
-    });
-
-    const enrichedVaults = vaultsInfo.map(toApiVault);
-
-    return c.json(
-      replaceBigInts({
-        vaults: enrichedVaults,
-        total: enrichedVaults.length,
-        failedVaultsCount: 0,
-        dataTimestampMs,
+  // A vault acquired after the index read reverts its chunk, which is then read one vault at a time.
+  const { previews, gone, failures, batchError } = await previewInChunks(
+    vaultIds,
+    (ids: readonly Hex[]) =>
+      publicClient.readContract({
+        address: vaultSwapAddress,
+        abi: vaultSwapAbi,
+        functionName: "previewEscrowedVaults",
+        args: [ids],
+        blockNumber: blockRef?.blockNumber,
       })
-    );
-  } catch (error) {
-    // Deliberately not logged yet. The overwhelmingly common cause is a vault acquired between the
-    // index read and this call, which reverts the whole batch — routine, and the per-vault pass
-    // below is what can tell that apart from a real fault. Logging here would put an error line on
-    // every poll of a draining escrow, which is the noise this endpoint is meant to stop emitting.
-    const settled = await Promise.allSettled(
-      vaultIds.map((vaultId) =>
-        publicClient.readContract({
-          address: vaultSwapAddress,
-          abi: vaultSwapAbi,
-          functionName: "previewEscrowedVaults",
-          args: [[vaultId]],
-          blockNumber: blockRef?.blockNumber,
-        })
-      )
-    );
+  );
 
-    const enrichedVaults = [];
-    let failed = 0;
-    let gone = 0;
-
-    for (let i = 0; i < settled.length; i++) {
-      const result = settled[i];
-      const vaultId = vaultIds[i];
-      if (result.status === "fulfilled" && result.value.length > 0) {
-        enrichedVaults.push(toApiVault(result.value[0]));
-      } else if (result.status === "rejected" && isVaultGoneRevert(result.reason)) {
-        // Already acquired between the index read and now. Omit it and say nothing: this is the
-        // steady state while the escrow drains, not a fault to report or retry.
-        gone += 1;
-      } else {
-        failed += 1;
-        logger.error(
-          `Failed to fetch vault info for ${vaultId}:`,
-          result.status === "rejected" ? result.reason : "empty response"
-        );
-      }
-    }
-
-    // Now the batch failure can be reported at its true severity: an error only if some vault
-    // failed for a reason other than having been acquired.
-    if (failed > 0) {
-      logger.error("Batch previewEscrowedVaults failed, fell back to per-vault fetch:", error);
-    } else if (gone > 0) {
-      logger.info(
-        `Batch previewEscrowedVaults skipped: ${gone} vault(s) acquired since the last index update`
-      );
-    }
-
-    // 500 only when something genuinely broke. An empty list because every vault was acquired is a
-    // valid, complete answer — previously it returned 500 and drove the bot through its full fetch
-    // retry/backoff on every poll once the escrow was drained.
-    return c.json(
-      replaceBigInts({
-        vaults: enrichedVaults,
-        total: enrichedVaults.length,
-        failedVaultsCount: failed,
-        dataTimestampMs,
-      }),
-      enrichedVaults.length > 0 || failed === 0 ? 200 : 500
+  // Gone vaults are the steady state while the escrow drains, so they are an info line. Only a
+  // vault that failed for another reason makes the batch failure an error.
+  for (const { vaultId, error } of failures) {
+    logger.error(`Failed to fetch vault info for ${vaultId}:`, error);
+  }
+  if (failures.length > 0) {
+    logger.error("Batch previewEscrowedVaults failed, fell back to per-vault fetch:", batchError);
+  } else if (gone > 0) {
+    logger.info(
+      `Batch previewEscrowedVaults skipped: ${gone} vault(s) acquired since the last index update`
     );
   }
+
+  // 500 only when something broke. An empty list because every vault was acquired is a complete
+  // answer.
+  const enrichedVaults = previews.map(toApiVault);
+  return c.json(
+    replaceBigInts({
+      vaults: enrichedVaults,
+      total: enrichedVaults.length,
+      failedVaultsCount: failures.length,
+      dataTimestampMs,
+    }),
+    enrichedVaults.length > 0 || failures.length === 0 ? 200 : 500
+  );
 });
 
 /**

@@ -1,4 +1,4 @@
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, connect } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startObservabilityServer } from "./server";
@@ -28,6 +28,21 @@ async function listening(host?: string) {
 
 async function metricsServer(): Promise<string> {
   return `http://127.0.0.1:${(await listening()).port}`;
+}
+
+/** Send one request target as given, which `fetch` would normalise, and return the status line. */
+function rawStatusLine(port: number, target: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1", () =>
+      socket.write(`GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)
+    );
+    let reply = "";
+    socket.on("data", (chunk) => {
+      reply += chunk;
+    });
+    socket.on("end", () => resolve(reply.split("\r\n")[0]));
+    socket.on("error", reject);
+  });
 }
 
 describe("startObservabilityServer", () => {
@@ -64,4 +79,15 @@ describe("startObservabilityServer", () => {
     const res = await fetch(`${await metricsServer()}${path}`, { method: "POST" });
     expect(res.status).toBe(404);
   });
+
+  // `URL` rejects the first two targets and Node's parser the third. A throw in the handler would
+  // end the process, so each must get an answer and the server must keep serving.
+  it.each(["//[", "//[bad", "//a b"])(
+    "answers 400 to the target %s and keeps serving",
+    async (target) => {
+      const { port } = await listening();
+      expect(await rawStatusLine(port, target)).toMatch(/^HTTP\/1\.1 400/);
+      expect((await fetch(`http://127.0.0.1:${port}/metrics`)).status).toBe(200);
+    }
+  );
 });

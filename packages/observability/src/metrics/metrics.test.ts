@@ -27,6 +27,20 @@ describe("metrics", () => {
     expect(out).toContain('eth_rpc_calls_total{method="eth_call"} 2');
   });
 
+  // Read at each scrape, so it matches the gate whatever halted or resumed it.
+  it("exports the risk gate's state as risk_gate_halted", async () => {
+    const { registry, trackRiskGate } = createMetricsRegistry();
+    expect(await registry.metrics()).not.toContain("risk_gate_halted");
+
+    // Anchored to the sample line: the HELP text also contains "risk_gate_halted 1".
+    let state = "RUNNING";
+    trackRiskGate({ state: () => state });
+    expect(await registry.metrics()).toMatch(/^risk_gate_halted 0$/m);
+
+    state = "HALTED";
+    expect(await registry.metrics()).toMatch(/^risk_gate_halted 1$/m);
+  });
+
   it("hosts both engines on one registry without metric-name collisions", async () => {
     // The arbitrageur will run both engines — both metric sets must coexist.
     const { registry } = createMetricsRegistry();

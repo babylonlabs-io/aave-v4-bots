@@ -5,7 +5,7 @@ import { type AwsSecretsConfig, type SecretsSend, createAwsSecrets } from "./aws
 import { assertUsableRef, describeRef } from "./ref";
 import type { SecretsProvider } from "./types";
 
-export { assertUsableRef, describeRef, isSafeToEcho } from "./ref";
+export { assertUsableRef, describeRef, isUsableRef } from "./ref";
 
 export type { SecretsProvider } from "./types";
 // `./aws` adapter — resolves refs from AWS Secrets Manager (implemented in `./aws.ts`).
