@@ -315,11 +315,16 @@ export function createAutoExecutor(deps: {
       // row with no nonce or hash, which looks like a dead process's leftover.
       if (intentId) crash.endSend(intentId);
     }
+    // Bound to this attempt's hash, as `recordOutcome` is. While the receipt is awaited, reconcile
+    // can fail the row and another engine can revive it for a new approval.
+    const ours = { txHash: hash };
     if (intentId) {
-      await crash.transition(intentId, "submitted", {
-        txHash: hash,
-        ...(await horizonFor(hash)),
-      });
+      await crash.transition(
+        intentId,
+        "submitted",
+        { txHash: hash, ...(await horizonFor(hash)) },
+        ours
+      );
     }
 
     const receipt = await publicClient.waitForTransactionReceipt({
@@ -328,11 +333,16 @@ export function createAutoExecutor(deps: {
     });
     if (receipt.status !== "success") {
       if (intentId) {
-        await crash.transition(intentId, "failed", { txHash: hash, error: `${noun} reverted` });
+        await crash.transition(
+          intentId,
+          "failed",
+          { txHash: hash, error: `${noun} reverted` },
+          ours
+        );
       }
       throw new Error(`${noun} transaction reverted for ${label ?? token}`);
     }
-    if (intentId) await crash.transition(intentId, "confirmed", { txHash: hash });
+    if (intentId) await crash.transition(intentId, "confirmed", { txHash: hash }, ours);
     return { kind: "satisfied" };
   };
 

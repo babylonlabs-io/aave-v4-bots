@@ -563,6 +563,35 @@ describe("createAutoExecutor", () => {
       expect(row).toMatchObject({ status: "submitted", txHash: "0xhash", error: "ECONNRESET" });
     });
 
+    // The receipt wait is outside `beginSend`, so a sibling reconcile can fail the row and another
+    // engine can revive it and broadcast a new approval before the old receipt comes back.
+    it("leaves a revived approval attempt untouched when the old receipt arrives", async () => {
+      const store = tickingStore();
+      const claim = { chainId: 31337, target: WBTC, action: "approval", subject: SPENDER };
+      const id = idempotencyKey(claim);
+      const pc = autoPublicClient({
+        ...allowanceReader(0n),
+        waitForTransactionReceipt: vi.fn(async () => {
+          await store.transition(id, "failed", { error: "reverted, seen by the other engine" });
+          await store.recordIntent(claim);
+          await store.transition(id, "submitted", { nonce: 8, txHash: "0xh2" as Hex });
+          return { status: "reverted" };
+        }),
+      });
+      const { exec } = autoExecutor(autoSender(), store, pc);
+
+      await expect(
+        exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n })
+      ).rejects.toThrow(/reverted/);
+
+      expect(store.get(id)).toMatchObject({
+        status: "submitted",
+        txHash: "0xh2",
+        nonce: 8,
+        error: null,
+      });
+    });
+
     it("throws when the approval reverts (as the engine's boot approval always did)", async () => {
       const pc = autoPublicClient({
         ...allowanceReader(0n),
