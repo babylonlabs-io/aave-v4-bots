@@ -317,10 +317,12 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
       return (res.rowCount ?? 0) > 0;
     },
 
+    // Keeps the Safe envelope. Owners may have signed its SafeTx off chain, so it stays executable
+    // until its nonce is spent. The operator CLI's next claim resolves it.
     async release(id, expectedPayloadHash) {
       await ensureReady();
       const res = await client.query(
-        `UPDATE ${intents} SET status = 'proposed', safe_envelope = NULL, updated_at = $3
+        `UPDATE ${intents} SET status = 'proposed', updated_at = $3
          WHERE id = $1 AND status = 'claimed' AND payload_hash = $2`,
         [id, expectedPayloadHash, Date.now()]
       );
@@ -339,19 +341,24 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
 
     async supersede(id) {
       await ensureReady();
+      // A row with a Safe envelope is never superseded: revival would clear the only record of a
+      // SafeTx owners may have signed. The operator CLI resolves it, as for `expireProposals`.
       const res = await client.query(
         `UPDATE ${intents} SET status = 'superseded', updated_at = $2
-         WHERE id = $1 AND status = 'proposed'`,
+         WHERE id = $1 AND status = 'proposed' AND safe_envelope IS NULL`,
         [id, Date.now()]
       );
       return (res.rowCount ?? 0) > 0;
     },
 
+    // Rows with a Safe envelope are never swept: a signed SafeTx does not expire with a timer, and
+    // a revived row would lose the envelope.
     async expireProposals(ttlMs, action) {
       await ensureReady();
       const res = await client.query(
         `UPDATE ${intents} SET status = 'expired', updated_at = $1
-         WHERE status = 'proposed' AND updated_at <= $2 AND ($3::text IS NULL OR action = $3)`,
+         WHERE status = 'proposed' AND safe_envelope IS NULL AND updated_at <= $2
+           AND ($3::text IS NULL OR action = $3)`,
         [Date.now(), Date.now() - ttlMs, action ?? null]
       );
       return res.rowCount ?? 0;
@@ -365,7 +372,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
            nonce = COALESCE($3, nonce),
            tx_hash = COALESCE($4, tx_hash),
            error = COALESCE($5, error),
-           relay_max_block = COALESCE($9, relay_max_block),
+           relay_max_block = GREATEST(relay_max_block, $9),
            updated_at = $6
          WHERE id = $1
            AND ($7::text IS NULL OR tx_hash = $7)

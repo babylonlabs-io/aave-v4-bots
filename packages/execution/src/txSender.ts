@@ -25,7 +25,8 @@ import { SubmitRejectedError } from "./submission";
 // exists that no record points at — and reconcile, seeing a mined nonce with no hash, has to
 // guess. Splitting the step lets the hash be recorded while the tx is still purely local:
 //
-//   prepare → sign (hash exists here, nothing broadcast) → `onSigned` (durable) → broadcast
+//   prepare → sign (hash exists here, nothing broadcast) → `onSigned` (durable) →
+//     `beforeBroadcast` (last gate, synchronous) → broadcast
 //
 // So the two failure points are now both safe. If `onSigned` throws, nothing was broadcast and
 // the reserved nonce is free (the next `resync` reclaims it). If the *broadcast* is ambiguous,
@@ -143,8 +144,15 @@ export interface TxSender {
    * Sign `call` locally, hand the resulting `SignedTx` to `onSigned` (the durable
    * pre-broadcast record), then broadcast. A throwing `onSigned` aborts the send — nothing
    * reaches the chain — so the caller may treat it as a plain send failure.
+   *
+   * `beforeBroadcast` runs synchronously just before the broadcast, with no `await` in between.
+   * A throw aborts the send; nothing was broadcast.
    */
-  send(call: ContractCall, onSigned?: (tx: SignedTx) => Promise<void>): Promise<Hex>;
+  send(
+    call: ContractCall,
+    onSigned?: (tx: SignedTx) => Promise<void>,
+    beforeBroadcast?: () => void
+  ): Promise<Hex>;
 }
 
 /**
@@ -269,12 +277,14 @@ export function createTxSender(
     // The sender's identity is intrinsic: its key is `walletClient.account`, its chain
     // `walletClient.chain`. A caller never has to supply it separately.
     identity: { from: walletClient.account.address, chainId: walletClient.chain.id },
-    async send(call, onSigned) {
+    async send(call, onSigned, beforeBroadcast) {
       let signed: SignedTx;
       try {
         signed = await signContractCall(walletClient, call, options.minPriorityFeeWei);
         // Durable BEFORE the tx can exist on chain.
         await onSigned?.(signed);
+        // Nothing is awaited between this check and the broadcast.
+        beforeBroadcast?.();
       } catch (error) {
         // Nothing was broadcast — say so, rather than letting the caller assume the worst.
         throw new PreBroadcastError(error);

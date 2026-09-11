@@ -20,11 +20,13 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 ///        and revoking whatever approvals or roles the old instance was granted.
 ///      - {onlySelf} is not an authorization boundary of its own. It only proves the call arrived through
 ///        `relay`, which means it proves the signer authorized it — nothing more.
-///      - Signed messages carry no nonce and are not bound to a submitter, so a message stays replayable by
-///        anyone until its `deadline`. This is deliberate: the signature attests that the signer considered
-///        the action valid, and derived contracts are expected to relay only actions that are naturally
-///        non-repeatable (the target state is consumed) or economically neutral when repeated. Derived
-///        contracts whose actions do not have that property must add their own replay protection.
+///      - Signed messages carry no nonce, so a message the base contract accepts stays replayable until its
+///        `deadline`. This is deliberate: the signature attests that the signer considered the action valid,
+///        and derived contracts are expected to relay only actions that are naturally non-repeatable (the
+///        target state is consumed) or economically neutral when repeated. Derived contracts whose actions
+///        do not have that property must add their own replay protection.
+///      - Submission is permissionless by default. A derived contract restricts it by overriding
+///        {_checkExecutor}.
 ///      - `deadline` has no upper bound. Signing `type(uint256).max` creates a standing authorization.
 ///
 ///      EIP-712: the digest follows the spec exactly, so `signTypedData` from any standard wallet or client
@@ -74,9 +76,8 @@ abstract contract SelfCallRelayer is EIP712 {
     }
 
     /// @notice Executes a signer-authorized batch of self-calls.
-    /// @dev Permissionless: anyone holding a valid `(message, signature)` pair may submit it, and both are
-    ///      public once the transaction is broadcast. The batch is atomic — the first failing call reverts
-    ///      everything, bubbling up the callee's original revert data.
+    /// @dev Anyone may submit unless {_checkExecutor} is overridden. The batch is atomic: the first
+    ///      failing call reverts everything with the callee's revert data.
     ///
     ///      Each call's `data` must be at least 4 bytes; shorter calldata reverts with a panic on the
     ///      selector slice below.
@@ -91,6 +92,7 @@ abstract contract SelfCallRelayer is EIP712 {
     /// @param message The batch to execute
     /// @param signature ECDSA signature by `signer` over the EIP-712 digest of `message`
     function relay(RelayerMessage calldata message, bytes calldata signature) external payable {
+        _checkExecutor();
         _verifyRelayerMessage(message, signature);
         for (uint256 i = 0; i < message.calls.length; i++) {
             Call calldata call = message.calls[i];
@@ -110,6 +112,11 @@ abstract contract SelfCallRelayer is EIP712 {
         }
         emit RelayerMessageExecuted(msg.sender, block.timestamp, message);
     }
+
+    /// @dev Decides who may submit a batch, from `msg.sender` (the caller of {relay}). The default
+    ///      accepts everyone. A batch is public before it is mined, so an override that binds the
+    ///      submitter makes a leaked batch unusable. The cost: only admitted addresses can pay its gas.
+    function _checkExecutor() internal view virtual {}
 
     /// @dev Reverts unless `message` is unexpired and `signature` recovers to `signer`.
     /// @param message The batch being authorized

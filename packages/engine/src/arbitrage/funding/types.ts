@@ -49,6 +49,12 @@ export interface ArbitrageFunding {
   refreshInventory(): Promise<void>;
 
   /**
+   * Revoke every allowance this mode granted. Called only on a code-hash halt: the spender's code
+   * changed, and the allowance still lets it pull funds.
+   */
+  revokeApprovals(): Promise<void>;
+
+  /**
    * Make sure `maxWbtcIn` can actually be delivered when the swap runs.
    *
    * Returns `satisfied` when the payment can go ahead. Anything else means an operator has to act
@@ -87,13 +93,16 @@ export interface ArbitrageFunding {
    * execute is a claim on the treasury that nothing else is counting — see
    * `RouterFunding.refreshInventory`.
    *
-   * `consumed` means the money provably moved (our own acquisition confirmed), so the treasury's
-   * balance already reflects it and holding it again would count it twice. Anything else leaves the
-   * authorization live until it expires or is observed executing.
+   * `consumed` means the money provably moved (our acquisition confirmed). `minedAtBlock` is the
+   * block a balance read must reach to show it; until then the mode keeps the outflow. Anything else
+   * leaves the authorization live until it expires or is observed executing.
    *
    * Idempotent, and a no-op for a mode whose payment cannot outlive its transaction.
    */
-  settleAuthorization(authorizationId: Hex | undefined, outcome: { consumed: boolean }): void;
+  settleAuthorization(
+    authorizationId: Hex | undefined,
+    outcome: { consumed: boolean; minedAtBlock?: bigint }
+  ): void;
 
   /**
    * The call that acquires one vault, bounded by the slippage-adjusted ceiling.
@@ -114,7 +123,7 @@ export interface ArbitrageFunding {
  * `authorizationId` is present only for a mode that signs a payment separately from the
  * transaction. It is what the engine hands back to `spentWithoutUs`, `authorizationExpired` and
  * `settleAuthorization`, so those answer about *this* batch rather than about whatever was last
- * signed for the same vault — with a permissionless relay, more than one can be live at once.
+ * signed for the same vault — the batch carries no nonce, so more than one can be live at once.
  */
 export interface AcquisitionCall {
   call: ContractCall;

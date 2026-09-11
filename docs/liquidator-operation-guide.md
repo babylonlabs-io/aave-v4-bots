@@ -175,7 +175,7 @@ Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two 
 | `START_BLOCK` | First block to index | No | `0` |
 | `PONDER_POLLING_INTERVAL` | Block poll interval (ms) | No | `4000` |
 | `PONDER_PORT` | API port. The `liquidator:indexer*` scripts and Compose both set it themselves, so a value here only applies when you run Ponder directly. Compose publishes the host port as `LIQUIDATOR_PONDER_PORT` | No | `42069` |
-| `POSITION_PROBE_CHUNK_SIZE` | Positions per batched `eth_call` in `/liquidatable-positions`. A batch over the node's gas cap fails whole and reports its positions as `unscanned`. Raise only against a known cap | No | `25` |
+| `POSITION_PROBE_CHUNK_SIZE` | Probes sent in one wave by `/liquidatable-positions`, split into calls of 15. It sets concurrency, not per-call gas. A throttled wave fails whole and reports its positions as `unscanned`. See §8.5 | No | `25` |
 | `MULTICALL3_ADDRESS` | Multicall3 for the API's batched reads. Falls back to single reads when absent on chain | No | `0xcA11bde05977b3631167028862bE2a173976CA11` |
 | `CONFIG_SECRET_ID` | AWS Secrets Manager id holding `PONDER_RPC_URL` and `DATABASE_URL` as JSON, for values not set in the env | No | |
 
@@ -291,7 +291,8 @@ with `operator-cli`, see §8.3.
 
 ### 5.5. Private submission
 
-Same variables and behaviour as the arbitrageur. Read
+Same variables and behaviour as the arbitrageur, including the accepted risk that releasing a
+nonce trusts the relay to stop offering the transaction. Read
 [§5.5 of the arbitrageur guide](arbitrageur-operation-guide.md#55-private-submission) before
 enabling it. Liquidation is the more contested path, so the reach-versus-protection trade-off
 matters more here.
@@ -431,6 +432,17 @@ is `true` once every pinned address has passed a check in this process.
 halt. That clears itself on the next successful check. If the pinned hash is wrong, correct
 `RISK_EXPECTED_CODE_HASHES` and restart.
 
+**A halted bot still keeps its books.** Reconcile, the `MANUAL_INTENT_TTL_MS` proposal sweep and
+the `intent-stuck` alert run every cycle while HALTED. None of them sends a transaction. A halt
+stops the trading half: the indexer is not asked and no candidate is acted on.
+
+**A code-hash halt also withdraws the adapter's allowances.** While it stands, every cycle sends
+`approve(adapter, 0)` for each debt token and WBTC whose allowance is not zero. This is the one
+transaction a HALTED gate sends: the adapter needs nothing more from the bot to pull what it was
+already approved for. A kill-switch halt does not do this. Under `EXECUTION_MODE=MANUAL` each
+withdrawal is a proposal to sign. After the pin is corrected and the gate resumes, the next cycle
+re-approves what it needs.
+
 ### 8.5. Indexer endpoints
 
 ```bash
@@ -441,7 +453,18 @@ curl http://localhost:42069/liquidatable-positions  # positions the Lens can liq
 In `/liquidatable-positions`, `checked` counts positions with an answer and `unscanned` those
 without: a batch that failed whole, or a probe that reverted for a reason other than the
 position being healthy. A nonzero `unscanned` means the list is incomplete for that request. The
-indexer logs the revert reasons once per cycle.
+indexer logs the revert reasons once per cycle. `unmapped` counts rows with no proxy mapping. They
+have no borrower, so they are dropped before the scan and never become candidates.
+
+`scanMs` is the probe time, and it is the number to watch. The scan is linear in `checked`, and the
+bot reads this route under a fixed 10s per-attempt timeout. A `scanMs` near that limit means the
+candidate feed is about to fail, and the bot will then skip cycles and say so.
+
+One `eth_call` carries 15 probes, fixed in code: ~177k gas per healthy probe and ~247k per
+liquidatable one, so about 2.7M gas per call. `POSITION_PROBE_CHUNK_SIZE` is how many probes go out
+in one wave, split into those calls, so it sets concurrency: 25 is two calls in flight. Raising it
+shortens a long scan but spends RPC capacity the indexer also needs, and a provider that throttles
+fails whole batches into `unscanned`.
 
 ## 9. Troubleshooting
 

@@ -4,8 +4,8 @@
 import { protocolErrorsAbi } from "./protocolErrors";
 
 export const arbitrageRouterAbi = [
-  // The only way to reach `swapWbtcToVault`, which is `onlySelf`. Permissionless: anyone holding a
-  // valid (message, signature) pair may submit it and pay the gas.
+  // The only way to reach `swapWbtcToVault`, which is `onlySelf`. The router relays for its own
+  // `signer` alone, so the bot both signs the batch and pays the gas that submits it.
   {
     type: "function",
     name: "relay",

@@ -38,6 +38,11 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   // that string is overwritten by whichever halt came last. Without it, a code-hash halt landing on
   // an already-HALTED gate is indistinguishable from the manual halt it replaced.
   let codeHashHalt = false;
+  /**
+   * Incremented on every code-hash halt. `verifyCode` passes can overlap, so a pass clears the halt
+   * only if no newer halt was recorded while it read.
+   */
+  let codeHashHaltSeq = 0;
   let everVerified = false;
 
   // Token ledger. Spendable capacity for one `(owner, token)` is
@@ -136,7 +141,10 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
     const wasRunning = state === "RUNNING";
     state = "HALTED";
     haltReason = reason;
-    if (fromCodeHash) codeHashHalt = true;
+    if (fromCodeHash) {
+      codeHashHalt = true;
+      codeHashHaltSeq++;
+    }
     if (wasRunning) emit({ kind: "halted", reason });
   };
 
@@ -241,6 +249,7 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
     halt,
 
     haltReason: () => haltReason,
+    codeHashHalted: () => codeHashHalt,
     everVerified: () => everVerified,
 
     resume() {
@@ -374,6 +383,9 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       const expected = config.expectedCodeHashes;
       if (!expected) return;
 
+      // Before the first read: a clean pass may only clear a halt that already stood then.
+      const seq = codeHashHaltSeq;
+
       const addresses = Object.keys(expected);
       // Read every address independently. `Promise.all` would reject on the first RPC blip and
       // discard the results that DID come back — so an upgraded contract could hide behind an
@@ -416,7 +428,9 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       // — an operator cannot assert it, and the state the periodic guard's fail-open rests on is
       // now actually true. The gate stays HALTED: proving the target is sound is not the same as
       // deciding to trade again, and that decision stays with the operator.
-      codeHashHalt = false;
+      // Unless a newer halt was recorded while this pass read.
+      if (codeHashHaltSeq === seq) codeHashHalt = false;
+      // Ungated: this pass did read every target as sound, which is all this records.
       everVerified = true;
     },
   };

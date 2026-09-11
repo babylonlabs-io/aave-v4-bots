@@ -47,6 +47,7 @@ set in [liquidator-metrics.md](liquidator-metrics.md).
 | `poll_error` | Exception escaped the poll cycle |
 | `ponder_fetch_error` | Failed to fetch `/escrowed-vaults` |
 | `vaults_unreadable` | The indexer answered but could not preview some escrowed vaults, for a reason other than the vault leaving escrow. Those vaults are missing from the list. Sustained, a vault or the RPC serving that read is persistently failing |
+| `vaults_malformed` | The indexer described some vaults in a shape the bot cannot use: a `vaultId` that is not 32-byte hex, or a `btcAmount`/`currentDebt` that is not a decimal integer. Those entries are dropped. Sustained, the indexer's wire format has changed |
 | `vault_skipped` | Vault not in escrow at preview time, or its previewed profit was zero |
 | `risk_blocked` | Risk gate denied the action |
 | `intent_in_flight` | A live persisted intent already exists for the vault |
@@ -54,9 +55,10 @@ set in [liquidator-metrics.md](liquidator-metrics.md).
 | `swap_send_error` | Executor failed or aborted while committing the swap |
 | `tx_timeout` | Receipt wait exceeded `TX_RECEIPT_TIMEOUT_MS` |
 | `swap_reverted` | Reverted with the vault still in escrow. Feeds the breaker |
+| `tx_replaced` | Another transaction took our swap's nonce and mined instead: a cancellation, a repricing, or another process holding the key. The receipt is not ours, so the outcome is unknown. Breaker-exempt. Under `router` the signed batch stays held until it expires or is seen executing |
 | `race_lost` | The vault was gone before acquisition or after a reverted swap: another arbitrageur won. Breaker-exempt |
 | `authorization_expired` | `router` only. Reverted with the vault still in escrow because the signed batch sat behind a stalled nonce past `ARBITRAGE_RELAY_DEADLINE_SECONDS`. Breaker-exempt. A run of these means the send queue is stalling: look at nonce gaps |
-| `relay_executed_elsewhere` | `router` only. The router's event shows our authorization acquired the vault, but another submitter sent it and paid the gas. Raised either after our swap reverted on a vault already gone, or before we broadcast at all, since gas estimation exposes the signed batch to the RPC. The spend stays counted |
+| `relay_executed_elsewhere` | `router` only. The router's event shows our authorization acquired the vault through a send other than this one. Raised after our swap reverted on a vault already gone, or before we broadcast. The router relays only for its signer, so that send was also ours. The spend stays counted |
 | `classification_error` | Something in receipt handling threw: a read that decides why a revert happened, or persisting the outcome after a settled receipt. An unclassifiable revert is counted as a genuine failure, the safe direction. The rest of the batch is still processed |
 | `spend_check_error` | `router` only. The router's event could not be read, so whether our authorization paid is unknown. The WBTC stays counted as spent until the next balance refresh |
 | `receipt_fetch_error` | No receipt. The transaction's fate is unknown; the intent stays live for reconcile |

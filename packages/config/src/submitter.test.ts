@@ -54,7 +54,7 @@ describe("buildSubmitterConfig", () => {
     ).toThrow(/requires FLASHBOTS_PROTECT_URL, PRIVATE_MIN_PRIORITY_FEE_WEI/);
   });
 
-  // §4.2: a private tx is invisible to our own node, so the persisted intents are the only thing
+  // A private tx is invisible to our own node, so the persisted intents are the only thing
   // left holding the nonce. Without a store this is not a degraded mode, it is nonce reuse.
   it("refuses private submission without a store to fence the nonce", () => {
     expect(() => buildSubmitterConfig(privateEnv({ DATABASE_URL: undefined }))).toThrow(
@@ -62,7 +62,7 @@ describe("buildSubmitterConfig", () => {
     );
   });
 
-  // §4.3: the failure this prevents is silent — protection that never lands a transaction.
+  // The failure this prevents is silent — protection that never lands a transaction.
   it("refuses private submission without a priority-fee floor", () => {
     expect(() =>
       buildSubmitterConfig(privateEnv({ PRIVATE_MIN_PRIORITY_FEE_WEI: undefined }))
@@ -181,6 +181,54 @@ describe("submission is an AUTO-only decision", () => {
       mode: "AUTO",
       submitter: { mode: "flashbots-protect", minPriorityFeeWei: 2_000_000_000n },
     });
+  });
+});
+
+// With no relay deadline, the declared window alone fences the nonce, so too short is unsafe.
+describe("the declared relay window, where the relay is known", () => {
+  const PROTECT_STATUS = "https://protect.flashbots.net";
+
+  it("refuses a window shorter than Protect's, when reading status from Protect", () => {
+    expect(() =>
+      buildSubmitterConfig(
+        privateEnv({ FLASHBOTS_STATUS_URL: PROTECT_STATUS, PRIVATE_RELAY_HORIZON_BLOCKS: "24" })
+      )
+    ).toThrow(/below the ~25 blocks Flashbots Protect keeps offering/);
+  });
+
+  // Matched by origin, so a trailing slash is still Protect.
+  it.each(["https://protect.flashbots.net/", "https://Protect.Flashbots.net"])(
+    "recognises %s as Protect",
+    (statusUrl) => {
+      expect(() =>
+        buildSubmitterConfig(
+          privateEnv({ FLASHBOTS_STATUS_URL: statusUrl, PRIVATE_RELAY_HORIZON_BLOCKS: "4" })
+        )
+      ).toThrow(/below the ~25 blocks/);
+    }
+  );
+
+  it("accepts Protect's own window, and anything longer", () => {
+    for (const blocks of ["25", "50"]) {
+      expect(
+        buildSubmitterConfig(
+          privateEnv({ FLASHBOTS_STATUS_URL: PROTECT_STATUS, PRIVATE_RELAY_HORIZON_BLOCKS: blocks })
+        )
+      ).toMatchObject({ relayHorizonBlocks: Number(blocks) });
+    }
+  });
+
+  // A custom relay's window is its operator's to declare. The e2e fake relay uses 4 blocks.
+  it("leaves a custom relay's window to the operator who named it", () => {
+    expect(
+      buildSubmitterConfig(
+        privateEnv({
+          FLASHBOTS_PROTECT_URL: "http://127.0.0.1:8555",
+          FLASHBOTS_STATUS_URL: "http://127.0.0.1:8555",
+          PRIVATE_RELAY_HORIZON_BLOCKS: "4",
+        })
+      )
+    ).toMatchObject({ relayHorizonBlocks: 4 });
   });
 });
 

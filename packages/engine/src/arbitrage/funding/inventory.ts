@@ -55,6 +55,16 @@ export class InventoryFunding implements ArbitrageFunding {
     metrics.recordFundingCapacity({ owner, balance });
   }
 
+  /** Take the LLP's WBTC allowance back to zero — the one standing permission this mode grants. */
+  async revokeApprovals(): Promise<void> {
+    const { executor, wbtcAddress, vaultSwapAddress } = this.deps;
+    await executor.revokeAllowance({
+      token: wbtcAddress,
+      spender: vaultSwapAddress,
+      label: "WBTC",
+    });
+  }
+
   /**
    * The LLP pulls the WBTC from the signer, so the signer must have approved it.
    *

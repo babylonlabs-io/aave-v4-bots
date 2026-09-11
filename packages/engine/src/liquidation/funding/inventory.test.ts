@@ -34,9 +34,16 @@ const reserve = (id: number, token: Address, borrowable = true): SpokeReserve =>
   borrowable,
 });
 
-function build(reserves: SpokeReserve[], opts: { balance?: bigint } = {}) {
+type Revoke = (input: { token: Address; spender: Address; label?: string }) => Promise<unknown>;
+
+function build(reserves: SpokeReserve[], opts: { balance?: bigint; revoke?: Revoke } = {}) {
   const risk = createRiskGate();
   const topology: SpokeReserves = { spoke: "0xspoke" as Address, reserves };
+  const revokeAllowance = vi.fn(opts.revoke ?? (async () => ({ kind: "satisfied" as const })));
+  const ensureAllowance = vi.fn(async (_input: { token: Address; spender: Address }) => ({
+    kind: "satisfied" as const,
+  }));
+  const readReserves = vi.fn(async () => topology);
   const funding = new InventoryFunding({
     publicClient: {
       getBlockNumber: vi.fn(async () => 1n),
@@ -51,18 +58,19 @@ function build(reserves: SpokeReserve[], opts: { balance?: bigint } = {}) {
     metrics: { recordError: vi.fn(), recordSimulationFailed: vi.fn() },
     executor: {
       identity: { from: SIGNER, chainId: 31337 },
-      ensureAllowance: vi.fn(async () => ({ kind: "satisfied" as const })),
+      ensureAllowance,
+      revokeAllowance,
       inFlightTxHashes: vi.fn(async () => undefined),
     },
     tokenMeta: { get: vi.fn(async () => ({ symbol: "TKN", decimals: 18 })) },
-    reserves: vi.fn(async () => topology),
+    reserves: readReserves,
     adapterAddress: ADAPTER,
     wbtcAddress: WBTC,
     btcRedeemKey: `0x${"0".repeat(64)}`,
     llpAddress: "0xllp",
     isDirectRedemption: false,
   } as unknown as ConstructorParameters<typeof InventoryFunding>[0]);
-  return { funding, risk };
+  return { funding, risk, revokeAllowance, ensureAllowance, readReserves };
 }
 
 /** What the gate ends up reserving per token, after vetting one candidate. */
@@ -251,5 +259,68 @@ describe("InventoryFunding spend attribution", () => {
     const { funding } = build([reserve(0, USDC)]);
 
     await expect(funding.vet([candidate([[0n, 100n]])])).rejects.toThrow(/before refreshInventory/);
+  });
+});
+
+// A code-hash halt revokes the adapter's allowances; the engine's halted cycle calls this.
+describe("InventoryFunding revokeApprovals", () => {
+  const revoked = (calls: { token: Address; spender: Address }[]) =>
+    calls.map((c) => [c.token, c.spender]);
+
+  it("withdraws the adapter's allowance on every reserve token and WBTC", async () => {
+    const { funding, revokeAllowance, readReserves } = build([
+      reserve(0, USDC),
+      reserve(1, VAULT_BTC, false),
+      reserve(2, USDT),
+    ]);
+
+    await funding.revokeApprovals();
+
+    // A non-borrowable reserve is included: it may hold an allowance granted earlier.
+    expect(revoked(revokeAllowance.mock.calls.map((c) => c[0]))).toEqual([
+      [USDC, ADAPTER],
+      [VAULT_BTC, ADAPTER],
+      [USDT, ADAPTER],
+      [WBTC, ADAPTER],
+    ]);
+    // No cycle has run, so the list comes from a fresh read.
+    expect(readReserves).toHaveBeenCalled();
+  });
+
+  // Governance clears `borrowable` after the grant. Approvals stop, but the allowance stays on
+  // chain, so a code-hash halt must still revoke it.
+  it("revokes a token whose reserve stopped being borrowable after it was approved", async () => {
+    const { funding, ensureAllowance, revokeAllowance, readReserves } = build([
+      reserve(0, USDC),
+      reserve(1, USDT),
+    ]);
+    await funding.refreshInventory();
+    expect(ensureAllowance.mock.calls.map((c) => c[0].token)).toContain(USDT);
+
+    readReserves.mockResolvedValue({
+      spoke: "0xspoke" as Address,
+      reserves: [reserve(0, USDC), reserve(1, USDT, false)],
+    });
+    ensureAllowance.mockClear();
+    await funding.refreshInventory();
+    expect(ensureAllowance.mock.calls.map((c) => c[0].token)).not.toContain(USDT);
+
+    await funding.revokeApprovals();
+
+    expect(revokeAllowance.mock.calls.map((c) => c[0].token)).toContain(USDT);
+  });
+
+  it("withdraws the rest when one token cannot be", async () => {
+    const { funding, revokeAllowance } = build([reserve(0, USDC), reserve(1, USDT)], {
+      revoke: async ({ token }) => {
+        if (token === USDC) throw new Error("rpc down");
+        return { kind: "satisfied" as const };
+      },
+    });
+
+    await expect(funding.revokeApprovals()).resolves.toBeUndefined();
+
+    // One failure does not stop the other revocations.
+    expect(revokeAllowance.mock.calls.map((c) => c[0].token)).toEqual([USDC, USDT, WBTC]);
   });
 });

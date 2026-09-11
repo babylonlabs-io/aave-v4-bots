@@ -252,14 +252,30 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
   });
 
   describe("release + fail (recovery)", () => {
-    it("release reverts claimed → proposed and clears the envelope", async () => {
+    // Owners may have signed the SafeTx off chain, so release keeps its envelope.
+    it("release reverts claimed → proposed and keeps the envelope", async () => {
       const store = createMemoryStateStore();
       const id = idempotencyKey(input("p"));
       await store.propose(input("p"), payload(), HASH_A);
       await store.claimProposal(id, HASH_A, SAFE_ENV);
 
       expect(await store.release(id, HASH_A)).toBe(true);
-      expect(store.get(id)).toMatchObject({ status: "proposed", safeEnvelope: null });
+      expect(store.get(id)).toMatchObject({ status: "proposed", safeEnvelope: SAFE_ENV });
+    });
+
+    // A signed SafeTx does not expire with a timer, so a row with an envelope is never swept.
+    it("does not expire a released row that still carries an envelope", async () => {
+      let clock = 1_000_000;
+      const store = createMemoryStateStore(() => clock);
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A, SAFE_ENV);
+      await store.release(id, HASH_A);
+
+      clock += 10_000;
+
+      expect(await store.expireProposals(1_000)).toBe(0);
+      expect(store.get(id)?.status).toBe("proposed");
     });
 
     it("release refuses a non-claimed row or a hash mismatch", async () => {
@@ -338,6 +354,18 @@ describe("MANUAL proposal lifecycle (memory model)", () => {
       await store.transition(id, "submitted", { txHash: TX });
       expect(await store.supersede(id)).toBe(false);
       expect(store.get(id)?.status).toBe("submitted");
+    });
+
+    // Revival would clear the envelope of a SafeTx owners may have signed.
+    it("will not supersede a released row that still carries a Safe envelope", async () => {
+      const store = createMemoryStateStore();
+      const id = idempotencyKey(input("p"));
+      await store.propose(input("p"), payload(), HASH_A);
+      await store.claimProposal(id, HASH_A, SAFE_ENV);
+      await store.release(id, HASH_A);
+
+      expect(await store.supersede(id)).toBe(false);
+      expect(store.get(id)).toMatchObject({ status: "proposed", safeEnvelope: SAFE_ENV });
     });
   });
 
@@ -532,5 +560,62 @@ describe("the default pool's deadlines", () => {
     expect(DEFAULT_POOL_TIMEOUTS.query_timeout).toBeGreaterThan(
       DEFAULT_POOL_TIMEOUTS.statement_timeout
     );
+  });
+});
+
+// A shorter horizon would free a nonce the relay can still spend, so the horizon only grows.
+describe("relay horizon is monotonic (memory model)", () => {
+  const HASH = "0xhash" as Hex;
+
+  /** One submitted intent, optionally already carrying a horizon. */
+  async function submitted(relayMaxBlock?: number) {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    await store.transition(id, "submitted", { nonce: 5, txHash: HASH, relayMaxBlock });
+    return { store, id };
+  }
+
+  it("fills in a horizon a row does not have", async () => {
+    const { store, id } = await submitted();
+
+    await store.transition(id, "submitted", { relayMaxBlock: 125 });
+
+    expect(store.get(id)?.relayMaxBlock).toBe(125);
+  });
+
+  it("lengthens a horizon when a later writer knows a longer deadline", async () => {
+    const { store, id } = await submitted(125);
+
+    await store.transition(id, "submitted", { relayMaxBlock: 200 });
+
+    expect(store.get(id)?.relayMaxBlock).toBe(200);
+  });
+
+  // One writer saw the relay's deadline of 200, another fell back to 125. 200 stands either way.
+  it("refuses to shorten one, whichever writer lands last", async () => {
+    const { store, id } = await submitted(200);
+
+    await store.transition(id, "submitted", { relayMaxBlock: 125 });
+
+    expect(store.get(id)?.relayMaxBlock).toBe(200);
+  });
+
+  it("leaves the horizon alone when a transition carries none", async () => {
+    const { store, id } = await submitted(200);
+
+    await store.transition(id, "confirmed", { txHash: HASH });
+
+    expect(store.get(id)?.relayMaxBlock).toBe(200);
+  });
+
+  // A revived row is a new transaction, so it starts with no horizon.
+  it("clears the horizon when the row is revived for a fresh attempt", async () => {
+    const { store, id } = await submitted(200);
+    await store.transition(id, "failed", { error: "dropped" });
+
+    await store.recordIntent(input("p"));
+
+    expect(store.get(id)?.relayMaxBlock).toBeNull();
   });
 });

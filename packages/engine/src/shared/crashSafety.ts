@@ -11,7 +11,7 @@ import {
 } from "@repo/persistence";
 import type { Address, Hex } from "viem";
 
-import { type ChainReader, type LivenessCheck, couldBeInFlight } from "./liveness";
+import { type ChainReader, type Horizon, type LivenessCheck, couldBeInFlight } from "./liveness";
 import { reconcilePending } from "./reconcile";
 
 // The crash-safety collaborator: the intent + shared-nonce-allocator dance both engines run
@@ -42,6 +42,8 @@ export interface CrashSafetyConfig {
   reader: ChainReader;
   /** See `LivenessCheck.reclaimMarginBlocks`. Travels with `reader`, which fails closed without it. */
   reclaimMarginBlocks?: number;
+  /** Recovers a missing relay horizon; see `Horizon`. Set together with `reclaimMarginBlocks`. */
+  horizon?: Pick<Horizon, "repair">;
   /** The sending address whose nonce sequence anchors reconcile's "was this broadcast?" checks. */
   signer: Address;
   logger: Logger;
@@ -230,6 +232,7 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
         now,
         graceMs,
         reclaimMarginBlocks: config.reclaimMarginBlocks,
+        horizon: config.horizon,
         isSending: (id) => sending.has(id),
       });
     },

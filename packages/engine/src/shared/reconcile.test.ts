@@ -20,6 +20,7 @@ import {
   type ChainReader,
   type SafeExecutionOutcome,
   UNKNOWN_TX_GRACE_MS,
+  couldBeInFlight,
   createChainReader,
 } from "./liveness";
 import { reconcilePending } from "./reconcile";
@@ -1020,5 +1021,109 @@ describe("reconcilePending — an in-progress claim is not another engine's to r
   it("does not protect a send that already failed", async () => {
     const transition = await runWith(claimed({ status: "submitted" }), 1_000);
     expect(transition).toHaveBeenCalledWith("i1", "failed", expect.anything(), expect.anything());
+  });
+});
+
+// A private intent whose horizon write failed has no deadline, so its nonce is never released.
+describe("reconcilePending — recovering a missing relay horizon", () => {
+  const HASH = "0xhash" as Hex;
+
+  /** One in-flight, privately-submitted intent at nonce 5 whose horizon never landed. */
+  async function unfenced() {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    await store.transition(id, "submitted", { nonce: 5, txHash: HASH });
+    return { store, id };
+  }
+
+  const pass = (
+    store: StateStore,
+    repair?: (hash: Hex) => Promise<number | null>,
+    over: { public?: true } = {}
+  ) =>
+    reconcilePending({
+      store,
+      signer: SIGNER,
+      // Still out there: the nonce slot is unspent and the relay-aware reader fails closed.
+      reader: reader({ receipts: { [HASH]: null }, latest: 5, pending: 5, known: true, head: 110 }),
+      now: aged(UNKNOWN_TX_GRACE_MS + 1),
+      reclaimMarginBlocks: over.public ? undefined : 3,
+      horizon: repair && { repair },
+    });
+
+  const horizonOf = (store: StateStore & { all(): TxIntent[] }, id: string) =>
+    store.all().find((r) => r.id === id)?.relayMaxBlock;
+
+  it("records the relay's own deadline for a row that has none", async () => {
+    const { store, id } = await unfenced();
+
+    const summary = await pass(store, async () => 200);
+
+    // Still in flight: the horizon takes effect on the next pass.
+    expect(summary).toMatchObject({ stillInFlight: 1, failed: 0, confirmed: 0 });
+    expect(horizonOf(store, id)).toBe(200);
+    expect(store.all().find((r) => r.id === id)?.status).toBe("submitted");
+  });
+
+  // End to end: the nonce is released once the chain passes the recovered horizon.
+  it("lets the fence release the nonce once the chain passes the recovered horizon", async () => {
+    const { store, id } = await unfenced();
+    await pass(store, async () => 100);
+
+    const intent = store.all().find((r) => r.id === id) as TxIntent;
+    // head 110 > 100 + margin 3 — the transaction can no longer be included, whatever the relay says.
+    expect(
+      await couldBeInFlight(
+        { reader: reader({ known: true }), now: Date.now, reclaimMarginBlocks: 3, head: 110 },
+        { txHash: HASH, updatedAt: 0, relayMaxBlock: intent.relayMaxBlock }
+      )
+    ).toBe(false);
+  });
+
+  // A public submission also leaves a null horizon; the relay cannot vouch for its hash.
+  it("leaves the row fenced when the relay cannot vouch for the hash", async () => {
+    const { store, id } = await unfenced();
+
+    const summary = await pass(store, async () => null);
+
+    expect(summary).toMatchObject({ stillInFlight: 1 });
+    expect(horizonOf(store, id)).toBeNull();
+  });
+
+  // A relay outage must cost throughput, never nonce safety — and never the whole pass.
+  it("keeps fencing, and keeps reconciling, when the probe throws", async () => {
+    const { store, id } = await unfenced();
+
+    const summary = await pass(store, async () => {
+      throw new Error("flashbots 503");
+    });
+
+    expect(summary).toMatchObject({ stillInFlight: 1 });
+    expect(horizonOf(store, id)).toBeNull();
+  });
+
+  // Under public submission a null horizon is normal, so no repair runs.
+  it("does not touch a row when no reclaim margin is configured", async () => {
+    const { store, id } = await unfenced();
+    const probe = vi.fn(async () => 200);
+
+    await pass(store, probe, { public: true });
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(horizonOf(store, id)).toBeNull();
+  });
+
+  // The row changed after this pass read it, so the write is refused.
+  it("refuses to stamp a row that advanced under it", async () => {
+    const { store, id } = await unfenced();
+
+    await pass(store, async () => {
+      await store.transition(id, "confirmed", { txHash: HASH });
+      return 200;
+    });
+
+    expect(horizonOf(store, id)).toBeNull();
+    expect(store.all().find((r) => r.id === id)?.status).toBe("confirmed");
   });
 });

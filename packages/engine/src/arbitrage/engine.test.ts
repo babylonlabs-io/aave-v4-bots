@@ -115,7 +115,9 @@ function createMockClients() {
       estimateContractGas: vi.fn().mockResolvedValue(100000n),
       waitForTransactionReceipt: vi
         .fn()
-        .mockResolvedValue({ status: "success", blockNumber: 123n }),
+        .mockImplementation(({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "success", blockNumber: 123n, transactionHash: hash })
+        ),
       // Inventory refresh pins every balance to one height, and the gate's outflow holds are
       // retired against it — see `retireSettledOutflows`.
       getBlockNumber: vi.fn().mockResolvedValue(200n),
@@ -206,6 +208,7 @@ describe("ArbitrageEngine", () => {
           functionName: "swapWbtcForVault",
           args: [mockVault.vaultId, 50500000n], // 0.5 WBTC debt + 1% slippage
         }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.publicClient.waitForTransactionReceipt).toHaveBeenCalledWith({
@@ -263,10 +266,10 @@ describe("ArbitrageEngine", () => {
 
     it("handles contract revert after tx sent", async () => {
       const clients = createMockClients();
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "reverted",
-        blockNumber: 123n,
-      });
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(
+        ({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "reverted", blockNumber: 123n, transactionHash: hash })
+      );
       const bot = createBot(clients);
 
       const result = await bot.acquireVault(mockVault);
@@ -324,6 +327,7 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).toHaveBeenCalledTimes(2);
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.walletClient.writeContract).not.toHaveBeenCalled();
@@ -365,6 +369,7 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).toHaveBeenCalledTimes(2);
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -406,6 +411,7 @@ describe("ArbitrageEngine", () => {
           functionName: "swapWbtcForVault",
           args: [mockVault.vaultId, 1n],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -423,6 +429,7 @@ describe("ArbitrageEngine", () => {
       // Fixture preview cost is 50_000_000 (+1% = 50_500_000); the stale 1000 must not be used.
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ args: [staleVault.vaultId, 50500000n] }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -444,6 +451,7 @@ describe("ArbitrageEngine", () => {
           functionName: "swapWbtcForVault",
           args: [mockVault.vaultId, MAX_WBTC_IN],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -460,6 +468,7 @@ describe("ArbitrageEngine", () => {
           functionName: "swapWbtcForVaultOnBehalf",
           args: [mockVault.vaultId, MAX_WBTC_IN, KEEPER],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -554,6 +563,78 @@ describe("ArbitrageEngine", () => {
       });
     });
 
+    // The feed is cast, not parsed, so an element can have any shape.
+    describe("when the indexer describes a vault in an unusable shape", () => {
+      const withPoison = (poison: unknown) =>
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ vaults: [mockVault, poison], total: 2 }),
+        });
+
+      // The good vault ahead of the bad one is still acquired.
+      it("still sends the vaults it can read", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = withPoison({ ...mockVault, currentDebt: "abc" });
+
+        await bot.run();
+
+        expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      });
+
+      it("says how many it dropped", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = withPoison({ ...mockVault, currentDebt: "abc" });
+
+        await bot.run();
+
+        expect(metrics.recordError).toHaveBeenCalledWith("vaults_malformed");
+      });
+
+      // In production a wrong-width id fails ABI encoding and is counted as `acquire_error`.
+      it("counts a wrong-width vaultId as malformed, not as an acquisition error", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = withPoison({ ...mockVault, vaultId: "0xaabbccdd" });
+
+        await bot.run();
+
+        expect(metrics.recordError).toHaveBeenCalledWith("vaults_malformed");
+        expect(metrics.recordError).not.toHaveBeenCalledWith("acquire_error");
+        expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      });
+
+      // `BigInt("")` is `0n`, so an empty debt would read as nothing owed.
+      it("drops an empty amount rather than reading it as zero", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = withPoison({
+          ...mockVault,
+          vaultId: `0x${"b".repeat(64)}`,
+          currentDebt: "",
+        });
+
+        await bot.run();
+
+        expect(metrics.recordError).toHaveBeenCalledWith("vaults_malformed");
+        expect(clients.sender.send).toHaveBeenCalledTimes(1);
+      });
+
+      it("says nothing when every vault is usable", async () => {
+        const clients = createMockClients();
+        const bot = createBot(clients);
+        global.fetch = vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
+        });
+
+        await bot.run();
+
+        expect(metrics.recordError).not.toHaveBeenCalledWith("vaults_malformed");
+      });
+    });
+
     it("handles empty vault list gracefully", async () => {
       const clients = createMockClients();
       const bot = createBot(clients);
@@ -629,10 +710,12 @@ describe("ArbitrageEngine", () => {
           return "0xtxhash" as `0x${string}`;
         }
       );
-      clients.publicClient.waitForTransactionReceipt.mockImplementation(() => {
-        order.push("receipt");
-        return Promise.resolve({ status: "success", blockNumber: 123n });
-      });
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(
+        ({ hash }: { hash: string }) => {
+          order.push("receipt");
+          return Promise.resolve({ status: "success", blockNumber: 123n, transactionHash: hash });
+        }
+      );
 
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
@@ -640,8 +723,8 @@ describe("ArbitrageEngine", () => {
           Promise.resolve({
             vaults: [
               mockVault,
-              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
-              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"de".repeat(32)}` as `0x${string}` },
             ],
             total: 3,
           }),
@@ -667,8 +750,8 @@ describe("ArbitrageEngine", () => {
           Promise.resolve({
             vaults: [
               mockVault,
-              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
-              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"de".repeat(32)}` as `0x${string}` },
             ],
             total: 3,
           }),
@@ -708,10 +791,10 @@ describe("ArbitrageEngine", () => {
     it("does not blame the breaker when the authorization expired before mining", async () => {
       const clients = createMockClients();
       fundedWith(clients, balanceFor(1n));
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "reverted",
-        blockNumber: 10n,
-      });
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(
+        ({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "reverted", blockNumber: 10n, transactionHash: hash })
+      );
 
       const risk = createRiskGate({ maxConsecutiveFailures: 1 });
       const bot = createBot(clients, { risk });
@@ -737,10 +820,10 @@ describe("ArbitrageEngine", () => {
     it("carries the authorization's identity from the send phase into settlement", async () => {
       const clients = createMockClients();
       fundedWith(clients, balanceFor(1n));
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "reverted",
-        blockNumber: 10n,
-      });
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(
+        ({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "reverted", blockNumber: 10n, transactionHash: hash })
+      );
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
@@ -773,10 +856,10 @@ describe("ArbitrageEngine", () => {
     // and with the spend released. A flaky endpoint could therefore silence the breaker entirely.
     describe("when a classifier read fails", () => {
       const reverted = (clients: ReturnType<typeof createMockClients>) => {
-        clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-          status: "reverted",
-          blockNumber: 10n,
-        });
+        clients.publicClient.waitForTransactionReceipt.mockImplementation(
+          ({ hash }: { hash: string }) =>
+            Promise.resolve({ status: "reverted", blockNumber: 10n, transactionHash: hash })
+        );
         global.fetch = vi.fn().mockResolvedValue({
           ok: true,
           json: () => Promise.resolve({ vaults: [mockVault], total: 1 }),
@@ -954,18 +1037,15 @@ describe("ArbitrageEngine", () => {
       ).toBe(false);
     });
 
-    // Under router funding the payment is authorized separately from the transaction, and `relay`
-    // is permissionless — so a third party can submit our signed batch and have it execute first.
-    // Our transaction reverts on a vault that is already gone, which looks exactly like a lost
-    // race, except the treasury's WBTC left under our own signature. Releasing the reservation
-    // would hand the same balance out twice in one cycle.
+    // Under router funding another send of the same signed batch can execute first. Our
+    // transaction then reverts like a lost race, but the treasury paid, so the WBTC stays reserved.
     it("keeps the spend counted when our own authorization acquired the vault", async () => {
       const clients = createMockClients();
       fundedWith(clients, balanceFor(1n));
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "reverted",
-        blockNumber: 10n,
-      });
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(
+        ({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "reverted", blockNumber: 10n, transactionHash: hash })
+      );
       // The vault is gone by the time we classify — from the receipt alone, an ordinary lost race.
       const inner = clients.publicClient.readContract.getMockImplementation();
       clients.publicClient.readContract.mockImplementation((arg: { functionName: string }) => {
@@ -1002,10 +1082,10 @@ describe("ArbitrageEngine", () => {
     it("frees the reservation for a competitor-won vault so the next one can use it", async () => {
       const clients = createMockClients();
       fundedWith(clients, balanceFor(1n)); // room for exactly one acquisition at a time
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "reverted",
-        blockNumber: 1n,
-      });
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(
+        ({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "reverted", blockNumber: 1n, transactionHash: hash })
+      );
       const risk = createRiskGate();
       const bot = createBot(clients, { risk });
 
@@ -1026,7 +1106,7 @@ describe("ArbitrageEngine", () => {
       const clients = createMockClients();
       const bot = createBot(clients);
 
-      const vault2 = { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` };
+      const vault2 = { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` };
 
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
@@ -1041,7 +1121,7 @@ describe("ArbitrageEngine", () => {
 
     it("continues to next vault when one fails", async () => {
       const clients = createMockClients();
-      const vault2 = { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` };
+      const vault2 = { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` };
 
       // First vault fails gas estimation, second succeeds
       clients.publicClient.estimateContractGas
@@ -1077,10 +1157,10 @@ describe("ArbitrageEngine", () => {
 
     it("trips the breaker after a reverted acquisition", async () => {
       const clients = createMockClients();
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "reverted",
-        blockNumber: 1n,
-      });
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(
+        ({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "reverted", blockNumber: 1n, transactionHash: hash })
+      );
       const risk = createRiskGate({ maxConsecutiveFailures: 1 });
       const bot = createBot(clients, { risk });
 
@@ -1090,10 +1170,10 @@ describe("ArbitrageEngine", () => {
 
     it("does NOT trip the breaker when the revert is a lost race (vault no longer acquirable)", async () => {
       const clients = createMockClients();
-      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
-        status: "reverted",
-        blockNumber: 1n,
-      });
+      clients.publicClient.waitForTransactionReceipt.mockImplementation(
+        ({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "reverted", blockNumber: 1n, transactionHash: hash })
+      );
       // The swap reverted because another arbitrageur already acquired the vault: it has left escrow.
       clients.publicClient.readContract.mockImplementation(
         ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
@@ -1167,9 +1247,9 @@ describe("ArbitrageEngine", () => {
           Promise.resolve({
             vaults: [
               mockVault,
-              { ...mockVault, vaultId: "0xaabbccdd" as `0x${string}` },
-              { ...mockVault, vaultId: "0xdeadbeef" as `0x${string}` },
-              { ...mockVault, vaultId: "0xfeedface" as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"aa".repeat(32)}` as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"de".repeat(32)}` as `0x${string}` },
+              { ...mockVault, vaultId: `0x${"fe".repeat(32)}` as `0x${string}` },
             ],
             total: 4,
           }),
@@ -1263,6 +1343,7 @@ describe("ArbitrageEngine", () => {
       expect(ok).toBe("acquired");
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "swapWbtcForVault", nonce: 5 }),
+        expect.any(Function),
         expect.any(Function)
       );
       const intent = store.all()[0];
@@ -1391,5 +1472,243 @@ describe("ArbitrageEngine", () => {
       // so the next send fills the gap and everything queued behind it becomes executable.
       expect(resyncSpy.mock.calls.length).toBeGreaterThan(resyncsAfterFirstCycle);
     });
+  });
+
+  // Viem returns the receipt of whatever took the nonce, so a receipt is ours only when its hash
+  // matches. Read as ours, it would confirm an acquisition that never happened.
+  describe("a receipt for a replacement transaction", () => {
+    const replaced = (clients: ReturnType<typeof createMockClients>) => {
+      clients.publicClient.waitForTransactionReceipt.mockResolvedValue({
+        status: "success",
+        blockNumber: 123n,
+        transactionHash: "0xsomeoneelse",
+      });
+    };
+
+    it("is not counted as an acquisition", async () => {
+      const clients = createMockClients();
+      replaced(clients);
+      const bot = createBot(clients);
+
+      expect(await bot.acquireVault(mockVault)).toBe("skipped");
+      expect(metrics.recordVaultAcquired).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("tx_replaced");
+    });
+
+    // The signed batch is still live. Marking it consumed would drop its hold.
+    it("does not report the authorization as consumed", async () => {
+      const clients = createMockClients();
+      replaced(clients);
+      const bot = createBot(clients);
+      const settleAuthorization = vi.fn();
+      (
+        bot as unknown as { funding: { settleAuthorization: unknown } }
+      ).funding.settleAuthorization = settleAuthorization;
+
+      await bot.acquireVault(mockVault);
+
+      expect(settleAuthorization).toHaveBeenCalled();
+      for (const [, outcome] of settleAuthorization.mock.calls) {
+        expect(outcome).toMatchObject({ consumed: false });
+      }
+    });
+
+    it("records the intent as replaced rather than confirmed", async () => {
+      const clients = createMockClients();
+      replaced(clients);
+      const recordOutcome = vi.fn();
+      const executor = {
+        ...createAutoExecutorWithSender({
+          nonces: passthroughNonces(),
+          sender: clients.sender as unknown as AutoDeps["sender"],
+          publicClient: clients.publicClient as unknown as AutoDeps["publicClient"],
+          walletClient: clients.walletClient as unknown as AutoDeps["walletClient"],
+          txReceiptTimeoutMs: 1000,
+          logger: silentLogger,
+        }),
+        commit: async () => ({ kind: "broadcast", hash: "0xtxhash", intentId: "intent-1" }),
+        recordOutcome,
+      } as unknown as ArbitrageEngineConfig["executor"];
+
+      await createBot(clients, { executor }).acquireVault(mockVault);
+
+      expect(recordOutcome).toHaveBeenCalledWith(
+        "intent-1",
+        expect.objectContaining({ kind: "failed", error: "replaced by 0xsomeoneelse" })
+      );
+    });
+  });
+});
+
+// A real `RouterFunding`: the hazard is in the hand-off between the gate and the mode's ledger,
+// which a stub cannot show.
+describe("ArbitrageEngine + router funding", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    metrics = createMetrics();
+  });
+
+  const SIGNER = "0x1111111111111111111111111111111111111111" as const;
+  const PAYER = "0x2222222222222222222222222222222222222222" as const;
+  const WBTC = "0x3333333333333333333333333333333333333333" as const;
+  const ROUTER = "0x4444444444444444444444444444444444444444" as const;
+  const VAULT_SWAP = "0x5555555555555555555555555555555555555555" as const;
+  const KEEPER = "0x6666666666666666666666666666666666666666" as const;
+
+  /** Exactly one acquisition's worth: 0.5 WBTC of cost plus the 1% slippage ceiling. */
+  const CAPACITY = 50_500_000n;
+
+  function routerClients(capacity = CAPACITY) {
+    const signTypedData = vi.fn().mockResolvedValue("0xsig");
+    const immutables: Record<string, unknown> = { signer: SIGNER, payer: PAYER, wbtc: WBTC };
+    const publicClient = {
+      readContract: vi.fn(
+        ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
+          if (functionName in immutables) return Promise.resolve(immutables[functionName]);
+          if (functionName === "WBTC") return Promise.resolve(WBTC);
+          if (functionName === "balanceOf" || functionName === "allowance") {
+            return Promise.resolve(capacity);
+          }
+          if (functionName === "isVaultAcquirable") return Promise.resolve(true);
+          if (functionName === "previewEscrowedVaults") {
+            return Promise.resolve(
+              (args?.[0] as readonly `0x${string}`[]).map((vaultId) => ({
+                vaultId,
+                amountVault: 100_000_000n,
+                amountDebt: 50_000_000n,
+                amountInterest: 0n,
+                amountFee: 0n,
+                amountWbtcEquivalent: 100_000_000n,
+                amountWbtcToAcquire: 50_000_000n,
+                amountProfitEst: 50_000_000n,
+              }))
+            );
+          }
+          return Promise.resolve(0n);
+        }
+      ),
+      getBlock: vi
+        .fn()
+        .mockResolvedValue({ number: 100n, timestamp: BigInt(Math.floor(Date.now() / 1000)) }),
+      getBlockNumber: vi.fn().mockResolvedValue(100n),
+      getLogs: vi.fn().mockResolvedValue([]),
+      estimateContractGas: vi.fn().mockResolvedValue(100_000n),
+      waitForTransactionReceipt: vi
+        .fn()
+        .mockImplementation(({ hash }: { hash: string }) =>
+          Promise.resolve({ status: "success", blockNumber: 101n, transactionHash: hash })
+        ),
+      getTransactionReceipt: vi.fn().mockResolvedValue({ status: "success", blockNumber: 101n }),
+    };
+    return {
+      signTypedData,
+      publicClient,
+      sender: mockSender({ from: SIGNER, chainId: 31337 }),
+      walletClient: {
+        account: { address: SIGNER, signTypedData },
+        chain: { id: 31337 },
+        writeContract: vi.fn().mockResolvedValue("0xtxhash"),
+      },
+    };
+  }
+
+  function routerBot(
+    clients: ReturnType<typeof routerClients>,
+    risk = createRiskGate(),
+    over: Partial<ArbitrageEngineConfig> = {}
+  ) {
+    return new ArbitrageEngine({
+      publicClient: clients.publicClient as unknown as ArbitrageEngineConfig["publicClient"],
+      vaultSwapAddress: VAULT_SWAP,
+      wbtcAddress: WBTC,
+      vaultKeeperAddress: KEEPER,
+      funding: { mode: "router", routerAddress: ROUTER, deadlineSeconds: 120 },
+      indexer: INDEXER_STUB,
+      maxSlippageBps: 100,
+      vaultProcessingDelayMs: 0,
+      txReceiptTimeoutMs: 1000,
+      metrics,
+      logger: silentLogger,
+      risk,
+      executor: createAutoExecutorWithSender({
+        nonces: passthroughNonces(),
+        sender: clients.sender as unknown as AutoDeps["sender"],
+        publicClient: clients.publicClient as unknown as AutoDeps["publicClient"],
+        walletClient: clients.walletClient as unknown as AutoDeps["walletClient"],
+        txReceiptTimeoutMs: 1000,
+        logger: silentLogger,
+      }),
+      ...over,
+    });
+  }
+
+  const twoVaults = () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          vaults: [
+            { ...mockVault, vaultId: `0x${"a".repeat(64)}` },
+            { ...mockVault, vaultId: `0x${"b".repeat(64)}` },
+          ],
+        }),
+    }) as unknown as typeof fetch;
+  };
+
+  // The first vault's batch is signed, then its gas estimate reverts and the acquisition is
+  // abandoned. The batch can still execute, so the second vault must not be funded from the same
+  // WBTC before the next refresh.
+  it("does not fund a second vault against WBTC a signed batch can still take", async () => {
+    const clients = routerClients();
+    clients.publicClient.estimateContractGas.mockRejectedValue(new Error("insufficient profit"));
+    const bot = routerBot(clients);
+    await bot.prepare();
+    twoVaults();
+
+    await bot.run();
+
+    expect(clients.signTypedData).toHaveBeenCalledTimes(1);
+    expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    expect(clients.sender.send).not.toHaveBeenCalled();
+  });
+
+  // A throw after a broadcast must still hand the live batch to the funding mode, so the treasury's
+  // WBTC is not reported as spendable. The throw is injected at the inter-send throttle.
+  it("hands a live batch over when the cycle throws after broadcasting it", async () => {
+    const clients = routerClients(CAPACITY * 2n);
+    const bot = routerBot(clients, createRiskGate(), { vaultProcessingDelayMs: 1 });
+    await bot.prepare();
+    (bot as unknown as { sleep: () => Promise<void> }).sleep = () =>
+      Promise.reject(new Error("interrupted between broadcast and classification"));
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          vaults: [
+            { ...mockVault, vaultId: `0x${"a".repeat(64)}` },
+            { ...mockVault, vaultId: `0x${"b".repeat(64)}` },
+          ],
+        }),
+    }) as unknown as typeof fetch;
+
+    await bot.run();
+
+    expect(metrics.recordError).toHaveBeenCalledWith("poll_error");
+    expect(metrics.recordFundingCapacity.mock.calls.at(-1)?.[0]).toMatchObject({
+      authorized: CAPACITY,
+    });
+  });
+
+  // Positive control: with capacity for two, the second vault is funded.
+  it("funds a second vault when the treasury can cover both", async () => {
+    const clients = routerClients(CAPACITY * 2n);
+    clients.publicClient.estimateContractGas.mockRejectedValue(new Error("insufficient profit"));
+    const bot = routerBot(clients);
+    await bot.prepare();
+    twoVaults();
+
+    await bot.run();
+
+    expect(clients.signTypedData).toHaveBeenCalledTimes(2);
   });
 });

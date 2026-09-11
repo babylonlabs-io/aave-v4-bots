@@ -179,22 +179,15 @@ export interface RelayStatusSource {
 }
 
 /**
- * How far past the configured window a relay's own deadline is still believed, as a multiple of it.
- *
- * The relay is authoritative about how long it will keep offering a transaction, so a deadline
- * *longer* than ours is normally the truth and fencing to it is the safe direction. That stops
- * being true without a ceiling: this number is the only thing that ever frees a privately-submitted
- * nonce, so one response claiming a deadline a million blocks out fences that nonce for good and
- * every later send queues behind it. Well-formed, in range, and permanent.
- *
- * A multiple rather than an absolute cap, because the quantity it bounds is the operator's declared
- * window — whatever `PRIVATE_RELAY_HORIZON_BLOCKS` says the relay's retry window is, this says we
- * will believe up to ten of them and no further.
+ * Maximum relay-declared deadline, in blocks past head (about one day). Independent of the
+ * configured window, so a short window never truncates a relay's longer deadline.
  */
-export const RELAY_HORIZON_TRUST_MULTIPLE = 10;
+export const MAX_RELAY_HORIZON_BLOCKS = 7200;
 
 /**
- * Resolve a just-submitted transaction's deadline — the block past which it can no longer be
+ * Build a relay's `Horizon`.
+ *
+ * `resolve`: a just-submitted transaction's deadline — the block past which it can no longer be
  * included, recorded on its intent so the nonce fence has something that always advances. The later
  * of the relay's own `maxBlockNumber` and `head + horizonBlocks`.
  *
@@ -210,26 +203,66 @@ export function createRelayHorizon(
   relay: RelayStatusSource,
   horizonBlocks: number,
   logger?: Pick<Logger, "warn">
-): (hash: Hex) => Promise<number> {
-  return async (hash) => {
+): Horizon {
+  return { resolve, repair };
+
+  async function resolve(hash: Hex): Promise<number> {
     const [head, status] = await Promise.all([
       node.getBlockNumber(),
       relay.status(hash).catch(() => null),
     ]);
     const fallback = head + horizonBlocks;
-    const declared = status?.maxBlockNumber ?? 0;
-    const ceiling = head + horizonBlocks * RELAY_HORIZON_TRUST_MULTIPLE;
-    if (declared > ceiling) {
-      // Said rather than silently clamped: a relay claiming a window this far past the one it
-      // documents is either broken or not the relay we think we are talking to, and the operator
-      // cannot infer either from a nonce that simply takes longer to come back.
-      logger?.warn(
-        `Relay declared a deadline of block ${declared} for ${hash}, beyond the ${RELAY_HORIZON_TRUST_MULTIPLE}x window this bot will honour — fencing to ${ceiling} instead.`
-      );
-      return ceiling;
-    }
-    return Math.max(declared, fallback);
-  };
+    // The later of the relay's deadline and the configured window. A relay that declares nothing
+    // reports 0, so the window alone bounds it and must match the relay's real window.
+    return Math.max(clampDeclared(status?.maxBlockNumber ?? 0, head, hash, logger), fallback);
+  }
+
+  /**
+   * Recover the deadline of a submitted row whose horizon write never landed (`horizonFor` is
+   * best-effort). Without it, `couldBeInFlight` never releases the row's nonce.
+   *
+   * Returns only the relay's own deadline for this hash, or `null` (keep fencing) when:
+   * - the status is `UNKNOWN`: the relay never received the hash, as with a public submission,
+   *   or no longer remembers it and its deadline;
+   * - `seenInMempool` is set: the transaction is public, so no relay deadline bounds it;
+   * - `maxBlockNumber` is 0: the relay names no deadline.
+   * A failed probe throws; the caller keeps the row fenced.
+   */
+  async function repair(hash: Hex): Promise<number | null> {
+    const status = await relay.status(hash);
+    if (status.status === "UNKNOWN") return null;
+    if (status.seenInMempool) return null;
+    if (status.maxBlockNumber <= 0) return null;
+    return clampDeclared(status.maxBlockNumber, await node.getBlockNumber(), hash, logger);
+  }
+}
+
+/**
+ * A private transaction's deadline: the last block the relay can include it in. Past it, the
+ * nonce is released. Both methods use one relay, because `repair` proves a row went through it.
+ */
+export interface Horizon {
+  /** Deadline to record at submission. Falls back to the configured window. */
+  resolve(hash: Hex): Promise<number>;
+  /** Deadline to recover at reconcile for a row that has none. `null`: keep the row fenced. */
+  repair(hash: Hex): Promise<number | null>;
+}
+
+/** Cap a relay-declared deadline at `MAX_RELAY_HORIZON_BLOCKS` past `head`, and warn when it applies. */
+function clampDeclared(
+  declared: number,
+  head: number,
+  hash: Hex,
+  logger?: Pick<Logger, "warn">
+): number {
+  const ceiling = head + MAX_RELAY_HORIZON_BLOCKS;
+  if (declared > ceiling) {
+    // A deadline a day out means a broken or unexpected relay. The operator must see it.
+    logger?.warn(
+      `Relay declared a deadline of block ${declared} for ${hash}, beyond the ${MAX_RELAY_HORIZON_BLOCKS} blocks this bot will fence for — fencing to ${ceiling} instead.`
+    );
+  }
+  return Math.min(declared, ceiling);
 }
 
 /**

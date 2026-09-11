@@ -158,8 +158,7 @@ describe("createFlashbotsProtectSubmitter — status", () => {
     expect(seen[0]).toBe(`https://status.example/tx/${HASH}`);
   });
 
-  // A status probe that throws must reach the caller: §4.6 decides what "unknown" means, and it is
-  // the liveness reader's job to fail closed, not this adapter's to invent an answer.
+  // A failed probe must reach the caller: the liveness reader fails closed, not this adapter.
   it("propagates a failed probe rather than reporting a status", async () => {
     const s = submitter(() => reply({}, 503));
     await expect(s.status(HASH)).rejects.toThrow(/HTTP 503/);

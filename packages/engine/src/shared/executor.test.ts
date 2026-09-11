@@ -406,7 +406,11 @@ describe("createAutoExecutor", () => {
 
     await exec.commit(CALL, claim("p"));
 
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ nonce: 42 }), expect.any(Function));
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({ nonce: 42 }),
+      expect.any(Function),
+      expect.any(Function)
+    );
   });
 
   describe("ensureAllowance", () => {
@@ -439,14 +443,14 @@ describe("createAutoExecutor", () => {
       const result = await exec.ensureAllowance({ token: WBTC, spender: SPENDER, required: 100n });
 
       expect(result).toEqual({ kind: "satisfied" });
-      // Two arguments now: the call, and the `onSigned` hook that durably records nonce + hash
-      // before the approval reaches the chain — the same pre-broadcast record `commit` makes.
+      // The call, the `onSigned` pre-broadcast record, and the broadcast guard, as `commit` uses.
       expect(sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           address: WBTC,
           functionName: "approve",
           args: [SPENDER, expect.anything()],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(autoWallet.writeContract).not.toHaveBeenCalled();
@@ -570,6 +574,92 @@ describe("createAutoExecutor", () => {
       ).rejects.toThrow(/reverted/);
     });
   });
+
+  // Runs because the gate halted, so it skips the broadcast guard.
+  describe("revokeAllowance", () => {
+    const WBTC = "0x0000000000000000000000000000000000000abc" as Address;
+    const SPENDER = "0x0000000000000000000000000000000000000def" as Address;
+    const allowanceReader = (allowance: bigint) => ({
+      readContract: vi.fn(async () => allowance),
+    });
+
+    it("sends approve(spender, 0) and waits the receipt", async () => {
+      const sender = autoSender();
+      const { exec } = autoExecutor(sender, undefined, autoPublicClient(allowanceReader(500n)));
+
+      const result = await exec.revokeAllowance({ token: WBTC, spender: SPENDER });
+
+      expect(result).toEqual({ kind: "satisfied" });
+      expect(sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: WBTC,
+          functionName: "approve",
+          args: [SPENDER, 0n],
+        }),
+        expect.any(Function),
+        // Two arguments: no broadcast guard.
+        undefined
+      );
+    });
+
+    // A zero allowance sends nothing, so a retry costs one read.
+    it("sends nothing when the spender can already pull nothing", async () => {
+      const sender = autoSender();
+      const { exec } = autoExecutor(sender, undefined, autoPublicClient(allowanceReader(0n)));
+
+      const result = await exec.revokeAllowance({ token: WBTC, spender: SPENDER });
+
+      expect(result).toEqual({ kind: "satisfied" });
+      expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    // A halted gate refuses every other send; this one must still go out.
+    it("goes out while the broadcast guard is refusing everything", async () => {
+      const sender = autoSender();
+      const exec = createAutoExecutor({
+        crash: createCrashSafety({
+          nonces: allocator(),
+          reader: createChainReader(autoPublicClient()),
+          signer: "0xsigner" as Address,
+          logger: silentLogger,
+        }),
+        sender,
+        publicClient: autoPublicClient(allowanceReader(500n)),
+        walletClient: autoWallet,
+        txReceiptTimeoutMs: 1000,
+        assertCanBroadcast: () => {
+          throw new PreBroadcastError("halted");
+        },
+        logger: silentLogger,
+      });
+
+      await expect(exec.revokeAllowance({ token: WBTC, spender: SPENDER })).resolves.toEqual({
+        kind: "satisfied",
+      });
+      expect(sender.send).toHaveBeenCalledOnce();
+    });
+
+    // Its own action, so a live grant does not block the revoke as a duplicate.
+    it("records its intent under its own action", async () => {
+      const store = createMemoryStateStore();
+      const { exec } = autoExecutor(autoSender(), store, autoPublicClient(allowanceReader(500n)));
+      await store.recordIntent({
+        chainId: 31337,
+        target: WBTC,
+        action: "approval",
+        subject: SPENDER,
+      });
+
+      const result = await exec.revokeAllowance({ token: WBTC, spender: SPENDER });
+
+      expect(result).toEqual({ kind: "satisfied" });
+      expect(
+        store.get(
+          idempotencyKey({ chainId: 31337, target: WBTC, action: "revoke", subject: SPENDER })
+        )
+      ).toMatchObject({ status: "confirmed", txHash: "0xhash" });
+    });
+  });
 });
 
 // ── MANUAL ──────────────────────────────────────────────────────────────────────────────
@@ -691,6 +781,46 @@ describe("createManualExecutor (keyless)", () => {
     expect(row?.status).toBe("proposed");
     expect(row?.payloadHash).not.toBe(firstHash);
     expect(events).toHaveLength(2); // the fresh proposal re-notifies
+  });
+
+  // The payload changes almost every cycle, so a supersede here would drop a released SafeTx's
+  // envelope within one poll. The operator resolves it through the CLI instead.
+  it("does not supersede a released row that carries a Safe envelope", async () => {
+    const store = createMemoryStateStore();
+    const { notifier, events } = fakeNotifier();
+    const exec = manualExecutor(store, notifier);
+    const zero = "0x0000000000000000000000000000000000000000" as Address;
+    const envelope = {
+      safeNonce: 7,
+      operation: 0 as const,
+      safeTxGas: "0",
+      baseGas: "0",
+      gasPrice: "0",
+      gasToken: zero,
+      refundReceiver: zero,
+      safeVersion: "1.4.1",
+      safeTxHash: `0x${"e".repeat(64)}` as Hex,
+      claimBlock: 1000,
+    };
+
+    await exec.commit(CALL, claim("p"));
+    const id = idempotencyKey(claim("p"));
+    const hash = store.get(id)?.payloadHash as Hex;
+    await store.claimProposal(id, hash, envelope);
+    await store.release(id, hash);
+
+    const out = await exec.commit(
+      { ...CALL, address: "0x00000000000000000000000000000000000000ff" as Address },
+      claim("p")
+    );
+
+    expect(out.kind).toBe("duplicate");
+    expect(store.get(id)).toMatchObject({
+      status: "proposed",
+      payloadHash: hash,
+      safeEnvelope: envelope,
+    });
+    expect(events).toHaveLength(1);
   });
 
   describe("ensureAllowance (keyless)", () => {
@@ -906,7 +1036,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
         submitter,
         reader: createChainReader(publicClient),
         reclaimMarginBlocks: 3,
-        horizon: async () => 125,
+        horizon: { resolve: async () => 125, repair: async () => 125 },
         minPriorityFeeWei: 5n,
       },
     });
@@ -949,7 +1079,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
         submitter: { send: async () => "0xprivate" as Hex },
         reader: createChainReader(publicClient),
         reclaimMarginBlocks: 3,
-        horizon: async () => 125,
+        horizon: { resolve: async () => 125, repair: async () => 125 },
         minPriorityFeeWei: 5n,
       },
     });
@@ -1002,7 +1132,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
           submitter: { send: over.submitterSend ?? (async () => "0xprivate" as Hex) },
           reader: createChainReader(publicClient),
           reclaimMarginBlocks: 3,
-          horizon: async () => 125,
+          horizon: { resolve: async () => 125, repair: async () => 125 },
           minPriorityFeeWei: 5n,
         },
       });
@@ -1081,6 +1211,65 @@ describe("createAutoExecutor — the broadcast guard", () => {
       exec.ensureAllowance({ token: TARGET, spender: OPERATOR, required: 1n })
     ).rejects.toThrow(/halted/);
     expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  // A halt can land after the first check, during locking, pricing, or signing.
+  const haltsMidSend = () => {
+    let halted = false;
+    const broadcast = vi.fn(async () => "0xhash" as Hex);
+    const sender: TxSender = {
+      identity: { from: "0xsigner" as Address, chainId: 31337 },
+      // Ordered like the real sender: durable record, last gate, wire.
+      send: async (call, onSigned, beforeBroadcast) => {
+        await onSigned?.({ hash: "0xhash" as Hex, nonce: call.nonce ?? 0, serialized: "0xraw" });
+        halted = true;
+        beforeBroadcast?.();
+        return broadcast();
+      },
+    };
+    return {
+      sender,
+      broadcast,
+      assertCanBroadcast: () => {
+        if (halted) throw new PreBroadcastError("halted");
+      },
+    };
+  };
+
+  it("stops a commit whose gate halts after it was admitted", async () => {
+    const { sender, broadcast, assertCanBroadcast } = haltsMidSend();
+    const exec = createAutoExecutor({
+      crash: crashFor(),
+      sender,
+      publicClient: autoPublicClient(),
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      assertCanBroadcast,
+      logger: silentLogger,
+    });
+
+    const out = await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ kind: "aborted", broadcastAttempted: false });
+  });
+
+  it("stops an approval whose gate halts after it was admitted", async () => {
+    const { sender, broadcast, assertCanBroadcast } = haltsMidSend();
+    const exec = createAutoExecutor({
+      crash: crashFor(),
+      sender,
+      publicClient: autoPublicClient({ readContract: vi.fn(async () => 0n) }),
+      walletClient: autoWallet,
+      txReceiptTimeoutMs: 1000,
+      assertCanBroadcast,
+      logger: silentLogger,
+    });
+
+    await expect(
+      exec.ensureAllowance({ token: TARGET, spender: OPERATOR, required: 1n })
+    ).rejects.toThrow(/halted/);
+    expect(broadcast).not.toHaveBeenCalled();
   });
 
   it("is out of the way when nothing refuses", async () => {

@@ -472,7 +472,7 @@ describe("resyncNonces — private submission, where the node cannot see our tx"
   });
 
   it("fences it when the relay itself is unreachable, rather than assuming it is gone", async () => {
-    // §4.6: a Flashbots outage must cost throughput, never nonce safety.
+    // A Flashbots outage must cost throughput, never nonce safety.
     expect(await nextNonceWithReader(relayReader("throw"))).toBe(6);
   });
 

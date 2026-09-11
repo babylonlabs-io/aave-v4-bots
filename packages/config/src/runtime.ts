@@ -33,10 +33,17 @@ type Hex40 = `0x${string}`;
  * frees the nonce of a privately-submitted transaction the relay has dropped, so a horizon set to a
  * number nobody meant does not read as a big number anywhere downstream: it reads as a nonce that
  * never comes back, with every later send from either engine queued behind it. `liveness.ts` bounds
- * the relay's *declared* deadline for the same reason (`RELAY_HORIZON_TRUST_MULTIPLE`); this bounds
- * the operator's declared one.
+ * the relay's *declared* deadline for the same reason (`MAX_RELAY_HORIZON_BLOCKS`); this bounds the
+ * operator's declared one.
  */
 const MAX_HORIZON_BLOCKS = 7200;
+
+/**
+ * Flashbots Protect's status service and its documented retry window. A status URL on this origin
+ * means the deployment uses Protect, so `buildSubmitterConfig` enforces the window.
+ */
+const PROTECT_STATUS_URL = "https://protect.flashbots.net";
+const PROTECT_HORIZON_BLOCKS = 25;
 
 /**
  * Ceiling on the relay's two network deadlines. Both are per-call timeouts inside a poll cycle, and
@@ -58,9 +65,8 @@ export const runtimeEnvFields = {
   AWS_REGION: z.string().min(1).optional(),
 
   /**
-   * Where a signed transaction is broadcast. `public` (default) is today's behaviour — the node's
-   * mempool. `flashbots-protect` submits privately, so the transaction is not visible to
-   * front-runners; see `docs/design-026-private-relay-submission.md` for what that costs elsewhere.
+   * Where a signed transaction is broadcast. `public` (default) uses the node's mempool.
+   * `flashbots-protect` submits privately, so front-runners cannot see the transaction.
    */
   SUBMITTER: z.enum(["public", "flashbots-protect"]).optional().default("public"),
   /** Protect RPC the signed transaction is sent to. */
@@ -73,9 +79,10 @@ export const runtimeEnvFields = {
    */
   PRIVATE_MIN_PRIORITY_FEE_WEI: positiveBigIntSchema.optional(),
   /**
-   * The relay's retry window, in blocks — how long it may keep offering a transaction to builders.
-   * Used when the relay does not tell us a transaction's own deadline. Protect's is ~25 blocks;
-   * declare whatever the configured relay actually uses.
+   * The relay's retry window in blocks: how long it keeps offering a transaction to builders.
+   * Protect's is ~25. It is the only bound when the relay reports no deadline, so a value that is
+   * too short frees a nonce the relay can still spend. For Protect, `buildSubmitterConfig` refuses
+   * less than 25.
    */
   PRIVATE_RELAY_HORIZON_BLOCKS: intInRangeSchema(
     1,
@@ -274,6 +281,19 @@ export type SubmitterSettings =
     };
 
 /**
+ * Does this status URL point at Flashbots Protect? Compared by origin, so a trailing slash or a
+ * different spelling of the host still matches.
+ */
+function readsProtectStatus(statusUrl: string): boolean {
+  try {
+    return new URL(statusUrl).origin === new URL(PROTECT_STATUS_URL).origin;
+  } catch {
+    // `urlSchema` rejects unparseable URLs first; this keeps a direct caller from throwing.
+    return statusUrl === PROTECT_STATUS_URL;
+  }
+}
+
+/**
  * The variables that mean nothing unless the bot broadcasts privately, paired with their values.
  *
  * Named once because two builders reject them, for the same reason from opposite directions:
@@ -296,8 +316,7 @@ const relayOnlyVars = (env: SubmitterEnv) =>
  * variable set without the mode: the bot would run and broadcast every liquidation into the public
  * mempool while the operator believed they had MEV protection. Silence there is the whole failure.
  *
- * The two private-mode requirements are not tuning knobs, they are the conditions under which
- * private submission is safe at all (`docs/design-026-private-relay-submission.md` §4.2, §4.3):
+ * The two private-mode requirements are the conditions under which private submission is safe:
  *
  * - **A store.** Nonce safety currently rests on our own node being able to see our transactions,
  *   and a private transaction is invisible to it by design. The store is what holds the
@@ -330,12 +349,21 @@ export function buildSubmitterConfig(env: SubmitterEnv): SubmitterSettings {
     );
   }
 
+  // A window shorter than the relay's retention frees a nonce the relay may still spend, and
+  // nothing downstream can detect it. Enforced only for Protect, whose window is known.
+  const relayHorizonBlocks = Number.parseInt(env.PRIVATE_RELAY_HORIZON_BLOCKS, 10);
+  if (readsProtectStatus(env.FLASHBOTS_STATUS_URL) && relayHorizonBlocks < PROTECT_HORIZON_BLOCKS) {
+    throw new Error(
+      `PRIVATE_RELAY_HORIZON_BLOCKS=${relayHorizonBlocks} is below the ~${PROTECT_HORIZON_BLOCKS} blocks Flashbots Protect keeps offering a transaction, and FLASHBOTS_STATUS_URL points at Protect. When a status probe fails or reports nothing, that window is the only thing fencing the nonce — set it to at least ${PROTECT_HORIZON_BLOCKS}, or name the status endpoint of the relay you are actually using.`
+    );
+  }
+
   return {
     mode: "flashbots-protect",
     rpcUrl: env.FLASHBOTS_PROTECT_URL as string,
     statusUrl: env.FLASHBOTS_STATUS_URL,
     minPriorityFeeWei: BigInt(env.PRIVATE_MIN_PRIORITY_FEE_WEI as string),
-    relayHorizonBlocks: Number.parseInt(env.PRIVATE_RELAY_HORIZON_BLOCKS, 10),
+    relayHorizonBlocks,
     reclaimMarginBlocks: Number.parseInt(env.PRIVATE_RECLAIM_MARGIN_BLOCKS, 10),
     submitTimeoutMs: Number.parseInt(env.PRIVATE_SUBMIT_TIMEOUT_MS, 10),
     statusTimeoutMs: Number.parseInt(env.PRIVATE_STATUS_TIMEOUT_MS, 10),

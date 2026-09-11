@@ -1,3 +1,4 @@
+import { safeAbi } from "@repo/abis";
 import { findSafeExecutionByHash } from "@repo/chain";
 import type { ProposedTx } from "@repo/execution";
 import {
@@ -104,6 +105,102 @@ function assertSafeEnvelopeIntact(
 }
 
 /**
+ * Is the claimed envelope still the Safe's next transaction?
+ *
+ * A nonce ahead of the chain throws. It is the one field a rewritten record can change and stay
+ * self-consistent, and it would have the operator sign a hash that becomes valid later. A Safe
+ * nonce only goes up.
+ *
+ * A nonce behind the chain returns `false`: the SafeTx executed (`confirm`) or the Safe moved on
+ * (`release`), and `show` stays usable. Used only where a hash is shown for signing.
+ */
+async function isEnvelopeNext(
+  ctx: OperatorContext,
+  id: string,
+  envelope: SafeEnvelope
+): Promise<boolean> {
+  const live = Number(
+    await ctx.publicClient.readContract({
+      address: ctx.executorAddress,
+      abi: safeAbi,
+      functionName: "nonce",
+    })
+  );
+  if (live < envelope.safeNonce) {
+    throw new Error(
+      `Safe nonce for ${id} is ahead of the chain: the envelope reserved ${envelope.safeNonce}, the Safe is at ${live} — refusing to show a hash to sign. A Safe nonce only goes up, so this envelope was changed after the claim.`
+    );
+  }
+  return live === envelope.safeNonce;
+}
+
+/**
+ * What became of an envelope that an earlier claim reserved and released unresolved. Owners may
+ * have signed its SafeTx off chain, so it stays executable until its nonce is spent.
+ *
+ * - Safe at the reserved nonce: `live`. The same envelope is reused.
+ * - Safe past it, SafeTx executed: throws. Record it with `confirm`.
+ * - Safe past it, SafeTx not executed: `dead`. A new envelope may be reserved.
+ * - Safe below it: throws. A Safe nonce only goes up, so the record was changed.
+ */
+async function classifyRetainedEnvelope(
+  ctx: OperatorContext,
+  id: string,
+  payload: ProposedTx,
+  envelope: SafeEnvelope
+): Promise<{ kind: "live" } | { kind: "dead" }> {
+  // Verify the record before its hash decides anything.
+  assertSafeEnvelopeIntact(ctx, id, payload, envelope);
+
+  const live = Number(
+    await ctx.publicClient.readContract({
+      address: ctx.executorAddress,
+      abi: safeAbi,
+      functionName: "nonce",
+    })
+  );
+  if (live < envelope.safeNonce) {
+    throw new Error(
+      `Safe nonce for ${id} is ahead of the chain: the envelope reserved ${envelope.safeNonce}, the Safe is at ${live} — refusing. A Safe nonce only goes up, so this envelope was changed after the claim.`
+    );
+  }
+  if (live === envelope.safeNonce) return { kind: "live" };
+
+  const executed = await findSafeExecutionByHash(
+    ctx.publicClient,
+    ctx.executorAddress,
+    envelope.safeTxHash,
+    BigInt(envelope.claimBlock)
+  );
+  if (executed) {
+    throw new Error(
+      `the SafeTx ${envelope.safeTxHash} reserved for ${id} already executed (tx ${executed.txHash}) — record it with \`confirm ${id} --tx ${executed.txHash}\`, not a new claim`
+    );
+  }
+  return { kind: "dead" };
+}
+
+/**
+ * The envelope for a claim: the outstanding one if still live, otherwise a new one. `claim` and
+ * `broadcast` both use it, so one payload never has two executable SafeTxs.
+ */
+async function envelopeForClaim(
+  ctx: OperatorContext,
+  id: string,
+  row: TxIntent,
+  payload: ProposedTx
+): Promise<SafeEnvelope | undefined> {
+  if (ctx.executorKind !== "safe") return undefined;
+
+  // Reserved by an earlier claim that was released unresolved.
+  const retained = row.safeEnvelope;
+  if (retained && (await classifyRetainedEnvelope(ctx, id, payload, retained)).kind === "live") {
+    return retained;
+  }
+  return ctx.signer.buildEnvelope(payload);
+}
+
+/**
  * v1 handles ONE Safe SafeTx at a time. Each claim reads `Safe.nonce()` independently, so two
  * concurrent Safe claims would reserve the SAME nonce and one SafeTx would be dead on arrival (it
  * reverts, reconcile fails it, the subject revives — no fund loss, but wasted). Until the store
@@ -138,6 +235,13 @@ export interface ProposalView {
   /** For `safe`: the settled hash (if claimed) or a preview (if still proposed). */
   safeTxHash?: Hex;
   safeTxHashIsPreview?: boolean;
+  /** For `safe`: the Safe nonce this hash is for — checked against the chain before it is shown. */
+  safeNonce?: number;
+  /**
+   * For a claimed `safe` row: is the hash still signable? `false` means the Safe moved past it
+   * (`confirm` or `release`).
+   */
+  safeTxIsNext?: boolean;
 }
 
 /** Verify + render one proposal (read-only). For a not-yet-claimed Safe proposal, previews the
@@ -148,15 +252,20 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
 
   let safeTxHash = row.safeEnvelope?.safeTxHash;
   let safeTxHashIsPreview = false;
+  let safeNonce = row.safeEnvelope?.safeNonce;
+  let safeTxIsNext: boolean | undefined;
   if (ctx.executorKind === "safe") {
     if (row.safeEnvelope) {
       // A claimed Safe row: recompute the hash from the persisted envelope and require it to match,
       // so a tampered `safeEnvelope.safeTxHash` can never be shown to an operator to sign.
       assertSafeEnvelopeIntact(ctx, row.id, payload, row.safeEnvelope);
+      // Then against the chain, which a modified record cannot change.
+      safeTxIsNext = await isEnvelopeNext(ctx, row.id, row.safeEnvelope);
     } else {
       // Not yet claimed: preview the hash the owners would sign (a chain read, allocates no nonce).
       const preview = await ctx.signer.buildEnvelope(payload);
       safeTxHash = preview?.safeTxHash;
+      safeNonce = preview?.safeNonce;
       safeTxHashIsPreview = true;
     }
   }
@@ -172,6 +281,8 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
     ageMs: ctx.now() - row.updatedAt,
     safeTxHash,
     safeTxHashIsPreview: safeTxHash ? safeTxHashIsPreview : undefined,
+    safeNonce,
+    safeTxIsNext,
   };
 }
 
@@ -186,8 +297,7 @@ export async function claimProposal(
   assertSignerIsExecutor(ctx);
   await assertNoOtherLiveSafeClaim(ctx, id);
 
-  const envelope =
-    ctx.executorKind === "safe" ? await ctx.signer.buildEnvelope(payload) : undefined;
+  const envelope = await envelopeForClaim(ctx, id, row, payload);
   const result = await ctx.store.claimProposal(id, payloadHash, envelope);
   return result.claimed
     ? { claimed: true, row: result.intent }
@@ -215,8 +325,8 @@ export async function broadcastProposal(
   }
   await assertNoOtherLiveSafeClaim(ctx, id);
 
-  const envelope =
-    ctx.executorKind === "safe" ? await ctx.signer.buildEnvelope(payload) : undefined;
+  // This path also claims, so it uses the same resolver as `claim`.
+  const envelope = await envelopeForClaim(ctx, id, row, payload);
   const result = await ctx.store.claimProposal(id, payloadHash, envelope);
   if (!result.claimed) throw new Error(`cannot claim ${id}: ${result.reason}`);
 
@@ -322,8 +432,10 @@ function verifySafeTx(
  * reserved `safeTxHash` (precise: an unrelated SafeTx on the same Safe does not trip it, unlike a bare
  * nonce compare). That case is a `confirm`, not a `release`, or a double-broadcast could follow. There
  * is an irreducible window between this read and `store.release` — inherent to any check-then-act
- * against the chain — but under one live claim it only opens if a concurrent process broadcast, and
- * the engine's fresh simulation still guards against re-executing an action that landed.
+ * against the chain — but under one live claim it only opens if a concurrent process broadcast.
+ *
+ * The envelope is kept: its SafeTx may still execute, and the next claim settles it through
+ * `classifyRetainedEnvelope`.
  */
 export async function releaseProposal(ctx: OperatorContext, id: string): Promise<void> {
   const row = await load(ctx, id);
@@ -363,7 +475,20 @@ export async function failProposal(
   id: string,
   reason?: string
 ): Promise<void> {
-  verifyProposal(ctx, await load(ctx, id));
+  const row = await load(ctx, id);
+  const { payload } = verifyProposal(ctx, row);
+
+  // A failed row can be revived, which clears the envelope: the only record of a SafeTx that may
+  // still execute. So a live reservation blocks the fail.
+  if (ctx.executorKind === "safe" && row.safeEnvelope) {
+    const verdict = await classifyRetainedEnvelope(ctx, id, payload, row.safeEnvelope);
+    if (verdict.kind === "live") {
+      throw new Error(
+        `cannot fail ${id}: the SafeTx ${row.safeEnvelope.safeTxHash} it reserved is still executable at Safe nonce ${row.safeEnvelope.safeNonce}. If owners signed it, it can execute after this row is gone. Execute it and \`confirm\`, or consume that nonce (reject it in the Safe UI), then fail.`
+      );
+    }
+  }
+
   if (!(await ctx.store.fail(id, reason ?? "failed by operator"))) {
     throw new Error(`fail refused for ${id} (already terminal?)`);
   }
