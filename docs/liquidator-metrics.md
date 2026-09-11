@@ -54,8 +54,9 @@ following label values:
 | `batch_error` | Exception escaped the send batch: broadcasting, receipt waiting or outcome recording |
 | `ponder_fetch_error` | Failed to fetch `/liquidatable-positions` from Ponder |
 | `positions_unscanned` | The indexer has no answer for part of the position table this cycle — a batch of `estimateLiquidation` calls failed as a whole, or individual probes reverted for a reason other than the position being healthy — so the candidate list is incomplete. The cycle still acts on what it saw. Sustained, it means the table has outgrown one batch's gas budget, the RPC is refusing them, or a contract the lens reads through is faulting (the indexer log names the revert) |
-| `positions_malformed` | The indexer's candidate list had entries without a usable `proxyAddress`, or repeated a proxy. They are dropped before any RPC call. Sustained, it means the indexer is faulty |
+| `positions_malformed` | The indexer's candidate list had entries without a usable `proxyAddress` or `borrower`, or repeated a proxy. They are dropped before any RPC call. Sustained, it means the indexer is faulty |
 | `positions_truncated` | The indexer returned more than 500 distinct liquidatable positions. The cycle acts on the first 500, and the rest wait for later cycles |
+| `positions_mismatched` | A candidate's `borrower` is not the account the adapter maps to its `proxyAddress`, or the adapter has no position for it. The candidate is dropped before any Lens call: the Lens estimates the proxy, but the liquidation charges the borrower. Sustained, it means the indexer's proxy mapping is wrong |
 | `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate |
 | `flash_probe_error` | The flash-funding probe threw for a candidate (`LIQUIDATION_FUNDING=flash` only) — a malfunction, not a "not fundable" verdict |
 | `router_balance_read_error` | The router's WBTC balance could not be read, so the whole cycle was skipped (`LIQUIDATION_FUNDING=flash` only) — every quote is measured net of that balance, and guessing it would overstate profit |

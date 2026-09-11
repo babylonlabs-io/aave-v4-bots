@@ -224,7 +224,12 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     }
     const { dataTimestampMs } = feed;
     // The feed is untrusted: drop unusable and repeated entries, and cap the rest, before any RPC.
-    const { positions, malformed, duplicates, truncated } = selectPositions(feed.positions);
+    const {
+      positions: selected,
+      malformed,
+      duplicates,
+      truncated,
+    } = selectPositions(feed.positions);
     if (malformed + duplicates > 0) {
       this.metrics.recordError("positions_malformed");
       this.logger.warn(
@@ -234,18 +239,57 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     if (truncated > 0) {
       this.metrics.recordError("positions_truncated");
       this.logger.warn(
-        `Indexer returned ${positions.length + truncated} liquidatable positions — acting on the first ${positions.length}; the rest wait for later cycles`
+        `Indexer returned ${selected.length + truncated} liquidatable positions — acting on the first ${selected.length}; the rest wait for later cycles`
       );
     }
 
-    this.metrics.recordPositionsLiquidatable(positions.length + truncated);
+    this.metrics.recordPositionsLiquidatable(selected.length + truncated);
 
-    if (positions.length === 0) {
+    if (selected.length === 0) {
       this.logger.info("No liquidatable positions found");
       return;
     }
 
-    this.logger.info(`Found ${positions.length} liquidatable position(s)`);
+    this.logger.info(`Found ${selected.length} liquidatable position(s)`);
+
+    // The Lens estimates the proxy, but the liquidation charges the borrower, and the indexer
+    // supplies both. Keep a candidate only if the adapter maps its borrower to its proxy. A failed
+    // read drops it too: the adapter reverts for a borrower it has no position for.
+    const positionOf = (p: LiquidatablePosition) =>
+      this.publicClient.readContract({
+        address: this.adapterAddress,
+        abi: adapterAbi,
+        functionName: "getPosition",
+        args: [p.borrower],
+      });
+    const positions: LiquidatablePosition[] = [];
+    for (let i = 0; i < selected.length; i += LENS_ESTIMATE_CHUNK) {
+      const chunk = selected.slice(i, i + LENS_ESTIMATE_CHUNK);
+      const reads = await Promise.allSettled(chunk.map(positionOf));
+      reads.forEach((read, j) => {
+        const mapped =
+          read.status === "fulfilled"
+            ? (read.value as { proxyContract?: unknown } | undefined)?.proxyContract
+            : undefined;
+        if (
+          typeof mapped === "string" &&
+          mapped.toLowerCase() === chunk[j].proxyAddress.toLowerCase()
+        ) {
+          positions.push(chunk[j]);
+        }
+      });
+    }
+    const mismatched = selected.length - positions.length;
+    if (mismatched > 0) {
+      this.metrics.recordError("positions_mismatched");
+      this.logger.warn(
+        `${mismatched} candidate(s) name a borrower the adapter does not map to their proxy — dropped`
+      );
+    }
+    if (positions.length === 0) {
+      this.logger.info("No candidates passed the borrower check");
+      return;
+    }
 
     // Estimate liquidation inputs via Lens, `LENS_ESTIMATE_CHUNK` at a time.
     const estimate = (p: LiquidatablePosition) =>

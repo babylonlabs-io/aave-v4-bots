@@ -66,7 +66,7 @@ describe("isBorrowableReserve", () => {
 // The indexer is untrusted, so the candidate list is trimmed before any RPC call is made from it.
 describe("selectPositions", () => {
   const proxy = (n: number) => `0x${n.toString(16).padStart(40, "0")}`;
-  const pos = (proxyAddress: string) => ({ proxyAddress, borrower: "0xb" });
+  const pos = (proxyAddress: string, borrower = proxy(0xb)) => ({ proxyAddress, borrower });
 
   it("keeps the first entry for each proxy, ignoring case, in feed order", () => {
     const a = proxy(0xa);
@@ -96,5 +96,12 @@ describe("selectPositions", () => {
 
     expect(out.positions).toHaveLength(1);
     expect(out.malformed).toBe(3);
+  });
+
+  it("drops entries without a usable borrower address", () => {
+    const out = selectPositions([pos(proxy(1)), pos(proxy(2), "0xnope")]);
+
+    expect(out.positions.map((p) => p.proxyAddress)).toEqual([proxy(1)]);
+    expect(out.malformed).toBe(1);
   });
 });

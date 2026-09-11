@@ -50,7 +50,7 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 /**
  * The positions one cycle acts on: the first entry for each proxy (case-insensitive), in feed
  * order, capped at `max`. The feed is cast, not parsed, so this runs before any RPC call and drops
- * entries without a usable `proxyAddress`.
+ * entries without a usable `proxyAddress` or `borrower`.
  */
 export function selectPositions<P extends { proxyAddress: string }>(
   positions: readonly P[],
@@ -60,8 +60,15 @@ export function selectPositions<P extends { proxyAddress: string }>(
   const unique: P[] = [];
   let malformed = 0;
   for (const p of positions) {
-    const proxy = (p as { proxyAddress?: unknown } | null)?.proxyAddress;
-    if (typeof proxy !== "string" || !ADDRESS.test(proxy)) {
+    const entry = p as { proxyAddress?: unknown; borrower?: unknown } | null;
+    const proxy = entry?.proxyAddress;
+    const borrower = entry?.borrower;
+    if (
+      typeof proxy !== "string" ||
+      !ADDRESS.test(proxy) ||
+      typeof borrower !== "string" ||
+      !ADDRESS.test(borrower)
+    ) {
       malformed++;
       continue;
     }
