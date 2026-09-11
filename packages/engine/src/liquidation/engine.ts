@@ -11,7 +11,7 @@ import {
   type LiquidationFunding,
   createLiquidationFunding,
 } from "./funding";
-import { type SpokeReserves, borrowableTokens, discoverSpokeReserves } from "./reserves";
+import { type SpokeReserves, discoverSpokeReserves, repayableTokens } from "./reserves";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 /** Observability port — the engine reports through it; the service supplies metrics. */
@@ -581,7 +581,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
       // Kick metadata + balanceOf in parallel so cold-start matches the original
       // 3-RPC concurrency; subsequent cycles only fire balanceOf (cache hit).
       for (const tokenAddress of this.reserveTopology
-        ? borrowableTokens(this.reserveTopology)
+        ? repayableTokens(this.reserveTopology)
         : []) {
         const [{ symbol, decimals }, balance] = await Promise.all([
           this.tokenMeta(tokenAddress),

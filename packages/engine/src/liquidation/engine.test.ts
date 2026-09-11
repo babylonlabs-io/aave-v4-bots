@@ -1223,11 +1223,12 @@ describe("LiquidationEngine", () => {
 
       await bot.discoverReserves();
 
-      // BTC_VAULT_CORE_SPOKE + getReserveCount + 2× getReserve + symbol/decimals per reserve
-      // (decimals is read alongside symbol via the tokenMeta cache). Both reserves are read and
-      // named, not just the borrowable one: the non-borrowable one still occupies a reserve id,
-      // and the id is what the Lens amounts are keyed by.
-      expect(clients.publicClient.readContract).toHaveBeenCalledTimes(8);
+      // BTC_VAULT_CORE_SPOKE + getReserveCount + 2× getReserve + getReserveTotalDebt for the
+      // non-borrowable reserve + symbol/decimals per reserve (decimals is read alongside symbol via
+      // the tokenMeta cache). Both reserves are read and named, not just the borrowable one: the
+      // non-borrowable one still occupies a reserve id, and the id is what the Lens amounts are
+      // keyed by.
+      expect(clients.publicClient.readContract).toHaveBeenCalledTimes(9);
     });
 
     it("handles zero reserves gracefully", async () => {

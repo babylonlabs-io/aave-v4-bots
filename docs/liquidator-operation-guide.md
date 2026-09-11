@@ -301,7 +301,7 @@ WBTC_ADDRESS=0x...
 # ====== Optional ======
 
 # Debt token addresses (comma-separated). If unset, auto-discovered from
-# the Spoke's borrowable reserves.
+# the Spoke's reserves a borrower can owe (borrowable, or still carrying debt).
 
 # Selects the redemption mode:
 #   true  → calls AaveAdapter.liquidate(borrower, BTC_REDEEM_KEY, ...)
