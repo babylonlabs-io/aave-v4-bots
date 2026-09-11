@@ -255,7 +255,9 @@ VAULT_SWAP_ADDRESS=0x...
 # Chain ID (1 for mainnet, 11155111 for Sepolia testnet)
 CHAIN_ID=1
 
-# Block number to start indexing from
+# Block number to start indexing from. Must be at or before the BTCVaultSwap deployment block (and
+# the AaveAdapter's, when the liquidation engine is enabled): a later block misses the events
+# before it, so earlier escrowed vaults and borrowers never appear.
 START_BLOCK=20000000
 
 # Blockchain polling interval (milliseconds)
@@ -271,7 +273,7 @@ DATABASE_SCHEMA=public
 | `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Yes | — |
 | `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Yes | — |
 | `CHAIN_ID` | Network chain ID (1 for mainnet, 11155111 for Sepolia) | No | `1` |
-| `START_BLOCK` | Block to begin indexing | No | `0` |
+| `START_BLOCK` | Block to begin indexing. Must be at or before the BTCVaultSwap deployment block (and the AaveAdapter's, when the liquidation engine is enabled), or earlier vaults and borrowers are missed | No | `0` |
 | `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | No | `4000` |
 | `DATABASE_URL` | PostgreSQL connection string | Yes | — |
 | `DATABASE_SCHEMA` | PostgreSQL schema | No | `public` |

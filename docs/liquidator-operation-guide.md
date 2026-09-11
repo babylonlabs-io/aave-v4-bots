@@ -245,7 +245,9 @@ ADAPTER_ADDRESS=0x...
 # Chain ID
 CHAIN_ID=1
 
-# Block number to start indexing from
+# Block number to start indexing from. Must be at or before the AaveAdapter deployment block:
+# a later block misses the events before it, so some borrowers are never probed. A rising
+# `unmapped` count in the indexer log is the sign.
 START_BLOCK=20000000
 
 # Blockchain polling interval (milliseconds)
@@ -262,7 +264,7 @@ DATABASE_SCHEMA=public
 | `SPOKE_ADDRESS` | Babylon's Aave Core Spoke contract | Yes | — |
 | `ADAPTER_ADDRESS` | AaveAdapter contract | Yes | — |
 | `CHAIN_ID` | Network chain ID | No | `1` |
-| `START_BLOCK` | Block to begin indexing | No | `0` |
+| `START_BLOCK` | Block to begin indexing. Must be at or before the AaveAdapter deployment block, or earlier borrowers are never probed | No | `0` |
 | `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | No | `4000` |
 | `DATABASE_URL` | PostgreSQL connection string | Yes | — |
 | `DATABASE_SCHEMA` | PostgreSQL schema | No | `public` |
