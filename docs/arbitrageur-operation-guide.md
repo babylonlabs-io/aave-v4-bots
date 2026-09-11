@@ -1,66 +1,37 @@
 # Arbitrageur Operation Guide
 
-This guide covers the operation of the arbitrageur service for the Aave v4 integration
-with Babylon's Trustless Bitcoin Vaults protocol.
+Operation of the arbitrageur service for the Aave v4 integration with Babylon's Trustless
+Bitcoin Vaults protocol.
 
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
 2. [System Requirements](#2-system-requirements)
-   - [Hardware Specifications](#21-hardware-specifications)
-   - [External Service Connections](#22-external-service-connections)
-   - [Network Requirements](#23-network-requirements)
 3. [Architecture Overview](#3-architecture-overview)
 4. [Installation](#4-installation)
-   - [Prerequisites](#41-prerequisites)
-   - [Native Installation](#42-native-installation)
-   - [Docker Installation](#43-docker-installation)
-   - [Router contract (treasury-funded acquisition only)](#44-router-contract-treasury-funded-acquisition-only)
 5. [Configuration](#5-configuration)
-   - [Environment Files](#51-environment-files)
-   - [Ponder Indexer Configuration](#52-ponder-indexer-configuration)
-   - [Arbitrageur Client Configuration](#53-arbitrageur-client-configuration)
-   - [MEV protection (private submission)](#55-mev-protection-private-submission)
-   - [Execution Modes](#54-execution-modes)
-   - [Contract Addresses](#55-contract-addresses)
 6. [Wallet Setup](#6-wallet-setup)
-   - [Funding Requirements](#61-funding-requirements)
 7. [Starting the Service](#7-starting-the-service)
-   - [Native Deployment](#71-native-deployment)
-   - [Docker Deployment](#72-docker-deployment)
 8. [Operations](#8-operations)
-   - [Health Monitoring](#81-health-monitoring)
-   - [Prometheus Metrics](#82-prometheus-metrics)
-   - [Indexer Endpoints](#83-indexer-endpoints)
-   - [Restarting under router funding](#84-restarting-under-router-funding)
-9. [Vault Acquisition Flow](#9-vault-acquisition-flow)
-   - [Incident: signing key compromised](#91-incident-the-signing-key-is-compromised-router-funding)
-    - [Economic Model](#91-economic-model)
-    - [Interest Accrual](#92-interest-accrual)
-10. [Troubleshooting](#10-troubleshooting)
-    - [Common Issues](#101-common-issues)
-    - [Error Types](#102-error-types)
+9. [Vault Acquisition](#9-vault-acquisition)
+10. [Incident: signing key compromised](#10-incident-signing-key-compromised)
+11. [Troubleshooting](#11-troubleshooting)
 
 ## 1. Introduction
 
-The arbitrageur service monitors escrowed BTC vaults and acquires them at a discount
-using WBTC. Escrowed vaults are created when liquidators swap seized vaults for
-instant WBTC liquidity via VaultSwap.
-
-The service consists of two components:
+The service monitors BTC vaults escrowed in BTCVaultSwap (the LLP) and acquires them at a discount
+for WBTC. Liquidators escrow seized vaults there through `liquidateWithLLP`.
 
 | Component | Description |
 |-----------|-------------|
-| **Ponder Indexer** | Indexes blockchain events (`AddedVault`, `RemovedVault`) and tracks escrowed vaults available for acquisition |
-| **Arbitrageur Client** | Polls the indexer for profitable vaults and executes acquisition transactions |
+| **Ponder Indexer** | Indexes `AddedVault` and `RemovedVault`, previews each escrowed vault on chain, and serves `/escrowed-vaults` |
+| **Arbitrageur Client** | Polls the indexer, evaluates profitability, and executes acquisitions |
 
-> **Note**: A vault keeper daemon must be running to complete vault redemptions. The keeper listens for redemption events and handles the off-chain claim process.
-
-> **Important**: The trustless Bitcoin vaults protocol requires all entities that may claim a BTC vault to pre-sign a set of transactions during the vault's creation. This restricts claims to a pre-approved set of participants controlled by the smart contract admin, making the arbitrageur role **permissioned**.
+A vault keeper daemon must be running to complete redemptions. The protocol requires every entity
+that may claim a vault to pre-sign transactions at vault creation, so the keeper set is
+permissioned by the contract admin.
 
 ## 2. System Requirements
-
-### 2.1. Hardware Specifications
 
 | Component | CPU | RAM | Storage |
 |-----------|-----|-----|---------|
@@ -68,913 +39,518 @@ The service consists of two components:
 | Arbitrageur Client | 1 vCPU | 1 GB | 10 GB SSD |
 | PostgreSQL | 2 vCPUs | 4 GB | 50 GB SSD |
 
-> **Note**: These are recommended minimum values. Adjust based on your workload and monitoring observations.
+External services: an Ethereum RPC endpoint and PostgreSQL 17.
 
-### 2.2. External Service Connections
-
-| Service | Purpose | Default Endpoint |
-|---------|---------|------------------|
-| Ethereum RPC | Event indexing, transaction execution | Configurable |
-| PostgreSQL | Ponder indexer data storage and optional bot StateStore | `localhost:5433` |
-
-### 2.3. Network Requirements
-
-**Ports:**
-
-| Port | Protocol | Purpose |
-|------|----------|---------|
-| 42070 | HTTP | Ponder indexer API |
-| 9091 | HTTP | Metrics, health, and readiness endpoints |
-| 9095 | HTTP | Optional risk-control kill switch, loopback by default |
-| 5433 | TCP | PostgreSQL database |
+| Port | Purpose |
+|------|---------|
+| 42070 | Ponder indexer API |
+| 9091 | Metrics, health, and readiness |
+| 9095 | Kill switch (optional, loopback by default) |
+| 5433 | PostgreSQL |
 
 ## 3. Architecture Overview
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Ethereum RPC  │     │   PostgreSQL    │     │   VaultSwap     │
-└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-         │                       │                       │
-         ▼                       ▼                       │
-┌─────────────────────────────────────────┐              │
-│           Ponder Indexer                │              │
-│  - Indexes AddedVault/RemovedVault     │              │
-│  - Tracks escrowed vaults               │              │
-│  - Enriches with live debt data         │              │
-│  - Exposes /escrowed-vaults API         │              │
-└────────────────────┬────────────────────┘              │
-                     │                                   │
-                     ▼                                   │
-┌─────────────────────────────────────────┐              │
-│         Arbitrageur Client              │              │
-│  - Polls indexer at configured interval │              │
-│  - Evaluates vault profitability        │              │
-│  - AUTO: signs and broadcasts           │──────────────┘
-│  - MANUAL: persists proposals for       │
-│    operator-cli                         │
-│  - Executes swapWbtcForVault()          │
-│  - Acquisition + redemption is atomic   │
-│  - (optional) also runs the liquidation │
-│    engine (see note below)              │
-│  - Exposes /metrics, /health, /ready    │
-└─────────────────────────────────────────┘
+Ethereum RPC ──┬──▶ Ponder Indexer ──▶ /escrowed-vaults (with live preview)
+               │         │
+               │         ▼
+               └──▶ Arbitrageur Client
+                     - AUTO: signs and broadcasts
+                     - MANUAL: writes proposals for operator-cli
+                     - inventory: swapWbtcForVault[OnBehalf] on BTCVaultSwap
+                     - router: signed authorization through ArbitrageRouter
+                     - optional: also runs the liquidation engine
+                     - serves /metrics, /health, /ready
 ```
 
-**Optional liquidation engine.** When `ADAPTER_ADDRESS` + `LENS_ADDRESS` are configured, the
-same process **also** runs the liquidation engine alongside arbitrage — the Ponder indexer
-additionally indexes the Spoke + Adapter and serves `/liquidatable-positions`, and the client
-liquidates unhealthy positions. Both engines share **one** signer, executor, nonce authority,
-and risk gate, so a kill-switch halt or a tripped breaker stops **both** at once. With neither
-address set, the process runs arbitrage only. See the
-[Liquidator Operation Guide](./liquidator-operation-guide.md) for the liquidation pipeline.
+**Optional liquidation engine.** With `ADAPTER_ADDRESS` and `LENS_ADDRESS` set, the same process
+also runs the liquidation engine. Both engines share one signer, executor, nonce sequence, token
+balance and risk gate: a halt or a tripped breaker stops both. The indexer must then index the
+position side too: set `SPOKE_ADDRESS`, `ADAPTER_ADDRESS` and `LENS_ADDRESS` in its env. See the
+[Liquidator Operation Guide](./liquidator-operation-guide.md) for that pipeline.
 
 ## 4. Installation
 
 ### 4.1. Prerequisites
 
-- **Node.js**: >= 18.14
-- **pnpm**: 9.13.2+
-- **PostgreSQL**: 17+
-- **Registration**: Must be registered as Aave keeper (see [Introduction](#1-introduction))
+- Node.js 20 or 22 (the Docker images use 22)
+- pnpm 9.13.2
+- PostgreSQL 17
+- A registered vault keeper (see §1)
+- Foundry, only to deploy the router (router funding)
 
 ### 4.2. Native Installation
 
-**Clone and install dependencies:**
-
 ```bash
-# TODO: Add release tag once we create a release (e.g., --branch v1.0.0)
 git clone https://github.com/babylonlabs-io/aave-v4-bots.git
 cd aave-v4-bots
 pnpm install
 ```
 
-**Directory structure:**
+Key paths:
 
 ```
-aave-v4-bots/
-├── services/
-│   ├── arbitrageur/         # Arbitrageur bot composition root
-│   ├── operator-cli/        # MANUAL-mode operator workflow
-│   └── ponder/              # Unified blockchain indexer
-├── packages/                # @repo/* packages by concern
-├── .env.arbitrageur         # Client configuration
-└── docker-compose.yml       # Docker orchestration
+services/arbitrageur/     # bot composition root
+services/operator-cli/    # MANUAL-mode operator tool
+services/ponder/          # indexer (shared with the liquidator)
+contracts/                # ArbitrageRouter
+.env.arbitrageur          # bot configuration
+.env.arbitrageur.indexer  # indexer configuration
+docker-compose.yml
 ```
 
 ### 4.3. Docker Installation
 
-Pre-built images are available from Docker Hub:
-
-| Image | Description |
-|-------|-------------|
-| `babylonlabs/arbitrageur-aave-indexer` | Ponder indexer |
-| `babylonlabs/arbitrageur-aave-bot` | Arbitrageur client |
-
-Docker Compose will automatically pull these images. To build locally instead:
+Compose builds the images from `docker/*.Dockerfile`:
 
 ```bash
 docker compose build arbitrageur-ponder arbitrageur-bot
 ```
 
-### 4.4. Router contract (treasury-funded acquisition only)
+`build` needs no configuration. `docker compose up` reads `.env.arbitrageur` and
+`.env.arbitrageur.indexer` and fails if either is missing, so create them first (§5.1).
 
-Skip this under `ARBITRAGE_FUNDING=inventory` — the bot pays for acquisitions from its own WBTC and
-needs no contract of its own.
+### 4.4. Router contract (router funding only)
 
-Router funding moves the float off the signing key: a treasury holds the WBTC, and the bot only
-signs an authorization and submits it. The router relays a batch **only for its own signer**, so the
-authorization is useless to anyone else who sees it — and the bot pays the gas for every acquisition
-out of the signing account. Deploy the router once:
+Skip this under `ARBITRAGE_FUNDING=inventory`.
+
+Router funding moves the WBTC off the signing key: a treasury holds it, and the bot only signs
+an EIP-712 authorization. The router relays a batch only for its own signer, so the authorization
+is of no use to anyone else who sees it. The bot pays the gas for every acquisition from the
+signing account. Deploy the router once:
 
 ```bash
-export ARBITRAGE_ROUTER_SIGNER=0x...   # this bot's signer. Authorizes acquisitions; holds no funds
-export ARBITRAGE_ROUTER_PAYER=0x...    # the treasury. Supplies the WBTC
+git submodule update --init --recursive
+
+export ARBITRAGE_ROUTER_SIGNER=0x...   # this bot's signer. Authorizes acquisitions, holds no funds
+export ARBITRAGE_ROUTER_PAYER=0x...    # the treasury
 export WBTC_ADDRESS=0x...              # must match the LLP's WBTC
 export DEPLOYER_PRIVATE_KEY=0x...
+export RPC_URL=https://...
 
 forge script scripts/DeployArbitrageRouter.s.sol:DeployArbitrageRouter \
   --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
 ```
 
-**The deploy is not the whole setup.** The router can move nothing until the treasury approves it,
-and only the treasury can do that:
+The script prints the router address. The treasury then approves it. The bot cannot do this, and
+boot fails without it:
 
 ```bash
+export ROUTER=0x...   # the ArbitrageRouter the script printed
+export AMOUNT=...     # WBTC base units (8 decimals): 100000000 = 1 WBTC
+
 cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" "$AMOUNT" \
   --rpc-url "$RPC_URL" --private-key "$TREASURY_KEY"
 ```
 
-Approve **working capital, not an unlimited amount.** The `vaultSwap` is an argument to each signed
-call, so a compromised signer can direct the whole allowance into a contract of its choosing — the
+Approve working capital, not an unlimited amount. `vaultSwap` is an argument to each signed call,
+so a compromised signer can direct the whole allowance into a contract of its choosing. The
 approval is the blast radius.
 
-All three constructor arguments are immutable and are checked against the bot's configuration at
-boot, so a mismatch is a redeploy rather than a reconfiguration. There is no rotation: recovering
-from a lost signer key means the treasury revokes its approval, then you deploy a new router and
-point the bot at it.
+At boot the bot reads `signer`, `payer` and `wbtc` from the router. It fails if `signer` is not
+its key, if `payer` is its key, if `wbtc` differs from `WBTC_ADDRESS`, or if the payer holds no
+WBTC or no allowance. All three are immutable: a mismatch is a redeploy.
 
-Not available with `EXECUTION_MODE=MANUAL`, and rejected at boot. The router needs an EIP-712
-authorization that exists *before* the transaction carrying it, which a proposal for an operator
-cannot express — and that authorizing key is not one to hand a keyless bot, since it can direct the
-treasury's whole allowance.
+Router funding is rejected under `EXECUTION_MODE=MANUAL`. The authorization needs a key the bot
+holds.
 
 ## 5. Configuration
 
 ### 5.1. Environment Files
 
-The service requires two environment configurations:
-
-| Component | File Location | Purpose |
-|-----------|---------------|---------|
-| Client | `.env.arbitrageur` (root) | Arbitrageur client settings |
-| Ponder | `services/ponder/.env.local` | Indexer settings |
-
-**Create configuration files:**
+| File | Used by |
+|------|---------|
+| `.env.arbitrageur` | The bot. Holds the key, risk and submission settings |
+| `.env.arbitrageur.indexer` | The indexer. Holds indexing settings only, and no secrets |
 
 ```bash
-# Copy template
-cp env.arbitrageur.example         .env.arbitrageur          # the bot: key, risk, submission
-cp env.arbitrageur.indexer.example .env.arbitrageur.indexer  # the indexer: indexing variables only
+cp env.arbitrageur.example         .env.arbitrageur
+cp env.arbitrageur.indexer.example .env.arbitrageur.indexer
 
-# Create Ponder env (copy relevant vars from .env.arbitrageur)
-cp .env.arbitrageur services/ponder/.env.local
+# Native only. Ponder reads .env.local from its own directory. Docker reads the root file directly.
+cp .env.arbitrageur.indexer services/ponder/.env.local
 ```
+
+Keep `VAULT_SWAP_ADDRESS` and the database in step between the two files.
 
 ### 5.2. Ponder Indexer Configuration
 
-Configure the indexer in `services/ponder/.env.local`:
-
-```bash
-# RPC URL for blockchain indexing
-PONDER_RPC_URL=https://eth-mainnet.example.com
-
-# VaultSwap contract address
-VAULT_SWAP_ADDRESS=0x...
-
-# Chain ID (1 for mainnet, 11155111 for Sepolia testnet)
-CHAIN_ID=1
-
-# Block number to start indexing from
-START_BLOCK=20000000
-
-# Blockchain polling interval (milliseconds)
-PONDER_POLLING_INTERVAL=4000
-
-# PostgreSQL connection (note: port 5433 to avoid conflict with liquidator)
-DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
-DATABASE_SCHEMA=public
-```
-
-| Parameter | Description | Required? | Default |
-|-----------|-------------|-----------|---------|
-| `PONDER_RPC_URL` | Ethereum RPC endpoint for indexing | Yes | — |
-| `VAULT_SWAP_ADDRESS` | VaultSwap contract address | Yes | — |
-| `CHAIN_ID` | Network chain ID (1 for mainnet, 11155111 for Sepolia) | No | `1` |
-| `START_BLOCK` | Block to begin indexing | No | `0` |
-| `PONDER_POLLING_INTERVAL` | How often to poll for new blocks (ms) | No | `4000` |
-| `DATABASE_URL` | PostgreSQL connection string | Yes | — |
-| `DATABASE_SCHEMA` | PostgreSQL schema | No | `public` |
+| Parameter | Description | Required | Default |
+|-----------|-------------|----------|---------|
+| `PONDER_RPC_URL` | RPC for indexing. May differ from the bot's | Yes | |
+| `VAULT_SWAP_ADDRESS` | BTCVaultSwap | Yes | |
+| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use | Yes | |
+| `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
+| `SPOKE_ADDRESS`, `ADAPTER_ADDRESS`, `LENS_ADDRESS` | Position indexing for the optional liquidation engine. Set all or none | liquidation | |
+| `POSITION_PROBE_CHUNK_SIZE` | See the liquidator guide | No | `25` |
+| `CHAIN_ID` | Network chain ID | No | `1` |
+| `START_BLOCK` | First block to index | No | `0` |
+| `PONDER_POLLING_INTERVAL` | Block poll interval (ms) | No | `4000` |
+| `PONDER_PORT` | API port. The `arbitrageur:indexer*` scripts and Compose both set it themselves, so a value here only applies when you run Ponder directly. Compose publishes the host port as `ARBITRAGEUR_PONDER_PORT` | No | `42070` |
+| `MULTICALL3_ADDRESS` | Multicall3 for the API's batched reads. Falls back to single reads when absent on chain | No | `0xcA11bde05977b3631167028862bE2a173976CA11` |
+| `CONFIG_SECRET_ID` | AWS Secrets Manager id holding `PONDER_RPC_URL` and `DATABASE_URL` as JSON, for values not set in the env | No | |
 
 ### 5.3. Arbitrageur Client Configuration
 
-Configure the client in `.env.arbitrageur`:
+Minimal `.env.arbitrageur`:
 
 ```bash
-# ====== Required ======
-
-# Ponder indexer API URL
 PONDER_URL=http://localhost:42070
-
-# RPC URL for transaction execution
-CLIENT_RPC_URL=https://eth-mainnet.example.com
-
-# Contract addresses
+CLIENT_RPC_URL=https://...
 VAULT_SWAP_ADDRESS=0x...
 WBTC_ADDRESS=0x...
-
-# ====== Optional ======
-
-# Maximum slippage in basis points (default: 100 = 1%)
-MAX_SLIPPAGE_BPS=100
-
-# Vault check frequency (default: 30000ms = 30 seconds)
-POLLING_INTERVAL_MS=30000
-
-# Optional throttle between acquisition broadcasts (default: 0 = off; acquisitions are batched)
-# VAULT_PROCESSING_DELAY_MS=0
-
-# Metrics server port (default: 9091)
-METRICS_PORT=9091
-
-# Execution mode (default: AUTO). MANUAL is keyless and writes proposals.
-EXECUTION_MODE=AUTO
-# MANUAL_EXECUTOR_ADDRESS=0x...
-# MANUAL_EXECUTOR_KIND=eoa
-# MANUAL_INTENT_TTL_MS=10800000
-# MANUAL_INTENT_STUCK_MS=3600000
-
-# Signer and secrets (defaults: env-backed local key from ARBITRAGEUR_PRIVATE_KEY)
-SECRETS_PROVIDER=env
-SIGNER_SOURCE=local
 ARBITRAGEUR_PRIVATE_KEY=0x...
-# SIGNER_KEY_REF=ARBITRAGEUR_PRIVATE_KEY
-# KMS_KEY_ID=arn:aws:kms:...
-# SIGNER_ADDRESS=0x...
-# AWS_REGION=us-east-1
-
-# Persistence / crash-safety. Required in MANUAL; optional in AUTO.
 DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
-# PERSISTENCE_SCHEMA=bot
-
-# Notifications (default: log-only)
-NOTIFIER=none
-# SLACK_WEBHOOK_REF=SLACK_WEBHOOK_URL
-
-# ====== Acquisition funding ======
-# inventory (default) pays for acquisitions from this signer's WBTC; router has a treasury pay
-# through an ArbitrageRouter, leaving this key holding only gas. Enforced both ways: setting the
-# router variables WITHOUT the flag is a boot error, since the mode is never inferred from them.
-# ARBITRAGE_FUNDING=inventory
-# ARBITRAGE_ROUTER_ADDRESS=0x...          # its immutable signer must be this bot's key (§4.4)
-# VAULT_KEEPER_ADDRESS=0x...              # REQUIRED under router: it only redeems on behalf
-# ARBITRAGE_RELAY_DEADLINE_SECONDS=120    # how long a signed batch stays valid, in chain seconds
-
-# Optional liquidation engine, sharing the same signer/executor/risk gate
-# ADAPTER_ADDRESS=0x...
-# LENS_ADDRESS=0x...
-# LIQUIDATION_POLLING_INTERVAL_MS=12000
-# Its funding mode — inventory (default) or flash, exactly as on the liquidator. Setting flash
-# without ADAPTER_ADDRESS + LENS_ADDRESS is rejected: there would be no engine to configure.
-# LIQUIDATION_FUNDING=inventory
-# LIQUIDATION_ROUTER_ADDRESS=0x...
-# FLASH_SWAP_VENUE_ADDRESS=0x...
-# FLASH_SWAP_POOLS=0xUSDC:0xWBTC:0xUSDC:3000:60
-# WBTC_FLASH_LOAN_ADDRESS=0x...
-# WBTC_FLASH_LOAN_VENUE=morpho
-# FLASH_MAX_SLIPPAGE_BPS=2000
-
-# Risk gate (unset variables disable their guard)
-# RISK_MAX_CONSECUTIVE_FAILURES=5
-# RISK_MIN_PROFIT=0
-# Unset means NO cap. Bounds one poll cycle's burst; the breaker settles on receipts and so cannot
-# stop the cycle already in flight. Size above the largest cascade you want to compete in.
-# RISK_MAX_IN_FLIGHT=25
-# RISK_MAX_DATA_STALENESS_MS=60000
-# RISK_START_HALTED=false
-# RISK_EXPECTED_CODE_HASHES=0xVaultSwap...=0xhash...
-# RISK_CODE_CHECK_INTERVAL_MS=300000
-# RISK_CONTROL_TOKEN_REF=BOT_CONTROL_TOKEN
-# RISK_CONTROL_PORT=9095
-# RISK_CONTROL_HOST=127.0.0.1
-
-# ====== Retry Configuration (Optional) ======
-
-# Maximum retry attempts (default: 3)
-RETRY_MAX_ATTEMPTS=3
-
-# Initial retry delay in milliseconds (default: 1000)
-RETRY_INITIAL_DELAY_MS=1000
-
-# Maximum retry delay in milliseconds (default: 30000). Bounds indexer reads only: the RPC
-# transport takes the attempt count and initial delay, then runs viem's own uncapped schedule.
-RETRY_MAX_DELAY_MS=30000
-
-# Transaction receipt timeout in milliseconds (default: 120000 = 2 minutes)
-TX_RECEIPT_TIMEOUT_MS=120000
 ```
 
-| Parameter | Description | Required? | Default |
-|-----------|-------------|-----------|---------|
-| `ARBITRAGEUR_PRIVATE_KEY` | Default local signer key ref target; not used with KMS or MANUAL | AUTO + local | — |
-| `PONDER_URL` | Indexer API endpoint | Yes | — |
-| `CLIENT_RPC_URL` | RPC for transaction execution | Yes | — |
-| `VAULT_SWAP_ADDRESS` | BTCVaultSwap contract address | Yes | — |
-| `WBTC_ADDRESS` | WBTC token address | Yes | — |
-| `ARBITRAGE_FUNDING` | `inventory` (pay from this signer's WBTC) or `router` (a treasury pays through an `ArbitrageRouter`) | No | `inventory` |
-| `ARBITRAGE_ROUTER_ADDRESS` | The deployed `ArbitrageRouter`. Its immutable `signer`, `payer` and `wbtc` are read back and checked at boot | router | — |
-| `ARBITRAGE_RELAY_DEADLINE_SECONDS` | How long a signed batch stays valid, in **chain** seconds. Bounded to 1–300: the router carries no nonce, so a signed batch stays executable by this bot's signer until it expires, whether or not the transaction that carried it ever landed | No | `120` |
-| `VAULT_KEEPER_ADDRESS` | Registered vault keeper the acquired vault is redeemed to. **Required** under `ARBITRAGE_FUNDING=router`, which only ever redeems on behalf of a keeper. Set it when the executor is **not** itself a keeper (e.g. a Safe): the bot pays and this keeper receives, via `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself. Only point this at a keeper you control — the BTC lands there while the WBTC leaves the bot, so the legs only net out (and `RISK_MIN_PROFIT` only means anything) under one owner | No | — |
-| `MAX_SLIPPAGE_BPS` | Maximum slippage tolerance (basis points) | No | `100` |
-| `POLLING_INTERVAL_MS` | How often to check for vaults | No | `30000` |
-| `VAULT_PROCESSING_DELAY_MS` | Throttle between acquisition broadcasts. Acquisitions are batched, so not a per-acquisition pause. `0` disables | No | `0` |
-| `METRICS_PORT` | HTTP server port for metrics/health | No | `9091` |
-| `METRICS_HOST` | Interface that server binds. Unset ⇒ every interface. `/metrics` is unauthenticated and labels carry the signer/treasury addresses and their balances, so restrict it where no network policy does | No | all interfaces |
-| `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
-| `MANUAL_EXECUTOR_ADDRESS` | Address the operator signs/broadcasts from; Safe address in `safe` custody | MANUAL only | — |
-| `MANUAL_EXECUTOR_KIND` | Operator custody model: `eoa` or `safe` | MANUAL only | — |
-| `MANUAL_INTENT_TTL_MS` | Expire un-actioned MANUAL proposals after this many ms; `0` disables expiry | No | `10800000` |
-| `MANUAL_INTENT_STUCK_MS` | Alert on `claimed`/`submitted` MANUAL intents older than this; `0` disables | No | `3600000` |
-| `SECRETS_PROVIDER` | Secret reference backend: `env` or `aws` Secrets Manager | No | `env` |
-| `SIGNER_SOURCE` | AUTO signer backend: `local` or `aws` KMS | No | `local` |
-| `SIGNER_KEY_REF` | Local signer secret reference; defaults to the service private-key env var | No | `ARBITRAGEUR_PRIVATE_KEY` |
-| `KMS_KEY_ID` | AWS KMS key id/ARN/alias for `SIGNER_SOURCE=aws` | KMS only | — |
-| `SIGNER_ADDRESS` | Expected signer address; boot fails if the key derives a different one. Applies to both `local` and `aws` — with the key behind a secret ref or a KMS id, the account it derives is invisible until something derives it | No | — |
-| `AWS_REGION` | AWS region for KMS and Secrets Manager | No | — |
-| `DATABASE_URL` | Enables Postgres StateStore for intent idempotency and reconcile-on-boot | MANUAL only | — |
-| `PERSISTENCE_SCHEMA` | Schema for bot StateStore tables, separate from Ponder. **One schema per signer** — a schema is claimed by the first execution identity to use it and a second one fails at boot, because intents in it are keyed and reconciled as a single account. Running both services against one `DATABASE_URL` therefore needs a distinct value here for each. | No | `bot` |
-| `NOTIFIER` | Notification backend: `none` or `slack` | No | `none` |
-| `SLACK_WEBHOOK_REF` | Secret reference for Slack webhook URL | if `NOTIFIER=slack` | — |
-| `ADAPTER_ADDRESS` | Enables the optional liquidation engine when set with `LENS_ADDRESS` | Liquidation only | — |
-| `LENS_ADDRESS` | AaveAdapterLiquidationPreview for optional liquidation mode; requires `ADAPTER_ADDRESS` | Liquidation only | — |
-| `LIQUIDATION_POLLING_INTERVAL_MS` | Poll interval for the optional liquidation engine | No | `12000` |
-| `LIQUIDATION_FUNDING` | Funding mode for the optional liquidation engine: `inventory` or `flash`. `flash` requires the engine to be enabled | No | `inventory` |
-| `LIQUIDATION_ROUTER_ADDRESS`, `FLASH_SWAP_VENUE_ADDRESS`, `FLASH_SWAP_POOLS`, `WBTC_FLASH_LOAN_ADDRESS` | Required together under `LIQUIDATION_FUNDING=flash`; see the [liquidator guide](./liquidator-operation-guide.md#53-liquidation-client-configuration) | flash | — |
-| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
-| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the chain reverts; derives the on-chain `minWbtcProfit`. Distinct from `RISK_MIN_PROFIT`, which is absolute and checked off-chain | No | `2000` |
-| `RISK_MAX_CONSECUTIVE_FAILURES` | Auto-halt after this many consecutive failed actions | No | — |
-| `RISK_MIN_PROFIT` | Profit floor in 8-decimal sats, applied to expected arbitrage profit. Rejected at boot when the optional liquidation engine is enabled **and inventory-funded**, since that path supplies no expected profit and the floor would cover only half the actions. Allowed when the engine is off or flash-funded. **Unset is not neutral** — see below | No | — |
-| `RISK_MAX_IN_FLIGHT` | Max in-flight actions across both engines. Unset = no cap. Size above the largest cascade you want to compete in | No | unlimited |
-| `RISK_MAX_DATA_STALENESS_MS` | Block actions whose indexer/source data is too old, missing, malformed, or dated in the future | No | — |
-| `RISK_START_HALTED` | Boot HALTED until resumed; `true` requires `RISK_CONTROL_TOKEN_REF` | No | `false` |
-| `RISK_EXPECTED_CODE_HASHES` | Pinned bytecode map: `address=keccak256(bytecode),...` — must name at least one contract when set, since an empty map would run the checker against nothing | No | — |
-| `RISK_CODE_CHECK_INTERVAL_MS` | Re-check interval for pinned bytecode | No | `300000` |
-| `RISK_CONTROL_TOKEN_REF` | Secret reference enabling authenticated `/halt`, `/resume`, `/status` | if `RISK_START_HALTED=true` | — |
-| `RISK_CONTROL_PORT` | Kill-switch server port, separate from `METRICS_PORT` | No | `9095` |
-| `RISK_CONTROL_HOST` | Kill-switch bind host; loopback by default | No | `127.0.0.1` |
-| `RETRY_MAX_ATTEMPTS` | Max attempts per read, for both the indexer and the RPC transport | No | `3` |
-| `RETRY_INITIAL_DELAY_MS` | Initial retry delay | No | `1000` |
-| `RETRY_MAX_DELAY_MS` | Maximum retry delay | No | `30000` |
-| `TX_RECEIPT_TIMEOUT_MS` | Transaction receipt timeout | No | `120000` |
+Everything else has a default, listed in the tables below. Under Docker, `PONDER_URL` and
+`METRICS_PORT` are set by Compose, and `DATABASE_URL` must point at `arbitrageur-postgres:5432`,
+not `localhost`.
 
-#### What leaving `RISK_MIN_PROFIT` unset actually means
+**Core**
 
-Not "the same behaviour without a floor". An acquisition is skipped only when the
-on-chain preview says the vault is worth exactly nothing, and the number the
-floor would have tested is not that preview — it is the **worst case the
-transaction authorizes**: the vault's BTC minus `maxWbtcIn`, which carries the
-whole `MAX_SLIPPAGE_BPS` buffer on top of the acquisition cost.
+| Parameter | Description | Required | Default |
+|-----------|-------------|----------|---------|
+| `PONDER_URL` | Indexer API endpoint | Yes | |
+| `CLIENT_RPC_URL` | RPC for execution | Yes | |
+| `VAULT_SWAP_ADDRESS` | BTCVaultSwap | Yes | |
+| `WBTC_ADDRESS` | WBTC token | Yes | |
+| `VAULT_KEEPER_ADDRESS` | Registered keeper the vault is redeemed to, via `swapWbtcForVaultOnBehalf`. Set it when the executor is not a keeper (a Safe, or a treasury). Unset: the executor must be a keeper. Point it only at a keeper you control; the BTC lands there while the WBTC leaves the bot | router | |
+| `MAX_SLIPPAGE_BPS` | Ceiling above the previewed cost the bot authorizes. Max `10000` | No | `100` |
+| `POLLING_INTERVAL_MS` | Poll interval | No | `30000` |
+| `VAULT_PROCESSING_DELAY_MS` | Throttle between broadcasts, for rate-limited RPCs. `0` is off | No | `0` |
+| `TX_RECEIPT_TIMEOUT_MS` | Receipt wait per transaction | No | `120000` |
+| `RETRY_MAX_ATTEMPTS` | Attempts per read, indexer and RPC | No | `3` |
+| `RETRY_INITIAL_DELAY_MS` | First retry delay | No | `1000` |
+| `RETRY_MAX_DELAY_MS` | Retry delay ceiling. Bounds indexer reads only; viem runs its own RPC schedule | No | `30000` |
+| `LOG_LEVEL` | `debug`, `info`, `warn` or `error` | No | `info` |
+| `METRICS_PORT` | Metrics and health server port | No | `9091` |
+| `METRICS_HOST` | Interface the metrics server binds. `/metrics` is unauthenticated and carries the signer and treasury addresses, balances and allowance, so bind it to the scraper's interface where no network policy applies | No | all interfaces |
 
-Those two can disagree. A vault previews profitably, the ceiling the bot signs
-for sits above what the vault is worth, and the swap is free to charge anywhere
-up to it. With no floor set, that acquisition is signed, and the size of the
-worst case is bounded by `MAX_SLIPPAGE_BPS` and nothing else.
+**Acquisition funding**
 
-`RISK_MIN_PROFIT=0` is what makes the worst case non-negative. It is deliberately
-not the default: a floor of zero is a policy, and a bot that quietly adopted one
-would be making that choice for an operator who never stated it. Set it
-explicitly if that is the policy you want.
+| Parameter | Description | Required | Default |
+|-----------|-------------|----------|---------|
+| `ARBITRAGE_FUNDING` | `inventory` pays from the signer's WBTC. `router` has the treasury pay through `ArbitrageRouter`. Router variables without `router` fail at boot | No | `inventory` |
+| `ARBITRAGE_ROUTER_ADDRESS` | The deployed router (§4.4) | router | |
+| `ARBITRAGE_RELAY_DEADLINE_SECONDS` | How long a signed batch stays valid, in chain seconds. Range 1 to 300. The router has no nonce, so a signed batch stays executable by this bot's signer until it expires, whether or not the transaction that carried it landed | No | `120` |
+
+**Optional liquidation engine**
+
+| Parameter | Description | Required | Default |
+|-----------|-------------|----------|---------|
+| `ADAPTER_ADDRESS`, `LENS_ADDRESS` | Enable the engine. Set both or neither | liquidation | |
+| `LIQUIDATION_POLLING_INTERVAL_MS` | Its own poll interval | No | `12000` |
+| `IS_DIRECT_REDEMPTION`, `BTC_REDEEM_KEY`, `LLP_ADDRESS` | Redemption mode, as on the liquidator | liquidation | `false` |
+| `LIQUIDATION_FUNDING` and the flash variables | As on the liquidator. `flash` without the engine is rejected | No | `inventory` |
+
+See the [liquidator guide](./liquidator-operation-guide.md#53-liquidation-client-configuration)
+for each variable.
+
+**Signer, secrets and execution mode**
+
+Identical to the liquidator's table, with `ARBITRAGEUR_PRIVATE_KEY` as the default key ref. See
+[§5.3 there](./liquidator-operation-guide.md#53-liquidation-client-configuration). Run one AUTO
+process per signer; use this dual-engine process when both engines must share a key.
+
+**Indexer liveness**
+
+`INDEXER_MAX_LAG_BLOCKS`, `INDEXER_MAX_LAG_HALT_MS` (`60000`), `INDEXER_READY_TIMEOUT_MS`, as on
+the liquidator. One guard covers both engines.
+
+**Risk gate**
+
+As on the liquidator, with two differences:
+
+| Parameter | Description | Required | Default |
+|-----------|-------------|----------|---------|
+| `RISK_MIN_PROFIT` | Floor in sats on the worst case the transaction authorizes: vault BTC minus `maxWbtcIn`. Rejected at boot when the liquidation engine is on and inventory-funded. Unset is not a floor of zero: a vault can preview profitably while `maxWbtcIn` exceeds its value, and the bot signs it. `RISK_MIN_PROFIT=0` makes the worst case non-negative | No | |
+| `RISK_MAX_IN_FLIGHT` | Cap across both engines | No | unlimited |
 
 ### 5.4. Execution Modes
 
-`EXECUTION_MODE=AUTO` is the default keeper mode: the process resolves one
-signer, shares it across every engine this service runs, signs approvals and
-actions, broadcasts them, and waits for receipts.
+`AUTO` resolves one signer, shares it across both engines, signs and broadcasts, and waits for
+receipts.
 
-`EXECUTION_MODE=MANUAL` is keyless. The bot must have `DATABASE_URL`,
-`MANUAL_EXECUTOR_ADDRESS`, and `MANUAL_EXECUTOR_KIND`; it must not have a signer
-configured or the effective private-key env var present. Instead of broadcasting,
-it writes a content-hashed proposal to the StateStore and sends a notification.
-The operator uses `operator-cli` against the same `DATABASE_URL` and
-`PERSISTENCE_SCHEMA`:
+`MANUAL` is keyless. It requires `DATABASE_URL`, `MANUAL_EXECUTOR_ADDRESS` and
+`MANUAL_EXECUTOR_KIND`. It refuses to boot with `SIGNER_SOURCE=aws`, `SIGNER_KEY_REF`,
+`KMS_KEY_ID`, `SIGNER_ADDRESS`, or a populated signing-key env var. It writes content-hashed
+proposals to the StateStore and notifies. The operator acts on them with `operator-cli`, see the
+[liquidator guide §8.3](./liquidator-operation-guide.md#83-manual-proposals). Filter with
+`list --action vault-acquisition`; inventory mode also emits `approval` proposals that must be
+signed first.
 
-```bash
-pnpm --filter @services/operator-cli operator-cli list
-pnpm --filter @services/operator-cli operator-cli show <id>
-pnpm --filter @services/operator-cli operator-cli claim <id>
-pnpm --filter @services/operator-cli operator-cli broadcast <id>
-# or, after signing externally:
-pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
-```
+### 5.5. Private submission
 
-### 5.5. MEV protection (private submission)
+Off by default. `SUBMITTER=public` broadcasts to the node's mempool, where searchers watch.
+`SUBMITTER=flashbots-protect` submits privately. AUTO only: MANUAL is rejected at boot, because
+the operator's wallet chooses its own route.
 
-Off by default. `SUBMITTER=public` broadcasts to your node's mempool, which is
-where searchers watch — a profitable liquidation is visible there before it
-mines, and the mempool also advertises which positions you consider liquidatable
-and at what threshold.
-
-`SUBMITTER=flashbots-protect` submits privately instead. **AUTO only** — MANUAL is
-keyless, so you broadcast with your own wallet and submission policy is yours;
-the bot refuses the combination at startup rather than pretending to protect
-transactions it never sends.
-
-| Variable | Required | Notes |
+| Variable | Required | Default |
 |---|---|---|
-| `SUBMITTER` | no | `public` (default) \| `flashbots-protect` |
-| `FLASHBOTS_PROTECT_URL` | in private mode | e.g. `https://rpc.flashbots.net/fast` |
-| `FLASHBOTS_STATUS_URL` | no | defaults to `https://protect.flashbots.net` |
-| `PRIVATE_MIN_PRIORITY_FEE_WEI` | in private mode | no default, deliberately — see below |
-| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | default `25` — the relay's retry window, used when it states no deadline of its own; capped at `7200` (~a day of blocks). Reading status from Protect, a value below its ~25-block window is refused at boot: when a status probe says nothing, this is the only thing fencing the nonce |
-| `PRIVATE_RECLAIM_MARGIN_BLOCKS` | no | default `3` — reorg headroom past that deadline; same cap |
+| `SUBMITTER` | no | `public` |
+| `FLASHBOTS_PROTECT_URL` | private | e.g. `https://rpc.flashbots.net/fast` |
+| `FLASHBOTS_STATUS_URL` | no | `https://protect.flashbots.net` |
+| `PRIVATE_MIN_PRIORITY_FEE_WEI` | private | none, on purpose |
+| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | `25`. Minimum nonce fence in blocks, max `7200`. With the status URL on Protect, a value below its ~25-block window fails at boot |
+| `PRIVATE_RECLAIM_MARGIN_BLOCKS` | no | `3`. Reorg headroom past the fence, max `7200` |
+| `PRIVATE_SUBMIT_TIMEOUT_MS` | no | `8000`. The submit holds the nonce lock, so keep it inside one poll cycle |
+| `PRIVATE_STATUS_TIMEOUT_MS` | no | `2000` |
 
-Four things fail the boot rather than degrading quietly, because each one
-otherwise produces a bot that looks healthy and lands nothing:
+Boot fails rather than degrading when:
 
-- **`DATABASE_URL` is mandatory.** A privately-submitted transaction is invisible
-  to your own node, so the persisted intents are the only thing that can tell
-  whether a reserved nonce is still spoken for. Without them nothing fences it.
-- **A priority-fee floor is mandatory.** Flashbots drops transactions builders
-  have no reason to include. There is no sensible default: what is competitive is
-  a market condition on the day, and guessing low fails silently.
-  `PRIVATE_MIN_PRIORITY_FEE_WEI` is applied to every transaction the bot signs in
-  private mode — the tip is raised to it when the node prices lower, and the fee
-  cap rises with it. The node's own estimate is about being ordered ahead of the
-  transactions it can see, which is not the market a private transaction is in.
-- **Relay variables outside private submission are rejected** — under
-  `SUBMITTER=public` and under `EXECUTION_MODE=MANUAL`, where the bot does not
-  broadcast at all — so a half-applied configuration cannot leave you sending in
-  public while believing otherwise.
-- **The two block counts above are bounded.** They are the only things that ever
-  release the nonce of a private transaction the relay has dropped, and a fence
-  set to an implausible number is indistinguishable, from the outside, from a
-  nonce that never comes back.
+- `DATABASE_URL` is unset. A private transaction is invisible to the node, so persisted intents
+  are the only nonce fence.
+- `PRIVATE_MIN_PRIORITY_FEE_WEI` is unset. Flashbots drops transactions builders have no reason
+  to include, and a competitive tip is a market condition. Every private transaction is signed
+  with at least this tip.
+- `FLASHBOTS_PROTECT_URL` or `PRIVATE_MIN_PRIORITY_FEE_WEI` is set under `SUBMITTER=public`, or
+  either of those, or `SUBMITTER=flashbots-protect`, is set under `EXECUTION_MODE=MANUAL`. The
+  remaining relay variables carry defaults, so they are accepted and ignored outside private mode.
 
-**Accepted risk: the relay is trusted to stop offering a transaction.** A signed
-transaction carries no expiry, so nothing on chain forces the relay to drop it
-once its deadline passes. Releasing the nonce rests on the relay honouring the
-deadline it reported, or — when it reports none — on
-`PRIVATE_RELAY_HORIZON_BLOCKS` describing the relay you actually use. The
-declared window, the reorg margin and the absolute cap bound the exposure; they
-do not remove it. Only consuming the nonce on chain would, which this bot does
-not do.
+**Nonce fence.** A dropped private transaction holds its nonce until the chain passes the larger
+of the relay's stated deadline and `head + PRIVATE_RELAY_HORIZON_BLOCKS`, plus the margin. A relay
+deadline more than 7200 blocks past head is capped. Later transactions queue behind it. This is
+self-healing. If `eth_getTransactionCount` stops advancing while the bot keeps recording intents,
+look for `Relay status probe failed` in the logs: an unreachable status endpoint keeps every nonce
+fenced until its horizon.
 
-**The trade-off is yours to make, and it is real.** Private submission reduces
-front-running, but it also narrows who can include you (Protect's default forwards
-only to the Flashbots builder; `/fast` targets all registered builders) and aligns
-submission to block boundaries. Whether that wins or loses more liquidations than
-it saves depends on your competition and capital. Judge it from your own metrics,
-not from this page:
+**Accepted risk: the relay is trusted to stop offering a transaction.** A signed transaction has
+no expiry, so nothing on chain forces the relay to drop it after its deadline. Releasing the nonce
+relies on the relay honouring the deadline it reported or, when it reports none, on
+`PRIVATE_RELAY_HORIZON_BLOCKS` matching the relay you use. The window, the margin and the cap bound
+this exposure. Only consuming the nonce on chain removes it, and this bot does not do that.
 
-| Metric | What it tells you |
+**Judge the trade-off from your own metrics.** Private submission narrows who can include you
+(`/fast` fans out to all registered builders) and aligns to block boundaries.
+
+| Metric | Meaning |
 |---|---|
-| `submitter_send_total{result="accepted"}` | the relay is taking your transactions |
-| `submitter_send_total{result="rejected"}` | the relay is *refusing* them — a malformed call or a bad fee |
-| `submitter_send_total{result="ambiguous"}` | relay unreachable or 5xx; the nonce stays fenced |
-| `relay_tx_status_total{status="INCLUDED"}` | they are landing |
-| `relay_tx_status_total{status="sim_error"}` | **your** transactions are unviable, not out-competed — check the fee floor and the call |
-| `relay_tx_status_total{status="probe_error"}` | the status API is unreachable; nonces stay fenced (safe, but throughput suffers) |
+| `submitter_send_total{result="accepted"}` | The relay took the transaction |
+| `submitter_send_total{result="rejected"}` | The relay refused it: malformed call or bad fee |
+| `submitter_send_total{result="ambiguous"}` | Relay unreachable or 5xx. The nonce stays fenced |
+| `relay_tx_status_total{status="sim_error"}` | Your transaction is unviable. Check the fee floor and the call |
+| `relay_tx_status_total{status="probe_error"}` | Status API unreachable. Nonces stay fenced |
 
-`accepted` climbing while `INCLUDED` stays flat is the signature of a fee floor
-set too low, or of a builder fan-out too narrow.
-
-**A stuck private nonce.** If a transaction is dropped by the relay and never
-mined, its nonce is held until the chain passes that transaction's own deadline —
-the `maxBlockNumber` the relay reported when it took it, recorded on the intent —
-plus `PRIVATE_RECLAIM_MARGIN_BLOCKS`, and is then released automatically. Later
-transactions queue behind it in the meantime, because nonces are consumed in
-order. That is expected and self-healing.
-
-The deadline is the relay's, not a duration you configure, so there is nothing to
-tune per relay: `PRIVATE_RELAY_HORIZON_BLOCKS` only covers a transaction whose
-status was never readable, and is never allowed to shorten a deadline the relay
-did state. Blocks rather than elapsed time matters when the chain stalls — a wall
-clock keeps running while a transaction the relay can still land goes nowhere.
-
-What is *not* expected is the queue never draining: if `eth_getTransactionCount`
-stops advancing while the bot keeps recording intents, raise the log level and
-check for `Relay status probe failed` — a status endpoint that is persistently
-unreachable keeps every nonce fenced until its horizon.
+Measure inclusion with `arbitrageur_vaults_acquired_total` and `liquidator_liquidations_total`.
+`relay_tx_status_total` is only recorded when the bot has to ask the relay, so it is not an
+inclusion counter.
 
 ### 5.6. Contract Addresses
 
-Testnet contract addresses are provided as part of the onboarding requirements.
+Testnet addresses are provided during onboarding.
 
-| Contract | Purpose |
-|----------|---------|
-| `VAULT_SWAP_ADDRESS` | BTCVaultSwap — `swapWbtcForVault()` and `previewEscrowedVaults()` |
-| `WBTC_ADDRESS` | WBTC token for acquisition payments |
+| Variable | Contract |
+|----------|----------|
+| `VAULT_SWAP_ADDRESS` | BTCVaultSwap. `swapWbtcForVault`, `previewEscrowedVaults` |
+| `WBTC_ADDRESS` | WBTC token |
 
 ## 6. Wallet Setup
 
-### 6.1. Funding Requirements
+**`inventory`**
 
-The arbitrageur wallet requires:
+| Asset | Held by | Purpose |
+|-------|---------|---------|
+| ETH | signer | Gas |
+| WBTC | signer | Acquisitions. Keep a buffer for several at once |
 
-Under `ARBITRAGE_FUNDING=inventory` (the default), the arbitrageur wallet requires:
+**`router`**
 
-| Asset | Purpose | Notes |
-|-------|---------|-------|
-| **ETH** | Transaction gas | Monitor balance for continuous operation |
-| **WBTC** | Vault acquisition payments | Must have sufficient balance to acquire vaults |
+| Asset | Held by | Purpose |
+|-------|---------|---------|
+| ETH | signer | Gas |
+| WBTC | treasury (`payer`) | Acquisitions, plus an allowance to the router |
 
-Under `ARBITRAGE_FUNDING=router` the WBTC moves to the treasury and this wallet needs **only ETH**.
-The router pulls exactly the preview cost from the treasury and sweeps any residue straight back, so
-the signing key can direct that allowance but can never receive it. What the treasury must hold:
+Capacity under router funding is `min(treasury balance, allowance)` minus WBTC held for signed
+batches that are still executable. An exhausted allowance stops acquisitions exactly like an
+empty treasury, and only the treasury can raise it.
 
-| Asset | Held by | Notes |
-|-------|---------|-------|
-| **ETH** | the bot's signer | Gas only. It pays for the transaction, not the vault |
-| **WBTC** | the treasury (`payer`) | Plus an allowance to the router — the bot cannot grant it, and boot fails without it |
+An inventory-funded liquidation engine in the same process still spends the signer's debt tokens
+and WBTC.
 
-**WBTC requirements:**
-- Vaults are acquired at a discount (see [Economic Model](#101-economic-model) for details)
-- Maintain buffer for multiple simultaneous acquisitions
-- Monitor `arbitrageur_wbtc_balance` metric
-- Under router funding, spendable capacity is `min(treasury balance, allowance)` — an allowance that
-  runs down stops acquisitions just as surely as an empty treasury
+Monitoring:
 
-**Recommended monitoring:**
-- Set up alerts for low ETH balance
-- Set up alerts for low WBTC balance — on `arbitrageur_funding_wbtc_balance`, which follows whichever
-  account actually pays. `arbitrageur_wbtc_balance` is always the *signer's*, so under router funding
-  it will sit flat while the treasury drains
-- Under router funding, alert on `arbitrageur_funding_wbtc_allowance` too: an exhausted approval
-  stops acquisitions exactly like an empty treasury, and only the treasury can raise it
-- In MANUAL mode, monitor proposals with `operator-cli list` and Slack/log notifications
+- ETH: the bot does not export its ETH balance. Use an external balance monitor.
+- WBTC: alert on `arbitrageur_funding_wbtc_balance`. It follows whichever account pays.
+  `arbitrageur_wbtc_balance` is always the signer's, so under router funding it does not track
+  acquisitions. It still moves when an inventory-funded liquidation engine spends the signer's
+  WBTC, or a flash-funded one sweeps profit there.
+- Router: alert on `arbitrageur_funding_wbtc_allowance` too.
+- The funding gauges refresh only on a cycle that found escrowed vaults, so they go stale during
+  quiet periods. Watch the treasury on chain as well, not only through these gauges.
+- MANUAL: watch `operator-cli list` and the notifier.
 
 ## 7. Starting the Service
 
-### 7.1. Native Deployment
+### 7.1. Native
 
-**Step 1: Start PostgreSQL**
-
-```bash
-pnpm arbitrageur:db:up
-```
-
-**Step 2: Start Ponder Indexer**
+The indexer and the bot are long-running foreground processes. Start each in its own terminal or
+under a supervisor.
 
 ```bash
-pnpm arbitrageur:indexer
-```
+pnpm arbitrageur:db:up                   # terminal 1, exits when the container is up
 
-Wait for initial sync (check logs or query `/escrowed-vaults` endpoint).
+pnpm arbitrageur:indexer:start           # terminal 2. `:indexer` runs `ponder dev` instead
+curl -f http://localhost:42070/ready     # 503 during backfill, 200 when caught up
 
-**Step 3: Start Arbitrageur Client**
-
-```bash
-pnpm arbitrageur:run
-```
-
-**Verify startup:**
-
-```bash
-# Check health
+pnpm arbitrageur:run                     # terminal 3, once the indexer answers 200
 curl http://localhost:9091/health
-
-# Check escrowed vaults being tracked
-curl http://localhost:42070/escrowed-vaults
 ```
 
-### 7.2. Docker Deployment
+Both indexer scripts read `services/ponder/.env.local`. Variables already exported in the shell
+take precedence over that file.
 
-**Start all arbitrageur services:**
+### 7.2. Docker
 
 ```bash
 docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-bot
-```
-
-**View logs:**
-
-```bash
-# All arbitrageur services
-docker compose logs -f arbitrageur-ponder arbitrageur-bot
-
-# Specific service
 docker compose logs -f arbitrageur-bot
 ```
 
-**Service dependencies:**
-- `arbitrageur-postgres` must be healthy before `arbitrageur-ponder` starts
-- `arbitrageur-ponder` must be healthy before `arbitrageur-bot` starts
+Each service starts after the previous one is healthy. `restart: unless-stopped` restarts a
+container that exits. A running container that reports unhealthy is not restarted.
 
-**Health checks are automatic** - Docker will restart unhealthy containers.
+Compose does not publish the kill-switch port. Reach it from inside the container, or bind
+`RISK_CONTROL_HOST=0.0.0.0` and publish the port yourself.
 
 ## 8. Operations
 
-### 8.1. Health Monitoring
+### 8.1. Health
 
-**Health endpoint:**
+Same endpoints and semantics as the liquidator, on port 9091. See
+[liquidator guide §8.1](./liquidator-operation-guide.md#81-health).
 
-```bash
-curl http://localhost:9091/health
-```
+### 8.2. Metrics
 
-Response:
-```json
-{
-  "status": "healthy",
-  "uptime": 3600,
-  "lastPollAt": "2025-01-30T12:00:00.000Z",
-  "ponderReachable": true,
-  "rpcReachable": true,
-  "latestBlockNumber": "19500000"
-}
-```
-
-| Status | Meaning |
-|--------|---------|
-| `healthy` | All dependencies reachable, polling active |
-| `degraded` | Some issues but still operational |
-| `unhealthy` | Critical failures, not operational |
-
-**Readiness endpoint:**
-
-```bash
-curl http://localhost:9091/ready
-```
-
-Returns HTTP 200 if ready, HTTP 503 if dependencies unreachable.
-
-### 8.2. Prometheus Metrics
-
-Available at `GET http://localhost:9091/metrics`
-
-The risk-control kill switch, when enabled, is not served from this port. It
-listens on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` and requires a bearer token.
-
-**Key metrics:**
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `eth_rpc_calls_total` | Counter | Outbound JSON-RPC attempts by `method` (retries counted separately) |
-| `submitter_send_total` | Counter | Broadcast attempts by `result` (`accepted`/`rejected`/`ambiguous`) — private submission only; see §5.5 |
-| `relay_tx_status_total` | Counter | Relay status by `status`, plus `sim_error` (our tx is unviable) and `probe_error` (relay unreachable) |
-| `arbitrageur_vaults_acquired_total` | Counter | Total vaults acquired |
-| `arbitrageur_wbtc_spent_total` | Counter | Total WBTC spent (satoshis) |
-| `arbitrageur_wbtc_balance` | Gauge | Current WBTC balance (satoshis) |
-| `arbitrageur_errors_total` | Counter | Errors by type |
-| `arbitrageur_poll_duration_seconds` | Histogram | Poll cycle duration |
-| `arbitrageur_last_poll_timestamp` | Gauge | Last poll timestamp |
-
-If `ADAPTER_ADDRESS` and `LENS_ADDRESS` enable the optional liquidation engine,
-the same endpoint also exposes the `liquidator_*` metric set.
-
-**Recommended alerts:**
+`GET http://localhost:9091/metrics`. Every metric and error label is defined in
+[arbitrageur-metrics.md](arbitrageur-metrics.md). With the liquidation engine on, the
+`liquidator_*` set is served from the same endpoint.
 
 ```yaml
-# Prometheus alerting rules example
 - alert: ArbitrageurNotPolling
   expr: time() - arbitrageur_last_poll_timestamp > 120
   for: 2m
-  annotations:
-    summary: "Arbitrageur has not polled in over 2 minutes"
-
-- alert: ArbitrageurHighErrorRate
-  expr: rate(arbitrageur_errors_total[5m]) > 0.1
-  annotations:
-    summary: "Arbitrageur experiencing high error rate"
-
-- alert: ArbitrageurLowWbtcBalance
-  expr: arbitrageur_wbtc_balance < 10000000  # 0.1 WBTC in satoshis
-  annotations:
-    summary: "Arbitrageur WBTC balance low"
+- alert: ArbitrageurLowFundingWbtc
+  expr: arbitrageur_funding_wbtc_balance < 10000000   # 0.1 WBTC in sats
+- alert: ArbitrageurLowAllowance
+  expr: arbitrageur_funding_wbtc_allowance < 10000000  # router funding only
 ```
 
-### 8.3. Indexer Endpoints
+### 8.3. Kill switch
 
-**MANUAL proposals:**
+Same server and endpoints as the liquidator. See
+[liquidator guide §8.4](./liquidator-operation-guide.md#84-kill-switch). One halt stops both
+engines.
+
+A code-hash halt withdraws the allowances this signer granted: the LLP's WBTC allowance under
+inventory funding, and the adapter's allowances when the liquidation engine is on. Router funding
+withdraws nothing, because that allowance belongs to the treasury, not to this process.
+
+### 8.4. Indexer endpoints
 
 ```bash
-# Proposals awaiting an operator
-pnpm --filter @services/operator-cli operator-cli list --action vault-acquisition
-
-# Inspect and claim a proposal before signing
-pnpm --filter @services/operator-cli operator-cli show <id>
-pnpm --filter @services/operator-cli operator-cli claim <id>
-
-# Broadcast with configured operator keys, or record an externally signed tx
-pnpm --filter @services/operator-cli operator-cli broadcast <id>
-pnpm --filter @services/operator-cli operator-cli confirm <id> --tx <hash>
+curl http://localhost:42070/escrowed-vaults      # escrowed vaults with a live preview
+curl http://localhost:42070/escrowed-vaults-raw  # indexed rows only, for debugging
 ```
 
-The CLI uses `CLIENT_RPC_URL`, `DATABASE_URL`, `PERSISTENCE_SCHEMA`,
-`MANUAL_EXECUTOR_ADDRESS`, and `MANUAL_EXECUTOR_KIND`. `broadcast` additionally
-needs `OPERATOR_KEY_REF` for EOA custody or `SAFE_OWNER_KEY_REFS` for Safe
-custody; `claim` and `confirm` can remain keyless.
-
-**Risk-control kill switch:**
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9095/status
-curl -XPOST -H "Authorization: Bearer $TOKEN" \
-  "http://127.0.0.1:9095/halt?reason=incident"
-curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9095/resume
-```
-
-`GET /status` answers `{state, inFlight, reason, codeVerified}`. Read `reason`
-before resuming: a halt recorded while the gate was *already* HALTED — a
-code-hash mismatch found under `RISK_START_HALTED=true`, say — raises no alert,
-so this is the only place it is ever stated. `codeVerified` is `true` once every
-address in `RISK_EXPECTED_CODE_HASHES` has passed a bytecode check in this
-process — and `false` both before that and when no hashes are pinned at all,
-since neither is an assurance about the code you are trading against.
-
-`POST /resume` clears the kill switch, and only the kill switch. It answers
-**409** and leaves the bot HALTED when the code-hash guard is what is holding
-the halt — a mismatched, missing or never-readable target is not something to
-wave through by hand. That clears itself: the next successful check retires the
-cause, and the resume then works — so a flaky RPC costs you one check interval,
-not an outage. If the pinned hash is simply *wrong*, correct
-`RISK_EXPECTED_CODE_HASHES` and restart; no amount of resuming will clear a
-mismatch that is really there.
-
-**A halted bot still keeps its books.** Reconcile, the `MANUAL_INTENT_TTL_MS` proposal sweep and
-the `intent-stuck` alert all run on every cycle whether or not the gate is HALTED — none of them
-sends a transaction, and all of them are wanted more during an incident. What a halt stops is the
-trading half: the indexer is not asked and no vault is acted on.
-
-**A code-hash halt also withdraws the allowances the bot granted.** While that
-halt stands, every poll cycle sends an `approve(spender, 0)` for each allowance
-this signer granted and that is not already zero — the LLP's WBTC allowance
-under signer funding, and the adapter's debt-token and WBTC allowances when the
-liquidation engine is enabled. This is the one transaction a HALTED gate still
-sends, and it is the only one it can: a halt stops what the bot sends, and a
-spender needs nothing further from the bot to pull what it was already approved
-for. An operator kill-switch halt does **not** do this. Router funding withdraws
-nothing — that allowance is the treasury's, granted by an operator to the
-router, and this process never held the right to grant or revoke it. Under
-`EXECUTION_MODE=MANUAL` each withdrawal is a proposal to sign. Once the pin is
-corrected and the gate resumes, the next cycle re-approves what it needs.
-
-**Query indexer endpoints:**
-
-```bash
-# Escrowed vaults available for acquisition (enriched with live debt data)
-curl http://localhost:42070/escrowed-vaults
-
-# Raw escrowed vaults (for debugging)
-curl http://localhost:42070/escrowed-vaults-raw
-```
-
-### 8.4. Restarting under router funding
+### 8.5. Restarting under router funding
 
 Skip this under `ARBITRAGE_FUNDING=inventory`.
 
-The bot remembers its signed batches **in memory only**. A restart forgets them. This is by design:
-the router relays only for its own signer, so a forgotten batch is executable by nobody but this
-bot, and the bot signs a fresh batch for every attempt rather than replaying an old one.
+The bot keeps its signed batches in memory only, so a restart forgets them. The router relays a
+batch only for its own signer, and the bot signs a fresh batch for every attempt, so a forgotten
+batch is executable by nobody else.
 
-What can outlive the process is a `relay` **transaction that was already broadcast**. It stays in
-the mempool and may mine after the restart, up to its `ARBITRAGE_RELAY_DEADLINE_SECONDS` deadline.
-Inside that window:
+A `relay` transaction that was already broadcast can outlive the process. It may still mine up to
+its `ARBITRAGE_RELAY_DEADLINE_SECONDS` deadline. Inside that window:
 
-- The restarted bot publishes the treasury's raw capacity, because it no longer knows the old batch
+- The restarted bot publishes the treasury's raw capacity, because it does not know the old batch
   exists. It can commit the same WBTC to a new vault.
-- If the old transaction lands first, it is a valid acquisition — the vault reaches your keeper and
-  the treasury pays the previewed cost. Nothing is lost, and nothing is spent beyond the approval.
-- The new acquisition then reverts on the WBTC pull, with its own vault still in escrow. That costs
-  gas, and the engine counts it as a genuine failure.
-- A run of such failures reaches `RISK_MAX_CONSECUTIVE_FAILURES` and halts the gate. The breaker is
-  off unless you set it; if you set it, keep the threshold above `RISK_MAX_IN_FLIGHT` so one
-  restart window cannot halt the bot on its own.
-- The old acquisition never reaches this process's `arbitrageur_vaults_acquired_total`. The
-  router's own `SwapWbtcToVault` events are the authoritative record of what the treasury paid for,
-  so alert on those rather than on the bot's counter alone.
+- If the old transaction lands first, it is a valid acquisition: the vault reaches your keeper and
+  the treasury pays the previewed cost.
+- The new acquisition then reverts on the WBTC pull, with its vault still in escrow. That costs gas
+  and counts as a genuine failure. If you set `RISK_MAX_CONSECUTIVE_FAILURES`, keep it above
+  `RISK_MAX_IN_FLIGHT` so one restart window cannot halt the bot.
+- The old acquisition never reaches this process's `arbitrageur_vaults_acquired_total`. Alert on
+  the router's `SwapWbtcToVault` events, which record what the treasury paid for.
 
 The next `refreshInventory` reads the real balance, so the accounting corrects itself on the
-following cycle. Nothing here needs an operator to repair it.
+following cycle.
 
-**A planned stop costs nothing.** Halt the gate first (`POST /halt`), wait for the in-flight
-acquisitions to reach their receipts — `inFlight` in the kill switch's `GET /status` reaching zero,
-or one poll interval plus `TX_RECEIPT_TIMEOUT_MS` — then stop the process. No transaction is then
+**Planned stop.** Halt the gate (`POST /halt`), wait until `inFlight` in `GET /status` is zero (or
+one poll interval plus `TX_RECEIPT_TIMEOUT_MS`), then stop the process. No transaction is left
 outstanding.
 
-**After an unplanned stop**, expect the window above for at most
-`ARBITRAGE_RELAY_DEADLINE_SECONDS` plus a block or two. If the gate halted during it, read
-`GET /status`, confirm the treasury's balance and the router's recent events explain the failures,
-and resume.
+**Unplanned stop.** Expect the window above for at most `ARBITRAGE_RELAY_DEADLINE_SECONDS` plus a
+block or two. If the gate halted during it, read `GET /status`, confirm that the treasury balance
+and the router's recent events explain the failures, and resume.
 
-## 9. Vault Acquisition Flow
+## 9. Vault Acquisition
 
-### 9.1. Economic Model
-
-When acquiring a vault, the arbitrageur pays less than the full BTC value:
-
-| Component | Example (1 BTC vault) |
-|-----------|----------------------|
-| Vault BTC Value | 1.00 BTC |
-| Arbitrageur Pays | ~0.97 WBTC |
-| **Gross Profit** | **~0.03 BTC (~3%)** |
-
-> **Note**: The exact discount percentage is defined as a protocol parameter.
-> Check the `ProtocolParam` contract on your target network for current rates.
->
-> <!-- TODO: Update this when protocol params are moved to Aave contracts -->
-
-### 9.2. Interest Accrual
-
-The Hub debt on an escrowed vault accrues interest over time. The
-contract function `BTCVaultSwap.previewEscrowedVaults(bytes32[])`
-returns, for each vault, a tuple including:
+`BTCVaultSwap.previewEscrowedVaults(bytes32[])` returns, per vault:
 
 | Field | Meaning |
 |---|---|
-| `amountVault` | Original BTC in the vault (sats) |
-| `amountDebt` | Current Hub debt = principal + accrued interest |
-| `amountInterest` | Interest accrued above the escrow-time principal |
-| `amountFee` | Protocol fee (only set when profitable) |
-| `amountWbtcToAcquire` | What the arbitrageur pays = `amountDebt + amountFee` |
-| `isProfitable` | `true` iff vault BTC value (oracle) > `amountDebt` |
+| `amountVault` | BTC in the vault (sats) |
+| `amountDebt` | Current Hub debt: principal plus accrued interest |
+| `amountInterest` | Interest accrued since escrow |
+| `amountWbtcEquivalent` | Oracle value of the vault in WBTC |
+| `amountFee` | Protocol commission on `amountWbtcEquivalent - amountDebt`. Zero when that is not positive |
+| `amountWbtcToAcquire` | What the arbitrageur pays: `amountDebt + amountFee` |
+| `amountProfitEst` | `max(0, amountWbtcEquivalent - amountWbtcToAcquire)` |
 
-The Ponder API surfaces this as `currentDebt` (= `amountWbtcToAcquire`)
-and `isProfitable`. Slippage is applied to `currentDebt`:
-`maxWbtcIn = currentDebt + currentDebt * MAX_SLIPPAGE_BPS / 10000`.
+The indexer serves `currentDebt` (`amountWbtcToAcquire`) and `isProfitable`
+(`amountProfitEst > 0`). The bot re-reads the preview before each acquisition and authorizes
+`maxWbtcIn = amountWbtcToAcquire + amountWbtcToAcquire * MAX_SLIPPAGE_BPS / 10000`. A vault whose
+`amountProfitEst` is zero is skipped. Debt accrues while a vault sits in escrow, so the discount
+shrinks over time.
 
-> **Note**: Vault acquisition is first-come-first-served. The first successful
-> `swapWbtcForVault()` transaction wins the vault.
+Acquisition is first-come-first-served. The first successful transaction wins the vault.
 
-### 9.1. Incident: the signing key is compromised (router funding)
+## 10. Incident: signing key compromised
 
-Router funding shrinks the blast radius of a lost key — the router pulls only the preview cost from
-the treasury and sweeps any residue straight back, so the key can never *receive* the float. It does
-not eliminate it: `vaultSwap` is an argument to each signed call, so whoever holds the key can point
-the router at a contract of their choosing and spend the entire allowance into it.
+Applies to router funding. The router pulls only the preview cost and refunds the residue to the
+treasury, but `vaultSwap` is an argument to each signed call: whoever holds the key can point the
+router at a contract of their choosing and spend the entire allowance into it, including to an
+address they control.
 
-**The approval is the exposure, so revoke it first.** Do this before stopping the bot — the bot's
-own submissions are not what is dangerous, and a stopped bot does nothing to stop an attacker:
+1. **Revoke the approval first.** Do this before stopping the bot; a stopped bot does not stop
+   the attacker. Signed batches stay valid until their deadline, and the router relays them for
+   the compromised signer, so only a zero allowance makes them fail.
 
-```bash
-cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" 0 \
-  --rpc-url "$RPC_URL" --private-key "$TREASURY_KEY"
-```
+   ```bash
+   cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" 0 \
+     --rpc-url "$RPC_URL" --private-key "$TREASURY_KEY"
+   ```
 
-Then, in order:
+2. Halt the bot (`POST /halt`) or stop the process.
+3. Deploy a new router for the new signer (§4.4). There is no rotation.
+4. Approve the new router from the treasury, with working capital.
+5. Configure the new key (`SIGNER_KEY_REF` or `KMS_KEY_ID`, and `SIGNER_ADDRESS`), point
+   `ARBITRAGE_ROUTER_ADDRESS` at the new router, and set a new `PERSISTENCE_SCHEMA`. A schema is
+   bound to the execution address that first used it.
+6. Restart. Boot re-reads the router's immutables and the allowance, and refuses on mismatch.
 
-1. Halt the bot via the kill switch (`POST /halt`), or stop the process.
-2. Deploy a **new** router for the new signer — see §4.4. `signer`, `payer` and `wbtc` are all
-   immutable, so there is no rotation: the compromised router is retired, not repaired.
-3. Point `ARBITRAGE_ROUTER_ADDRESS` at the new one and restart. Boot re-reads the router's
-   immutables and refuses to start if they disagree with the bot's key.
-4. Approve the new router from the treasury, with working capital rather than an unlimited amount.
+If the liquidation engine runs with flash funding, treat `LIQUIDATION_ROUTER_ADDRESS` as
+compromised too. Its `owner` is this signer, and it sweeps proceeds there.
 
-Signed batches already in flight stay valid until their `ARBITRAGE_RELAY_DEADLINE_SECONDS` expires —
-they carry no nonce, and a compromised signer is exactly the address the router relays for — but
-revoking the approval makes them fail, which is the second reason to revoke first.
+## 11. Troubleshooting
 
-The same key also signs liquidations. If the liquidation engine is enabled, treat
-`LIQUIDATION_ROUTER_ADDRESS` as compromised too: its `owner` is this signer, and it sweeps proceeds
-there.
+| Symptom | Cause | Action |
+|---------|-------|--------|
+| `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
+| `Database schema required` from the indexer | `DATABASE_SCHEMA` unset | Set it in `.env.arbitrageur.indexer` |
+| `ARBITRAGE_FUNDING=router requires ...` or `... is set but ARBITRAGE_FUNDING is "inventory"` | Half-configured funding | Set `ARBITRAGE_FUNDING=router` with `ARBITRAGE_ROUTER_ADDRESS` and `VAULT_KEEPER_ADDRESS`, or none |
+| `payer ... has not approved ArbitrageRouter` | Missing treasury allowance | The treasury approves the router (§4.4) |
+| `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |
+| `EXECUTION_MODE=MANUAL is keyless` | A signer variable or the key env var is present | Unset it |
+| `Indexer ... was not ready within ...` | Backfill longer than `INDEXER_READY_TIMEOUT_MS` | Wait, or raise it |
+| `halted (...)` in logs | Risk gate HALTED | `GET /status`, read `reason`, then `POST /resume` |
+| `vault_skipped` | Vault left escrow, or previewed profit is zero | Normal |
+| `race_lost` | Another arbitrageur took the vault | Normal competition |
+| `swap_reverted` | Reverted with the vault still in escrow | Inspect the revert. Counts toward the breaker |
+| `authorization_expired` | Signed batch sat behind a stalled nonce past `ARBITRAGE_RELAY_DEADLINE_SECONDS` | Look at nonce gaps, not the market |
+| `tx_timeout` | No receipt within `TX_RECEIPT_TIMEOUT_MS` | Check the network, or raise it |
+| `EADDRINUSE` on 9095 | Both services on one host with the kill switch on | Set a distinct `RISK_CONTROL_PORT` |
 
-## 10. Troubleshooting
-
-### 10.1. Common Issues
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| "Ponder unreachable" | Indexer not running or wrong URL | Check `PONDER_URL`, verify indexer is healthy |
-| "RPC unreachable" | Invalid RPC endpoint | Verify `CLIENT_RPC_URL` and network connectivity |
-| "Configuration validation failed" | Invalid env vars | Check error output for specific field |
-| "Swap reverted" | Vault already acquired or slippage exceeded | Normal competition - vault was acquired by another |
-| "Gas estimation failed" | Contract call would revert | Vault state changed, will retry |
-| "Transaction timeout" | Network congestion | Increase `TX_RECEIPT_TIMEOUT_MS` |
-| "Insufficient WBTC" | Low balance | Fund wallet with more WBTC |
-| "EXECUTION_MODE=MANUAL requires DATABASE_URL" | MANUAL proposals need durable storage | Set `DATABASE_URL` and matching `PERSISTENCE_SCHEMA` |
-| "EXECUTION_MODE=MANUAL is keyless" | A signer or private key is present in MANUAL | Unset signer env and the effective private-key env var |
-| "halted (...)" | Risk gate is HALTED | `GET /status` and read `reason` — it is the only record of a halt raised while already HALTED; then `POST /resume` if appropriate (409 means the code-hash guard is holding it) |
-
-### 10.2. Error Types
-
-| Error Type | Trigger | Action |
-|------------|---------|--------|
-| `poll_error` | Exception escaped the poll cycle | Check logs for stack trace |
-| `ponder_fetch_error` | Failed to fetch from indexer | Verify Ponder is running |
-| `vault_skipped` | Vault no longer in escrow at preview time, or `isProfitable=false` | Normal skip — the indexer is one block behind reality, or the vault was already acquired |
-| `risk_blocked` | Risk gate blocked an otherwise executable candidate | Check risk config and kill-switch state |
-| `intent_in_flight` | Existing live intent/proposal already owns this vault | Let reconcile/operator workflow finish, or inspect the StateStore |
-| `gas_estimation_failed` | `estimateContractGas` reverted | Contract would revert; usually transient |
-| `swap_send_error` | Executor failed or aborted before a receipt wait | Check RPC, balance, approvals, or MANUAL proposal status |
-| `tx_timeout` | Receipt wait exceeded `TX_RECEIPT_TIMEOUT_MS` | Check network, increase timeout |
-| `swap_reverted` | Receipt status was `reverted` | Vault likely acquired by another |
-| `contract_revert` | `writeContract` rejected with a contract revert | Check transaction for reason |
-| `acquire_error` | Other unhandled exception during acquisition | Check WBTC balance, approval |
-
-**Viewing logs:**
-
-```bash
-# Native
-# Logs output to stdout
-
-# Docker
-docker compose logs -f arbitrageur-bot --tail 100
-```
+Logs go to stdout. Under Docker: `docker compose logs -f arbitrageur-bot --tail 100`.
