@@ -3,7 +3,13 @@ import { type Address, type Hex, formatUnits } from "viem";
 import { adapterAbi, lensAbi } from "@repo/abis";
 import { type RiskSlot, settleUnfinished } from "@repo/risk";
 import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
-import { LENS_ESTIMATE_CHUNK, bufferAmount, bufferAmounts, selectPositions } from "./domain";
+import {
+  LENS_ESTIMATE_CHUNK,
+  MAX_LIQUIDATION_CANDIDATES,
+  bufferAmount,
+  bufferAmounts,
+  selectPositions,
+} from "./domain";
 import {
   type FundedCandidate,
   type FundingParams,
@@ -68,6 +74,8 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   private txReceiptTimeoutMs: number;
   /** How repayment is funded — the seam that decides the call, the risk declaration and the setup. */
   private funding: LiquidationFunding;
+  /** Where the next truncated candidate window starts. See `selectPositions`. */
+  private candidateOffset = 0;
 
   constructor(config: LiquidationEngineConfig) {
     super(config, { engine: "liquidation", intentAction: "liquidation" });
@@ -224,12 +232,16 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     }
     const { dataTimestampMs } = feed;
     // The feed is untrusted: drop unusable and repeated entries, and cap the rest, before any RPC.
+    const offset = this.candidateOffset;
     const {
       positions: selected,
       malformed,
       duplicates,
       truncated,
-    } = selectPositions(feed.positions);
+    } = selectPositions(feed.positions, MAX_LIQUIDATION_CANDIDATES, offset);
+    // Move past this window, so a long list is covered across cycles.
+    const listed = selected.length + truncated;
+    this.candidateOffset = truncated > 0 ? (offset + selected.length) % listed : 0;
     if (malformed + duplicates > 0) {
       this.metrics.recordError("positions_malformed");
       this.logger.warn(
@@ -239,7 +251,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     if (truncated > 0) {
       this.metrics.recordError("positions_truncated");
       this.logger.warn(
-        `Indexer returned ${selected.length + truncated} liquidatable positions — acting on the first ${selected.length}; the rest wait for later cycles`
+        `Indexer returned ${listed} liquidatable positions — acting on ${selected.length} from offset ${offset % listed}; later cycles cover the rest`
       );
     }
 

@@ -86,6 +86,25 @@ describe("selectPositions", () => {
     expect(out.truncated).toBe(2);
   });
 
+  // Positions the bot cannot clear stay liquidatable, so a window fixed at the start could hold
+  // them forever.
+  it("starts a capped window at the offset and wraps around the end", () => {
+    const list = Array.from({ length: 7 }, (_, i) => pos(proxy(i)));
+
+    const out = selectPositions(list, 5, 5);
+
+    expect(out.positions.map((p) => p.proxyAddress)).toEqual([5, 6, 0, 1, 2].map(proxy));
+    expect(out.truncated).toBe(2);
+  });
+
+  it("ignores the offset when nothing is truncated", () => {
+    const list = Array.from({ length: 3 }, (_, i) => pos(proxy(i)));
+
+    const out = selectPositions(list, 5, 2);
+
+    expect(out.positions.map((p) => p.proxyAddress)).toEqual([0, 1, 2].map(proxy));
+  });
+
   it("drops entries without a usable proxy address", () => {
     const out = selectPositions([
       pos(proxy(1)),

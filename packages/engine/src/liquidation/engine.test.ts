@@ -1643,7 +1643,12 @@ describe("LiquidationEngine", () => {
 
   // The indexer is untrusted, so its candidate list is trimmed before any RPC and estimated in chunks.
   describe("candidate intake", () => {
-    it("estimates at most the capped number of distinct positions, a chunk at a time", async () => {
+    /**
+     * `MAX_LIQUIDATION_CANDIDATES + 100` distinct positions, each with its own borrower, on clients
+     * whose adapter maps each borrower back to its proxy. `onEstimate` sees each Lens call; no
+     * candidate proceeds past the Lens, because these tests are about which ones reach it.
+     */
+    function longFeed(onEstimate: (proxy: string) => Promise<void> | void) {
       const clients = createMockClients();
       const base = clients.publicClient.readContract;
       const proxyOf = new Map<string, string>();
@@ -1653,9 +1658,6 @@ describe("LiquidationEngine", () => {
         proxyOf.set(borrower, proxyAddress);
         return { ...mockPosition, proxyAddress, borrower };
       });
-      let calls = 0;
-      let active = 0;
-      let peak = 0;
       clients.publicClient.readContract = vi.fn(
         async (args: { functionName: string; args?: unknown[] }) => {
           if (args.functionName === "getPosition") {
@@ -1666,25 +1668,60 @@ describe("LiquidationEngine", () => {
             };
           }
           if (args.functionName !== "estimateLiquidation") return base(args);
-          calls++;
-          active++;
-          peak = Math.max(peak, active);
-          await new Promise((resolve) => setTimeout(resolve, 0));
-          active--;
-          // No candidate proceeds: this test is about the fan-out, not what follows it.
+          await onEstimate(String(args.args?.[0]));
           throw new Error("healthy position");
         }
       );
-      global.fetch = vi.fn().mockResolvedValue({
+      return { clients, distinct };
+    }
+
+    const feedOf = (liquidatable: unknown[]) =>
+      vi.fn().mockResolvedValue({
         ok: true,
-        json: () =>
-          Promise.resolve({ liquidatable: [...distinct, ...distinct], total: 0, checked: 0 }),
+        json: () => Promise.resolve({ liquidatable, total: 0, checked: 0 }),
       });
+
+    it("estimates at most the capped number of distinct positions, a chunk at a time", async () => {
+      let calls = 0;
+      let active = 0;
+      let peak = 0;
+      const { clients, distinct } = longFeed(async () => {
+        calls++;
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        active--;
+      });
+      global.fetch = feedOf([...distinct, ...distinct]);
 
       await createBot(clients).run();
 
       expect(calls).toBe(MAX_LIQUIDATION_CANDIDATES);
       expect(peak).toBeLessThanOrEqual(LENS_ESTIMATE_CHUNK);
+    });
+
+    // Candidates the bot cannot clear stay liquidatable. A window fixed at the start of the list
+    // would hold them every cycle, and the positions after them would never be estimated.
+    it("moves the window on each cycle, so a long list is covered", async () => {
+      let cycle: string[] = [];
+      const { clients, distinct } = longFeed((proxy) => {
+        cycle.push(proxy);
+      });
+      global.fetch = feedOf(distinct);
+      const bot = createBot(clients);
+      const proxies = (from: number, to: number) =>
+        distinct.slice(from, to).map((p) => p.proxyAddress);
+
+      await bot.run();
+      const first = cycle;
+      cycle = [];
+      await bot.run();
+
+      expect(first).toEqual(proxies(0, MAX_LIQUIDATION_CANDIDATES));
+      expect(cycle).toEqual([
+        ...proxies(MAX_LIQUIDATION_CANDIDATES, distinct.length),
+        ...proxies(0, 400),
+      ]);
     });
   });
 

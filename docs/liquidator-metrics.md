@@ -49,7 +49,7 @@ when `RISK_CONTROL_TOKEN_REF` is set.
 | `ponder_fetch_error` | Failed to fetch `/liquidatable-positions` |
 | `positions_unscanned` | The indexer had no answer for part of the position table: a batch of `estimateLiquidation` calls failed whole, or probes reverted for a reason other than the position being healthy. The cycle acts on what it saw. Sustained, the table has outgrown one batch's gas budget, the RPC refuses the batch, or a contract the lens reads is faulting (the indexer log names the revert) |
 | `positions_malformed` | Candidate entries without a usable `proxyAddress` or `borrower`, or a repeated proxy. Dropped before any RPC call. Sustained, the indexer is faulty |
-| `positions_truncated` | The indexer returned more than 500 distinct positions. The cycle acts on the first 500, and the rest wait for later cycles |
+| `positions_truncated` | The indexer returned more than 500 distinct positions. The cycle acts on 500 of them. The window moves on each cycle, so every position is covered within a few cycles |
 | `positions_mismatched` | The adapter does not map the candidate's `borrower` to its `proxyAddress`, or has no position for it. Dropped before any Lens call, because the Lens estimates the proxy but the liquidation charges the borrower. Sustained, the indexer's proxy mapping is wrong |
 | `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate |
 | `flash_probe_error` | The flash probe threw for a candidate. A malfunction, not a "not fundable" verdict (`flash` only) |
