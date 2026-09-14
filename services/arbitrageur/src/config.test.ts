@@ -97,6 +97,7 @@ describe("config validation", () => {
       expect(config.pollingIntervalMs).toBe(30000);
       expect(config.vaultProcessingDelayMs).toBe(0);
       expect(config.maxSlippageBps).toBe(100);
+      expect(config.btcRedemptionCostSats).toBe(0n);
       expect(config.metricsPort).toBe(9091);
       expect(config.retryConfig).toEqual({
         maxAttempts: 3,
@@ -112,6 +113,7 @@ describe("config validation", () => {
         ...validEnv,
         POLLING_INTERVAL_MS: "60000",
         MAX_SLIPPAGE_BPS: "200",
+        BTC_REDEMPTION_COST_SATS: "25000",
         METRICS_PORT: "3000",
         RETRY_MAX_ATTEMPTS: "5",
         TX_RECEIPT_TIMEOUT_MS: "60000",
@@ -122,6 +124,7 @@ describe("config validation", () => {
 
       expect(config.pollingIntervalMs).toBe(60000);
       expect(config.maxSlippageBps).toBe(200);
+      expect(config.btcRedemptionCostSats).toBe(25000n);
       expect(config.metricsPort).toBe(3000);
       expect(config.retryConfig).toMatchObject({ maxAttempts: 5 });
       expect(config.txReceiptTimeoutMs).toBe(60000);
@@ -148,6 +151,14 @@ describe("config validation", () => {
         const { loadConfig } = await import("./config");
         expect(loadConfig().maxSlippageBps).toBe(Number(bps));
       }
+    });
+
+    it.each(["-1", "1.5", "abc"])("refuses BTC_REDEMPTION_COST_SATS=%s", async (sats) => {
+      process.env = { ...validEnv, BTC_REDEMPTION_COST_SATS: sats };
+
+      const { loadConfig } = await import("./config");
+
+      expect(() => loadConfig()).toThrow("process.exit called");
     });
 
     // Same bound, same reason, on the flash-funding path: it feeds the on-chain profit floor, where

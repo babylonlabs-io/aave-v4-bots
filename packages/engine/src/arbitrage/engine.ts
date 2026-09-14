@@ -83,6 +83,12 @@ export interface ArbitrageEngineParams {
   vaultProcessingDelayMs: number;
   txReceiptTimeoutMs: number;
   /**
+   * Bitcoin cost of the keeper's claim on one vault, in sats: the Claim, Assert and Payout fees
+   * and anchors. The preview prices the gross vault BTC, but the keeper receives it net of these,
+   * so profit is measured net of this figure. Omitted ⇒ 0.
+   */
+  btcRedemptionCostSats?: bigint;
+  /**
    * Registered vault keeper the acquired vault is redeemed to, splitting the payer from the
    * beneficiary: this process pays the WBTC, that keeper's BTC key receives the vault
    * (`swapWbtcForVaultOnBehalf`). Set it when whoever signs is **not** itself a keeper — a
@@ -108,6 +114,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   private maxSlippageBps: number;
   private vaultProcessingDelayMs: number;
   private txReceiptTimeoutMs: number;
+  private btcRedemptionCostSats: bigint;
 
   constructor(config: ArbitrageEngineConfig) {
     super(config, { engine: "arbitrage", intentAction: "vault-acquisition" });
@@ -119,6 +126,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     this.maxSlippageBps = config.maxSlippageBps;
     this.vaultProcessingDelayMs = config.vaultProcessingDelayMs;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
+    this.btcRedemptionCostSats = config.btcRedemptionCostSats ?? 0n;
   }
 
   /**
@@ -495,8 +503,11 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       }
 
       const preview = previewResults[0];
-      if (preview.amountProfitEst === 0n) {
-        this.logger.warn(`Vault ${vaultId} is currently unprofitable, skipping`);
+      // The preview's profit is on the gross vault BTC, so it must also cover the claim's cost.
+      if (preview.amountProfitEst <= this.btcRedemptionCostSats) {
+        this.logger.warn(
+          `Vault ${vaultId} is currently unprofitable after a ${this.btcRedemptionCostSats} sat BTC redemption cost, skipping`
+        );
         this.logger.warn(
           `   Debt: ${formatUnits(preview.amountDebt, 8)} WBTC | Interest: ${formatUnits(preview.amountInterest, 8)} WBTC | Fee: ${formatUnits(preview.amountFee, 8)} WBTC`
         );
@@ -529,7 +540,9 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       // (a treasury multisig paying for its own keeper), so both legs belong to the same balance
       // sheet and netting them is the correct frame. Pointing `vaultKeeperAddress` at a keeper you
       // do NOT own would make this number — and therefore `RISK_MIN_PROFIT` — meaningless.
-      const expectedProfit = preview.amountVault - maxWbtcIn;
+      //
+      // `amountVault` is the gross vault BTC. The keeper's claim pays its Bitcoin fees out of it.
+      const expectedProfit = preview.amountVault - maxWbtcIn - this.btcRedemptionCostSats;
       slot = this.risk.openSlot({
         kind: this.intentAction,
         subject: vaultId,

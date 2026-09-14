@@ -1286,6 +1286,27 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).toHaveBeenCalledOnce();
     });
 
+    // The preview prices the gross vault BTC; the keeper's claim pays its Bitcoin fees out of it.
+    it("floors on profit net of the BTC redemption cost", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ minProfit: EXPECTED_PROFIT });
+      const bot = createBot(clients, { risk, btcRedemptionCostSats: 1n });
+
+      expect(await bot.acquireVault(mockVault)).toBe("skipped");
+      expect(clients.sender.send).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("skips a vault whose previewed profit does not cover the BTC redemption cost", async () => {
+      const clients = createMockClients();
+      // The mock previews `amountProfitEst` 50_000_000.
+      const bot = createBot(clients, { btcRedemptionCostSats: 50_000_000n });
+
+      expect(await bot.acquireVault(mockVault)).toBe("skipped");
+      expect(clients.publicClient.estimateContractGas).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("vault_skipped");
+    });
+
     // Regression: the floor must bound the worst case the tx authorizes. `swapWbtcForVault`
     // charges the debt+fee prevailing at execution and only reverts above `maxWbtcIn`, so a
     // vault whose *optimistic* (preview) profit clears the floor can still realize less after

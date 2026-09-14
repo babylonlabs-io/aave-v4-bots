@@ -219,6 +219,7 @@ not `localhost`.
 | `WBTC_ADDRESS` | WBTC token | Yes | |
 | `VAULT_KEEPER_ADDRESS` | Registered keeper the vault is redeemed to, via `swapWbtcForVaultOnBehalf`. Set it when the executor is not a keeper (a Safe, or a treasury). Unset: the executor must be a keeper. Point it only at a keeper you control; the BTC lands there while the WBTC leaves the bot | router | |
 | `MAX_SLIPPAGE_BPS` | Ceiling above the previewed cost the bot authorizes. Max `10000` | No | `100` |
+| `BTC_REDEMPTION_COST_SATS` | Bitcoin cost of the keeper's claim on one vault, in sats: the Claim, Assert and Payout fees and anchors. The preview prices the gross vault BTC, and the keeper receives it net of these. See §9 | No | `0` |
 | `POLLING_INTERVAL_MS` | Poll interval | No | `30000` |
 | `VAULT_PROCESSING_DELAY_MS` | Throttle between broadcasts, for rate-limited RPCs. `0` is off | No | `0` |
 | `TX_RECEIPT_TIMEOUT_MS` | Receipt wait per transaction | No | `120000` |
@@ -266,7 +267,7 @@ As on the liquidator, with two differences:
 
 | Parameter | Description | Required | Default |
 |-----------|-------------|----------|---------|
-| `RISK_MIN_PROFIT` | Floor in sats on the worst case the transaction authorizes: vault BTC minus `maxWbtcIn`. Rejected at boot when the liquidation engine is on and inventory-funded. Unset is not a floor of zero: a vault can preview profitably while `maxWbtcIn` exceeds its value, and the bot signs it. `RISK_MIN_PROFIT=0` makes the worst case non-negative | No | |
+| `RISK_MIN_PROFIT` | Floor in sats on the worst case the transaction authorizes: vault BTC minus `maxWbtcIn` minus `BTC_REDEMPTION_COST_SATS`. Rejected at boot when the liquidation engine is on and inventory-funded. Unset is not a floor of zero: a vault can preview profitably while `maxWbtcIn` exceeds its value, and the bot signs it. `RISK_MIN_PROFIT=0` makes the worst case non-negative | No | |
 | `RISK_MAX_IN_FLIGHT` | Cap across both engines | No | unlimited |
 
 ### 5.4. Execution Modes
@@ -528,8 +529,13 @@ and the router's recent events explain the failures, and resume.
 The indexer serves `currentDebt` (`amountWbtcToAcquire`) and `isProfitable`
 (`amountProfitEst > 0`). The bot re-reads the preview before each acquisition and authorizes
 `maxWbtcIn = amountWbtcToAcquire + amountWbtcToAcquire * MAX_SLIPPAGE_BPS / 10000`. A vault whose
-`amountProfitEst` is zero is skipped. Debt accrues while a vault sits in escrow, so the discount
-shrinks over time.
+`amountProfitEst` does not exceed `BTC_REDEMPTION_COST_SATS` is skipped. Debt accrues while a vault
+sits in escrow, so the discount shrinks over time.
+
+`amountVault` is the gross vault BTC. The keeper's claim on Bitcoin pays the Claim, Assert and
+Payout fees and anchors, and the Payout takes its fee out of the vault BTC. A keeper claim carries
+no vault provider commission: only a claim by the vault provider itself does. Set
+`BTC_REDEMPTION_COST_SATS` to your measured claim cost, so the profit floor is net of it.
 
 Acquisition is first-come-first-served. The first successful transaction wins the vault.
 
