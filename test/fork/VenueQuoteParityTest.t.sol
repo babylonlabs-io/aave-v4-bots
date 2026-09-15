@@ -51,7 +51,7 @@ contract VenueManagerHarness is VenueManager {
 /// @notice Holds venue ranking to what execution charges, on Ethereum mainnet.
 /// @dev Ranking picks a UniswapV4 pool by the V4Quoter's exact-output input, on the premise that it is exactly the
 ///      WBTC `UniswapV4SwapVenue` takes when the router borrows the same amount. Nothing else checks that premise:
-///      the Sepolia suites execute flash swaps but never compare them with a quote. Two real WBTC/USDC pools with
+///      the liquidation fork suites execute flash swaps but never compare them with a quote. Two real WBTC/USDC pools with
 ///      similar depth and different fees give ranking a real choice to make.
 contract VenueQuoteParityTest is Test, TestSuites {
     using PoolIdLibrary for PoolKey;
@@ -67,7 +67,7 @@ contract VenueQuoteParityTest is Test, TestSuites {
     function setUp() public {
         vm.createSelectFork(vm.rpcUrl("mainnet"), MAINNET_FORK_BLOCK);
         harness = new VenueManagerHarness();
-        venue = new UniswapV4SwapVenue(MAINNET_UNISWAP_V4_POOL_MANAGER, address(harness));
+        venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(harness));
         deal(MAINNET_WBTC, address(harness), 100e8);
     }
 
@@ -116,7 +116,7 @@ contract VenueQuoteParityTest is Test, TestSuites {
 
     /// @dev Exactly as the bot quotes: borrowing currency1 is zeroForOne, and the venue passes empty hook data.
     function _quote(PoolKey memory key, uint256 amount) internal returns (uint256 amountIn) {
-        (amountIn,) = IV4Quoter(MAINNET_UNISWAP_V4_QUOTER)
+        (amountIn,) = IV4Quoter(UNISWAP_V4_QUOTER)
             .quoteExactOutputSingle(
                 IV4Quoter.QuoteExactSingleParams({
                 poolKey: key, zeroForOne: true, exactAmount: uint128(amount), hookData: ""

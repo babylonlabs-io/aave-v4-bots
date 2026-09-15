@@ -147,7 +147,7 @@ jobs:
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0 https://github.com/actions/cache/releases/tag/v4.2.0
         with:
           path: ~/.foundry/cache/rpc
-          key: foundry-rpc-e2e-11141103
+          key: foundry-rpc-e2e-25982687
           restore-keys: foundry-rpc-
 
       - name: Install Node.js
@@ -227,9 +227,9 @@ jobs:
       - name: Start Anvil (forked)
         if: ${{ matrix.fork }}
         env:
-          SEPOLIA_RPC: ${{ secrets.SEPOLIA_RPC || 'https://sepolia.gateway.tenderly.co' }}
+          MAINNET_RPC: ${{ secrets.MAINNET_RPC || 'https://mainnet.gateway.tenderly.co' }}
         run: |
-          anvil --silent --fork-url "$SEPOLIA_RPC" --chain-id 31337 --fork-block-number 11141103 &
+          anvil --silent --fork-url "$MAINNET_RPC" --chain-id 31337 --fork-block-number 25982687 &
           for _ in $(seq 1 60); do
             cast chain-id --rpc-url http://127.0.0.1:8545 --rpc-timeout 5 >/dev/null 2>&1 && break
             sleep 2

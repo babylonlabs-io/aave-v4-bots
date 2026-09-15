@@ -5,30 +5,24 @@ pragma solidity 0.8.28;
 import {Types} from "./Types.sol";
 
 abstract contract TestSuites {
-    address internal constant UNISWAP_V4_POOL_MANAGER = address(0xE03A1074c86CFeDd5C142C4F04F1a1536e203543);
-    address internal constant UNISWAP_V4_ROUTER = address(0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b);
-    address internal constant UNISWAP_V4_PERMIT2 = address(0x000000000022D473030F116dDEE9F6B43aC78BA3);
-    address internal constant UNISWAP_V4_POSITION_MANAGER = address(0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4);
-    address internal constant UNISWAP_V4_QUOTER = address(0x61B3f2011A92d183C7dbaDBdA940a7555Ccf9227);
-
-    address internal constant MORPHO_BLUE = address(0xd011EE229E7459ba1ddd22631eF7bF528d424A14);
-
-    /// @notice The Ethereum mainnet block `VenueQuoteParityTest` forks at, and the contracts it reads there.
-    /// @dev Pinned so the parity test, and the TypeScript venue-ranking fork test that forks the same block,
-    ///      read identical pool state on every run and are served from `~/.foundry/cache/rpc` after the first.
-    ///      At this block the two hookless WBTC/USDC pools both tests use price a 50,000 USDC borrow apart.
+    /// @notice The Ethereum mainnet block every fork suite forks at.
+    /// @dev One block for all of them, so foundry serves every suite from a single `~/.foundry/cache/rpc` entry.
+    ///      The liquidation suites deploy the TBV protocol and their own pools, so they take only the venue
+    ///      bytecode below from the fork. `VenueQuoteParityTest` and the TypeScript venue-ranking fork test also
+    ///      read two real hookless WBTC/USDC pools, which price a 50,000 USDC borrow apart at this block.
+    ///      The e2e liquidator suite forks the same block (`scripts/e2e-local.sh`).
     uint256 internal constant MAINNET_FORK_BLOCK = 25982687;
-    address internal constant MAINNET_UNISWAP_V4_POOL_MANAGER = address(0x000000000004444c5dc75cB358380D2e3dE08A90);
-    address internal constant MAINNET_UNISWAP_V4_QUOTER = address(0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203);
+
+    address internal constant UNISWAP_V4_POOL_MANAGER = address(0x000000000004444c5dc75cB358380D2e3dE08A90);
+    address internal constant UNISWAP_V4_ROUTER = address(0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af);
+    address internal constant UNISWAP_V4_PERMIT2 = address(0x000000000022D473030F116dDEE9F6B43aC78BA3);
+    address internal constant UNISWAP_V4_POSITION_MANAGER = address(0xbD216513d74C8cf14cf4747E6AaA6420FF64ee9e);
+    address internal constant UNISWAP_V4_QUOTER = address(0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203);
+
+    address internal constant MORPHO_BLUE = address(0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb);
+
     address internal constant MAINNET_WBTC = address(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);
     address internal constant MAINNET_USDC = address(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
-
-    /// @notice The block every scenario forks at.
-    /// @dev One block for all of them, and deliberately one that was already pinned before the TBV
-    ///      protocol moved into the fixture: the only thing the fork still has to provide is the
-    ///      venue bytecode above, which does not change between these heights. Sharing it means
-    ///      foundry serves every suite from a single `~/.foundry/cache/rpc` entry.
-    uint256 internal constant SEPOLIA_FORK_BLOCK = 11141103;
 
     /// @dev The positions the liquidation suites build. Both borrow evenly across USDC and USDT, so
     ///      each exercises two flash venues, and between them they cover the fairness payment in both
@@ -48,16 +42,16 @@ abstract contract TestSuites {
     ///      drifted out of the band fails loudly rather than silently testing one venue less.
     Types.LiquidationScenario[] internal LIQUIDATION_SCENARIOS = [
         Types.LiquidationScenario({
-            network: "sepolia",
-            blockNumber: SEPOLIA_FORK_BLOCK,
+            network: "mainnet",
+            blockNumber: MAINNET_FORK_BLOCK,
             collateralValueUsd: 80_000,
             borrowValueUsd: 60_000,
             dropPercent: 30,
             hasFairnessPayment: false
         }),
         Types.LiquidationScenario({
-            network: "sepolia",
-            blockNumber: SEPOLIA_FORK_BLOCK,
+            network: "mainnet",
+            blockNumber: MAINNET_FORK_BLOCK,
             collateralValueUsd: 100_000,
             borrowValueUsd: 40_000,
             dropPercent: 53,
