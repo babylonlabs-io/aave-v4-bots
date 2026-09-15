@@ -73,6 +73,19 @@ export function borrowableTokens(topology: SpokeReserves): Address[] {
   return tokens;
 }
 
+/** Every distinct reserve token, borrowable or not. */
+export function reserveTokens(topology: SpokeReserves): Address[] {
+  const seen = new Set<string>();
+  const tokens: Address[] = [];
+  for (const reserve of topology.reserves) {
+    const k = reserve.token.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    tokens.push(reserve.token);
+  }
+  return tokens;
+}
+
 /**
  * Enumerate the Spoke's reserves — boot-time chain discovery, not engine policy, so it reads as a
  * function rather than a method.

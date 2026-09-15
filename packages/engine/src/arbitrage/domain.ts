@@ -1,5 +1,7 @@
 // Pure arbitrage-domain logic (no IO).
 
+import type { EscrowedVault } from "./types";
+
 /**
  * Max WBTC the arbitrageur will pay for a vault: the current Hub debt plus a
  * `slippageBps` buffer over it (protects against interest accrual between the
@@ -17,4 +19,30 @@ export function maxWbtcInWithSlippage(currentDebt: bigint, slippageBps: number):
   }
   const buffer = (currentDebt * BigInt(slippageBps)) / 10_000n;
   return currentDebt + buffer;
+}
+
+/**
+ * A `uint256` as the indexer serializes it: decimal digits only. Stricter than `BigInt`, which
+ * reads `""` as `0n`, and a zero debt looks maximally profitable.
+ */
+const UINT_STRING = /^[0-9]+$/;
+
+/** A `vaultId`: a `bytes32`, as `previewEscrowedVaults` takes it. */
+const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
+
+/**
+ * Can the engine act on this escrow feed element? The response is cast, not parsed, so this
+ * checks the fields the engine reads: `vaultId` and the two amounts.
+ */
+export function isUsableVault(vault: unknown): vault is EscrowedVault {
+  if (typeof vault !== "object" || vault === null) return false;
+  const { vaultId, btcAmount, currentDebt } = vault as Partial<EscrowedVault>;
+  return (
+    typeof vaultId === "string" &&
+    BYTES32.test(vaultId) &&
+    typeof btcAmount === "string" &&
+    UINT_STRING.test(btcAmount) &&
+    typeof currentDebt === "string" &&
+    UINT_STRING.test(currentDebt)
+  );
 }

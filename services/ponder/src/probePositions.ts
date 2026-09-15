@@ -5,29 +5,28 @@
  * module and cannot be loaded outside a running indexer — this is the part worth testing.
  */
 
+/** Calldata of one `estimateLiquidation(address,bool)`: a selector and two words. */
+const ESTIMATE_CALLDATA_BYTES = 68;
+
 /**
- * Items per batch, so one batch's gas stays well inside any node's `eth_call` cap.
+ * Probes per `eth_call`; this sets one call's gas. The route passes it to viem's `multicall` as
+ * `batchSize`, because viem splits by calldata bytes (1024 by default).
  *
- * A multicall's `allowFailure: true` makes a *sub-call* revert harmless — the normal case for these
- * probes, since a healthy position reverts by design. It does nothing for the envelope: the
- * aggregate is still one `eth_call`, and once its total gas passes the node's cap the whole call
- * reverts and every result is lost, healthy and liquidatable alike.
- *
- * That ceiling is reached by growth, not only by an attacker. A position row is created on any
- * `Spoke:Supply` and removed only when its shares reach zero, so the table is monotonic in practice
- * and the scan gets heavier every cycle.
- *
- * 25 is measured, not guessed. One probe of a *healthy* position costs ~177k gas against a
- * five-reserve spoke, and healthy is the case that sets the price: `estimateLiquidation` loads
- * every reserve before it finds out the position is healthy and reverts, and the table is almost
- * all healthy positions. Batching does not amortise it — the marginal cost stays ~177k however
- * large the batch — so 25 is ~4.4M gas, inside both the 50M `rpc.gascap` geth defaults to and the
- * 10M some providers enforce.
- *
- * The margin is not padding. The per-probe cost rises ~21k per spoke reserve the deployment lists
- * and ~3k per vault backing a position, and a position that really is liquidatable costs ~247k
- * rather than ~177k — so a distressed market on a deployment with more loan assets runs to roughly
- * twice today's number. Raise `POSITION_PROBE_CHUNK_SIZE` only against a known node cap.
+ * Measured: a healthy position costs ~177k gas to probe (`estimateLiquidation` loads every reserve
+ * before it reverts), and batching does not amortize it. 15 is ~2.7M gas, inside both geth's 50M
+ * default cap and the 10M some providers enforce. The margin covers growth: each extra spoke
+ * reserve adds ~21k, each vault ~3k, and a liquidatable position costs ~247k.
+ */
+export const PROBES_PER_CALL = 15;
+
+/** `PROBES_PER_CALL` as viem's `multicall` wants it: a calldata-byte limit. */
+export const MULTICALL_BATCH_BYTES = PROBES_PER_CALL * ESTIMATE_CALLDATA_BYTES;
+
+/**
+ * Probes per chunk. A chunk is split into `PROBES_PER_CALL`-sized calls that run concurrently, and
+ * chunks run one after another, so this sets concurrency, not per-call gas: 25 is two calls in
+ * flight. Raising it cuts latency on a large table but spends RPC capacity the indexer also needs;
+ * a throttled chunk fails whole, and its positions count as `unscanned`.
  */
 export const PROBE_CHUNK_SIZE = 25;
 
@@ -94,4 +93,27 @@ export async function probeInChunks<I, T>(
   }
 
   return { probes, unscanned };
+}
+
+/**
+ * Pair each position with its proxy's borrower, and drop positions without one. Any
+ * `Spoke:Supply` creates a position row for an address the supplier chooses. Such a row cannot be
+ * liquidated and costs nearly a full probe. Addresses are matched case-insensitively.
+ */
+export function selectProbeCandidates<
+  P extends { proxyAddress: string },
+  M extends { proxyAddress: string; borrower: string },
+>(
+  positions: readonly P[],
+  proxyMappings: readonly M[]
+): { candidates: { position: P; borrower: string }[]; unmapped: number } {
+  const borrowerOf = new Map<string, string>();
+  for (const m of proxyMappings) borrowerOf.set(m.proxyAddress.toLowerCase(), m.borrower);
+
+  const candidates = positions.flatMap((position) => {
+    const borrower = borrowerOf.get(position.proxyAddress.toLowerCase());
+    return borrower ? [{ position, borrower }] : [];
+  });
+
+  return { candidates, unmapped: positions.length - candidates.length };
 }

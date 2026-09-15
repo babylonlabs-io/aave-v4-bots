@@ -188,6 +188,75 @@ describe("verifyProposal (tamper check)", () => {
 
     await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/baseGas 21000.*gasPrice 1/);
   });
+
+  // A rewritten nonce keeps the record consistent but moves when the SafeTx can execute.
+  it("refuses an envelope moved to a future nonce, however consistent", async () => {
+    const c = ctx({
+      signer: safeSigner(4),
+      executorAddress: SAFE,
+      executorKind: "safe",
+      publicClient: fakeClient({ safeNonce: 4n }),
+    });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const row = await c.store.getIntent(id);
+    if (!row?.safeEnvelope) throw new Error("expected a persisted envelope");
+    const future = { ...row.safeEnvelope, safeNonce: 5 };
+    const envelope = {
+      ...future,
+      safeTxHash: computeSafeTxHash({ inner: p, params: future, safe: SAFE, chainId: c.chainId }),
+    };
+    const tamperedCtx = {
+      ...c,
+      store: { ...c.store, getIntent: async () => ({ ...row, safeEnvelope: envelope }) },
+    };
+
+    await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/ahead of the chain/);
+  });
+
+  // A nonce behind the chain means the SafeTx executed or was replaced, so `show` reports it.
+  it("reports, without refusing, a claim the Safe has already moved past", async () => {
+    const c = ctx({
+      signer: safeSigner(4),
+      executorAddress: SAFE,
+      executorKind: "safe",
+      publicClient: fakeClient({ safeNonce: 4n }),
+    });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const moved = { ...c, publicClient: fakeClient({ safeNonce: 5n }) };
+    const view = await ops.showProposal(moved, id);
+
+    expect(view.safeTxIsNext).toBe(false);
+    expect(view.safeNonce).toBe(4);
+  });
+
+  it("shows the hash and its nonce when the envelope is the Safe's next transaction", async () => {
+    const c = ctx({
+      signer: safeSigner(4),
+      executorAddress: SAFE,
+      executorKind: "safe",
+      publicClient: fakeClient({ safeNonce: 4n }),
+    });
+    const p = payload();
+    const id = idempotencyKey(input());
+    await c.store.propose(input(), p, hashPayload(p));
+    await ops.claimProposal(c, id);
+
+    const view = await ops.showProposal(c, id);
+
+    // The operator checks the nonce against the Safe UI.
+    expect(view.safeNonce).toBe(4);
+    expect(view.safeTxIsNext).toBe(true);
+    expect(view.safeTxHash).toBe((await c.store.getIntent(id))?.safeEnvelope?.safeTxHash);
+    expect(view.safeTxHashIsPreview).toBe(false);
+  });
 });
 
 describe("claimProposal", () => {
@@ -495,6 +564,132 @@ describe("release + fail (recovery)", () => {
     });
     await ops.releaseProposal(c, id);
     expect((await c.store.getIntent(id))?.status).toBe("proposed");
+  });
+
+  // Owners may have signed the released SafeTx off chain, so a second envelope would authorize
+  // the same payload twice.
+  describe("an envelope released without being resolved", () => {
+    const safeCtx = (safeNonce = 4, over: Parameters<typeof fakeClient>[0] = {}) =>
+      ctx({
+        signer: safeSigner(safeNonce),
+        executorAddress: SAFE,
+        executorKind: "safe",
+        publicClient: fakeClient({ safeNonce: BigInt(safeNonce), ...over }),
+      });
+
+    const claimedThenReleased = async (c: ops.OperatorContext) => {
+      const p = payload();
+      const id = idempotencyKey(input());
+      await c.store.propose(input(), p, hashPayload(p));
+      await ops.claimProposal(c, id);
+      const envelope = (await c.store.getIntent(id))?.safeEnvelope;
+      if (!envelope) throw new Error("expected an envelope");
+      await ops.releaseProposal(c, id);
+      return { id, envelope };
+    };
+
+    it("survives the release rather than being discarded", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      const row = await c.store.getIntent(id);
+      expect(row?.status).toBe("proposed");
+      expect(row?.safeEnvelope).toEqual(envelope);
+    });
+
+    // Same payload and gas policy give the same hash, so the outstanding envelope is reused.
+    it("is handed back by the next claim while its nonce still stands", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      const result = await ops.claimProposal(c, id);
+
+      expect(result.claimed).toBe(true);
+      expect((await c.store.getIntent(id))?.safeEnvelope).toEqual(envelope);
+    });
+
+    // Released, then executed by someone else, then claimed again: no second envelope.
+    it("refuses the next claim when it executed after the release", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      // The Safe moved on by executing our SafeTx.
+      c.publicClient = fakeClient({
+        safeNonce: 5n,
+        safeLogs: [
+          {
+            eventName: "ExecutionSuccess",
+            args: { txHash: envelope.safeTxHash },
+            transactionHash: SENT_TX,
+          },
+        ],
+      });
+
+      await expect(ops.claimProposal(c, id)).rejects.toThrow(/already executed/);
+    });
+
+    // Another transaction spent its nonce, so it can never execute.
+    it("is replaced once its nonce is spent by another transaction", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      c.publicClient = fakeClient({ safeNonce: 5n });
+      c.signer = safeSigner(5);
+
+      const result = await ops.claimProposal(c, id);
+
+      expect(result.claimed).toBe(true);
+      const replaced = (await c.store.getIntent(id))?.safeEnvelope;
+      expect(replaced?.safeNonce).toBe(5);
+      expect(replaced?.safeTxHash).not.toBe(envelope.safeTxHash);
+    });
+
+    // `broadcast` also claims, and it sends what it reserves.
+    it("is handed back by broadcast rather than reserved a second time", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      await ops.broadcastProposal(c, id);
+
+      expect((await c.store.getIntent(id))?.safeEnvelope).toEqual(envelope);
+    });
+
+    it("refuses a broadcast when it executed after the release", async () => {
+      const c = safeCtx();
+      const { id, envelope } = await claimedThenReleased(c);
+
+      c.publicClient = fakeClient({
+        safeNonce: 5n,
+        safeLogs: [
+          {
+            eventName: "ExecutionSuccess",
+            args: { txHash: envelope.safeTxHash },
+            transactionHash: SENT_TX,
+          },
+        ],
+      });
+
+      await expect(ops.broadcastProposal(c, id)).rejects.toThrow(/already executed/);
+    });
+
+    // A failed row can be revived, which would clear the envelope.
+    it("cannot be failed away while it still stands", async () => {
+      const c = safeCtx();
+      const { id } = await claimedThenReleased(c);
+
+      await expect(ops.failProposal(c, id)).rejects.toThrow(/still executable/);
+      expect((await c.store.getIntent(id))?.status).toBe("proposed");
+    });
+
+    it("can be failed once its nonce is spent and it did not execute", async () => {
+      const c = safeCtx();
+      const { id } = await claimedThenReleased(c);
+
+      c.publicClient = fakeClient({ safeNonce: 5n });
+
+      await ops.failProposal(c, id, "giving up");
+      expect((await c.store.getIntent(id))?.status).toBe("failed");
+    });
   });
 
   it("fail marks a proposal failed and revives the subject", async () => {

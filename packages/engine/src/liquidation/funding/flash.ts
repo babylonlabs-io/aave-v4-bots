@@ -46,6 +46,9 @@ export class FlashFunding implements LiquidationFunding {
   /** Nothing to publish — no action declares a `spend`, so the gate needs no balances from us. */
   async refreshInventory(): Promise<void> {}
 
+  /** Nothing to withdraw: the router borrows and repays itself, so this mode grants no allowance. */
+  async revokeApprovals(): Promise<void> {}
+
   /**
    * Viable iff the probe returns a quote that clears zero profit.
    *

@@ -122,8 +122,15 @@ async function dispatch(command: string, args: string[], ctx: ops.OperatorContex
         process.exitCode = 1;
         return;
       }
-      const hash = result.row.safeEnvelope?.safeTxHash;
-      console.log(`claimed ${result.row.id}${hash ? ` — sign safeTxHash ${hash}` : ""}`);
+      const envelope = result.row.safeEnvelope;
+      // The Safe UI shows the nonce, so owners can check it against this line.
+      console.log(
+        `claimed ${result.row.id}${
+          envelope
+            ? ` — sign safeTxHash ${envelope.safeTxHash} at Safe nonce ${envelope.safeNonce}`
+            : ""
+        }`
+      );
       return;
     }
     case "broadcast": {

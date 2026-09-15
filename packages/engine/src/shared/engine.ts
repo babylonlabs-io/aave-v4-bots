@@ -153,6 +153,13 @@ export abstract class BaseEngine<M extends CycleMetrics> {
    */
   protected abstract poll(slots: RiskSlot[]): Promise<void>;
 
+  /**
+   * Revoke every allowance this engine's funding granted. No-op by default. Runs only in a halted
+   * cycle after a code-hash halt: the spender's code changed, and the allowance lets it pull funds
+   * without us.
+   */
+  protected async revokeApprovals(): Promise<void> {}
+
   /** Run one poll cycle. */
   async run(): Promise<void> {
     const startTime = Date.now();
@@ -161,18 +168,24 @@ export abstract class BaseEngine<M extends CycleMetrics> {
     const slots: RiskSlot[] = [];
 
     try {
-      // A HALTED gate (kill switch or tripped breaker) skips the cycle — before reconcile, so the
-      // stop is immediate and touches nothing.
-      if (this.risk.state() === "HALTED") {
-        this.logger.warn(`Risk gate is HALTED — skipping ${this.engineName} run`);
-        return;
-      }
-
+      // Bookkeeping runs even when halted. A halt stops sending, not reconciling, TTL expiry, or
+      // stuck alerts, and an incident needs those most.
+      //
       // Crash-/ambiguous-send-safety: resolve in-flight intents against the chain (no-op without a
       // store), then re-seed the shared nonce lease from the chain (reclaiming any
-      // reserved-but-not-broadcast nonce).
+      // reserved-but-not-broadcast nonce). It runs before the halted branch, because a revocation
+      // needs a fresh nonce too.
       await this.reconcile();
       await this.executor.resyncNonces();
+
+      // A HALTED gate (kill switch or tripped breaker) ends the cycle here.
+      if (this.risk.state() === "HALTED") {
+        this.logger.warn(`Risk gate is HALTED — skipping ${this.engineName} run`);
+        // A code-hash halt revokes allowances to the changed contract. Retried every halted cycle;
+        // once the allowance is zero, it costs one read.
+        if (this.risk.codeHashHalted()) await this.revokeApprovals();
+        return;
+      }
 
       // Only now the indexer, and deliberately *after* reconcile: the candidate list is what a
       // wedged indexer poisons, but an action stranded as a live intent still has to be resolved in

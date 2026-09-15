@@ -62,6 +62,13 @@ export interface LiquidationFunding {
   refreshInventory(): Promise<void>;
 
   /**
+   * Revoke every allowance this mode granted. Called only on a code-hash halt: the spender's code
+   * changed, and the allowance still lets it pull funds. Best-effort per token; every halted cycle
+   * retries.
+   */
+  revokeApprovals(): Promise<void>;
+
+  /**
    * Filter the candidates down to those this mode can actually fund, and price them.
    *
    * The two modes vet incompatibly and cannot share an implementation: the inventory simulation calls
@@ -149,10 +156,13 @@ export interface FundingMetrics {
  * The execution collaborator, narrowed to what funding may touch.
  *
  * `identity` is a live property, so strategies read it per call rather than capturing it. They get
- * `ensureAllowance` and nothing else: committing is the engine's job, and a strategy that could
- * commit would be able to bypass the risk slot.
+ * the two allowance calls and nothing else: committing is the engine's job, and a strategy that
+ * could commit would be able to bypass the risk slot.
  */
-export type FundingExecutor = Pick<Executor, "identity" | "ensureAllowance" | "inFlightTxHashes">;
+export type FundingExecutor = Pick<
+  Executor,
+  "identity" | "ensureAllowance" | "revokeAllowance" | "inFlightTxHashes"
+>;
 
 /**
  * Everything a funding strategy draws on.

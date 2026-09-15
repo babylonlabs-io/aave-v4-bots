@@ -28,7 +28,7 @@ import {
 } from "viem";
 
 import { type CrashSafety, createCrashSafety } from "./crashSafety";
-import { type ChainReader, createChainReader } from "./liveness";
+import { type ChainReader, type Horizon, createChainReader } from "./liveness";
 import { reconcilePending } from "./reconcile";
 
 // The **execution mode seam**. An engine finds opportunities the same way in both modes — risk gate,
@@ -129,6 +129,20 @@ interface BaseExecutor {
     /** For logs (e.g. the token symbol). */
     label?: string;
   }): Promise<AllowanceResult>;
+
+  /**
+   * Set `spender`'s allowance on `token` to zero. AUTO broadcasts `approve(spender, 0)` and waits
+   * for the receipt; MANUAL proposes it. Returns `satisfied` when the allowance is already zero.
+   *
+   * It skips the broadcast guard: it runs while halted, to withdraw a permission the spender could
+   * still use. It can only send a zero approval.
+   */
+  revokeAllowance(input: {
+    token: Address;
+    spender: Address;
+    /** For logs (e.g. the token symbol). */
+    label?: string;
+  }): Promise<AllowanceResult>;
 }
 
 /** AUTO — signs and broadcasts. */
@@ -172,7 +186,7 @@ export function createAutoExecutor(deps: {
    * recorded on its intent at submission. Absent under public submission, where the node's own
    * answer about a transaction is authoritative and nothing has to expire.
    */
-  horizon?: (hash: Hex) => Promise<number>;
+  horizon?: Pick<Horizon, "resolve">;
   /**
    * Last word before anything is broadcast: throw to stop it. Supplied by the composition root, and
    * deliberately a bare callback rather than the risk gate — this seam signs and sends, and knows
@@ -183,6 +197,9 @@ export function createAutoExecutor(deps: {
    * a target's bytecode changed. Between those two moments this is the only thing left. Approvals
    * go through it too — an approval is a transaction, and the same halt that stops a liquidation
    * has no reason to permit granting an allowance to the contract that caused it.
+   *
+   * Called twice per send: before the claim, so a halted gate costs nothing, and as the
+   * `TxSender`'s `beforeBroadcast`, to catch a halt that lands during locking, pricing or signing.
    *
    * Throw `PreBroadcastError` (the runtime does): the engines already read that as "nothing reached
    * the chain", so the slot settles `abandoned` and the breaker is left alone.
@@ -202,11 +219,117 @@ export function createAutoExecutor(deps: {
   const horizonFor = async (hash: Hex): Promise<{ relayMaxBlock?: number }> => {
     if (!horizon) return {};
     try {
-      return { relayMaxBlock: await horizon(hash) };
+      return { relayMaxBlock: await horizon.resolve(hash) };
     } catch (error) {
       logger.warn(`Could not resolve the relay horizon for ${hash}: ${error}`);
       return {};
     }
+  };
+
+  /**
+   * Crash-safe send of an ERC-20 `approve` for any amount: one claim, one pre-broadcast record, one
+   * receipt. `action` keys the claim, so a grant and a revoke are separate rows. `guard` is the
+   * broadcast guard; only the grant passes one.
+   */
+  const sendApprove = async (input: {
+    token: Address;
+    spender: Address;
+    amount: bigint;
+    /** The persisted action name — part of the idempotency key. */
+    action: string;
+    /** Names this transaction in its log lines and in the revert it throws. */
+    noun: string;
+    label?: string;
+    guard?: () => void;
+  }): Promise<AllowanceResult> => {
+    const { token, spender, amount, action, noun, label, guard } = input;
+
+    // Claimed for nonce safety, not idempotency: `liveNonceFloor` fences by walking persisted
+    // intents, so an unclaimed send has nothing fencing it. Invisible under public submission (the
+    // node's `pending` count covers it), unsafe under private. Same key MANUAL proposes under.
+    const claimed = await crash.claim({
+      chainId: identity.chainId,
+      target: token,
+      action,
+      subject: spender,
+    });
+    // One is already in flight — this cycle's or a crashed process's. A second would race it on a
+    // nonce, so the caller is told the allowance is not ready and retries next cycle.
+    if (!claimed.claimed) return { kind: "duplicate", existing: claimed.existing as TxIntent };
+    const intentId = claimed.intentId;
+
+    // Through the `TxSender`, not `walletClient.writeContract`: the sender is what carries the
+    // submission policy, so an approval must take the same route every other transaction does.
+    // Broadcasting it publicly while liquidations went private would put two transactions on one
+    // nonce sequence under two different sets of assumptions about who can see them.
+    let hash: Hex;
+    let signedHash: Hex | undefined;
+    // See `commit`: this process's own reconcile must not judge a row it is still sending.
+    if (intentId) crash.beginSend(intentId);
+    try {
+      guard?.();
+      hash = await crash.send((nonce) =>
+        sender.send(
+          {
+            address: token,
+            abi: erc20Abi,
+            functionName: "approve",
+            args: [spender, amount],
+            nonce,
+          },
+          async (signed) => {
+            if (intentId && claimed.attemptAt !== undefined) {
+              await crash.markPending(intentId, signed.nonce, claimed.attemptAt, signed.hash);
+            }
+            // Set last: it is what tells the paths below the row under this id is still ours.
+            signedHash = signed.hash;
+          },
+          guard
+        )
+      );
+    } catch (error) {
+      // Ambiguous — the intent stays LIVE so its nonce keeps its fence and reconcile decides.
+      const message = error instanceof Error ? error.message : String(error);
+      if (intentId) {
+        // Stamp the horizon whenever signing got far enough to produce a hash: an ambiguous send
+        // under a fail-closed reader would otherwise fence its nonce with nothing to release it.
+        const meta = signedHash ? await horizonFor(signedHash) : {};
+        // With no hash the pre-broadcast record never landed, so this may be writing to a row
+        // that is no longer this attempt's — bind it to the claim, and let the write be refused
+        // if another engine has since resolved and re-claimed the subject. With a hash the row is
+        // provably ours (`markPending` proved it) and its stamp has moved on, so nothing to bind.
+        await crash.transition(
+          intentId,
+          "submitted",
+          { ...meta, error: message },
+          signedHash ? undefined : { updatedAt: claimed.attemptAt }
+        );
+      }
+      throw error;
+    } finally {
+      // The row now carries what reconcile needs. The set covers only the send window: a claimed
+      // row with no nonce or hash, which looks like a dead process's leftover.
+      if (intentId) crash.endSend(intentId);
+    }
+    if (intentId) {
+      await crash.transition(intentId, "submitted", {
+        txHash: hash,
+        ...(await horizonFor(hash)),
+      });
+    }
+
+    const receipt = await publicClient.waitForTransactionReceipt({
+      hash,
+      timeout: txReceiptTimeoutMs,
+    });
+    if (receipt.status !== "success") {
+      if (intentId) {
+        await crash.transition(intentId, "failed", { txHash: hash, error: `${noun} reverted` });
+      }
+      throw new Error(`${noun} transaction reverted for ${label ?? token}`);
+    }
+    if (intentId) await crash.transition(intentId, "confirmed", { txHash: hash });
+    return { kind: "satisfied" };
   };
 
   return {
@@ -238,94 +361,36 @@ export function createAutoExecutor(deps: {
       if (allowance >= required) return { kind: "satisfied" };
 
       logger.info(`Approving ${label ?? token} for ${spender}...`);
-      // Claimed for nonce safety, not idempotency: `liveNonceFloor` fences by walking persisted
-      // intents, so an unclaimed send has nothing fencing it. Invisible under public submission (the
-      // node's `pending` count covers it), unsafe under private. Same key MANUAL proposes under.
-      const claimed = await crash.claim({
-        chainId: identity.chainId,
-        target: token,
+      const result = await sendApprove({
+        token,
+        spender,
+        amount: maxUint256,
         action: "approval",
-        subject: spender,
+        noun: "Approval",
+        label,
+        guard: () => assertCanBroadcast("approval"),
       });
-      // One is already in flight — this cycle's or a crashed process's. A second would race it on a
-      // nonce, so the caller is told the allowance is not ready and retries next cycle.
-      if (!claimed.claimed) return { kind: "duplicate", existing: claimed.existing as TxIntent };
-      const intentId = claimed.intentId;
+      if (result.kind === "satisfied") logger.info(`Approved ${label ?? token}`);
+      return result;
+    },
 
-      // Through the `TxSender`, not `walletClient.writeContract`: the sender is what carries the
-      // submission policy, so an approval must take the same route every other transaction does.
-      // Broadcasting it publicly while liquidations went private would put two transactions on one
-      // nonce sequence under two different sets of assumptions about who can see them.
-      let hash: Hex;
-      let signedHash: Hex | undefined;
-      // See `commit`: this process's own reconcile must not judge a row it is still sending.
-      if (intentId) crash.beginSend(intentId);
-      try {
-        assertCanBroadcast("approval");
-        hash = await crash.send((nonce) =>
-          sender.send(
-            {
-              address: token,
-              abi: erc20Abi,
-              functionName: "approve",
-              args: [spender, maxUint256],
-              nonce,
-            },
-            async (signed) => {
-              if (intentId && claimed.attemptAt !== undefined) {
-                await crash.markPending(intentId, signed.nonce, claimed.attemptAt, signed.hash);
-              }
-              // Set last: it is what tells the paths below the row under this id is still ours.
-              signedHash = signed.hash;
-            }
-          )
-        );
-      } catch (error) {
-        // Ambiguous — the intent stays LIVE so its nonce keeps its fence and reconcile decides.
-        const message = error instanceof Error ? error.message : String(error);
-        if (intentId) {
-          // Stamp the horizon whenever signing got far enough to produce a hash: an ambiguous send
-          // under a fail-closed reader would otherwise fence its nonce with nothing to release it.
-          const meta = signedHash ? await horizonFor(signedHash) : {};
-          // With no hash the pre-broadcast record never landed, so this may be writing to a row
-          // that is no longer this attempt's — bind it to the claim, and let the write be refused
-          // if another engine has since resolved and re-claimed the subject. With a hash the row is
-          // provably ours (`markPending` proved it) and its stamp has moved on, so nothing to bind.
-          await crash.transition(
-            intentId,
-            "submitted",
-            { ...meta, error: message },
-            signedHash ? undefined : { updatedAt: claimed.attemptAt }
-          );
-        }
-        throw error;
-      } finally {
-        // The send is over either way, and the row now carries what reconcile needs to judge it on
-        // its own. Releasing here rather than after the receipt keeps the set to the one window it
-        // is for: a claimed row with no nonce and no hash, which nothing else can tell apart from a
-        // dead process's leftover.
-        if (intentId) crash.endSend(intentId);
-      }
-      if (intentId) {
-        await crash.transition(intentId, "submitted", {
-          txHash: hash,
-          ...(await horizonFor(hash)),
-        });
-      }
+    async revokeAllowance({ token, spender, label }) {
+      const allowance = await readAllowance(publicClient, token, identity.from, spender);
+      // Already zero. The read makes the retry on every halted cycle cheap.
+      if (allowance === 0n) return { kind: "satisfied" };
 
-      const receipt = await publicClient.waitForTransactionReceipt({
-        hash,
-        timeout: txReceiptTimeoutMs,
+      logger.warn(`Revoking ${label ?? token} allowance for ${spender}...`);
+      // Called only while HALTED, where the guard would refuse it.
+      const result = await sendApprove({
+        token,
+        spender,
+        amount: 0n,
+        action: "revoke",
+        noun: "Revocation",
+        label,
       });
-      if (receipt.status !== "success") {
-        if (intentId) {
-          await crash.transition(intentId, "failed", { txHash: hash, error: "approval reverted" });
-        }
-        throw new Error(`Approval transaction reverted for ${label ?? token}`);
-      }
-      if (intentId) await crash.transition(intentId, "confirmed", { txHash: hash });
-      logger.info(`Approved ${label ?? token}`);
-      return { kind: "satisfied" };
+      if (result.kind === "satisfied") logger.warn(`Revoked ${label ?? token} for ${spender}`);
+      return result;
     },
 
     async commit(call, claim) {
@@ -347,12 +412,16 @@ export function createAutoExecutor(deps: {
         // The reserved nonce arrives here under the allocator's lock. The sender signs it locally
         // first, so `onSigned` durably records nonce + hash before anything reaches the chain.
         const hash = await crash.send((nonce) =>
-          sender.send({ ...call, nonce }, async (signed) => {
-            if (intentId && claimed.attemptAt !== undefined) {
-              await crash.markPending(intentId, signed.nonce, claimed.attemptAt, signed.hash);
-            }
-            signedHash = signed.hash;
-          })
+          sender.send(
+            { ...call, nonce },
+            async (signed) => {
+              if (intentId && claimed.attemptAt !== undefined) {
+                await crash.markPending(intentId, signed.nonce, claimed.attemptAt, signed.hash);
+              }
+              signedHash = signed.hash;
+            },
+            () => assertCanBroadcast(claim.action)
+          )
         );
         // The hash was persisted pre-broadcast, so losing this write is safe — except for the
         // horizon, whose absence only means the reader keeps fencing until reconcile stamps one.
@@ -403,8 +472,11 @@ export interface Submission {
   reader: ChainReader;
   /** See `CrashSafetyConfig.reclaimMarginBlocks` — with the recorded horizon, what frees a nonce. */
   reclaimMarginBlocks: number;
-  /** Stamps each submitted transaction with the block past which it can no longer be included. */
-  horizon: (hash: Hex) => Promise<number>;
+  /**
+   * Records each private transaction's deadline at submission, and recovers a missing one at
+   * reconcile. See `Horizon`.
+   */
+  horizon: Horizon;
   /**
    * Floor for the tip on every transaction this executor signs. Travels with the relay route for
    * the same reason the reader does: a private transaction the node priced for the public mempool
@@ -452,6 +524,7 @@ export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecut
     store: deps.store,
     reader: reader ?? createChainReader(deps.publicClient),
     reclaimMarginBlocks,
+    horizon,
     // The allocator is mandatory (the arbitrageur's two engines share one). A service that runs a
     // single engine off one signer can omit it; we mint a per-signer allocator here.
     nonces: deps.nonces ?? createNonceAllocator(createNonceLease(), sender.identity.from),
@@ -515,7 +588,9 @@ export function createManualExecutor(deps: {
     if (intentStuckMs <= 0) return;
     const at = now();
     const candidates = [
-      ...(await store.proposals()).filter((r) => r.status === "claimed"),
+      // Also a `proposed` row with a Safe envelope: released without resolving its SafeTx. The TTL
+      // never sweeps it, and it blocks every other Safe claim until an operator settles it.
+      ...(await store.proposals()).filter((r) => r.status === "claimed" || r.safeEnvelope !== null),
       ...(await store.reconcile()).filter((r) => r.status === "submitted"),
     ];
     const stuck = new Set<string>();
@@ -632,6 +707,16 @@ export function createManualExecutor(deps: {
       return propose(
         { address: token, abi: erc20Abi, functionName: "approve", args: [spender, maxUint256] },
         { target: token, action: "approval", subject: spender }
+      );
+    },
+
+    async revokeAllowance({ token, spender }) {
+      const allowance = await readAllowance(publicClient, token, identity.from, spender);
+      if (allowance === 0n) return { kind: "satisfied" };
+      // Its own `action`, so a pending grant proposal does not make this one a duplicate.
+      return propose(
+        { address: token, abi: erc20Abi, functionName: "approve", args: [spender, 0n] },
+        { target: token, action: "revoke", subject: spender }
       );
     },
   };

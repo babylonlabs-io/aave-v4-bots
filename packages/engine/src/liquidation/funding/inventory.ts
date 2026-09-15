@@ -10,7 +10,7 @@ import {
   maxUint256,
 } from "viem";
 import { retireSettledOutflows } from "../../shared/outflows";
-import { type SpokeReserves, borrowableTokens } from "../reserves";
+import { type SpokeReserves, borrowableTokens, reserveTokens } from "../reserves";
 import type {
   FundedCandidate,
   FundingContext,
@@ -82,6 +82,47 @@ export class InventoryFunding implements LiquidationFunding {
   }
 
   /**
+   * Revoke the adapter's allowance on every reserve token plus WBTC. This is wider than the
+   * approved set: a reserve that stopped being borrowable keeps the allowance it was granted.
+   */
+  async revokeApprovals(): Promise<void> {
+    const { adapterAddress, executor, logger } = this.deps;
+
+    for (const token of await this.revocableTokens()) {
+      const { symbol } = await this.deps.tokenMeta.get(this.deps.publicClient, token);
+      try {
+        const result = await executor.revokeAllowance({
+          token,
+          spender: adapterAddress,
+          label: symbol,
+        });
+        // MANUAL cannot withdraw it itself, so the operator is told what is still standing.
+        if (result.kind !== "satisfied") {
+          logger.warn(`Revocation for ${symbol} ${result.kind} — awaiting operator signature`);
+        }
+      } catch (error) {
+        // Per token: one failure must not leave the other allowances granted.
+        logger.error(`Could not revoke the adapter's ${symbol} allowance:`, error);
+      }
+    }
+  }
+
+  /** The tokens this mode approves the adapter for: every borrowable reserve, plus WBTC. */
+  private async approvedTokens(): Promise<Address[]> {
+    const topology = this.topology ?? (await this.deps.reserves());
+    return Array.from(new Set<Address>([...borrowableTokens(topology), this.deps.wbtcAddress]));
+  }
+
+  /**
+   * Every token the adapter can hold an allowance on: all reserve tokens, plus WBTC. Reads the
+   * reserves when no topology is cached, as in a cycle that halted at boot.
+   */
+  private async revocableTokens(): Promise<Address[]> {
+    const topology = this.topology ?? (await this.deps.reserves());
+    return Array.from(new Set<Address>([...reserveTokens(topology), this.deps.wbtcAddress]));
+  }
+
+  /**
    * Tell the risk gate what this signer can currently spend, for every token an action may pull.
    *
    * Must not swallow read errors: the gate fails closed on a token it has no figure for, so a
@@ -96,7 +137,7 @@ export class InventoryFunding implements LiquidationFunding {
     // which token each repay amount belongs to (`spendFor`, by reserve id). Held for the cycle so
     // every candidate is judged against the same topology the balances were published for.
     this.topology = await this.deps.reserves();
-    const tokens = Array.from(new Set<Address>([...borrowableTokens(this.topology), wbtcAddress]));
+    const tokens = await this.approvedTokens();
 
     // Before the balances, because an allowance the adapter cannot pull makes them meaningless —
     // and because this is the first point in the cycle that is downstream of the gate's HALTED
