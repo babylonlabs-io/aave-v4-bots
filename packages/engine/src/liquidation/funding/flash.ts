@@ -2,7 +2,6 @@ import { type FlashData, type VenueDebt, liquidationRouterAbi } from "@repo/abis
 import { readBalance } from "@repo/chain";
 import type { ContractCall } from "@repo/execution";
 import type { Address } from "viem";
-import { unbufferAmount } from "../domain";
 import type { SpokeReserves } from "../reserves";
 import { minWbtcProfitFloor, probeLiquidation, quoteProfit } from "./flashProbe";
 import type {
@@ -18,13 +17,7 @@ import { type VenueSources, createVenueSources } from "./venueRoutes/factory";
 import { buildRankedFlashDatas } from "./venueRoutes/flashDatas";
 import { sizeOwedLegs } from "./venueRoutes/legs";
 import { planRoute } from "./venueRoutes/planner";
-import type {
-  OwedLeg,
-  PlannedLeg,
-  QuoteOutcome,
-  RoutePlan,
-  VenueSource,
-} from "./venueRoutes/types";
+import type { OwedLeg, PlannedLeg, QuoteOutcome, VenueSource } from "./venueRoutes/types";
 import {
   type VenueRegistry,
   allFundableTokens,
@@ -249,35 +242,21 @@ export class FlashFunding implements LiquidationFunding {
     const sized = sizeOwedLegs(candidate, topology, wbtcAddress);
     if (sized.kind === "skip") return { skip: sized.reason };
 
-    let plan = await this.plan(sized.legs, sources);
-    let atLensAmounts = false;
+    const outcomesByToken = new Map<Address, readonly QuoteOutcome[]>();
+    await Promise.all(
+      sized.legs.map(async (leg) => {
+        const venues = sources.byToken.get(leg.token) ?? [];
+        outcomesByToken.set(leg.token, await Promise.all(venues.map((s) => this.quote(s, leg))));
+      })
+    );
+
+    const plan = planRoute(sized.legs, outcomesByToken);
     if (plan.kind === "unfundable") {
-      // The legs carry the engine's accrual buffer, but the router borrows what its own preview
-      // says. A venue that holds the preview amount but not the buffer can still fund the
-      // liquidation, so the legs are quoted again at the Lens amounts before the candidate is
-      // skipped. The probe checks that route like any other.
-      const bare = sizeOwedLegs(
-        {
-          debtReserveIds: candidate.debtReserveIds,
-          debtToCoverAmounts: candidate.debtToCoverAmounts.map((amount) => unbufferAmount(amount)),
-          wbtcPayment: unbufferAmount(candidate.wbtcPayment),
-        },
-        topology,
-        wbtcAddress
-      );
-      const retry = bare.kind === "sized" ? await this.plan(bare.legs, sources) : undefined;
-      if (retry?.kind !== "funded") {
-        return {
-          skip: `no venue can fund it: ${plan.tokens
-            .map(({ token, reasons }) => `${token} (${reasons.join("; ")})`)
-            .join(", ")}`,
-        };
-      }
-      logger.info(
-        `No venue fills the buffered amounts for ${proxy}; routing at the Lens amounts for the probe to check`
-      );
-      plan = retry;
-      atLensAmounts = true;
+      return {
+        skip: `no venue can fund it: ${plan.tokens
+          .map(({ token, reasons }) => `${token} (${reasons.join("; ")})`)
+          .join(", ")}`,
+      };
     }
 
     if (plan.degraded.length > 0) {
@@ -300,22 +279,8 @@ export class FlashFunding implements LiquidationFunding {
 
     return {
       flashDatas: buildRankedFlashDatas(plan.legs, sources.byToken, wbtcAddress),
-      // A quote at the Lens amounts is below what the probe borrows once interest accrues, so the
-      // probe is not compared against it.
-      legs: atLensAmounts ? [] : plan.legs,
+      legs: plan.legs,
     };
-  }
-
-  /** Quotes every venue for each leg, and picks the cheapest that fills it. */
-  private async plan(legs: readonly OwedLeg[], sources: VenueSources): Promise<RoutePlan> {
-    const outcomesByToken = new Map<Address, readonly QuoteOutcome[]>();
-    await Promise.all(
-      legs.map(async (leg) => {
-        const venues = sources.byToken.get(leg.token) ?? [];
-        outcomesByToken.set(leg.token, await Promise.all(venues.map((s) => this.quote(s, leg))));
-      })
-    );
-    return planRoute(legs, outcomesByToken);
   }
 
   /**
