@@ -6,6 +6,7 @@ import type { Address, Hex, PublicClient } from "viem";
 import type { Executor } from "../../shared/executor";
 import type { SpokeReserves } from "../reserves";
 import type { LiquidatablePosition } from "../types";
+import type { FlashVenueEntry } from "./venueRoutes/factory";
 import type { VenueRegistry } from "./venues";
 
 /**
@@ -119,13 +120,16 @@ export interface FundedCandidate extends LiquidationCandidate {
   risk: RiskDeclaration;
 }
 
-/** `funding: "flash"` — everything the router path needs that the inventory path does not. */
-export interface FlashFundingParams {
+/**
+ * `funding: "flash"` — everything the router path needs that the inventory path does not.
+ *
+ * Venues come in exactly one of two shapes, and the type keeps them apart: a fixed `venues` registry
+ * with one venue per token, or a `ranking` that quotes several per token and picks per candidate.
+ */
+export type FlashFundingParams = {
   mode: "flash";
   /** The `LiquidationRouter` deployment whose `owner` is our executor identity. */
   routerAddress: Address;
-  /** Where each token is flash-borrowed. Validated once at construction (`assertRegistryValid`). */
-  venues: VenueRegistry;
   /**
    * How far the realised profit may fall below the probe's quote before the chain must revert, in
    * basis points.
@@ -134,6 +138,30 @@ export interface FlashFundingParams {
    * bound there is — the venue fills at whatever price the pool gives. `10_000` removes the bound.
    */
   maxSlippageBps: number;
+} & (
+  | {
+      /** Where each token is flash-borrowed. Validated once at construction (`assertRegistryValid`). */
+      venues: VenueRegistry;
+      ranking?: undefined;
+    }
+  | {
+      ranking: VenueRanking;
+      venues?: undefined;
+    }
+);
+
+/**
+ * The venues to quote and choose between, as configured.
+ *
+ * Carried as parsed entries rather than built sources: a source needs the engine's client, which
+ * configuration does not have. The strategy builds them, and checks each entry, at construction.
+ */
+export interface VenueRanking {
+  entries: readonly FlashVenueEntry[];
+  /** The UniswapV4 `V4Quoter`. Present whenever an entry is a UniswapV4 pool. */
+  quoter?: Address;
+  /** The UniswapV4 `StateView`. Present whenever an entry is a UniswapV4 pool. */
+  stateView?: Address;
 }
 
 /** Which funding mode to run, and its parameters. `inventory` needs none. */
