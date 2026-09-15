@@ -98,11 +98,26 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 https://github.com/actions/checkout/releases/tag/v6.0.2
 
+      # lib/tbv-contracts is the private vault-contracts-aave-v4 repo: read it
+      # with a per-job GitHub App installation token (tbv-protocol-deps-ro,
+      # Contents: read, revoked when the job ends) instead of the shared
+      # VAULT_REPOS_RO PAT. The rewrite is limited to the org so the Uniswap
+      # submodules keep cloning anonymously.
+      - name: Mint submodule read token (GitHub App)
+        id: deps_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0 https://github.com/actions/create-github-app-token/releases/tag/v3.2.0
+        with:
+          app-id: ${{ vars.TBV_DEPS_APP_ID }}
+          private-key: ${{ secrets.TBV_DEPS_APP_PRIVATE_KEY }}
+          owner: babylonlabs-io
+          repositories: vault-contracts-aave-v4
+          permission-contents: read
+
       - name: Checkout submodules (private repo)
         env:
-          GITHUB_TOKEN: ${{ secrets.VAULT_REPOS_RO }}
+          GITHUB_TOKEN: ${{ steps.deps_token.outputs.token }}
         run: |
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/babylonlabs-io/".insteadOf "https://github.com/babylonlabs-io/"
           git submodule update --init --recursive
 
       - name: Install Foundry
