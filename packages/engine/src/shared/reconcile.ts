@@ -15,6 +15,7 @@ import type { Address, Hex } from "viem";
 import type { Logger } from "@repo/logger";
 import {
   type ChainReader,
+  type Horizon,
   type LivenessCheck,
   UNKNOWN_TX_GRACE_MS,
   couldBeInFlight,
@@ -48,6 +49,8 @@ interface Resolution {
   meta?: TransitionMeta;
   bucket: "confirmed" | "failed" | "stillInFlight";
   warn?: string;
+  /** In flight with no relay horizon. The loop recovers one, because resolvers do no I/O. */
+  repairHorizon?: true;
 }
 
 const confirmedAs = (meta: TransitionMeta): Resolution => ({
@@ -63,6 +66,9 @@ const failedAs = (meta: TransitionMeta): Resolution => ({
 
 /** Genuinely in flight — leave the row as-is, just count it. */
 const stillInFlight: Resolution = { bucket: "stillInFlight" };
+
+/** In flight, with no horizon to release its nonce. */
+const stillInFlightUnfenced: Resolution = { bucket: "stillInFlight", repairHorizon: true };
 
 /**
  * How far ahead of this process's clock a row's `updatedAt` may sit before it is worth saying so.
@@ -214,6 +220,10 @@ async function resolveBroadcastIntent(
   ) {
     return failedAs({ txHash, error: "not accepted (reconciled)" });
   }
+  // Under private submission a row without a horizon never releases its nonce. See `Horizon`.
+  if (liveness.reclaimMarginBlocks !== undefined && intent.relayMaxBlock == null) {
+    return stillInFlightUnfenced;
+  }
   return stillInFlight;
 }
 
@@ -259,6 +269,47 @@ function resolveUnbroadcastIntent(
 }
 
 /**
+ * Record the missing relay horizon of an in-flight intent, or warn why not. Never throws: a
+ * failed repair leaves the row fenced, and the next pass retries. In AUTO mode the warning is the
+ * only signal of a fenced nonce.
+ */
+async function recoverHorizon(
+  horizon: Pick<Horizon, "repair"> | undefined,
+  store: StateStore,
+  intent: BroadcastIntent,
+  expect: TransitionExpectation,
+  logger?: Pick<Logger, "warn" | "info">
+): Promise<void> {
+  const describe = `${intent.action} ${intent.subject} (${intent.id}) at nonce ${intent.nonce}`;
+  // Private submission is on but no `horizon` is wired, so this row can never be released.
+  if (!horizon) {
+    logger?.warn(
+      `Reconcile: ${describe} has no recorded relay horizon and no way to recover one, so its nonce stays fenced. Pass \`horizon\` alongside \`reclaimMarginBlocks\`.`
+    );
+    return;
+  }
+  try {
+    const recovered = await horizon.repair(intent.txHash);
+    if (recovered === null) {
+      logger?.warn(
+        `Reconcile: the relay cannot vouch for ${intent.txHash}, so ${describe} keeps its nonce fenced. If this repeats, the transaction predates the relay's memory (or was never sent to it) and an operator must resolve the intent by hand.`
+      );
+      return;
+    }
+    if (!(await store.transition(intent.id, intent.status, { relayMaxBlock: recovered }, expect))) {
+      // Another writer changed the row after this pass read it. Its state is newer.
+      logger?.info(`Reconcile: ${describe} advanced while its horizon was being recovered.`);
+      return;
+    }
+    logger?.warn(
+      `Reconcile: recovered the missing relay horizon for ${describe} — block ${recovered}. Its nonce was fenced with nothing able to release it; it now expires with the transaction.`
+    );
+  } catch (error) {
+    logger?.warn(`Reconcile: could not recover the relay horizon for ${describe}: ${error}`);
+  }
+}
+
+/**
  * Resolve the store's in-flight intents against the chain, **before** the engine re-drives — the
  * crux of no-double-submit after a crash or an ambiguous send. `signer` is the sending address whose
  * nonce sequence anchors the "was this broadcast?" checks (and, in `safe` custody, the Safe whose
@@ -293,6 +344,8 @@ export async function reconcilePending(args: {
    * empty, so nothing here keeps a crash leftover alive.
    */
   isSending?: (id: string) => boolean;
+  /** Recovers a missing relay horizon; see `Horizon`. Omitted under public submission. */
+  horizon?: Pick<Horizon, "repair">;
 }): Promise<ReconcileSummary> {
   const { store, reader, signer, logger, graceMs, reclaimMarginBlocks, isSending } = args;
   const now = args.now ?? Date.now;
@@ -378,6 +431,9 @@ export async function reconcilePending(args: {
 
     if (resolution.status) {
       await store.transition(intent.id, resolution.status, resolution.meta, asRead(intent));
+    } else if (resolution.repairHorizon && isBroadcast(intent)) {
+      // Guarded by `asRead`, like every write here. The horizon takes effect on the next pass.
+      await recoverHorizon(args.horizon, store, intent, asRead(intent), logger);
     }
     if (resolution.warn) logger?.warn(resolution.warn);
     summary[resolution.bucket]++;

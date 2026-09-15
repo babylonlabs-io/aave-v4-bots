@@ -39,6 +39,16 @@ function clone(row: TxIntent): TxIntent {
 }
 
 /**
+ * The relay horizon only moves later. A shorter one would free a nonce the relay can still spend,
+ * and two writers (submission and reconcile repair) can reach one row. Mirrors
+ * `GREATEST(relay_max_block, $9)` in Postgres, where a null on either side leaves the other value.
+ */
+function maxHorizon(current: number | null, next: number | undefined): number | null {
+  if (next === undefined) return current;
+  return current === null ? next : Math.max(current, next);
+}
+
+/**
  * Build a non-durable in-memory `StateStore`. `now` is injectable so tests can drive the TTL clock
  * `expireProposals` reads without mutating stored rows (Postgres uses wall-clock; both agree that
  * time only advances between calls).
@@ -139,10 +149,11 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       return true;
     },
 
+    // Keeps the Safe envelope. See the Postgres store.
     async release(id, expectedPayloadHash) {
       const row = rows.get(id);
       if (!row || row.status !== "claimed" || row.payloadHash !== expectedPayloadHash) return false;
-      rows.set(id, { ...row, status: "proposed", safeEnvelope: null, updatedAt: now() });
+      rows.set(id, { ...row, status: "proposed", updatedAt: now() });
       return true;
     },
 
@@ -156,7 +167,8 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
 
     async supersede(id) {
       const row = rows.get(id);
-      if (!row || row.status !== "proposed") return false;
+      // Never a row still carrying an envelope — see the Postgres store.
+      if (!row || row.status !== "proposed" || row.safeEnvelope !== null) return false;
       rows.set(id, { ...row, status: "superseded", updatedAt: now() });
       return true;
     },
@@ -166,6 +178,8 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       let swept = 0;
       for (const [id, row] of rows) {
         if (row.status !== "proposed") continue;
+        // Never a row still carrying an envelope — see the Postgres store.
+        if (row.safeEnvelope !== null) continue;
         if (action !== undefined && row.action !== action) continue;
         if (row.updatedAt > cutoff) continue;
         rows.set(id, { ...row, status: "expired", updatedAt: now() });
@@ -187,7 +201,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
         nonce: meta?.nonce ?? row.nonce,
         txHash: meta?.txHash ?? row.txHash,
         error: meta?.error ?? row.error,
-        relayMaxBlock: meta?.relayMaxBlock ?? row.relayMaxBlock,
+        relayMaxBlock: maxHorizon(row.relayMaxBlock, meta?.relayMaxBlock),
         updatedAt: now(),
       });
       return true;

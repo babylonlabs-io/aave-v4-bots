@@ -20,7 +20,7 @@ import {LiquidationRouter} from "../contracts/LiquidationRouter.sol";
 ///      The router still needs its venues before it can fund anything — a `UniswapV4SwapVenue` (or
 ///      equivalent) per debt token, plus the WBTC flash-loan venue for the LLP fairness payment.
 ///      Those go in the bot's env as `FLASH_SWAP_POOLS` / `WBTC_FLASH_LOAN_ADDRESS`; see
-///      `env.liquidator.example` and `docs/design-021-flash-funded-liquidations.md`.
+///      `env.liquidator.example`.
 contract DeployLiquidationRouter is Script {
     function run() external returns (LiquidationRouter router) {
         address owner = vm.envAddress("LIQUIDATION_ROUTER_OWNER");

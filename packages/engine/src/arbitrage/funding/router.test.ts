@@ -158,8 +158,14 @@ describe("RouterFunding", () => {
       );
     });
 
-    it("refuses to start with an empty treasury", async () => {
-      await expect(build({ balance: 0n }).funding.prepare()).rejects.toThrow(/holds no WBTC/);
+    // A drained treasury is refilled by a transfer. The gate admits nothing against zero.
+    it("starts with an empty treasury, publishing nothing to spend", async () => {
+      const h = build({ balance: 0n });
+      await h.funding.prepare();
+      await h.funding.refreshInventory();
+
+      expect(h.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/holds no WBTC/));
+      expect(h.risk.openSlot({ kind: "a", subject: "v", spend: [SPEND(1n)] }).allowed).toBe(false);
     });
   });
 
@@ -328,8 +334,7 @@ describe("RouterFunding", () => {
       return { ...h, authorizationId };
     }
 
-    // `relay` is permissionless and the batch is visible before we broadcast — gas estimation puts
-    // it in front of an RPC first — so a third party can execute it and leave our own tx reverting.
+    // The batch is public before we broadcast, so another send of it can execute first.
     it("reports a spend when the router shows our authorization acquired the vault", async () => {
       const { funding, getLogs, authorizationId } = await authorized({
         swapLogs: [{ blockNumber: 99n }],
@@ -424,7 +429,7 @@ describe("RouterFunding", () => {
   describe("holding capacity for batches that are settled but still executable", () => {
     /** Sign a batch, then tell the mode what became of the slot that opened it. */
     async function authorizedThen(
-      outcome: { consumed: boolean } | undefined,
+      outcome: { consumed: boolean; minedAtBlock?: bigint } | undefined,
       opts: Parameters<typeof build>[0] = {}
     ) {
       const h = build({ balance: 1_000n, allowance: 1_000n, ...opts });
@@ -455,11 +460,37 @@ describe("RouterFunding", () => {
       expect(published(h)).toMatchObject({ authorized: 90n });
     });
 
-    // The confirmed acquisition's WBTC has already left, so the balance read reports it. Holding it
-    // as well would subtract the same money twice and shrink capacity for no reason.
-    it("holds nothing for a batch whose acquisition confirmed", async () => {
-      const h = await authorizedThen({ consumed: true });
+    // The refresh reads at block 100, at or above where the acquisition mined, so the balance
+    // already shows the payment.
+    it("holds nothing for a batch whose acquisition confirmed below the refresh height", async () => {
+      const h = await authorizedThen({ consumed: true, minedAtBlock: 99n });
       expect(published(h)).toMatchObject({ authorized: 0n });
+    });
+
+    // A balance read below the mined block still includes the WBTC, so the hold stays.
+    it("keeps holding a confirmed acquisition the refresh height cannot report yet", async () => {
+      const h = await authorizedThen({ consumed: true, minedAtBlock: 150n }, { blockNumber: 100n });
+      expect(published(h)).toMatchObject({ authorized: 90n });
+    });
+
+    // The hold reaches the gate at settlement, before the send loop judges the next vault.
+    it("republishes capacity the moment a batch becomes held, not at the next refresh", async () => {
+      const h = build({ balance: 1_000n, allowance: 1_000n });
+      await h.funding.prepare();
+      await h.funding.refreshInventory();
+      const { authorizationId } = await h.funding.buildAcquisition({
+        vaultId: VAULT_ID,
+        preview: PREVIEW,
+        maxWbtcIn: 90n,
+      });
+
+      h.funding.settleAuthorization(authorizationId, { consumed: false });
+
+      // No refresh in between: this is the figure the gate holds for the rest of the cycle.
+      expect(published(h)).toMatchObject({ authorized: 90n });
+      expect(h.risk.openSlot({ kind: "a", subject: "v2", spend: [SPEND(911n)] }).allowed).toBe(
+        false
+      );
     });
 
     it("publishes capacity net of the hold, not the raw balance", async () => {
@@ -509,10 +540,28 @@ describe("RouterFunding", () => {
       });
       h.funding.settleAuthorization(authorizationId, { consumed: false });
 
-      // One second past the 120s deadline signed at 1_700_000_000.
-      h.getBlock.mockResolvedValue({ timestamp: 1_700_000_121n, number: 200n });
+      // Past the 120s deadline signed at 1_700_000_000, and past the margin held on top of it.
+      h.getBlock.mockResolvedValue({ timestamp: 1_700_000_150n, number: 200n });
       await h.funding.refreshInventory();
       expect(published(h)).toMatchObject({ authorized: 0n });
+    });
+
+    // One header can be contradicted by a reorg or a lagging node, so expiry waits for the margin.
+    it("keeps holding through the first header that reports expiry", async () => {
+      const h = build({ balance: 1_000n, allowance: 1_000n });
+      await h.funding.prepare();
+      const { authorizationId } = await h.funding.buildAcquisition({
+        vaultId: VAULT_ID,
+        preview: PREVIEW,
+        maxWbtcIn: 90n,
+      });
+      h.funding.settleAuthorization(authorizationId, { consumed: false });
+
+      // One second past the deadline, inside the margin.
+      h.getBlock.mockResolvedValue({ timestamp: 1_700_000_121n, number: 200n });
+      await h.funding.refreshInventory();
+
+      expect(published(h)).toMatchObject({ authorized: 90n });
     });
 
     // The other way out: someone submitted it. The vault leaves escrow, so no batch for it can
@@ -554,11 +603,34 @@ describe("RouterFunding", () => {
     });
 
     it("tolerates a lead within the allowance, since chain time is not our clock", async () => {
-      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 299n });
+      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 59n });
       await funding.prepare();
       await funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
 
       expect(signTypedData).toHaveBeenCalled();
+    });
+
+    // A lead of minutes is not skew, and all of it would extend the batch's lifetime.
+    it("refuses a lead of minutes, however plausible the block otherwise looks", async () => {
+      const { funding, signTypedData } = build({ blockTimestamp: nowSeconds() + 299n });
+
+      await funding.prepare();
+      await expect(
+        funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n })
+      ).rejects.toThrow(/leads this host's clock/);
+      expect(signTypedData).not.toHaveBeenCalled();
+    });
+
+    // The accepted lead extends the deadline, so it must stay a fraction of the window.
+    it("bounds the lifetime a tolerated lead can buy", async () => {
+      const now = nowSeconds();
+      const { funding, signTypedData } = build({ blockTimestamp: now + 59n });
+      await funding.prepare();
+      await funding.buildAcquisition({ vaultId: VAULT_ID, preview: PREVIEW, maxWbtcIn: 90n });
+
+      const { message } = signTypedData.mock.calls[0][0] as { message: { deadline: bigint } };
+      // 120s configured; the lead may stretch it, but not past half as long again.
+      expect(message.deadline - now).toBeLessThanOrEqual(120n + 60n);
     });
 
     // A month-ahead timestamp turns a 120-second authorization into a month-long one. The router

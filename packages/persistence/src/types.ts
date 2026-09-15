@@ -306,7 +306,8 @@ export interface StateStore {
   /**
    * Retire a `proposed` intent as `superseded` (a fresher proposal for the same subject replaces
    * it). No-op unless the row is currently `proposed` — a `pending`/`submitted` (AUTO, real tx)
-   * intent is never superseded. Returns whether it applied.
+   * intent is never superseded, and neither is a row carrying a Safe envelope. Returns whether it
+   * applied.
    */
   supersede(id: string): Promise<boolean>;
   /**

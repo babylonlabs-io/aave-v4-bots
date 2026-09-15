@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  MULTICALL_BATCH_BYTES,
+  PROBES_PER_CALL,
   PROBE_CHUNK_SIZE,
   type Probe,
   probeInChunks,
   resolveChunkSize,
+  selectProbeCandidates,
 } from "../src/probePositions";
 
 const ok = (value: number): Probe<number> => ({ status: "success", value });
@@ -153,5 +156,77 @@ describe("resolveChunkSize", () => {
     for (const raw of ["0", "-5", "12.5", "abc", "Infinity", "25 positions"]) {
       assert.deepEqual(resolveChunkSize(raw), { chunkSize: PROBE_CHUNK_SIZE, invalid: true }, raw);
     }
+  });
+});
+
+// Rows without a borrower cannot be liquidated but cost nearly a full probe, so they are dropped.
+describe("selectProbeCandidates", () => {
+  const position = (proxyAddress: string) => ({ proxyAddress, suppliedShares: 1n });
+  const mapping = (proxyAddress: string, borrower: string) => ({ proxyAddress, borrower });
+
+  it("keeps only the positions a borrower can be resolved for", () => {
+    const { candidates, unmapped } = selectProbeCandidates(
+      [position("0xaaa"), position("0xbbb"), position("0xccc")],
+      [mapping("0xaaa", "0x111"), mapping("0xccc", "0x333")]
+    );
+
+    assert.deepEqual(
+      candidates.map((c) => [c.position.proxyAddress, c.borrower]),
+      [
+        ["0xaaa", "0x111"],
+        ["0xccc", "0x333"],
+      ]
+    );
+    assert.equal(unmapped, 1);
+  });
+
+  // The two tables come from different events and can differ in checksum casing.
+  it("matches addresses whatever their case", () => {
+    const { candidates, unmapped } = selectProbeCandidates(
+      [position("0xAbCd")],
+      [mapping("0xaBcD", "0x111")]
+    );
+
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].borrower, "0x111");
+    assert.equal(unmapped, 0);
+  });
+
+  it("reports an unprobeable table as entirely unmapped", () => {
+    const { candidates, unmapped } = selectProbeCandidates([position("0xaaa")], []);
+
+    assert.deepEqual(candidates, []);
+    assert.equal(unmapped, 1);
+  });
+
+  // Probe results are indexed by this order, so it must follow the input.
+  it("keeps the input order", () => {
+    const { candidates } = selectProbeCandidates(
+      [position("0xccc"), position("0xaaa"), position("0xbbb")],
+      [mapping("0xaaa", "0x111"), mapping("0xbbb", "0x222"), mapping("0xccc", "0x333")]
+    );
+
+    assert.deepEqual(
+      candidates.map((c) => c.position.proxyAddress),
+      ["0xccc", "0xaaa", "0xbbb"]
+    );
+  });
+});
+
+// viem splits a multicall by calldata bytes, so `MULTICALL_BATCH_BYTES` sets one call's size. It
+// must land exactly on the probe count: viem starts a new call when the size exceeds the limit.
+describe("MULTICALL_BATCH_BYTES", () => {
+  const CALLDATA_BYTES = 68; // estimateLiquidation(address,bool): selector + two words
+
+  it("admits exactly PROBES_PER_CALL probes per eth_call", () => {
+    assert.equal(MULTICALL_BATCH_BYTES, PROBES_PER_CALL * CALLDATA_BYTES);
+    // viem starts a new call when `currentChunkSize > batchSize`.
+    assert.ok(PROBES_PER_CALL * CALLDATA_BYTES <= MULTICALL_BATCH_BYTES);
+    assert.ok((PROBES_PER_CALL + 1) * CALLDATA_BYTES > MULTICALL_BATCH_BYTES);
+  });
+
+  // ~177k gas per healthy probe, ~247k per liquidatable one; the cap is 10M on some providers.
+  it("keeps one call inside the tightest provider gas cap", () => {
+    assert.ok(PROBES_PER_CALL * 247_000 < 10_000_000);
   });
 });

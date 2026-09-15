@@ -2,7 +2,7 @@ import type { Hex } from "viem";
 import { SubmitRejectedError, type Submitter } from "./index";
 
 // Flashbots Protect adapter — private submission, so a transaction is never visible in the public
-// mempool and cannot be front-run from it. See `docs/design-026-private-relay-submission.md`.
+// mempool and cannot be front-run from it.
 //
 // Two endpoints, both plain HTTP so the whole adapter is testable against a scripted `fetch`:
 //
@@ -11,13 +11,13 @@ import { SubmitRejectedError, type Submitter } from "./index";
 //
 // The status half exists because a private transaction is invisible to OUR node: `isKnown` and the
 // `pending` nonce count both miss it, and without a second source the nonce fence and reconcile both
-// make unsafe decisions (§4.1). The response shape below was verified against the live endpoint.
+// make unsafe decisions. The response shape below was verified against the live endpoint.
 
 /** What Protect reports for a submitted transaction. Verified against the live API. */
 export interface RelayTxStatus {
   /**
-   * `UNKNOWN` is ambiguous between "never seen it" and "expired from the index", which is why
-   * §4.5 never lets status alone free a nonce — only the recorded horizon does.
+   * `UNKNOWN` is ambiguous between "never seen it" and "expired from the index", so status alone
+   * never frees a nonce; only the recorded horizon does.
    */
   status: "PENDING" | "INCLUDED" | "FAILED" | "CANCELLED" | "UNKNOWN";
   /**

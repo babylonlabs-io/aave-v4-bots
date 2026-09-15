@@ -724,6 +724,30 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.openSlot(action()).allowed).toBe(false);
     });
 
+    // Only a code-hash halt makes the spender suspect.
+    it("reports a code-hash halt apart from any other halt", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
+      expect(gate.codeHashHalted()).toBe(false);
+
+      gate.halt("operator kill-switch");
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.codeHashHalted()).toBe(false);
+
+      await gate.verifyCode(reader({ "0xadapter": "0xdead" }));
+      expect(gate.codeHashHalted()).toBe(true);
+    });
+
+    it("stops reporting a code-hash halt once a clean pass retires it", async () => {
+      const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
+      await gate.verifyCode(reader({ "0xadapter": "0xdead" }));
+      expect(gate.codeHashHalted()).toBe(true);
+
+      await gate.verifyCode(reader({ "0xadapter": "0xabc" }));
+      // Still HALTED until the operator resumes, but the code-hash cause is cleared.
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.codeHashHalted()).toBe(false);
+    });
+
     it("halts when the target has no code (self-destructed / wrong address)", async () => {
       const gate = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
       await gate.verifyCode(reader({ "0xadapter": undefined }));
@@ -823,6 +847,41 @@ describe("@repo/risk createRiskGate", () => {
       expect(gate.state()).toBe("HALTED");
       expect(gate.openSlot(action()).allowed).toBe(false);
       expect(gate.haltReason()).toMatch(/code hash mismatch/);
+    });
+
+    // Guard passes can overlap. A pass that read before a mismatch must not clear it.
+    it("refuses when a stale clean pass lands after a newer mismatch", async () => {
+      const gate = createRiskGate(pinned);
+      let releaseStale: (hash: string) => void = () => {};
+      const stalled = new Promise<string>((resolve) => {
+        releaseStale = resolve;
+      });
+
+      // Pass A reads against a lagging backend and hangs mid-flight.
+      const stale = gate.verifyCode(() => stalled);
+      // Pass B sees the upgrade and halts.
+      await gate.verifyCode(async () => "0xtampered");
+      expect(gate.resume()).toBe(false);
+
+      // A now returns the pre-upgrade hash.
+      releaseStale("0xgood");
+      await stale;
+
+      expect(gate.resume()).toBe(false);
+      expect(gate.state()).toBe("HALTED");
+      expect(gate.openSlot(action()).allowed).toBe(false);
+    });
+
+    // A pass that started after the mismatch and reads clean does clear it.
+    it("lets a pass started after the mismatch retire it", async () => {
+      const gate = createRiskGate(pinned);
+      await gate.verifyCode(async () => "0xtampered");
+      expect(gate.resume()).toBe(false);
+
+      await gate.verifyCode(async () => "0xgood");
+
+      expect(gate.resume()).toBe(true);
+      expect(gate.state()).toBe("RUNNING");
     });
 
     // Same cause, different evidence: a self-destructed target or a wrong address reads as no code

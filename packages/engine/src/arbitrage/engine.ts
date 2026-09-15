@@ -11,7 +11,7 @@ import { waitForReceiptWithTimeout } from "@repo/execution";
 import type { ActionOutcome } from "@repo/risk";
 import type { RiskSlot } from "@repo/risk";
 import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
-import { maxWbtcInWithSlippage } from "./domain";
+import { isUsableVault, maxWbtcInWithSlippage } from "./domain";
 import { type ArbitrageFunding, type FundingParams, createArbitrageFunding } from "./funding";
 import type { EscrowedVault, PonderResponse } from "./types";
 
@@ -132,9 +132,21 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     await this.funding.prepare();
   }
 
+  /** The funding mode owns the allowances, so it owns taking them back. */
+  protected async revokeApprovals(): Promise<void> {
+    await this.funding.revokeApprovals();
+  }
+
   protected async poll(cycleSlots: RiskSlot[]): Promise<void> {
     // Fetch escrowed vaults from Ponder (with the freshness stamp of its reads)
-    const { vaults, dataTimestampMs } = await this.fetchEscrowedVaults();
+    const feed = await this.fetchEscrowedVaults();
+
+    // A failed read is not an empty escrow. Both end the cycle, with different logs.
+    if (feed.kind === "unavailable") {
+      this.logger.warn("Skipping cycle: the escrow list could not be read (not an empty escrow)");
+      return;
+    }
+    const { vaults, dataTimestampMs } = feed;
 
     if (vaults.length === 0) {
       this.logger.info("No escrowed vaults available");
@@ -164,6 +176,29 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     await this.funding.refreshInventory();
     const sent: SentAcquisition[] = [];
 
+    try {
+      await this.sendAndSettle(vaults, sent, dataTimestampMs, cycleSlots);
+    } finally {
+      // Backstop for every broadcast this cycle. `unresolved` keeps the WBTC held, because these
+      // transactions are on the wire. `this.settle` also informs the funding mode, which `run()`'s
+      // backstop does not. Idempotent, so the real outcomes above win.
+      for (const entry of sent) {
+        this.settle(
+          entry.slot,
+          { ok: false, unresolved: true, txHash: entry.hash },
+          entry.authorizationId
+        );
+      }
+    }
+  }
+
+  /** Send every acquisition, then classify the receipts. `poll`'s backstop wraps both. */
+  private async sendAndSettle(
+    vaults: EscrowedVault[],
+    sent: SentAcquisition[],
+    dataTimestampMs: number | undefined,
+    cycleSlots: RiskSlot[]
+  ): Promise<void> {
     for (const vault of vaults) {
       const prep = await this.prepareAndSend(vault, dataTimestampMs);
 
@@ -226,10 +261,9 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   /**
    * Fetch escrowed vaults from Ponder indexer with retry
    */
-  private async fetchEscrowedVaults(): Promise<{
-    vaults: EscrowedVault[];
-    dataTimestampMs?: number;
-  }> {
+  private async fetchEscrowedVaults(): Promise<
+    { kind: "ok"; vaults: EscrowedVault[]; dataTimestampMs?: number } | { kind: "unavailable" }
+  > {
     try {
       const data = await this.indexer.read<PonderResponse>("/escrowed-vaults");
       if (!Array.isArray(data.vaults)) {
@@ -245,11 +279,20 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           `Indexer could not read ${data.failedVaultsCount} escrowed vault(s) this cycle — the escrow list is incomplete`
         );
       }
-      return { vaults: data.vaults, dataTimestampMs: data.dataTimestampMs };
+      // Drop malformed entries, count them, and act on the rest.
+      const vaults = data.vaults.filter(isUsableVault);
+      const malformed = data.vaults.length - vaults.length;
+      if (malformed > 0) {
+        this.metrics.recordError("vaults_malformed");
+        this.logger.warn(
+          `Indexer described ${malformed} escrowed vault(s) in a shape this bot cannot use — dropped. Expect a decimal \`btcAmount\`/\`currentDebt\` and a 32-byte hex \`vaultId\`; a persistent count here means the indexer's wire format changed.`
+        );
+      }
+      return { kind: "ok", vaults, dataTimestampMs: data.dataTimestampMs };
     } catch (error) {
       this.logger.error("Failed to fetch escrowed vaults:", error);
       this.metrics.recordError("ponder_fetch_error");
-      return { vaults: [] };
+      return { kind: "unavailable" };
     }
   }
 
@@ -258,10 +301,10 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
    * first whether its funds went anyway.
    *
    * "We sent nothing" normally means "our money stayed put", which is what `abandoned` encodes. It
-   * stops being true once the payment is authorized *separately* from the transaction: a signed
-   * batch for a permissionless relay is executable by anyone who sees it, and it is seen before we
-   * broadcast — gas estimation puts it in front of an RPC provider first. Releasing the
-   * reservation while such a batch is live could admit a later vault against money already spent.
+   * stops being true once the payment is authorized *separately* from the transaction: the signed
+   * batch outlives the transaction that was going to carry it, and it is public before we broadcast
+   * anything — gas estimation puts it in front of an RPC provider first. Releasing the reservation
+   * while such a batch is live could admit a later vault against money already spent.
    */
   private async abandonAfterAuthorizing(
     slot: RiskSlot,
@@ -270,7 +313,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   ): Promise<void> {
     const verdict = await this.spendVerdict(vaultId, authorizationId);
     if ("spent" in verdict && verdict.spent) {
-      this.logger.warn(`Vault ${vaultId} was acquired with our authorization by another submitter`);
+      this.logger.warn(`Vault ${vaultId} was acquired with our authorization by another send`);
       this.metrics.recordError("relay_executed_elsewhere");
     }
     this.settle(slot, { ok: false, abandoned: true, ...verdict }, authorizationId);
@@ -291,8 +334,12 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
   private settle(slot: RiskSlot, outcome: ActionOutcome, authorizationId?: Hex): void {
     slot.settle(outcome);
     // Only a confirmed acquisition proves the money moved; everything else leaves the batch live
-    // until it expires or is observed executing.
-    this.funding.settleAuthorization(authorizationId, { consumed: outcome.ok === true });
+    // until it expires or is observed executing. The mined block tells the mode when a balance
+    // read reflects the payment.
+    this.funding.settleAuthorization(authorizationId, {
+      consumed: outcome.ok === true,
+      minedAtBlock: outcome.minedAtBlock,
+    });
   }
 
   /**
@@ -414,8 +461,6 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     dataTimestampMs?: number
   ): Promise<PrepareResult> {
     const { vaultId, btcAmount, currentDebt } = vault;
-    const currentDebtBigInt = BigInt(currentDebt);
-    const btcAmountBigInt = BigInt(btcAmount);
     // Assigned once the risk gate allows this acquisition; from then on every exit must settle it
     // (the `finally` is the backstop). Stays undefined if we bail before ever asking the gate.
     let slot: RiskSlot | undefined;
@@ -426,12 +471,16 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
     // unexpected throw still has to be handed over to the funding mode's own accounting.
     let authorizationId: Hex | undefined;
 
-    this.logger.info("Attempting to acquire vault:");
-    this.logger.info(`   Vault ID: ${vaultId}`);
-    this.logger.info(`   BTC Amount: ${formatUnits(btcAmountBigInt, 8)} WBTC`);
-    this.logger.info(`   Current Debt (indexer): ${formatUnits(currentDebtBigInt, 8)} WBTC`);
-
     try {
+      // Inside the `try`, so a failed conversion skips only this vault.
+      const currentDebtBigInt = BigInt(currentDebt);
+      const btcAmountBigInt = BigInt(btcAmount);
+
+      this.logger.info("Attempting to acquire vault:");
+      this.logger.info(`   Vault ID: ${vaultId}`);
+      this.logger.info(`   BTC Amount: ${formatUnits(btcAmountBigInt, 8)} WBTC`);
+      this.logger.info(`   Current Debt (indexer): ${formatUnits(currentDebtBigInt, 8)} WBTC`);
+
       const previewResults = await this.publicClient.readContract({
         address: this.vaultSwapAddress,
         abi: vaultSwapAbi,
@@ -665,6 +714,24 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         return "skipped";
       }
 
+      // Viem returns the receipt of whatever took our nonce, so this one may not be ours, and its
+      // status says nothing about our acquisition. Settle `unresolved`: no breaker hit, and the
+      // WBTC stays held under our hash, because the signed batch can still pay.
+      if (receipt.transactionHash !== hash) {
+        this.settle(slot, { ok: false, unresolved: true, txHash: hash }, authorizationId);
+        this.logger.warn(
+          `Acquisition ${hash} for vault ${vaultId} was replaced by ${receipt.transactionHash} at the same nonce`
+        );
+        this.metrics.recordError("tx_replaced");
+        if (intentId)
+          await this.executor.recordOutcome(intentId, {
+            kind: "failed",
+            txHash: hash,
+            error: `replaced by ${receipt.transactionHash}`,
+          });
+        return "skipped";
+      }
+
       if (receipt.status === "success") {
         // The height it mined at travels too, so the hold is retired by the first balance read that
         // can actually report it rather than by the next one to arrive.
@@ -690,8 +757,8 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       if (lostRace) {
         // Losing the race does not always mean keeping the money. Ask the funding mode whether its
         // funds paid for the vault anyway — they can, where the payment is authorized separately
-        // from this transaction and anyone may submit that authorization. Releasing the
-        // reservation in that case would hand the same balance out twice in one cycle.
+        // from this transaction and outlives it. Releasing the reservation in that case would hand
+        // the same balance out twice in one cycle.
         const verdict = await this.spendVerdict(vaultId as Hex, authorizationId);
         this.settle(
           slot,
@@ -708,7 +775,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           classification = "lost race (spend unknown)";
         } else if (verdict.spent) {
           this.logger.warn(
-            `Vault ${vaultId} was acquired with our own authorization by another submitter — funds spent, gas theirs`
+            `Vault ${vaultId} was acquired with our own authorization by another send — the treasury paid, the gas did not`
           );
           this.metrics.recordError("relay_executed_elsewhere");
           classification = "lost race (our authorization paid)";

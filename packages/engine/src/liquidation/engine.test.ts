@@ -297,6 +297,32 @@ describe("LiquidationEngine", () => {
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
     });
 
+    // A failed read must not write a zero to the candidate gauge.
+    it("does not record an empty market when the candidate list cannot be read", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      global.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
+
+      await bot.run();
+
+      expect(metrics.recordError).toHaveBeenCalledWith("ponder_fetch_error");
+      expect(metrics.recordPositionsLiquidatable).not.toHaveBeenCalled();
+    });
+
+    it("records the empty market when the indexer actually reports one", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable: [], total: 0, checked: 0 }),
+      });
+
+      await bot.run();
+
+      expect(metrics.recordPositionsLiquidatable).toHaveBeenCalledWith(0);
+      expect(metrics.recordError).not.toHaveBeenCalledWith("ponder_fetch_error");
+    });
+
     // The response is cast to its type, never parsed, so what the cycle is built on is checked where
     // it is read — the same reason the risk gate re-establishes the freshness stamp itself. The
     // arbitrage engine has always done this for its vault list; this side had not.
@@ -670,6 +696,7 @@ describe("LiquidationEngine", () => {
           nonce: 42,
           functionName: "liquidateWithLLP",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -712,6 +739,7 @@ describe("LiquidationEngine", () => {
             nonZeroRedeemKey,
           ],
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -744,11 +772,13 @@ describe("LiquidationEngine", () => {
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ nonce: 10 }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({ nonce: 11 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -957,6 +987,7 @@ describe("LiquidationEngine", () => {
         expect.objectContaining({
           functionName: "approve",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1008,6 +1039,7 @@ describe("LiquidationEngine", () => {
           address: "0xwbtc",
           functionName: "approve",
         }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1076,6 +1108,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ functionName: "approve" }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1365,6 +1398,7 @@ describe("LiquidationEngine", () => {
 
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({ nonce: 7 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -1414,11 +1448,13 @@ describe("LiquidationEngine", () => {
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ nonce: 10 }),
+        expect.any(Function),
         expect.any(Function)
       );
       expect(clients.sender.send).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({ nonce: 11 }),
+        expect.any(Function),
         expect.any(Function)
       );
     });

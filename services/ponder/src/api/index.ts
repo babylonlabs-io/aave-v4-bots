@@ -6,7 +6,13 @@ import { Hono } from "hono";
 import { client, graphql, replaceBigInts as replaceBigIntsBase } from "ponder";
 import type { Address, PublicClient } from "viem";
 import { FaultTally, isHealthyPositionRevert, isVaultGoneRevert } from "../probeFaults";
-import { type Probe, probeInChunks, resolveChunkSize } from "../probePositions";
+import {
+  MULTICALL_BATCH_BYTES,
+  type Probe,
+  probeInChunks,
+  resolveChunkSize,
+  selectProbeCandidates,
+} from "../probePositions";
 
 const logger = createLogger();
 
@@ -142,10 +148,15 @@ app.get("/liquidatable-positions", async (c) => {
   const blockRef = await readBlockRef(publicClient);
   const dataTimestampMs = blockRef?.dataTimestampMs;
 
-  // Build proxy -> borrower lookup
-  const proxyToBorrower = new Map<string, string>();
-  for (const m of proxyMappings) {
-    proxyToBorrower.set(m.proxyAddress.toLowerCase(), m.borrower);
+  // Probe only rows with a borrower. See `selectProbeCandidates`.
+  const { candidates, unmapped } = selectProbeCandidates(positions, proxyMappings);
+
+  // One line per cycle. A rising count on an adapter-only deployment means proxy mappings are
+  // missing.
+  if (unmapped > 0) {
+    logger.warn(
+      `${unmapped} position row(s) have no proxy mapping and were not probed — no borrower means no liquidation call can be built for them`
+    );
   }
 
   // estimateLiquidation reverts for healthy positions and returns
@@ -166,24 +177,25 @@ app.get("/liquidatable-positions", async (c) => {
       error instanceof Error ? error.message : error
     );
 
+  const scanStartedAt = Date.now();
   const { probes, unscanned } = (await isMulticallSupported(publicClient))
     ? // One aggregate over every position would be one `eth_call`: past the node's gas cap the
       // whole thing reverts, viem throws, and this endpoint 500s while real unhealthy positions
-      // exist. The position table only grows (a row is created on any Supply and removed only when
-      // shares reach zero), so that ceiling is reached by ordinary adoption, not just by someone
-      // trying.
+      // exist. `PROBES_PER_CALL` is what bounds a call; the chunk is how many of them run at once.
       await probeInChunks(
-        positions,
+        candidates,
         async (chunk): Promise<Probe<Estimate>[]> => {
           const results = await publicClient.multicall({
-            contracts: chunk.map((p) => ({
+            contracts: chunk.map(({ position }) => ({
               address: lensAddress,
               abi: lensAbi,
               functionName: "estimateLiquidation" as const,
-              args: [p.proxyAddress as Address, false] as const,
+              args: [position.proxyAddress as Address, false] as const,
             })),
             allowFailure: true,
             multicallAddress: MULTICALL3_ADDRESS,
+            // Explicit, not viem's 1024-byte default. See `PROBES_PER_CALL`.
+            batchSize: MULTICALL_BATCH_BYTES,
             blockNumber: blockRef?.blockNumber,
           });
           return results.map((r) =>
@@ -200,15 +212,15 @@ app.get("/liquidatable-positions", async (c) => {
       // endpoint — so the batching is not just a multicall concern. `allSettled` keeps a single
       // failed read from costing its batch, which is why this path rarely reports `unscanned`.
       await probeInChunks(
-        positions,
+        candidates,
         async (chunk): Promise<Probe<Estimate>[]> => {
           const settled = await Promise.allSettled(
-            chunk.map((p) =>
+            chunk.map(({ position }) =>
               publicClient.readContract({
                 address: lensAddress,
                 abi: lensAbi,
                 functionName: "estimateLiquidation",
-                args: [p.proxyAddress as Address, false],
+                args: [position.proxyAddress as Address, false],
                 blockNumber: blockRef?.blockNumber,
               })
             )
@@ -222,6 +234,9 @@ app.get("/liquidatable-positions", async (c) => {
         onChunkFailure,
         probeChunkSize
       );
+
+  // Probe time only.
+  const scanMs = Date.now() - scanStartedAt;
 
   const liquidatable: Array<{
     proxyAddress: string;
@@ -240,7 +255,7 @@ app.get("/liquidatable-positions", async (c) => {
 
   for (let i = 0; i < probes.length; i++) {
     const probe = probes[i];
-    const p = positions[i];
+    const { position, borrower } = candidates[i];
 
     if (probe.status === "failure") {
       // A healthy position is the lens answering the question, and it is most of the table on every
@@ -249,23 +264,23 @@ app.get("/liquidatable-positions", async (c) => {
       continue;
     }
 
-    const borrower = proxyToBorrower.get(p.proxyAddress.toLowerCase());
-    if (!borrower) {
-      logger.error(`No borrower mapping found for proxy ${p.proxyAddress}`);
-      continue;
-    }
-
     const [debtReserveIds, debtToCoverAmounts, , vaultId] = probe.value;
 
     liquidatable.push({
-      proxyAddress: p.proxyAddress,
+      proxyAddress: position.proxyAddress,
       borrower,
       debtReserveIds: debtReserveIds.map((id) => id.toString()),
       debtToCoverAmounts: debtToCoverAmounts.map((amt) => amt.toString()),
       vaultId,
-      suppliedShares: p.suppliedShares.toString(),
+      suppliedShares: position.suppliedShares.toString(),
     });
   }
+
+  // Scan time grows with the candidate count, and the bot reads this route under a fixed timeout.
+  // This line shows how close the scan is to that limit.
+  logger.info(
+    `Probed ${candidates.length} candidate(s) in ${scanMs}ms: ${liquidatable.length} liquidatable, ${unscanned} unscanned, ${unmapped} unmapped`
+  );
 
   if (faults.count > 0) {
     logger.warn(
@@ -283,8 +298,12 @@ app.get("/liquidatable-positions", async (c) => {
       // everything else — a batch that failed as a whole, or a probe that reverted for a reason
       // that is not "healthy". Without it a partial scan is indistinguishable from a quiet market,
       // and "no candidates" is exactly the answer a liquidator must not infer from a failure.
-      checked: positions.length - unknown,
+      checked: candidates.length - unknown,
       unscanned: unknown,
+      // Rows with no borrower. Unlike `unscanned`, a later cycle does not change them.
+      unmapped,
+      // Probe time. Read it against `checked`: the scan is linear in it.
+      scanMs,
       dataTimestampMs,
     })
   );

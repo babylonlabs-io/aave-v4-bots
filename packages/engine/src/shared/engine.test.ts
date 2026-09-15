@@ -1,4 +1,4 @@
-import type { RiskSlot } from "@repo/risk";
+import type { RiskGate, RiskSlot } from "@repo/risk";
 import { createRiskGate } from "@repo/risk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BaseEngine, type BaseEngineConfig, type CycleMetrics } from "./engine";
@@ -22,6 +22,9 @@ class TestEngine extends BaseEngine<CycleMetrics> {
     this.calls.push("poll");
     await this.body(this, slots);
   }
+  protected async revokeApprovals(): Promise<void> {
+    this.calls.push("revokeApprovals");
+  }
   /** Reaching `this.risk` is what `protected` is for — a real strategy opens its slots this way. */
   openTestSlot(): RiskSlot {
     return this.risk.openSlot({ kind: "test", subject: "test" });
@@ -33,10 +36,11 @@ function harness(
     indexerOk?: boolean;
     onReconcile?: () => void;
     body?: (self: TestEngine, slots: RiskSlot[]) => Promise<void>;
+    risk?: RiskGate;
   } = {}
 ) {
   const reconciled: string[] = [];
-  const risk = createRiskGate();
+  const risk = opts.risk ?? createRiskGate();
   const metrics = { recordError: vi.fn(), recordPollDuration: vi.fn() };
   const onPollComplete = vi.fn();
   const engine = new TestEngine(
@@ -91,17 +95,39 @@ describe("BaseEngine", () => {
     expect(reconciled).toEqual([undefined]);
   });
 
-  it("skips everything but the bookkeeping when the gate is HALTED", async () => {
+  it("keeps the bookkeeping but trades nothing when the gate is HALTED", async () => {
     const { engine, risk, metrics, onPollComplete } = harness();
     risk.halt("test");
 
     await engine.run();
 
-    // Nothing is touched — not even reconcile — but the cycle still stamps itself, so a halted bot
-    // reads as alive rather than wedged.
-    expect(engine.calls).toEqual([]);
+    // Halted: bookkeeping still runs, but the indexer and the strategy do not.
+    expect(engine.calls).toEqual(["reconcile", "resyncNonces"]);
     expect(metrics.recordPollDuration).toHaveBeenCalledOnce();
     expect(onPollComplete).toHaveBeenCalledOnce();
+  });
+
+  // A code-hash halt revokes allowances in the halted cycle, and does nothing else.
+  it("withdraws its allowances when the halt says a pinned target changed", async () => {
+    const risk = createRiskGate({ expectedCodeHashes: { "0xadapter": "0xabc" } });
+    await risk.verifyCode(async () => "0xdead");
+    const { engine, onPollComplete } = harness({ risk });
+
+    await engine.run();
+
+    // After reconcile and the nonce resync: the revocation needs a fresh nonce.
+    expect(engine.calls).toEqual(["reconcile", "resyncNonces", "revokeApprovals"]);
+    expect(onPollComplete).toHaveBeenCalledOnce();
+  });
+
+  it("leaves them standing on any other halt", async () => {
+    const { engine, risk } = harness();
+    risk.halt("operator kill-switch");
+
+    await engine.run();
+
+    // A kill-switch halt revokes nothing: the operator stopped trading, not the adapter.
+    expect(engine.calls).toEqual(["reconcile", "resyncNonces"]);
   });
 
   it("runs the strategy only when the indexer says so", async () => {

@@ -115,7 +115,9 @@ docker compose build arbitrageur-ponder arbitrageur-bot
 Skip this under `ARBITRAGE_FUNDING=inventory`.
 
 Router funding moves the WBTC off the signing key: a treasury holds it, and the bot only signs
-an EIP-712 authorization. Deploy the router once:
+an EIP-712 authorization. The router relays a batch only for its own signer, so the authorization
+is of no use to anyone else who sees it. The bot pays the gas for every acquisition from the
+signing account. Deploy the router once:
 
 ```bash
 git submodule update --init --recursive
@@ -231,7 +233,7 @@ not `localhost`.
 |-----------|-------------|----------|---------|
 | `ARBITRAGE_FUNDING` | `inventory` pays from the signer's WBTC. `router` has the treasury pay through `ArbitrageRouter`. Router variables without `router` fail at boot | No | `inventory` |
 | `ARBITRAGE_ROUTER_ADDRESS` | The deployed router (§4.4) | router | |
-| `ARBITRAGE_RELAY_DEADLINE_SECONDS` | How long a signed batch stays valid, in chain seconds. Range 1 to 300. The router has no nonce, so a signed batch is replayable by anyone until it expires | No | `120` |
+| `ARBITRAGE_RELAY_DEADLINE_SECONDS` | How long a signed batch stays valid, in chain seconds. Range 1 to 300. The router has no nonce, so a signed batch stays executable by this bot's signer until it expires, whether or not the transaction that carried it landed | No | `120` |
 
 **Optional liquidation engine**
 
@@ -290,7 +292,7 @@ the operator's wallet chooses its own route.
 | `FLASHBOTS_PROTECT_URL` | private | e.g. `https://rpc.flashbots.net/fast` |
 | `FLASHBOTS_STATUS_URL` | no | `https://protect.flashbots.net` |
 | `PRIVATE_MIN_PRIORITY_FEE_WEI` | private | none, on purpose |
-| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | `25`. Minimum nonce fence in blocks, max `7200` |
+| `PRIVATE_RELAY_HORIZON_BLOCKS` | no | `25`. Minimum nonce fence in blocks, max `7200`. With the status URL on Protect, a value below its ~25-block window fails at boot |
 | `PRIVATE_RECLAIM_MARGIN_BLOCKS` | no | `3`. Reorg headroom past the fence, max `7200` |
 | `PRIVATE_SUBMIT_TIMEOUT_MS` | no | `8000`. The submit holds the nonce lock, so keep it inside one poll cycle |
 | `PRIVATE_STATUS_TIMEOUT_MS` | no | `2000` |
@@ -308,10 +310,16 @@ Boot fails rather than degrading when:
 
 **Nonce fence.** A dropped private transaction holds its nonce until the chain passes the larger
 of the relay's stated deadline and `head + PRIVATE_RELAY_HORIZON_BLOCKS`, plus the margin. A relay
-deadline beyond ten times the horizon is capped. Later transactions queue behind it. This is
+deadline more than 7200 blocks past head is capped. Later transactions queue behind it. This is
 self-healing. If `eth_getTransactionCount` stops advancing while the bot keeps recording intents,
 look for `Relay status probe failed` in the logs: an unreachable status endpoint keeps every nonce
 fenced until its horizon.
+
+**Accepted risk: the relay is trusted to stop offering a transaction.** A signed transaction has
+no expiry, so nothing on chain forces the relay to drop it after its deadline. Releasing the nonce
+relies on the relay honouring the deadline it reported or, when it reports none, on
+`PRIVATE_RELAY_HORIZON_BLOCKS` matching the relay you use. The window, the margin and the cap bound
+this exposure. Only consuming the nonce on chain removes it, and this bot does not do that.
 
 **Judge the trade-off from your own metrics.** Private submission narrows who can include you
 (`/fast` fans out to all registered builders) and aligns to block boundaries.
@@ -434,12 +442,48 @@ Same server and endpoints as the liquidator. See
 [liquidator guide §8.4](./liquidator-operation-guide.md#84-kill-switch). One halt stops both
 engines.
 
+A code-hash halt withdraws the allowances this signer granted: the LLP's WBTC allowance under
+inventory funding, and the adapter's allowances when the liquidation engine is on. Router funding
+withdraws nothing, because that allowance belongs to the treasury, not to this process.
+
 ### 8.4. Indexer endpoints
 
 ```bash
 curl http://localhost:42070/escrowed-vaults      # escrowed vaults with a live preview
 curl http://localhost:42070/escrowed-vaults-raw  # indexed rows only, for debugging
 ```
+
+### 8.5. Restarting under router funding
+
+Skip this under `ARBITRAGE_FUNDING=inventory`.
+
+The bot keeps its signed batches in memory only, so a restart forgets them. The router relays a
+batch only for its own signer, and the bot signs a fresh batch for every attempt, so a forgotten
+batch is executable by nobody else.
+
+A `relay` transaction that was already broadcast can outlive the process. It may still mine up to
+its `ARBITRAGE_RELAY_DEADLINE_SECONDS` deadline. Inside that window:
+
+- The restarted bot publishes the treasury's raw capacity, because it does not know the old batch
+  exists. It can commit the same WBTC to a new vault.
+- If the old transaction lands first, it is a valid acquisition: the vault reaches your keeper and
+  the treasury pays the previewed cost.
+- The new acquisition then reverts on the WBTC pull, with its vault still in escrow. That costs gas
+  and counts as a genuine failure. If you set `RISK_MAX_CONSECUTIVE_FAILURES`, keep it above
+  `RISK_MAX_IN_FLIGHT` so one restart window cannot halt the bot.
+- The old acquisition never reaches this process's `arbitrageur_vaults_acquired_total`. Alert on
+  the router's `SwapWbtcToVault` events, which record what the treasury paid for.
+
+The next `refreshInventory` reads the real balance, so the accounting corrects itself on the
+following cycle.
+
+**Planned stop.** Halt the gate (`POST /halt`), wait until `inFlight` in `GET /status` is zero (or
+one poll interval plus `TX_RECEIPT_TIMEOUT_MS`), then stop the process. No transaction is left
+outstanding.
+
+**Unplanned stop.** Expect the window above for at most `ARBITRAGE_RELAY_DEADLINE_SECONDS` plus a
+block or two. If the gate halted during it, read `GET /status`, confirm that the treasury balance
+and the router's recent events explain the failures, and resume.
 
 ## 9. Vault Acquisition
 
@@ -471,7 +515,8 @@ router at a contract of their choosing and spend the entire allowance into it, i
 address they control.
 
 1. **Revoke the approval first.** Do this before stopping the bot; a stopped bot does not stop
-   the attacker. Signed batches in flight fail once the allowance is zero.
+   the attacker. Signed batches stay valid until their deadline, and the router relays them for
+   the compromised signer, so only a zero allowance makes them fail.
 
    ```bash
    cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" 0 \
