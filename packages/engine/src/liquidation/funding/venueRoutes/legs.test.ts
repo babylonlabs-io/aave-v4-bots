@@ -100,7 +100,59 @@ describe("sizeOwedLegs", () => {
       );
 
       expect(legs.kind).toBe("skip");
-      expect(legs.kind === "skip" && legs.reason).toMatch(/reserves 0, 2 share/);
+      expect(legs.kind === "skip" && legs.reason).toMatch(
+        /reserve 2, but reserve 0 lists it first/
+      );
+    });
+
+    it("sizes a candidate owing it only on the first id, which the router borrows in full", () => {
+      const legs = sizeOwedLegs(
+        { debtReserveIds: [0n], debtToCoverAmounts: [100n], wbtcPayment: 0n },
+        topology(USDC, WBTC, USDC),
+        WBTC
+      );
+
+      expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 100n }] });
+    });
+
+    it("sizes WBTC owed only on the first WBTC reserve when there is no fairness payment", () => {
+      const legs = sizeOwedLegs(
+        { debtReserveIds: [0n], debtToCoverAmounts: [100n], wbtcPayment: 0n },
+        topology(WBTC, USDC, WBTC),
+        WBTC
+      );
+
+      expect(legs).toEqual({ kind: "sized", legs: [{ token: WBTC, amount: 100n }] });
+    });
+
+    it("skips WBTC owed on the first WBTC reserve with a fairness payment", () => {
+      // The later WBTC reserve's approval (the payment alone) replaces the first one's (debt plus
+      // payment), so the adapter cannot pull the debt.
+      const legs = sizeOwedLegs(
+        { debtReserveIds: [0n], debtToCoverAmounts: [100n], wbtcPayment: 5n },
+        topology(WBTC, USDC, WBTC),
+        WBTC
+      );
+
+      expect(legs.kind).toBe("skip");
+      expect(legs.kind === "skip" && legs.reason).toMatch(/with a fairness payment/);
+    });
+
+    it("sizes a fairness payment alone when two reserves share WBTC", () => {
+      // Every WBTC reserve approves the payment alone, so the last approval still covers it.
+      const legs = sizeOwedLegs(
+        { debtReserveIds: [1n], debtToCoverAmounts: [100n], wbtcPayment: 5n },
+        topology(WBTC, USDC, WBTC),
+        WBTC
+      );
+
+      expect(legs).toEqual({
+        kind: "sized",
+        legs: [
+          { token: USDC, amount: 100n },
+          { token: WBTC, amount: 5n },
+        ],
+      });
     });
 
     it("skips a candidate owing it only on the later id, where the router's lookup reads zero", () => {

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { RESERVE_FLAG, bufferAmount, bufferAmounts, isBorrowableReserve } from "./domain";
+import {
+  RESERVE_FLAG,
+  bufferAmount,
+  bufferAmounts,
+  isBorrowableReserve,
+  unbufferAmount,
+} from "./domain";
 
 describe("bufferAmounts", () => {
   it("applies a 1% buffer by default", () => {
@@ -45,6 +51,21 @@ describe("bufferAmount", () => {
     // Above 10_000 / bufferBps the two coincide, which is why no other test in the engine moves.
     expect(bufferAmount(100n)).toBe(101n);
     expect(bufferAmount(5_000n)).toBe(5_050n);
+  });
+});
+
+describe("unbufferAmount", () => {
+  it("recovers every amount bufferAmount inflated, at the same bps", () => {
+    for (const bps of [1, 100, 250, 10_000]) {
+      for (let amount = 0n; amount <= 30_000n; amount++) {
+        expect(unbufferAmount(bufferAmount(amount, bps), bps)).toBe(amount);
+      }
+    }
+  });
+
+  it("recovers a large amount", () => {
+    const amount = 123_456_789_012_345_678_901n;
+    expect(unbufferAmount(bufferAmount(amount))).toBe(amount);
   });
 });
 

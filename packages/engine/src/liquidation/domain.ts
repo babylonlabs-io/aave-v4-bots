@@ -19,6 +19,17 @@ export function bufferAmount(amount: bigint, bufferBps = 100): bigint {
   return (amount * BigInt(10_000 + bufferBps) + 9_999n) / 10_000n;
 }
 
+/**
+ * The Lens amount that `bufferAmount` inflated, recovered exactly at the same `bufferBps`.
+ *
+ * `bufferAmount` rounds up, so its result lies in `[amount * k, amount * k + 1)` with
+ * `k = (10_000 + bufferBps) / 10_000`. Dividing by `k` gives a value in `[amount, amount + 1 / k)`,
+ * and truncation returns `amount`. Only a value `bufferAmount` produced has this guarantee.
+ */
+export function unbufferAmount(buffered: bigint, bufferBps = 100): bigint {
+  return (buffered * 10_000n) / BigInt(10_000 + bufferBps);
+}
+
 /** `bufferAmount` over a whole estimate. */
 export function bufferAmounts(amounts: readonly bigint[], bufferBps = 100): bigint[] {
   return amounts.map((amt) => bufferAmount(amt, bufferBps));

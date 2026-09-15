@@ -77,15 +77,24 @@ export function sizeOwedLegs(
     const token = getAddress(reserve.token);
 
     // The router sizes a borrow by looking the token up among the reserves and taking the *first*
-    // match, but hands the adapter every reserve's debt. A token listed under two ids is therefore
-    // under-borrowed whenever the debt is not all on the first one — including debt sitting only on
-    // the later id, where the first match reads zero. No quote describes what the router would
-    // borrow, so the candidate cannot be flash-funded as priced.
+    // match, but hands the adapter every reserve's debt. Debt on a later reserve with the same token
+    // is therefore never borrowed. Debt on the first one is borrowed in full, because the lookup
+    // returns that reserve's entry.
     const sharing = reserveIdsByToken.get(token) ?? [];
-    if (sharing.length > 1) {
+    const first = sharing[0];
+    if (first !== undefined && BigInt(first) !== id) {
       return {
         kind: "skip",
-        reason: `owes ${token}, which reserves ${sharing.join(", ")} share; the router borrows only the first reserve's debt for a token`,
+        reason: `owes ${token} on reserve ${id}, but reserve ${first} lists it first; the router borrows only the first reserve's debt for a token`,
+      };
+    }
+    // The router approves the adapter one reserve at a time, and every WBTC reserve adds the fairness
+    // payment. A later WBTC reserve that owes nothing then replaces the first reserve's allowance
+    // (debt plus payment) with the payment alone, and the adapter's pull of the debt reverts.
+    if (sharing.length > 1 && token === wbtcKey && wbtcPayment > 0n) {
+      return {
+        kind: "skip",
+        reason: `owes ${token}, which reserves ${sharing.join(", ")} share, with a fairness payment; the router's last WBTC approval covers only the payment`,
       };
     }
 

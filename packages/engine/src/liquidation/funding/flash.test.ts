@@ -10,6 +10,7 @@ import {
   getAddress,
 } from "viem";
 import { describe, expect, it, vi } from "vitest";
+import { bufferAmount } from "../domain";
 import type { SpokeReserves } from "../reserves";
 import { FlashFunding, type FlashFundingDeps } from "./flash";
 import type { LiquidationCandidate } from "./types";
@@ -76,6 +77,8 @@ function setup(
     net?: bigint;
     debts?: readonly { venue: Address; amount: bigint }[];
     poolManagers?: Record<string, Address>;
+    /** Morpho's WBTC balance, which is all it can lend. */
+    morphoBalance?: bigint;
   } = {}
 ) {
   const publicClient = {
@@ -88,7 +91,9 @@ function setup(
         switch (functionName) {
           case "balanceOf":
             // Morpho lends from its balance; the router starts every cycle empty.
-            return getAddress(args?.[0] as Address) === MORPHO ? 10n ** 12n : 0n;
+            return getAddress(args?.[0] as Address) === MORPHO
+              ? (over.morphoBalance ?? 10n ** 12n)
+              : 0n;
           case "getSlot0":
             return [Q96, 0, 0, 3000];
           case "poolManager":
@@ -272,7 +277,40 @@ describe("FlashFunding with venue ranking", () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/no venue can fund it/));
   });
 
-  it("skips a candidate owing a token two reserves share, before quoting it", async () => {
+  describe("a venue that holds the Lens amount but not the buffer", () => {
+    // The candidate's fairness payment is 100 sats buffered to 101, so the WBTC leg is 101 at the
+    // buffered size and 100 at the Lens size. The router borrows its own unbuffered preview.
+    const buffered = { wbtcPayment: bufferAmount(100n) };
+
+    it("routes at the Lens amounts and probes the candidate", async () => {
+      const { funding, probes, metrics, logger } = setup({
+        morphoBalance: 100n,
+        // Accrued past the Lens amount, as a real probe is: not a divergence from a Lens-sized quote.
+        debts: [{ venue: MORPHO, amount: 101n }],
+      });
+
+      await expect(funding.vet([candidate(PROXY_A, buffered)])).resolves.toHaveLength(1);
+
+      expect(probes()).toHaveLength(1);
+      expect(probes()[0].at(-1)?.venueAddress).toBe(MORPHO);
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.stringMatching(/routing at the Lens amounts/)
+      );
+      expect(metrics.recordError).not.toHaveBeenCalled();
+    });
+
+    it("still skips the candidate when the venue cannot lend the Lens amount either", async () => {
+      const { funding, probes, logger } = setup({ morphoBalance: 99n });
+
+      await expect(funding.vet([candidate(PROXY_A, buffered)])).resolves.toEqual([]);
+
+      expect(probes()).toHaveLength(0);
+      // The reason names the buffered size the venues were first asked for.
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/holds 99 WBTC, below 101/));
+    });
+  });
+
+  it("skips a candidate owing a shared token on the later reserve, before quoting it", async () => {
     const { funding, probes, quotes } = setup({
       topology: {
         spoke: SPOKE,
@@ -280,10 +318,23 @@ describe("FlashFunding with venue ranking", () => {
       },
     });
 
-    await expect(funding.vet([candidate(PROXY_A)])).resolves.toEqual([]);
+    await expect(funding.vet([candidate(PROXY_A, { debtReserveIds: [3n] })])).resolves.toEqual([]);
 
     expect(quotes()).toHaveLength(0);
     expect(probes()).toHaveLength(0);
+  });
+
+  it("funds a candidate owing a shared token only on the first reserve", async () => {
+    const { funding, probes } = setup({
+      topology: {
+        spoke: SPOKE,
+        reserves: [...TOPOLOGY.reserves, { id: 3, token: USDC, borrowable: true }],
+      },
+    });
+
+    await expect(funding.vet([candidate(PROXY_A)])).resolves.toHaveLength(1);
+
+    expect(probes()).toHaveLength(1);
   });
 
   it("flags a venue the probe owes more than its quote, and still funds the candidate", async () => {
