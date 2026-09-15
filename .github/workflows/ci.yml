@@ -138,6 +138,8 @@ jobs:
           # answers `eth_chainId` and serves the block header, then fails the state reads with
           # "historical state is not available" — so a chain-id smoke test does not qualify one.
           SEPOLIA_RPC: ${{ secrets.SEPOLIA_RPC || 'https://sepolia.gateway.tenderly.co' }}
+          # Same terms on Ethereum mainnet, for the venue quote-parity test.
+          MAINNET_RPC: ${{ secrets.MAINNET_RPC || 'https://mainnet.gateway.tenderly.co' }}
         run: |
           set -o pipefail
           forge test --match-path 'test/fork/**' -vv 2>&1 | tee /tmp/fork.log
@@ -148,3 +150,31 @@ jobs:
             echo "::error::the min-profit floor fork test did not run — it is the only proof the profit guard works"
             exit 1
           }
+          grep -qE '^\[PASS\] test_VENUE_QUOTE_PARITY_TWO_POOLS' /tmp/fork.log || {
+            echo "::error::the venue quote-parity fork test did not run — it is the only proof ranking prices what venues charge"
+            exit 1
+          }
+
+      # The venue-ranking fork test runs the TypeScript ranked route on an anvil fork of the same pinned
+      # mainnet block, which it starts and stops itself. It needs this job's Foundry and `forge build`
+      # output, which the `test` job does not have. anvil stores its fork state under the cache above.
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0 https://github.com/pnpm/action-setup/releases/tag/v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 https://github.com/actions/setup-node/releases/tag/v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Venue ranking fork test
+        env:
+          ETHEREUM_FORK_RPC_URL: ${{ secrets.MAINNET_RPC || 'https://mainnet.gateway.tenderly.co' }}
+        run: |
+          set -o pipefail
+          pnpm --filter @repo/engine test src/liquidation/funding/ranking.fork.test.ts 2>&1 | tee /tmp/ranking.log
+
+          # The suite skips itself when ETHEREUM_FORK_RPC_URL is unset. Set here, a skip means it never ran.
+          if grep -qE 'ranking\.fork\.test\.ts .*skipped' /tmp/ranking.log \
+            || ! grep -qE '✓ .*ranking\.fork\.test\.ts' /tmp/ranking.log; then
+            echo "::error::the venue ranking fork test did not run"
+            exit 1
+          fi

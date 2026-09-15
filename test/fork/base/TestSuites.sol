@@ -13,6 +13,16 @@ abstract contract TestSuites {
 
     address internal constant MORPHO_BLUE = address(0xd011EE229E7459ba1ddd22631eF7bF528d424A14);
 
+    /// @notice The Ethereum mainnet block `VenueQuoteParityTest` forks at, and the contracts it reads there.
+    /// @dev Pinned so the parity test, and the TypeScript venue-ranking fork test that forks the same block,
+    ///      read identical pool state on every run and are served from `~/.foundry/cache/rpc` after the first.
+    ///      At this block the two hookless WBTC/USDC pools both tests use price a 50,000 USDC borrow apart.
+    uint256 internal constant MAINNET_FORK_BLOCK = 25982687;
+    address internal constant MAINNET_UNISWAP_V4_POOL_MANAGER = address(0x000000000004444c5dc75cB358380D2e3dE08A90);
+    address internal constant MAINNET_UNISWAP_V4_QUOTER = address(0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203);
+    address internal constant MAINNET_WBTC = address(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);
+    address internal constant MAINNET_USDC = address(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
+
     /// @notice The block every scenario forks at.
     /// @dev One block for all of them, and deliberately one that was already pinned before the TBV
     ///      protocol moved into the fixture: the only thing the fork still has to provide is the

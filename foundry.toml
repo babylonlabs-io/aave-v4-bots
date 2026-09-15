@@ -63,3 +63,4 @@ gas_limit = "max"
 
 [rpc_endpoints]
 sepolia = "${SEPOLIA_RPC}"
+mainnet = "${MAINNET_RPC}"

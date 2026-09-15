@@ -30,12 +30,17 @@ Solidity lives here too (`contracts/`, `test/`), so the Foundry gates are part o
 ```bash
 forge build
 forge fmt --check                                    # CI gate; `forge fmt` to fix
-SEPOLIA_RPC=<url> forge test --match-path 'test/fork/**'   # fork tests, pinned blocks
+SEPOLIA_RPC=<url> MAINNET_RPC=<url> forge test --match-path 'test/fork/**'   # fork tests, pinned blocks
+
+# Venue ranking on an Ethereum mainnet fork: starts its own anvil, needs `forge build` output.
+# Skips when the variable is unset.
+ETHEREUM_FORK_RPC_URL=<url> pnpm --filter @repo/engine test src/liquidation/funding/ranking.fork.test.ts
 ```
 
 The fork tests pin their blocks (`test/fork/base/TestSuites.sol`), so after the first run foundry
 serves them from `~/.foundry/cache/rpc` and the RPC is not called again — which is what makes them
-cheap enough to gate on.
+cheap enough to gate on. The RPCs must serve archive state at those blocks;
+`https://sepolia.gateway.tenderly.co` and `https://mainnet.gateway.tenderly.co` do.
 
 Running a bot locally needs its database and indexer first:
 
