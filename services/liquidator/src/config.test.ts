@@ -261,12 +261,37 @@ describe("flash funding config", () => {
 
     expect(funding).toMatchObject({ mode: "flash", maxSlippageBps: 2000 });
     if (funding?.mode !== "flash") throw new Error("expected flash");
-    expect(funding.venues.flashSwaps[0].poolKey).toMatchObject({
+    expect(funding.venues?.flashSwaps[0].poolKey).toMatchObject({
       currency0: WBTC,
       currency1: USDC,
       fee: 3000,
       tickSpacing: 60,
     });
+  });
+
+  it("builds a venue ranking from FLASH_VENUES instead of the fixed venue variables", async () => {
+    process.env = {
+      ...originalEnv,
+      ...base,
+      LIQUIDATION_FUNDING: "flash",
+      LIQUIDATION_ROUTER_ADDRESS: flashEnv.LIQUIDATION_ROUTER_ADDRESS,
+      FLASH_VENUE_RANKING: "true",
+      FLASH_VENUES: `morpho:${flashEnv.WBTC_FLASH_LOAN_ADDRESS},univ4:${flashEnv.FLASH_SWAP_VENUE_ADDRESS}:${USDC}:${WBTC}:${USDC}:3000:60`,
+      UNISWAP_V4_QUOTER_ADDRESS: "0x7777777777777777777777777777777777777777",
+      UNISWAP_V4_STATE_VIEW_ADDRESS: "0x8888888888888888888888888888888888888888",
+    };
+    const { loadConfig } = await import("./config");
+    const funding = loadConfig().funding;
+
+    if (funding?.mode !== "flash") throw new Error("expected flash");
+    expect(funding.venues).toBeUndefined();
+    expect(funding.ranking?.entries.map((e) => e.tag)).toEqual(["morpho", "univ4"]);
+  });
+
+  it("refuses FLASH_VENUE_RANKING values other than true or false", async () => {
+    process.env = { ...originalEnv, ...flashEnv, FLASH_VENUE_RANKING: "yes" };
+    const { loadConfig } = await import("./config");
+    expect(() => loadConfig()).toThrow();
   });
 
   it("refuses a half-configured flash setup instead of falling back to inventory", async () => {

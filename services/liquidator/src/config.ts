@@ -144,6 +144,21 @@ const envSchema = z.object({
   WBTC_FLASH_LOAN_ADDRESS: addressSchema.optional(),
   WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional().default("morpho"),
   /**
+   * `true` quotes several venues per token and uses the cheapest for each candidate. Venues then
+   * come from `FLASH_VENUES`, and the three fixed venue variables above must be unset. Off when
+   * unset, which keeps one fixed venue per token and quotes nothing.
+   */
+  FLASH_VENUE_RANKING: z.enum(["true", "false"]).optional(),
+  /**
+   * The venues ranking chooses between, comma-separated: `morpho:<morpho>`, `aavev3:<pool>`, and
+   * `univ4:<venueAddress>:<token>:<currency0>:<currency1>:<fee>:<tickSpacing>[:hooks]` per pool.
+   */
+  FLASH_VENUES: z.string().optional(),
+  /** The UniswapV4 `V4Quoter`. Required when `FLASH_VENUES` lists a `univ4` pool. */
+  UNISWAP_V4_QUOTER_ADDRESS: addressSchema.optional(),
+  /** The UniswapV4 `StateView`. Required when `FLASH_VENUES` lists a `univ4` pool. */
+  UNISWAP_V4_STATE_VIEW_ADDRESS: addressSchema.optional(),
+  /**
    * How far the realised profit may fall below the probe's quote before the chain reverts, in bps.
    * With flash-swap funding this is the only slippage bound there is — the venue fills at whatever
    * price the pool gives. Distinct from `RISK_MIN_PROFIT`, which is an absolute floor checked

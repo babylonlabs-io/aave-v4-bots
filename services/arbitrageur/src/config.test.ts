@@ -290,6 +290,22 @@ describe("config validation", () => {
         });
       });
 
+      it("threads venue ranking into the liquidation engine", async () => {
+        process.env = {
+          ...validEnv,
+          ...liqEnv,
+          LIQUIDATION_FUNDING: "flash",
+          LIQUIDATION_ROUTER_ADDRESS: flashEnv.LIQUIDATION_ROUTER_ADDRESS,
+          FLASH_VENUE_RANKING: "true",
+          FLASH_VENUES: `morpho:${flashEnv.WBTC_FLASH_LOAN_ADDRESS}`,
+        };
+        const { loadConfig } = await import("./config");
+        expect(loadConfig().liquidation?.funding).toMatchObject({
+          mode: "flash",
+          ranking: { entries: [{ tag: "morpho" }] },
+        });
+      });
+
       it("refuses a complete flash setup with the mode flag left off", async () => {
         process.env = {
           ...validEnv,
