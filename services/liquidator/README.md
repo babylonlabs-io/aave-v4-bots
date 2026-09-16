@@ -15,7 +15,8 @@ against the AaveAdapter contract.
 
 1. **Discover reserves** — at boot, enumerates the Spoke's reserves in id order.
    The ids matter: a repay amount is charged to the token of the reserve it is
-   indexed by. Those flagged borrowable are what the signer holds and approves.
+   indexed by. Those a borrower can owe (borrowable, or still carrying debt) are
+   what the signer holds and approves.
 2. **Approve** — under `LIQUIDATION_FUNDING=inventory` (the default), once at
    boot, sets `MAX_UINT256` allowance on every debt token and on WBTC for the
    AaveAdapter contract. WBTC approval is required because the adapter pulls

@@ -23,12 +23,17 @@ export interface SpokeReserve {
    * read afresh each cycle rather than cached: a reserve that became borrowable is one whose token
    * the signer must now hold and approve, and a stale `false` costs every liquidation that owes it.
    *
-   * It decides *inventory* — what to hold and approve — and nothing else. It is deliberately not a
-   * liquidation precondition: the flag restricts borrowing, while the adapter repays existing debt
-   * with a plain `transferFrom` and takes vaultBTC collateral, so debt on a frozen reserve is still
-   * liquidatable by anyone holding the token.
+   * The flag restricts borrowing only. The adapter repays existing debt with a plain `transferFrom`
+   * and takes vaultBTC collateral, so debt on a reserve that is no longer borrowable is still
+   * liquidatable by anyone holding the token. That is why inventory follows `repayable`.
    */
   borrowable: boolean;
+  /**
+   * Whether a borrower can owe this reserve: it is borrowable, or it still carries debt
+   * (`getReserveTotalDebt > 0`). It decides *inventory* — what to hold and approve. A collateral
+   * reserve carries no debt, so it stays out.
+   */
+  repayable: boolean;
 }
 
 /**
@@ -57,12 +62,12 @@ export interface SpokeReserves {
  */
 export const MAX_SPOKE_RESERVES = 256n;
 
-/** The distinct tokens a borrower can still owe — what an inventory-funded bot must hold and approve. */
-export function borrowableTokens(topology: SpokeReserves): Address[] {
+/** The distinct tokens a borrower can owe — what an inventory-funded bot must hold and approve. */
+export function repayableTokens(topology: SpokeReserves): Address[] {
   const seen = new Set<string>();
   const tokens: Address[] = [];
   for (const reserve of topology.reserves) {
-    if (!reserve.borrowable) continue;
+    if (!reserve.repayable) continue;
     const k = reserve.token.toLowerCase();
     // Two reserves can share an underlying (same token on a different hub), and the balance and
     // allowance behind them are one and the same.
@@ -91,7 +96,7 @@ export function reserveTokens(topology: SpokeReserves): Address[] {
  * function rather than a method.
  *
  * Returns **every** reserve rather than the borrowable subset it used to, because two different
- * questions are asked of this: *"what can I be asked to pay?"* (the borrowable tokens — approvals,
+ * questions are asked of this: *"what can I be asked to pay?"* (the repayable tokens — approvals,
  * balances) and *"which token is this amount denominated in?"* (the reserve at that id). The second
  * cannot be answered from the first, and answering it from a filtered list is wrong the moment a
  * non-borrowable reserve sorts before a borrowable one — silently, in the direction of declaring
@@ -132,11 +137,17 @@ export async function discoverSpokeReserves(deps: {
       functionName: "getReserve",
       args: [i],
     });
-    reserves.push({
-      id: Number(i),
-      token: reserve.underlying,
-      borrowable: isBorrowableReserve(reserve.flags),
-    });
+    const borrowable = isBorrowableReserve(reserve.flags);
+    // Debt is read only when the flag is clear: a borrowable reserve is repayable either way.
+    const repayable =
+      borrowable ||
+      (await publicClient.readContract({
+        address: spoke,
+        abi: spokeAbi,
+        functionName: "getReserveTotalDebt",
+        args: [i],
+      })) > 0n;
+    reserves.push({ id: Number(i), token: reserve.underlying, borrowable, repayable });
   }
 
   const topology = { spoke, reserves };
@@ -145,7 +156,11 @@ export async function discoverSpokeReserves(deps: {
     for (const reserve of reserves) {
       logger.info(
         `  Reserve ${reserve.id}: ${await tokenSymbol(reserve.token)} (${reserve.token})${
-          reserve.borrowable ? " - borrowable" : ""
+          reserve.borrowable
+            ? " - borrowable"
+            : reserve.repayable
+              ? " - not borrowable, still owed"
+              : ""
         }`
       );
     }
@@ -156,11 +171,15 @@ export async function discoverSpokeReserves(deps: {
   return topology;
 }
 
-/** Whether two reads describe the same Spoke in the same state — ids, tokens and flags alike. */
+/** Whether two reads describe the same Spoke in the same state — ids, tokens, flags and debt alike. */
 function sameReserves(a: SpokeReserves | undefined, b: SpokeReserves): boolean {
   if (!a || a.spoke !== b.spoke || a.reserves.length !== b.reserves.length) return false;
   return a.reserves.every((reserve, i) => {
     const other = b.reserves[i];
-    return reserve.token === other.token && reserve.borrowable === other.borrowable;
+    return (
+      reserve.token === other.token &&
+      reserve.borrowable === other.borrowable &&
+      reserve.repayable === other.repayable
+    );
   });
 }

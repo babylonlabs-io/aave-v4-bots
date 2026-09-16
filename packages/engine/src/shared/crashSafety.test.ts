@@ -437,6 +437,25 @@ describe("resyncNonces — private submission, where the node cannot see our tx"
       silentLogger
     );
 
+  /** The node holds the tx in its pool, but its `pending` count still reads 5 (a stale backend). */
+  const publicReader = (head = 100) =>
+    createRelayAwareReader(
+      createChainReader({
+        getTransactionCount: vi.fn(async () => 5),
+        getBlockNumber: vi.fn(async () => BigInt(head)),
+        getTransaction: vi.fn(async ({ hash }: { hash: Hex }) => ({ hash })),
+      } as unknown as PublicClient),
+      {
+        status: async () => ({
+          status: "UNKNOWN" as const,
+          maxBlockNumber: 0,
+          isRevert: false,
+          seenInMempool: true,
+        }),
+      },
+      silentLogger
+    );
+
   /** Seed one submitted intent at nonce 5 and report the nonce the next send gets. */
   async function nextNonceWithReader(
     reader: ChainReader,
@@ -504,6 +523,16 @@ describe("resyncNonces — private submission, where the node cannot see our tx"
       reclaimMarginBlocks: 3,
     });
     expect(next).toBe(5);
+  });
+
+  // The relay can no longer include the tx, but a copy in the node's pool still can: leaked, or
+  // reinserted by a reorg. `pending` is stale, so only the node's own answer keeps the fence.
+  it("keeps fencing past the horizon while the node holds the transaction", async () => {
+    const next = await nextNonceWithReader(publicReader(104), {
+      relayMaxBlock: 100,
+      reclaimMarginBlocks: 3,
+    });
+    expect(next).toBe(6);
   });
 
   it("does not release one block early", async () => {

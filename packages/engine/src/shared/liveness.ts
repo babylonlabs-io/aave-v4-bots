@@ -36,6 +36,11 @@ export interface ChainReader {
    */
   isKnown(hash: Hex): Promise<boolean>;
   /**
+   * Node knowledge alone, for a reader whose `isKnown` also counts relay knowledge. Absent ⇒
+   * `isKnown` is already node knowledge. See `couldBeInFlight`.
+   */
+  isKnownToNode?(hash: Hex): Promise<boolean>;
+  /**
    * Resolve a Safe `execTransaction`: scan `txHash`'s receipt for `safeAddress`'s
    * `Execution{Success,Failure}` event matching `safeTxHash`. See `SafeExecutionOutcome`. Used only
    * for `safe`-custody intents (those carrying a `safeEnvelope`).
@@ -118,9 +123,10 @@ export interface LivenessCheck {
   /** Defaults to `UNKNOWN_TX_GRACE_MS`. */
   graceMs?: number;
   /**
-   * Blocks past a transaction's recorded relay horizon before its nonce is released, regardless of
-   * what the reader says. Unset ⇒ no release, which is right for public submission: a public
-   * transaction can linger in a node's pool indefinitely and the node's own answer is authoritative.
+   * Blocks past a transaction's recorded relay horizon before relay knowledge stops keeping it in
+   * flight; after that only the node's own knowledge counts. Unset ⇒ the reader always decides,
+   * which is right for public submission: a public transaction can linger in a node's pool
+   * indefinitely and the node's own answer is authoritative.
    *
    * Private submission needs it, because there the reader deliberately fails closed — an unreachable
    * relay, or a hash it has forgotten, both read as "still in flight". Without something that always
@@ -141,9 +147,9 @@ export interface LivenessCheck {
  * still reserved (or the reverse).
  *
  * A tx recorded within the grace window is taken as live without asking: too young for a "no" to
- * mean anything. Past that the reader's answer stands, until the chain passes the tx's own recorded
- * relay horizon — beyond which it is declared gone whatever the reader claims. See
- * `reclaimMarginBlocks` for why that backstop exists.
+ * mean anything. Past that the reader's answer stands until the chain passes the tx's recorded
+ * relay horizon. Beyond it only the node's knowledge counts: the relay can no longer include the
+ * tx, but a copy in the node's pool still can. See `reclaimMarginBlocks`.
  */
 export async function couldBeInFlight(
   check: LivenessCheck,
@@ -151,17 +157,24 @@ export async function couldBeInFlight(
 ): Promise<boolean> {
   const age = check.now() - intent.updatedAt;
   if (age < (check.graceMs ?? UNKNOWN_TX_GRACE_MS)) return true;
-  // Past the relay's own deadline for this transaction (plus reorg headroom) it can no longer be
-  // included, so nothing the reader says should keep its nonce.
-  if (
-    check.reclaimMarginBlocks !== undefined &&
-    check.head !== undefined &&
-    intent.relayMaxBlock != null &&
-    check.head > intent.relayMaxBlock + check.reclaimMarginBlocks
-  ) {
-    return false;
+  // Past the relay's deadline the relay can no longer include it, so only the node's answer
+  // counts: a copy in its pool (leaked, or reinserted by a reorg) still can.
+  if (pastRelayHorizon(check, intent.relayMaxBlock)) {
+    return knownToNode(check.reader, intent.txHash);
   }
   return check.reader.isKnown(intent.txHash);
+}
+
+/** Is the chain past this transaction's relay deadline plus the reorg margin? */
+function pastRelayHorizon(check: LivenessCheck, relayMaxBlock?: number | null): boolean {
+  const { head, reclaimMarginBlocks: margin } = check;
+  if (head === undefined || margin === undefined || relayMaxBlock == null) return false;
+  return head > relayMaxBlock + margin;
+}
+
+/** The node's own answer. A reader without `isKnownToNode` already answers from the node. */
+function knownToNode(reader: ChainReader, hash: Hex): Promise<boolean> {
+  return reader.isKnownToNode ? reader.isKnownToNode(hash) : reader.isKnown(hash);
 }
 
 // ── Private submission ──────────────────────────────────────────────────────────────────────
@@ -239,7 +252,7 @@ export function createRelayHorizon(
 
 /**
  * A private transaction's deadline: the last block the relay can include it in. Past it, the
- * nonce is released. Both methods use one relay, because `repair` proves a row went through it.
+ * nonce is released unless the node holds the transaction. Both methods use one relay, because `repair` proves a row went through it.
  */
 export interface Horizon {
   /** Deadline to record at submission. Falls back to the configured window. */
@@ -286,6 +299,7 @@ export function createRelayAwareReader(
 ): ChainReader {
   return {
     ...node,
+    isKnownToNode: (hash) => node.isKnown(hash),
     async isKnown(hash) {
       // Ask the node first: once a private transaction mines it is ordinary chain state, and that
       // answer costs nothing extra when it is already yes.

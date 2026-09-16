@@ -202,7 +202,8 @@ The bot automates monitoring and execution.
 
 1. **Discover reserves** — at boot, enumerates the Spoke's reserves in id
    order. A repay amount is charged to the token of the reserve id it is paired
-   with; those flagged borrowable are what the signer holds and approves.
+   with; those a borrower can owe (borrowable, or still carrying debt) are what
+   the signer holds and approves.
 2. **Approve** — under `inventory` funding, ensures `MAX_UINT256`
    allowance on every debt token and on WBTC for the AaveAdapter. WBTC
    approval is required because the adapter pulls the fairness payment

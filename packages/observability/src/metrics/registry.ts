@@ -1,4 +1,4 @@
-import { Counter, Registry, collectDefaultMetrics } from "prom-client";
+import { Counter, Gauge, Registry, collectDefaultMetrics } from "prom-client";
 
 /**
  * The shared prom-client registry plus the service-level (engine-agnostic)
@@ -27,6 +27,11 @@ export interface MetricsRegistry {
    * distinguishes "the fee floor is too low / the call is broken" from "we are losing races".
    */
   recordRelayStatus(status: string): void;
+  /**
+   * Export the risk gate's state as `risk_gate_halted` (1 while HALTED, else 0), read at each
+   * scrape. Call once, after the gate exists: the metric is absent until then.
+   */
+  trackRiskGate(gate: { state(): string }): void;
   /** Serialize all registered metrics in Prometheus text format. */
   getMetrics(): Promise<string>;
   /** Content-type for the Prometheus exposition format. */
@@ -72,6 +77,16 @@ export function createMetricsRegistry(): MetricsRegistry {
     },
     recordRelayStatus(status: string): void {
       relayStatusTotal.inc({ status });
+    },
+    trackRiskGate(gate): void {
+      new Gauge({
+        name: "risk_gate_halted",
+        help: "1 while the risk gate is HALTED (kill switch, breaker, code-hash or indexer halt), else 0",
+        registers: [registry],
+        collect() {
+          this.set(gate.state() === "HALTED" ? 1 : 0);
+        },
+      });
     },
     getMetrics(): Promise<string> {
       return registry.metrics();

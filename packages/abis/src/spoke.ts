@@ -33,6 +33,13 @@ export const spokeAbi = [
     ],
     stateMutability: "view",
   },
+  {
+    type: "function",
+    name: "getReserveTotalDebt",
+    inputs: [{ name: "reserveId", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
   // Events — consumed by the Ponder indexer (@services/ponder)
   {
     type: "event",

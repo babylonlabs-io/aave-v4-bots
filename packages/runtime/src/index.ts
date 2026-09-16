@@ -20,6 +20,7 @@ import {
   createFlashbotsProtectSubmitter,
   createNonceAllocator,
   createNonceLease,
+  describeEndpoint,
 } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type Notifier, buildNotifier, riskEventSink } from "@repo/notifications";
@@ -81,15 +82,19 @@ export interface BootConfig extends RiskSettings {
 /** The per-service knobs the shared boot can't derive: the metric recorders and the tagged logger. */
 export interface BootDeps {
   /**
-   * The process-level recorders this boot wires up: the RPC transport counter, and — in private
-   * submission — how the relay answered each broadcast and what it later said about it.
+   * The process-level recorders this boot wires up: the RPC transport counter, the risk gate's
+   * state, and — in private submission — how the relay answered each broadcast and what it later
+   * said about it.
    *
    * One object rather than loose callbacks, matching how engines and the indexer take their metrics.
-   * All three are required: an operator's only view of "the relay is refusing us" or "our
-   * transactions are unviable" is these counters, and a service that quietly passed none of them
-   * would look healthy while landing nothing.
+   * All are required: an operator's only view of "the relay is refusing us", "our transactions are
+   * unviable" or "the gate is halted" is these metrics, and a service that quietly passed none of
+   * them would look healthy while landing nothing.
    */
-  metrics: Pick<MetricsRegistry, "recordRpcCall" | "recordSubmit" | "recordRelayStatus">;
+  metrics: Pick<
+    MetricsRegistry,
+    "recordRpcCall" | "recordSubmit" | "recordRelayStatus" | "trackRiskGate"
+  >;
   logger: Logger;
 }
 
@@ -131,8 +136,9 @@ function buildSubmission(
   // carries a default that is right for Flashbots and silently wrong for anything else — a
   // divergence that is otherwise invisible, since nothing downstream fails when the status feed
   // does (every probe failure reads as still-in-flight, and the declared horizon still releases).
+  // Origins only: a custom relay can carry its key in the URL.
   logger.info(
-    `Submission: Flashbots Protect — sending to ${settings.rpcUrl}, status from ${settings.statusUrl}`
+    `Submission: Flashbots Protect — sending to ${describeEndpoint(settings.rpcUrl)}, status from ${describeEndpoint(settings.statusUrl)}`
   );
   const relay = createFlashbotsProtectSubmitter({
     rpcUrl: settings.rpcUrl,
@@ -219,6 +225,9 @@ export async function bootstrapService(config: BootConfig, deps: BootDeps): Prom
     onEvent: riskEventSink(notifier),
     logger,
   });
+  // `/health` does not reflect a halt: a halt lives only in memory, and a liveness probe that
+  // restarted the process would clear it. The gauge is what an alert reads.
+  metrics.trackRiskGate(risk);
 
   const executor = await buildExecutor(
     config,

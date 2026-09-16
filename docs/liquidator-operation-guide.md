@@ -13,6 +13,7 @@ Bitcoin Vaults protocol.
 3. [Architecture Overview](#3-architecture-overview)
 4. [Installation](#4-installation)
 5. [Configuration](#5-configuration)
+
 6. [Wallet Setup](#6-wallet-setup)
 7. [Starting the Service](#7-starting-the-service)
 8. [Operations](#8-operations)
@@ -172,7 +173,7 @@ Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two 
 | `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
 | `CHAIN_ID` | Network chain ID | No | `1` |
-| `START_BLOCK` | First block to index | No | `0` |
+| `START_BLOCK` | First block to index. Must be at or before the AaveAdapter deployment block, or earlier borrowers are never probed. A rising `unmapped` count is the sign | No | `0` |
 | `PONDER_POLLING_INTERVAL` | Block poll interval (ms) | No | `4000` |
 | `PONDER_PORT` | API port. The `liquidator:indexer*` scripts and Compose both set it themselves, so a value here only applies when you run Ponder directly. Compose publishes the host port as `LIQUIDATOR_PONDER_PORT` | No | `42069` |
 | `POSITION_PROBE_CHUNK_SIZE` | Probes sent in one wave by `/liquidatable-positions`, split into calls of 15. It sets concurrency, not per-call gas. A throttled wave fails whole and reports its positions as `unscanned`. See §8.5 | No | `25` |
@@ -192,6 +193,7 @@ WBTC_ADDRESS=0x...
 LLP_ADDRESS=0x...
 LIQUIDATOR_PRIVATE_KEY=0x...
 DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder
+
 ```
 
 Everything else has a default, listed in the tables below. Under Docker, `PONDER_URL` and
@@ -309,6 +311,28 @@ Testnet addresses are provided during onboarding.
 | `WBTC_ADDRESS` | WBTC token |
 | `LLP_ADDRESS` | BTCVaultSwap, for LLP-mode redemption under inventory funding |
 
+### 5.7. Database roles
+
+The indexer is untrusted: it only decides which candidates the bot looks at, and the bot checks
+every candidate on chain. The bot's crash-safety schema (`PERSISTENCE_SCHEMA`, default `bot`) is
+trusted: it holds the intents that fence the signer's nonce, so write access to it can stall
+trading. In production, the two services therefore connect as separate roles:
+
+- The bot connects as its own role, which owns `PERSISTENCE_SCHEMA`. `operator-cli` uses the same
+  role.
+- The indexer connects as `liquidation_indexer`. That role must not be a superuser, own the bot's schema, or
+  be a member of the bot's role.
+
+Run this once in the bot's database, as an administrator:
+
+```sql
+CREATE ROLE liquidation_bot LOGIN PASSWORD '<password>';
+CREATE SCHEMA bot AUTHORIZATION liquidation_bot;
+```
+
+A schema created this way grants nothing to other roles. The local Docker setup uses one superuser
+for both services, which is acceptable for development only.
+
 ## 6. Wallet Setup
 
 **`inventory`**
@@ -393,6 +417,8 @@ and the kill-switch `/status` for that.
   for: 2m
 - alert: LiquidatorFailing
   expr: increase(liquidator_liquidations_failed_total[15m]) > 0
+- alert: RiskGateHalted
+  expr: risk_gate_halted == 1
 ```
 
 ### 8.3. MANUAL proposals

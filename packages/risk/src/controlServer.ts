@@ -44,7 +44,16 @@ export function startControlServer(config: ControlServerConfig): Promise<Server>
   const { port, host, handle, logger } = config;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const { pathname, searchParams } = new URL(req.url || "/", "http://localhost");
+    // Node admits targets `URL` rejects, such as `//[`, and a throw here would end the process.
+    let parsed: URL;
+    try {
+      parsed = new URL(req.url || "/", "http://localhost");
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Bad request" }));
+      return;
+    }
+    const { pathname, searchParams } = parsed;
 
     try {
       if (handle(req, res, pathname, searchParams)) return;

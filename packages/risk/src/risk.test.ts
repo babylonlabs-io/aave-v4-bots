@@ -377,8 +377,7 @@ describe("@repo/risk createRiskGate", () => {
         const gate = held();
         // The tx mined: the read is taken at a height that includes it, and the hold retired in the
         // same step — capacity must never sit between the two, holding neither.
-        gate.retireOutflow(TX);
-        gate.setAvailable(acct(), 40n, 12n);
+        gate.applySnapshot([{ account: acct(), amount: 40n }], 12n, [TX]);
 
         expect(gate.openSlot(spending(40n)).allowed).toBe(true);
         expect(gate.outflows()).toEqual([]);
@@ -426,9 +425,44 @@ describe("@repo/risk createRiskGate", () => {
         expect(gate.openSlot(spending(60n)).allowed).toBe(false);
         expect(gate.openSlot(spending(70n, "0xUSDC")).allowed).toBe(false);
 
-        // One hash, one retirement, both tokens freed.
-        gate.retireOutflow(TX);
+        // A read of both accounts, with evidence, frees both.
+        gate.applySnapshot(
+          [
+            { account: acct(), amount: 100n },
+            { account: acct("0xUSDC"), amount: 100n },
+          ],
+          12n,
+          [TX]
+        );
         expect(gate.openSlot(spending(100n)).allowed).toBe(true);
+        expect(gate.openSlot(spending(100n, "0xUSDC")).allowed).toBe(true);
+      });
+
+      // A read covers only the accounts it publishes. The hold's other entries stay until a read
+      // of their own accounts for them.
+      it("releases only the accounts a snapshot publishes", () => {
+        const gate = createRiskGate();
+        gate.setAvailable(acct(), 100n, 10n);
+        gate.setAvailable(acct("0xUSDC"), 1000n, 10n);
+        gate
+          .openSlot({
+            kind: "liquidation",
+            subject: "0xpos",
+            spend: [
+              { owner: SIGNER, token: WBTC, amount: 60n },
+              { owner: SIGNER, token: "0xUSDC", amount: 900n },
+            ],
+          })
+          .settle({ ok: false, unresolved: true, txHash: TX });
+
+        gate.applySnapshot([{ account: acct(), amount: 40n }], 12n, [TX]);
+
+        expect(gate.openSlot(spending(40n)).allowed).toBe(true);
+        expect(gate.openSlot(spending(101n, "0xUSDC")).allowed).toBe(false);
+        expect(gate.outflows()).toEqual([{ txHash: TX }]);
+
+        gate.applySnapshot([{ account: acct("0xUSDC"), amount: 100n }], 12n, [TX]);
+        expect(gate.outflows()).toEqual([]);
       });
 
       // `settle` is idempotent by design (the precise path plus a `finally` backstop), and the

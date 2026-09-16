@@ -14,6 +14,7 @@ when `RISK_CONTROL_TOKEN_REF` is set.
 | `indexer_lag_blocks` | Gauge | - | Blocks the indexer is behind the chain at the last check |
 | `indexer_cycles_skipped_total` | Counter | - | Poll cycles skipped because the indexer was lagging or unreadable (`INDEXER_MAX_LAG_BLOCKS`; off when unset) |
 | `indexer_halts_total` | Counter | - | Times sustained indexer lag halted the risk gate (`INDEXER_MAX_LAG_HALT_MS`) |
+| `risk_gate_halted` | Gauge | - | 1 while the risk gate is HALTED (kill switch, breaker, code-hash or indexer halt), else 0. Alert on it. `/health` stays healthy while HALTED: a halt lives only in memory, and a probe that restarted the process would clear it |
 
 ## Arbitrageur Metrics
 

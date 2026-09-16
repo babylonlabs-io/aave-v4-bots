@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { LENS_HEALTHY_POSITION_ERROR, lensAbi } from "@repo/abis";
+import { ContractFunctionRevertedError, encodeErrorResult } from "viem";
 import {
+  type ChunkedProbe,
   MULTICALL_BATCH_BYTES,
   PROBES_PER_CALL,
   PROBE_CHUNK_SIZE,
@@ -8,6 +11,7 @@ import {
   probeInChunks,
   resolveChunkSize,
   selectProbeCandidates,
+  summarizeProbes,
 } from "../src/probePositions";
 
 const ok = (value: number): Probe<number> => ({ status: "success", value });
@@ -24,21 +28,20 @@ describe("probeInChunks", () => {
     const batches: number[][] = [];
     const items = [1, 2, 3, 4, 5];
 
-    const { probes, unscanned } = await probeInChunks(items, recording(batches), noop, 2);
+    const probes = await probeInChunks(items, recording(batches), noop, 2);
 
     assert.deepEqual(batches, [[1, 2], [3, 4], [5]]);
     assert.deepEqual(
       probes.map((p) => (p.status === "success" ? p.value : null)),
       items
     );
-    assert.equal(unscanned, 0);
   });
 
   // The whole reason for batching: one aggregate over the full table is one `eth_call`, and past
   // the node's gas cap it reverts entirely. A failure must cost its own batch, not the scan.
   it("keeps the other batches when one fails as a whole", async () => {
     const boom = new Error("out of gas");
-    const { probes, unscanned } = await probeInChunks(
+    const probes = await probeInChunks(
       [1, 2, 3, 4, 5, 6],
       async (chunk) => {
         if (chunk.includes(3)) throw boom;
@@ -50,16 +53,15 @@ describe("probeInChunks", () => {
 
     assert.equal(probes.length, 6);
     assert.deepEqual(
-      probes.map((p) => (p.status === "success" ? p.value : p.error)),
-      [1, 2, boom, boom, 5, 6]
+      probes.map((p) => (p.status === "success" ? p.value : [p.status, p.error])),
+      [1, 2, ["unscanned", boom], ["unscanned", boom], 5, 6]
     );
-    assert.equal(unscanned, 2);
   });
 
   // A scan that saw nothing and a market with nothing to see produce the same empty candidate
-  // list. `unscanned` is the only thing that tells them apart, so it must count every lost item.
-  it("counts every item a failed batch cost", async () => {
-    const { unscanned } = await probeInChunks(
+  // list. `unscanned` is the only thing that tells them apart, so it must mark every lost item.
+  it("marks every item a failed batch cost as unscanned", async () => {
+    const probes = await probeInChunks(
       [1, 2, 3, 4, 5],
       async () => {
         throw new Error("node refused the batch");
@@ -68,7 +70,10 @@ describe("probeInChunks", () => {
       2
     );
 
-    assert.equal(unscanned, 5);
+    assert.deepEqual(
+      probes.map((p) => p.status),
+      ["unscanned", "unscanned", "unscanned", "unscanned", "unscanned"]
+    );
   });
 
   it("reports each failed batch with its offset and size", async () => {
@@ -92,27 +97,23 @@ describe("probeInChunks", () => {
   // attribute one position's liquidation estimate to another position's proxy — a liquidation sent
   // against a healthy borrower. Refuse the batch instead of trusting it.
   it("refuses a batch that returns the wrong number of results", async () => {
-    const { probes, unscanned } = await probeInChunks(
+    const probes = await probeInChunks(
       [1, 2, 3, 4],
       async (chunk) => (chunk[0] === 1 ? [ok(1)] : chunk.map(ok)),
       noop,
       2
     );
 
-    assert.equal(probes.length, 4);
-    assert.equal(probes[0].status, "failure");
-    assert.equal(probes[1].status, "failure");
     assert.deepEqual(
-      probes.slice(2).map((p) => (p.status === "success" ? p.value : null)),
-      [3, 4]
+      probes.map((p) => (p.status === "success" ? p.value : p.status)),
+      ["unscanned", "unscanned", 3, 4]
     );
-    assert.equal(unscanned, 2);
   });
 
   it("returns one probe per item however the batches fall", async () => {
     for (const size of [1, 3, 4, 7, 100]) {
       const items = Array.from({ length: 10 }, (_, i) => i);
-      const { probes } = await probeInChunks(items, recording([]), noop, size);
+      const probes = await probeInChunks(items, recording([]), noop, size);
       assert.equal(probes.length, items.length, `chunk size ${size}`);
     }
   });
@@ -131,11 +132,67 @@ describe("probeInChunks", () => {
   it("does nothing when there is nothing to probe", async () => {
     const batches: number[][] = [];
 
-    const { probes, unscanned } = await probeInChunks([], recording(batches), noop, 2);
+    const probes = await probeInChunks([], recording(batches), noop, 2);
 
     assert.deepEqual(batches, []);
     assert.deepEqual(probes, []);
-    assert.equal(unscanned, 0);
+  });
+});
+
+describe("summarizeProbes", () => {
+  /** The lens's healthy-position revert, decoded the way viem decodes one off the wire. */
+  const healthy = (): ChunkedProbe<number> => ({
+    status: "failure",
+    error: new ContractFunctionRevertedError({
+      abi: lensAbi,
+      data: encodeErrorResult({ abi: lensAbi, errorName: LENS_HEALTHY_POSITION_ERROR }),
+      functionName: "estimateLiquidation",
+    }),
+  });
+  const fault = (message: string): ChunkedProbe<number> => ({
+    status: "failure",
+    error: new Error(message),
+  });
+
+  // The finding this exists for: a failed batch was counted once as unscanned and again as faults,
+  // so `unscanned` doubled and `checked` could go negative.
+  it("counts each position of a failed batch once", async () => {
+    const candidates = Array.from({ length: 10 }, (_, i) => i);
+    const probes = await probeInChunks(
+      candidates,
+      async (chunk) => {
+        if (chunk.includes(3)) throw new Error("gas cap exceeded");
+        return chunk.map(() => healthy() as Probe<number>);
+      },
+      noop,
+      3
+    );
+
+    const summary = summarizeProbes(candidates, probes);
+
+    assert.equal(summary.unscanned, 3);
+    assert.equal(summary.checked, 7);
+    assert.equal(summary.faults.count, 0);
+  });
+
+  it("counts a revert that is not a healthy position once, as a fault", () => {
+    const summary = summarizeProbes(["a", "b"], [fault("InvalidOraclePrice"), healthy()]);
+
+    assert.equal(summary.unscanned, 1);
+    assert.equal(summary.checked, 1);
+    assert.equal(summary.faults.count, 1);
+  });
+
+  it("lists each success with its candidate, and counts it as checked", () => {
+    const summary = summarizeProbes(["a", "b", "c"], [healthy(), ok(42), healthy()]);
+
+    assert.deepEqual(summary.succeeded, [{ candidate: "b", value: 42 }]);
+    assert.equal(summary.checked, 3);
+    assert.equal(summary.unscanned, 0);
+  });
+
+  it("refuses probes that do not line up with the candidates", () => {
+    assert.throws(() => summarizeProbes(["a", "b"], [ok(1)]), /1 probe\(s\) for 2 candidate\(s\)/);
   });
 });
 

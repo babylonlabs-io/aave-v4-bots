@@ -3,13 +3,15 @@ import { createAwsSecrets, createEnvSecrets, createSecrets } from "./index";
 
 // A ref names a secret; it is never the secret. The two sit one line apart in every example file
 // (`SIGNER_KEY_REF=BOT_KEY` above `BOT_KEY=0x…`), so pasting the value where the name belongs is an
-// ordinary mistake — and it used to end with the key in the fatal boot log, which is replicated and
-// retained far more widely than a process environment.
+// ordinary mistake — and an error that echoed the ref would put the key in the fatal boot log,
+// which is replicated and retained far more widely than a process environment.
 describe("a ref that is really the secret", () => {
   const KEY = `0x${"a".repeat(64)}`;
   const WEBHOOK = "https://hooks.slack.com/services/T00/B00/XXXXXXXXXXXX";
+  const BARE_KEY = "ab".repeat(32);
+  const JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJib3QifQ.c2lnbmF0dXJlLWJ5dGVz";
 
-  it.each([KEY, WEBHOOK, "0xDEADBEEF".repeat(6)])(
+  it.each([KEY, WEBHOOK, "0xDEADBEEF".repeat(6), BARE_KEY, JWT])(
     "is refused without appearing in the error (%#)",
     async (value) => {
       const error = await createEnvSecrets({})
@@ -25,9 +27,7 @@ describe("a ref that is really the secret", () => {
   );
 
   it("says how long the value was, which is what identifies the mistake", async () => {
-    await expect(createEnvSecrets({}).get(KEY, "SIGNER_KEY_REF")).rejects.toThrow(
-      /<redacted, 66 chars>/
-    );
+    await expect(createEnvSecrets({}).get(KEY, "SIGNER_KEY_REF")).rejects.toThrow(/<66 chars>/);
   });
 
   // Refused before the fetch, not merely redacted afterwards: the id would otherwise become the
@@ -41,14 +41,31 @@ describe("a ref that is really the secret", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it.each(["BOT_KEY", "prod/liquidator/key", "prod/bot/config", "AWS_SECRET-1.2"])(
-    "still allows an ordinary name (%s)",
-    async (ref) => {
-      await expect(createEnvSecrets({ [ref]: "value" }).get(ref, "SIGNER_KEY_REF")).resolves.toBe(
-        "value"
+  // A random token of another shape passes the gate, so no error may echo a ref at all.
+  it("never echoes a ref, even one that passes the gate", async () => {
+    const token = "q3Vx7Zk2Lm9Pn4Rt8Ws1Yb6Cd0Ef5Gh2Ij3Kl7Mn8=";
+    const error = await createEnvSecrets({})
+      .get(token, "RISK_CONTROL_TOKEN_REF")
+      .then(
+        () => new Error("expected the lookup to fail"),
+        (e: Error) => e
       );
-    }
-  );
+
+    expect(error.message).not.toContain(token);
+    expect(error.message).toContain(`<${token.length} chars>`);
+  });
+
+  it.each([
+    "BOT_KEY",
+    "prod/liquidator/key",
+    "prod/bot/config",
+    "AWS_SECRET-1.2",
+    "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/bot-AbCdEf",
+  ])("still allows an ordinary name (%s)", async (ref) => {
+    await expect(createEnvSecrets({ [ref]: "value" }).get(ref, "SIGNER_KEY_REF")).resolves.toBe(
+      "value"
+    );
+  });
 });
 
 describe("@repo/secrets", () => {
@@ -61,7 +78,7 @@ describe("@repo/secrets", () => {
     it("throws on a missing ref", async () => {
       const secrets = createEnvSecrets({});
       await expect(secrets.get("MISSING", "TEST_REF")).rejects.toThrow(
-        /TEST_REF: no environment variable named "MISSING" is set/
+        /TEST_REF: no environment variable named <7 chars> is set/
       );
     });
 

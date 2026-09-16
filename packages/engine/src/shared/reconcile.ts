@@ -99,24 +99,25 @@ export const INTENT_CLOCK_SKEW_WARN_MS = 2 * UNKNOWN_TX_GRACE_MS;
  * recorded outer hash is then a hash that will never have a receipt, or one that reverts because the
  * Safe nonce is already spent, while the action itself is on chain.
  *
- * A failed scan is swallowed. It is additive evidence: without it every branch falls back to the
- * answer it gave before this existed, and the alternative is worse — the scan's range grows with the
- * intent's age, so a provider's `eth_getLogs` limit would eventually stop the whole reconcile pass,
- * and one stuck intent would take the bot down with it.
+ * Returns `null` only when the scan ran and found nothing. A failed scan returns `"unknown"`: it
+ * is not evidence that the SafeTx did not execute, so the caller keeps the intent in flight and
+ * scans again next pass. The error is caught, not thrown, so one intent's scan cannot stop the
+ * reconcile pass (the range grows with the intent's age, and a provider's `eth_getLogs` limit could
+ * otherwise fail every pass).
  */
 async function findElsewhere(
   liveness: LivenessCheck,
   safe: Address,
   envelope: SafeEnvelope,
   logger?: Pick<Logger, "warn">
-): Promise<{ txHash: Hex; success: boolean } | null> {
+): Promise<{ txHash: Hex; success: boolean } | null | "unknown"> {
   try {
     return await liveness.reader.findSafeExecution(safe, envelope.safeTxHash, envelope.claimBlock);
   } catch (error) {
     logger?.warn(
-      `Reconcile: could not scan ${safe} for SafeTx ${envelope.safeTxHash} — ${error instanceof Error ? error.message : error}`
+      `Reconcile: could not scan ${safe} for SafeTx ${envelope.safeTxHash}, so its intent stays in flight — ${error instanceof Error ? error.message : error}`
     );
-    return null;
+    return "unknown";
   }
 }
 
@@ -152,6 +153,8 @@ async function resolveSafeIntent(
       // already spent looks like — so this is the shape of *losing a duplicate*, and the winner
       // carries our action. Nothing is pending here, so there is nothing to wait for before asking.
       const found = await findElsewhere(liveness, safe, envelope, logger);
+      // A failed scan cannot rule out that another transaction executed our SafeTx.
+      if (found === "unknown") return stillInFlight;
       if (found) {
         return {
           ...resolveFound(found),
@@ -178,7 +181,7 @@ async function resolveSafeIntent(
         return stillInFlight;
       }
       const found = await findElsewhere(liveness, safe, envelope, logger);
-      if (!found) return stillInFlight;
+      if (found === null || found === "unknown") return stillInFlight;
       return {
         ...resolveFound(found),
         warn: `Reconcile: ${intent.action} ${intent.subject} — recorded Safe tx ${txHash} never mined, but SafeTx ${envelope.safeTxHash} executed in ${found.txHash}`,

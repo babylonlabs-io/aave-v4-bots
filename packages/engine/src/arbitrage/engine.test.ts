@@ -1286,6 +1286,27 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).toHaveBeenCalledOnce();
     });
 
+    // The preview prices the gross vault BTC; the keeper's claim pays its Bitcoin fees out of it.
+    it("floors on profit net of the BTC redemption cost", async () => {
+      const clients = createMockClients();
+      const risk = createRiskGate({ minProfit: EXPECTED_PROFIT });
+      const bot = createBot(clients, { risk, btcRedemptionCostSats: 1n });
+
+      expect(await bot.acquireVault(mockVault)).toBe("skipped");
+      expect(clients.sender.send).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
+    });
+
+    it("skips a vault whose previewed profit does not cover the BTC redemption cost", async () => {
+      const clients = createMockClients();
+      // The mock previews `amountProfitEst` 50_000_000.
+      const bot = createBot(clients, { btcRedemptionCostSats: 50_000_000n });
+
+      expect(await bot.acquireVault(mockVault)).toBe("skipped");
+      expect(clients.publicClient.estimateContractGas).not.toHaveBeenCalled();
+      expect(metrics.recordError).toHaveBeenCalledWith("vault_skipped");
+    });
+
     // Regression: the floor must bound the worst case the tx authorizes. `swapWbtcForVault`
     // charges the debt+fee prevailing at execution and only reverts above `maxWbtcIn`, so a
     // vault whose *optimistic* (preview) profit clears the floor can still realize less after
@@ -1398,6 +1419,33 @@ describe("ArbitrageEngine", () => {
       // The hash was signed and recorded before the broadcast, so reconcile can resolve this
       // ambiguous send by receipt lookup instead of guessing from the nonce.
       expect(intent?.txHash).toBe("0xtxhash");
+    });
+
+    // An ambiguous send may still land, so its spend stays held under the signed hash.
+    it("holds the spend of an ambiguous send under its hash", async () => {
+      const store = createMemoryStateStore();
+      const clients = createMockClients();
+      (clients.walletClient as { chain?: { id: number } }).chain = { id: 31337 };
+      const nonces = createNonceAllocator(createNonceLease(), "0xarbitrageur");
+      const risk = createRiskGate();
+      const bot = createBot(clients, { store, nonces, risk });
+      await nonces.resync(() => Promise.resolve(5));
+      clients.sender.send = vi.fn(
+        async (
+          call: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          await onSigned?.({ hash: "0xtxhash", nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new Error("rpc timeout");
+        }
+      );
+
+      expect(await bot.acquireVault(mockVault)).toBe("send-error");
+      expect(risk.outflows().map((o) => o.txHash)).toContain("0xtxhash");
     });
 
     it("run() stops the cycle after a send error (does not process later vaults)", async () => {

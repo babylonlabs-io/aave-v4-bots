@@ -28,10 +28,17 @@ const candidate = (debt: Array<[bigint, bigint]>, wbtcPayment = 0n): Liquidation
   vaultId: VAULT,
 });
 
-const reserve = (id: number, token: Address, borrowable = true): SpokeReserve => ({
+/** `repayable` follows `borrowable` unless given: a reserve that is not borrowable carries no debt. */
+const reserve = (
+  id: number,
+  token: Address,
+  borrowable = true,
+  repayable = borrowable
+): SpokeReserve => ({
   id,
   token,
   borrowable,
+  repayable,
 });
 
 type Revoke = (input: { token: Address; spender: Address; label?: string }) => Promise<unknown>;
@@ -217,8 +224,8 @@ describe("InventoryFunding spend attribution", () => {
       ]);
     });
 
-    // Nothing published a balance for USDT, so the gate refuses the action by itself, naming the
-    // token. No separate error path is needed to reach that answer.
+    // With no debt left on the reserve, nothing publishes a balance for USDT, so the gate refuses the
+    // action by itself, naming the token. No separate error path is needed to reach that answer.
     it("is blocked by the gate when the signer does not hold that token", async () => {
       const { funding, risk } = build([reserve(0, USDC), reserve(1, USDT, false)]);
       await funding.refreshInventory();
@@ -252,6 +259,28 @@ describe("InventoryFunding spend attribution", () => {
       );
 
       expect(reserved).toEqual({ [USDC]: 1000n });
+    });
+
+    // Governance cleared `borrowable` while the reserve still carries debt. That debt is still
+    // liquidatable, so its token is approved and its balance published, from a fresh start too.
+    it("is approved and funded while it still carries debt", async () => {
+      const { funding, risk, ensureAllowance } = build([
+        reserve(0, USDC),
+        reserve(1, USDT, false, true),
+      ]);
+
+      const reserved = await reservedFor(
+        funding,
+        risk,
+        candidate([
+          [0n, 100n],
+          [1n, 900n],
+        ]),
+        [USDC, USDT]
+      );
+
+      expect(ensureAllowance).toHaveBeenCalledWith(expect.objectContaining({ token: USDT }));
+      expect(reserved).toEqual({ [USDC]: 100n, [USDT]: 900n });
     });
   });
 

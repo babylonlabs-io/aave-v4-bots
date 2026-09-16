@@ -1,4 +1,4 @@
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, connect } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ControlRoute } from "./control";
@@ -26,6 +26,21 @@ async function start(handle: ControlRoute, host = "127.0.0.1"): Promise<string> 
   const server = await startControlServer({ port: 0, host, handle, logger });
   servers.push(server);
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
+
+/** Send one request target as given, which `fetch` would normalise, and return the status line. */
+function rawStatusLine(port: number, target: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1", () =>
+      socket.write(`GET ${target} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`)
+    );
+    let reply = "";
+    socket.on("data", (chunk) => {
+      reply += chunk;
+    });
+    socket.on("end", () => resolve(reply.split("\r\n")[0]));
+    socket.on("error", reject);
+  });
 }
 
 describe("startControlServer", () => {
@@ -72,6 +87,17 @@ describe("startControlServer", () => {
     await start(haltRoute, "0.0.0.0");
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("0.0.0.0"));
   });
+
+  // `URL` rejects the first two targets and Node's parser the third. A throw in the handler would
+  // end the process, so each must get an answer and the switch must keep serving.
+  it.each(["//[", "//[bad", "//a b"])(
+    "answers 400 to the target %s and keeps serving",
+    async (target) => {
+      const base = await start(haltRoute);
+      expect(await rawStatusLine(Number(new URL(base).port), target)).toMatch(/^HTTP\/1\.1 400/);
+      expect((await fetch(`${base}/halt`, { method: "POST" })).status).toBe(200);
+    }
+  );
 });
 
 // A kill switch that is configured but not listening is worse than one that is absent: the operator

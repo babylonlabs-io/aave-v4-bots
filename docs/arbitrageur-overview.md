@@ -142,6 +142,7 @@ keeper-registered BTC key inside the same transaction.
 | `VAULT_KEEPER_ADDRESS` | Keeper the vault is redeemed to when the executor isn't one itself (uses `swapWbtcForVaultOnBehalf`) | No | — |
 | `POLLING_INTERVAL_MS` | How often to check for escrowed vaults | No | `30000` |
 | `MAX_SLIPPAGE_BPS` | Slippage tolerance (basis points) over `currentDebt` | No | `100` |
+| `BTC_REDEMPTION_COST_SATS` | Bitcoin cost of the keeper's claim on one vault (Claim, Assert and Payout fees, anchors). Profit is measured net of it | No | `0` |
 | `VAULT_PROCESSING_DELAY_MS` | Throttle between acquisition broadcasts. Acquisitions are batched, so not a per-acquisition pause. `0` disables | No | `0` |
 | `TX_RECEIPT_TIMEOUT_MS` | Receipt wait timeout | No | `120000` |
 | `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
