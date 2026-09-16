@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { RESERVE_FLAG, bufferAmount, bufferAmounts, isBorrowableReserve } from "./domain";
+import {
+  RESERVE_FLAG,
+  bufferAmount,
+  bufferAmounts,
+  isBorrowableReserve,
+  selectPositions,
+} from "./domain";
 
 describe("bufferAmounts", () => {
   it("applies a 1% buffer by default", () => {
@@ -54,5 +60,67 @@ describe("isBorrowableReserve", () => {
     expect(isBorrowableReserve(RESERVE_FLAG.BORROWABLE | RESERVE_FLAG.PAUSED)).toBe(true);
     expect(isBorrowableReserve(RESERVE_FLAG.PAUSED | RESERVE_FLAG.FROZEN)).toBe(false);
     expect(isBorrowableReserve(0)).toBe(false);
+  });
+});
+
+// The indexer is untrusted, so the candidate list is trimmed before any RPC call is made from it.
+describe("selectPositions", () => {
+  const proxy = (n: number) => `0x${n.toString(16).padStart(40, "0")}`;
+  const pos = (proxyAddress: string, borrower = proxy(0xb)) => ({ proxyAddress, borrower });
+
+  it("keeps the first entry for each proxy, ignoring case, in feed order", () => {
+    const a = proxy(0xa);
+    const out = selectPositions([pos(a), pos(proxy(2)), pos(a.toUpperCase().replace("0X", "0x"))]);
+
+    expect(out.positions.map((p) => p.proxyAddress)).toEqual([a, proxy(2)]);
+    expect(out).toMatchObject({ duplicates: 1, malformed: 0, truncated: 0 });
+  });
+
+  it("caps the list and reports how many it left for later cycles", () => {
+    const out = selectPositions(
+      Array.from({ length: 7 }, (_, i) => pos(proxy(i))),
+      5
+    );
+
+    expect(out.positions).toHaveLength(5);
+    expect(out.truncated).toBe(2);
+  });
+
+  // Positions the bot cannot clear stay liquidatable, so a window fixed at the start could hold
+  // them forever.
+  it("starts a capped window at the offset and wraps around the end", () => {
+    const list = Array.from({ length: 7 }, (_, i) => pos(proxy(i)));
+
+    const out = selectPositions(list, 5, 5);
+
+    expect(out.positions.map((p) => p.proxyAddress)).toEqual([5, 6, 0, 1, 2].map(proxy));
+    expect(out.truncated).toBe(2);
+  });
+
+  it("ignores the offset when nothing is truncated", () => {
+    const list = Array.from({ length: 3 }, (_, i) => pos(proxy(i)));
+
+    const out = selectPositions(list, 5, 2);
+
+    expect(out.positions.map((p) => p.proxyAddress)).toEqual([0, 1, 2].map(proxy));
+  });
+
+  it("drops entries without a usable proxy address", () => {
+    const out = selectPositions([
+      pos(proxy(1)),
+      pos("0xnope"),
+      null as unknown as ReturnType<typeof pos>,
+      { borrower: "0xb" } as unknown as ReturnType<typeof pos>,
+    ]);
+
+    expect(out.positions).toHaveLength(1);
+    expect(out.malformed).toBe(3);
+  });
+
+  it("drops entries without a usable borrower address", () => {
+    const out = selectPositions([pos(proxy(1)), pos(proxy(2), "0xnope")]);
+
+    expect(out.positions.map((p) => p.proxyAddress)).toEqual([proxy(1)]);
+    expect(out.malformed).toBe(1);
   });
 });

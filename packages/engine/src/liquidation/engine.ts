@@ -3,7 +3,13 @@ import { type Address, type Hex, formatUnits } from "viem";
 import { adapterAbi, lensAbi } from "@repo/abis";
 import { type RiskSlot, settleUnfinished } from "@repo/risk";
 import { BaseEngine, type BaseEngineConfig } from "../shared/engine";
-import { bufferAmount, bufferAmounts } from "./domain";
+import {
+  LENS_ESTIMATE_CHUNK,
+  MAX_LIQUIDATION_CANDIDATES,
+  bufferAmount,
+  bufferAmounts,
+  selectPositions,
+} from "./domain";
 import {
   type FundedCandidate,
   type FundingParams,
@@ -11,7 +17,7 @@ import {
   type LiquidationFunding,
   createLiquidationFunding,
 } from "./funding";
-import { type SpokeReserves, borrowableTokens, discoverSpokeReserves } from "./reserves";
+import { type SpokeReserves, discoverSpokeReserves, repayableTokens } from "./reserves";
 import type { LiquidatablePosition, PonderResponse } from "./types";
 
 /** Observability port — the engine reports through it; the service supplies metrics. */
@@ -68,6 +74,8 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   private txReceiptTimeoutMs: number;
   /** How repayment is funded — the seam that decides the call, the risk declaration and the setup. */
   private funding: LiquidationFunding;
+  /** Where the next truncated candidate window starts. See `selectPositions`. */
+  private candidateOffset = 0;
 
   constructor(config: LiquidationEngineConfig) {
     super(config, { engine: "liquidation", intentAction: "liquidation" });
@@ -222,28 +230,92 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
       );
       return;
     }
-    const { positions, dataTimestampMs } = feed;
+    const { dataTimestampMs } = feed;
+    // The feed is untrusted: drop unusable and repeated entries, and cap the rest, before any RPC.
+    const offset = this.candidateOffset;
+    const {
+      positions: selected,
+      malformed,
+      duplicates,
+      truncated,
+    } = selectPositions(feed.positions, MAX_LIQUIDATION_CANDIDATES, offset);
+    // Move past this window, so a long list is covered across cycles.
+    const listed = selected.length + truncated;
+    this.candidateOffset = truncated > 0 ? (offset + selected.length) % listed : 0;
+    if (malformed + duplicates > 0) {
+      this.metrics.recordError("positions_malformed");
+      this.logger.warn(
+        `Indexer candidate list had ${malformed} unusable and ${duplicates} repeated entries — dropped`
+      );
+    }
+    if (truncated > 0) {
+      this.metrics.recordError("positions_truncated");
+      this.logger.warn(
+        `Indexer returned ${listed} liquidatable positions — acting on ${selected.length} from offset ${offset % listed}; later cycles cover the rest`
+      );
+    }
 
-    this.metrics.recordPositionsLiquidatable(positions.length);
+    this.metrics.recordPositionsLiquidatable(selected.length + truncated);
 
-    if (positions.length === 0) {
+    if (selected.length === 0) {
       this.logger.info("No liquidatable positions found");
       return;
     }
 
-    this.logger.info(`Found ${positions.length} liquidatable position(s)`);
+    this.logger.info(`Found ${selected.length} liquidatable position(s)`);
 
-    // Estimate liquidation inputs via Lens for each position
-    const estimateResults = await Promise.allSettled(
-      positions.map((p) =>
-        this.publicClient.readContract({
-          address: this.lensAddress,
-          abi: lensAbi,
-          functionName: "estimateLiquidation",
-          args: [p.proxyAddress, this.isDirectRedemption],
-        })
-      )
-    );
+    // The Lens estimates the proxy, but the liquidation charges the borrower, and the indexer
+    // supplies both. Keep a candidate only if the adapter maps its borrower to its proxy. A failed
+    // read drops it too: the adapter reverts for a borrower it has no position for.
+    const positionOf = (p: LiquidatablePosition) =>
+      this.publicClient.readContract({
+        address: this.adapterAddress,
+        abi: adapterAbi,
+        functionName: "getPosition",
+        args: [p.borrower],
+      });
+    const positions: LiquidatablePosition[] = [];
+    for (let i = 0; i < selected.length; i += LENS_ESTIMATE_CHUNK) {
+      const chunk = selected.slice(i, i + LENS_ESTIMATE_CHUNK);
+      const reads = await Promise.allSettled(chunk.map(positionOf));
+      reads.forEach((read, j) => {
+        const mapped =
+          read.status === "fulfilled"
+            ? (read.value as { proxyContract?: unknown } | undefined)?.proxyContract
+            : undefined;
+        if (
+          typeof mapped === "string" &&
+          mapped.toLowerCase() === chunk[j].proxyAddress.toLowerCase()
+        ) {
+          positions.push(chunk[j]);
+        }
+      });
+    }
+    const mismatched = selected.length - positions.length;
+    if (mismatched > 0) {
+      this.metrics.recordError("positions_mismatched");
+      this.logger.warn(
+        `${mismatched} candidate(s) name a borrower the adapter does not map to their proxy — dropped`
+      );
+    }
+    if (positions.length === 0) {
+      this.logger.info("No candidates passed the borrower check");
+      return;
+    }
+
+    // Estimate liquidation inputs via Lens, `LENS_ESTIMATE_CHUNK` at a time.
+    const estimate = (p: LiquidatablePosition) =>
+      this.publicClient.readContract({
+        address: this.lensAddress,
+        abi: lensAbi,
+        functionName: "estimateLiquidation",
+        args: [p.proxyAddress, this.isDirectRedemption],
+      });
+    const estimateResults: PromiseSettledResult<Awaited<ReturnType<typeof estimate>>>[] = [];
+    for (let i = 0; i < positions.length; i += LENS_ESTIMATE_CHUNK) {
+      const chunk = positions.slice(i, i + LENS_ESTIMATE_CHUNK);
+      estimateResults.push(...(await Promise.allSettled(chunk.map(estimate))));
+    }
 
     // Build position + amounts pairs, filter failed estimates
     const candidates: LiquidationCandidate[] = [];
@@ -367,9 +439,13 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
           case "aborted":
             this.metrics.recordError("tx_send_error");
             this.logger.error(`Failed to send liquidation for ${position.borrower}: ${out.error}`);
-            // Only a failed *broadcast* is a real failure signal for the breaker; a pre-broadcast
-            // failure reached no chain, so an RPC/database blip cannot trip it.
-            slot.settle({ ok: false, abandoned: !out.broadcastAttempted });
+            // A failed broadcast may still land. Its fate is unknown, so the spend stays held under
+            // its hash and the breaker does not count it. A pre-broadcast failure moved nothing.
+            slot.settle(
+              out.broadcastAttempted
+                ? { ok: false, unresolved: true, txHash: out.txHash }
+                : { ok: false, abandoned: true }
+            );
             // The send left a possible nonce gap — stop the cycle; the next resync reclaims it.
             break sendLoop;
 
@@ -517,7 +593,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
       // Kick metadata + balanceOf in parallel so cold-start matches the original
       // 3-RPC concurrency; subsequent cycles only fire balanceOf (cache hit).
       for (const tokenAddress of this.reserveTopology
-        ? borrowableTokens(this.reserveTopology)
+        ? repayableTokens(this.reserveTopology)
         : []) {
         const [{ symbol, decimals }, balance] = await Promise.all([
           this.tokenMeta(tokenAddress),

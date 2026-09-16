@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createManualExecutor } from "../shared/executor";
 import { createAutoExecutorWithSender } from "../shared/executorTestKit";
 import { createIndexerClient } from "../shared/indexerClient";
+import { LENS_ESTIMATE_CHUNK, MAX_LIQUIDATION_CANDIDATES } from "./domain";
 import { LiquidationEngine, type LiquidationEngineConfig } from "./engine";
 import type { LiquidatablePosition } from "./types";
 
@@ -54,11 +55,18 @@ const mockWbtcPayment = 5000n;
 
 const mockPosition: LiquidatablePosition = {
   proxyAddress: "0x1234567890123456789012345678901234567890",
-  borrower: "0xborrower0000000000000000000000000000000001",
+  borrower: "0x000000000000000000000000000000000000b0b1",
   debtReserveIds: ["0"],
   debtToCoverAmounts: ["1000000"],
   vaultId: "0xvault1",
   suppliedShares: "1000000000",
+};
+
+/** The adapter's borrower → proxy mapping for the positions these tests feed. */
+const PROXY_OF: Record<string, string> = {
+  [mockPosition.borrower.toLowerCase()]: mockPosition.proxyAddress,
+  "0x000000000000000000000000000000000000b0b2": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+  "0x000000000000000000000000000000000000b0b3": "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed",
 };
 
 /**
@@ -117,39 +125,51 @@ function createMockClients() {
     },
     publicClient: {
       simulateContract: vi.fn().mockResolvedValue({ result: true }),
-      readContract: vi.fn().mockImplementation(({ functionName }: { functionName: string }) => {
-        // One borrowable reserve, matching `mockAmounts` — the engine refuses to attribute a spend
-        // when the Lens vector and the Spoke's reserve list disagree in length. The Lens reports
-        // the adapter and Spoke it was built for; `prepare()` refuses a pair that disagrees.
-        if (functionName === "adapter") return Promise.resolve("0xadapter");
-        if (functionName === "spoke") return Promise.resolve("0xspoke");
-        if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
-        if (functionName === "getReserveCount") return Promise.resolve(BigInt(mockAmounts.length));
-        if (functionName === "getReserve") {
-          return Promise.resolve({ flags: 0x04, underlying: "0xdebt" });
-        }
-        if (functionName === "estimateLiquidation") {
-          // [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId, amountCollateralToSeize] —
-          // wbtcPayment is the WBTC the adapter pulls from msg.sender for fairness + redemption
-          // fee, and doubles as the `maxWbtcPayment` cap on the call.
-          return Promise.resolve([mockReserveIds, mockAmounts, mockWbtcPayment, "0xvault1", 0n]);
-        }
-        // Default: the position still holds collateral, so a reverted liquidation reads as a genuine
-        // failure (a lost-race test overrides this with totalCollateralBTC 0n).
-        if (functionName === "getPosition") {
-          return Promise.resolve({
-            vaultIds: ["0xvault1"],
-            totalCollateralBTC: 1000n,
-            proxyContract: "0xproxy",
-          });
-        }
-        // Already approved, so the cycle's `refreshInventory` sends nothing and each test measures
-        // the liquidation it is about. Genuinely unlimited: inventory funding asks for
-        // `maxUint256 / 2`, so a merely large number would still trigger an approval. The tests
-        // that DO cover approvals override this with a zero allowance.
-        if (functionName === "allowance") return Promise.resolve(2n ** 256n - 1n);
-        return Promise.resolve(BigInt("1000000000000000000"));
-      }),
+      readContract: vi
+        .fn()
+        .mockImplementation(
+          ({ functionName, args }: { functionName: string; args?: unknown[] }) => {
+            // One borrowable reserve, matching `mockAmounts` — the engine refuses to attribute a spend
+            // when the Lens vector and the Spoke's reserve list disagree in length. The Lens reports
+            // the adapter and Spoke it was built for; `prepare()` refuses a pair that disagrees.
+            if (functionName === "adapter") return Promise.resolve("0xadapter");
+            if (functionName === "spoke") return Promise.resolve("0xspoke");
+            if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
+            if (functionName === "getReserveCount")
+              return Promise.resolve(BigInt(mockAmounts.length));
+            if (functionName === "getReserve") {
+              return Promise.resolve({ flags: 0x04, underlying: "0xdebt" });
+            }
+            if (functionName === "estimateLiquidation") {
+              // [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId, amountCollateralToSeize] —
+              // wbtcPayment is the WBTC the adapter pulls from msg.sender for fairness + redemption
+              // fee, and doubles as the `maxWbtcPayment` cap on the call.
+              return Promise.resolve([
+                mockReserveIds,
+                mockAmounts,
+                mockWbtcPayment,
+                "0xvault1",
+                0n,
+              ]);
+            }
+            // Default: the position still holds collateral, so a reverted liquidation reads as a genuine
+            // failure (a lost-race test overrides this with totalCollateralBTC 0n).
+            if (functionName === "getPosition") {
+              return Promise.resolve({
+                vaultIds: ["0xvault1"],
+                totalCollateralBTC: 1000n,
+                proxyContract:
+                  PROXY_OF[String(args?.[0]).toLowerCase()] ?? mockPosition.proxyAddress,
+              });
+            }
+            // Already approved, so the cycle's `refreshInventory` sends nothing and each test measures
+            // the liquidation it is about. Genuinely unlimited: inventory funding asks for
+            // `maxUint256 / 2`, so a merely large number would still trigger an approval. The tests
+            // that DO cover approvals override this with a zero allowance.
+            if (functionName === "allowance") return Promise.resolve(2n ** 256n - 1n);
+            return Promise.resolve(BigInt("1000000000000000000"));
+          }
+        ),
       getTransactionCount: vi.fn().mockResolvedValue(0),
       getBlockNumber: vi.fn().mockResolvedValue(1n),
       // Reconcile asks for receipts. The default answer is viem's "not mined yet" signal — a
@@ -432,7 +452,7 @@ describe("LiquidationEngine", () => {
       overrideRead(clients, "getPosition", {
         vaultIds: [],
         totalCollateralBTC: 0n,
-        proxyContract: "0xproxy",
+        proxyContract: mockPosition.proxyAddress,
       });
       const risk = createRiskGate({ maxConsecutiveFailures: 1 });
       const bot = createBot(clients, { risk });
@@ -460,7 +480,7 @@ describe("LiquidationEngine", () => {
       overrideRead(clients, "getPosition", {
         vaultIds: ["0xvault2"], // ours is gone; the borrower's other vault is not
         totalCollateralBTC: 500n,
-        proxyContract: "0xproxy",
+        proxyContract: mockPosition.proxyAddress,
       });
       const risk = createRiskGate({ maxConsecutiveFailures: 1 });
       const bot = createBot(clients, { risk });
@@ -505,18 +525,33 @@ describe("LiquidationEngine", () => {
       expect(risk.inFlight()).toBe(0); // and the exposure slot was still released
     });
 
-    // The counterpart: an ambiguous *broadcast* failure may be on chain, so it IS a real
-    // failure signal and must feed the breaker.
-    it("trips the breaker when the broadcast itself fails (ambiguous)", async () => {
+    // The counterpart: an ambiguous *broadcast* may be on chain, so its spend stays held under the
+    // signed hash. Its fate is unknown, which is not evidence the chain rejected us, so the breaker
+    // does not count it.
+    it("holds the spend of an ambiguous broadcast failure without tripping the breaker", async () => {
       const clients = createMockClients();
-      clients.sender.send = vi.fn().mockRejectedValue(new Error("rpc timeout"));
+      clients.sender.send = vi.fn(
+        async (
+          call: { nonce?: number },
+          onSigned?: (tx: {
+            hash: `0x${string}`;
+            nonce: number;
+            serialized: `0x${string}`;
+          }) => Promise<void>
+        ) => {
+          await onSigned?.({ hash: "0xambiguous", nonce: call.nonce ?? 0, serialized: "0xraw" });
+          throw new Error("rpc timeout");
+        }
+      );
       const risk = createRiskGate({ maxConsecutiveFailures: 1 });
       const bot = createBot(clients, { risk });
       global.fetch = vi.fn().mockResolvedValue(liquidatable());
 
       await bot.run();
 
-      expect(risk.state()).toBe("HALTED");
+      expect(clients.sender.send).toHaveBeenCalled();
+      expect(risk.state()).not.toBe("HALTED");
+      expect(risk.outflows().map((o) => o.txHash)).toContain("0xambiguous");
     });
 
     const NOW = 1_000_000_000;
@@ -645,7 +680,7 @@ describe("LiquidationEngine", () => {
       const position2: LiquidatablePosition = {
         ...mockPosition,
         proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-        borrower: "0xborrower0000000000000000000000000000000002",
+        borrower: "0x000000000000000000000000000000000000b0b2",
       };
 
       // First simulation succeeds, second fails
@@ -751,7 +786,7 @@ describe("LiquidationEngine", () => {
       const position2: LiquidatablePosition = {
         ...mockPosition,
         proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-        borrower: "0xborrower0000000000000000000000000000000002",
+        borrower: "0x000000000000000000000000000000000000b0b2",
       };
 
       const bot = createBot(clients);
@@ -789,7 +824,7 @@ describe("LiquidationEngine", () => {
       const position2: LiquidatablePosition = {
         ...mockPosition,
         proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-        borrower: "0xborrower0000000000000000000000000000000002",
+        borrower: "0x000000000000000000000000000000000000b0b2",
       };
 
       // The first send throws — an AMBIGUOUS broadcast (the tx may be on the wire). The loop must
@@ -1188,11 +1223,12 @@ describe("LiquidationEngine", () => {
 
       await bot.discoverReserves();
 
-      // BTC_VAULT_CORE_SPOKE + getReserveCount + 2× getReserve + symbol/decimals per reserve
-      // (decimals is read alongside symbol via the tokenMeta cache). Both reserves are read and
-      // named, not just the borrowable one: the non-borrowable one still occupies a reserve id,
-      // and the id is what the Lens amounts are keyed by.
-      expect(clients.publicClient.readContract).toHaveBeenCalledTimes(8);
+      // BTC_VAULT_CORE_SPOKE + getReserveCount + 2× getReserve + getReserveTotalDebt for the
+      // non-borrowable reserve + symbol/decimals per reserve (decimals is read alongside symbol via
+      // the tokenMeta cache). Both reserves are read and named, not just the borrowable one: the
+      // non-borrowable one still occupies a reserve id, and the id is what the Lens amounts are
+      // keyed by.
+      expect(clients.publicClient.readContract).toHaveBeenCalledTimes(9);
     });
 
     it("handles zero reserves gracefully", async () => {
@@ -1428,12 +1464,12 @@ describe("LiquidationEngine", () => {
       const p2: LiquidatablePosition = {
         ...mockPosition,
         proxyAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-        borrower: "0xborrower0000000000000000000000000000000002",
+        borrower: "0x000000000000000000000000000000000000b0b2",
       };
       const p3: LiquidatablePosition = {
         ...mockPosition,
         proxyAddress: "0xfeedfeedfeedfeedfeedfeedfeedfeedfeedfeed",
-        borrower: "0xborrower0000000000000000000000000000000003",
+        borrower: "0x000000000000000000000000000000000000b0b3",
       };
       clients.sender.send = vi
         .fn()
@@ -1505,9 +1541,8 @@ describe("LiquidationEngine", () => {
   // loop drives it correctly — including the keyless promise (no signer nonce reads).
   describe("MANUAL mode (keyless)", () => {
     const OPERATOR = "0xoperator00000000000000000000000000000000" as `0x${string}`;
-    // Unlike AUTO's mocked sender, MANUAL's `propose` ABI-encodes the call for real — so the
-    // position's addresses must be valid hex. `mockPosition.borrower` is a readable placeholder
-    // (`0xborrower…`, not hex), which the encoder rejects; give this one a real address.
+    // Unlike AUTO's mocked sender, MANUAL's `propose` ABI-encodes the call for real, so the
+    // position's addresses must be valid hex.
     const manualPosition: LiquidatablePosition = {
       ...mockPosition,
       borrower: "0x00000000000000000000000000000000000b0b01",
@@ -1603,6 +1638,143 @@ describe("LiquidationEngine", () => {
 
       expect(store.all()).toHaveLength(1);
       expect(events).toHaveLength(1);
+    });
+  });
+
+  // The indexer is untrusted, so its candidate list is trimmed before any RPC and estimated in chunks.
+  describe("candidate intake", () => {
+    /**
+     * `MAX_LIQUIDATION_CANDIDATES + 100` distinct positions, each with its own borrower, on clients
+     * whose adapter maps each borrower back to its proxy. `onEstimate` sees each Lens call; no
+     * candidate proceeds past the Lens, because these tests are about which ones reach it.
+     */
+    function longFeed(onEstimate: (proxy: string) => Promise<void> | void) {
+      const clients = createMockClients();
+      const base = clients.publicClient.readContract;
+      const proxyOf = new Map<string, string>();
+      const distinct = Array.from({ length: MAX_LIQUIDATION_CANDIDATES + 100 }, (_, i) => {
+        const proxyAddress = `0x${(i + 1).toString(16).padStart(40, "0")}`;
+        const borrower = `0xb${(i + 1).toString(16).padStart(39, "0")}`;
+        proxyOf.set(borrower, proxyAddress);
+        return { ...mockPosition, proxyAddress, borrower };
+      });
+      clients.publicClient.readContract = vi.fn(
+        async (args: { functionName: string; args?: unknown[] }) => {
+          if (args.functionName === "getPosition") {
+            return {
+              vaultIds: [],
+              totalCollateralBTC: 1n,
+              proxyContract: proxyOf.get(String(args.args?.[0])),
+            };
+          }
+          if (args.functionName !== "estimateLiquidation") return base(args);
+          await onEstimate(String(args.args?.[0]));
+          throw new Error("healthy position");
+        }
+      );
+      return { clients, distinct };
+    }
+
+    const feedOf = (liquidatable: unknown[]) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ liquidatable, total: 0, checked: 0 }),
+      });
+
+    it("estimates at most the capped number of distinct positions, a chunk at a time", async () => {
+      let calls = 0;
+      let active = 0;
+      let peak = 0;
+      const { clients, distinct } = longFeed(async () => {
+        calls++;
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        active--;
+      });
+      global.fetch = feedOf([...distinct, ...distinct]);
+
+      await createBot(clients).run();
+
+      expect(calls).toBe(MAX_LIQUIDATION_CANDIDATES);
+      expect(peak).toBeLessThanOrEqual(LENS_ESTIMATE_CHUNK);
+    });
+
+    // Candidates the bot cannot clear stay liquidatable. A window fixed at the start of the list
+    // would hold them every cycle, and the positions after them would never be estimated.
+    it("moves the window on each cycle, so a long list is covered", async () => {
+      let cycle: string[] = [];
+      const { clients, distinct } = longFeed((proxy) => {
+        cycle.push(proxy);
+      });
+      global.fetch = feedOf(distinct);
+      const bot = createBot(clients);
+      const proxies = (from: number, to: number) =>
+        distinct.slice(from, to).map((p) => p.proxyAddress);
+
+      await bot.run();
+      const first = cycle;
+      cycle = [];
+      await bot.run();
+
+      expect(first).toEqual(proxies(0, MAX_LIQUIDATION_CANDIDATES));
+      expect(cycle).toEqual([
+        ...proxies(MAX_LIQUIDATION_CANDIDATES, distinct.length),
+        ...proxies(0, 400),
+      ]);
+    });
+  });
+
+  // The Lens estimates the proxy, but the liquidation charges the borrower, and the indexer supplies
+  // both. A candidate whose pair the adapter does not confirm never reaches the Lens.
+  describe("borrower check", () => {
+    const OTHER_PROXY = "0x00000000000000000000000000000000000000c1";
+
+    /** Clients that record every proxy sent to the Lens, with an optional `getPosition` override. */
+    function countingClients(getPosition?: () => Promise<unknown>) {
+      const clients = createMockClients();
+      const base = clients.publicClient.readContract;
+      const estimated: string[] = [];
+      clients.publicClient.readContract = vi.fn(
+        async (args: { functionName: string; args?: unknown[] }) => {
+          if (args.functionName === "estimateLiquidation") estimated.push(String(args.args?.[0]));
+          if (args.functionName === "getPosition" && getPosition) return getPosition();
+          return base(args);
+        }
+      );
+      return { clients, estimated };
+    }
+
+    const feed = (liquidatable: unknown[]) =>
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            liquidatable,
+            total: liquidatable.length,
+            checked: liquidatable.length,
+          }),
+      });
+
+    it("drops a second proxy paired with the same borrower", async () => {
+      const { clients, estimated } = countingClients();
+      global.fetch = feed([mockPosition, { ...mockPosition, proxyAddress: OTHER_PROXY }]);
+
+      await createBot(clients).run();
+
+      expect(estimated).toEqual([mockPosition.proxyAddress]);
+    });
+
+    // The adapter reverts for a borrower it has no position for, so a failed read drops the candidate.
+    it("drops a candidate whose borrower the adapter cannot resolve", async () => {
+      const { clients, estimated } = countingClients(async () => {
+        throw new Error("InvalidProxyContract");
+      });
+      global.fetch = feed([mockPosition]);
+
+      await createBot(clients).run();
+
+      expect(estimated).toEqual([]);
     });
   });
 });

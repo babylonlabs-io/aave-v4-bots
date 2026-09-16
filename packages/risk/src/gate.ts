@@ -76,7 +76,7 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
    * that a fresh read reflects everything that has landed, is precisely wrong for the one case that
    * matters: it has not landed, which is why we are holding it.
    *
-   * Held until `retireOutflow` is given evidence — a receipt at or below the height of the read
+   * Held until `applySnapshot` is given evidence — a receipt at or below the height of the read
    * being published, or a transaction the chain can no longer include. Never on a timer.
    *
    * Keyed by transaction hash rather than intent id because an intent id names a subject and is
@@ -108,6 +108,26 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
   };
   const capacity = (k: string) =>
     get(available, k) - heldFor(k) - get(spentSinceRefresh, k) - get(reserved, k);
+
+  /** See `RiskGate.setAvailable`. Local so `applySnapshot` publishes in the same step. */
+  function setAvailable(account: TokenAccount, amount: bigint, block?: bigint): void {
+    const k = key(account);
+    if (block !== undefined) {
+      const newest = snapshotBlock.get(k);
+      // Two engines refresh the same account concurrently, and this is last-writer-wins. A read
+      // that started earlier and finished later would otherwise raise capacity to a balance the
+      // account no longer has — an over-report with no inflow behind it, and one nothing later
+      // corrects except another refresh.
+      if (newest !== undefined && block < newest) return;
+      snapshotBlock.set(k, block);
+    }
+    available.set(k, amount);
+    // Anything counted here landed or did not while this read was being taken, and the read is
+    // authoritative about both. Holds are NOT dropped: a held outflow is one the chain has not
+    // settled, so this read cannot be reporting it. Reservations survive too — those are still in
+    // flight and by definition not yet in that balance.
+    spentSinceRefresh.set(k, 0n);
+  }
 
   /**
    * Alerting is advisory: a throwing sink must never be able to stop the kill-switch from halting,
@@ -270,24 +290,7 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
       return true;
     },
 
-    setAvailable(account, amount, block) {
-      const k = key(account);
-      if (block !== undefined) {
-        const newest = snapshotBlock.get(k);
-        // Two engines refresh the same account concurrently, and this is last-writer-wins. A read
-        // that started earlier and finished later would otherwise raise capacity to a balance the
-        // account no longer has — an over-report with no inflow behind it, and one nothing later
-        // corrects except another refresh.
-        if (newest !== undefined && block < newest) return;
-        snapshotBlock.set(k, block);
-      }
-      available.set(k, amount);
-      // Anything counted here landed or did not while this read was being taken, and the read is
-      // authoritative about both. Holds are NOT dropped: a held outflow is one the chain has not
-      // settled, so this read cannot be reporting it. Reservations survive too — those are still in
-      // flight and by definition not yet in that balance.
-      spentSinceRefresh.set(k, 0n);
-    },
+    setAvailable,
 
     outflows: () =>
       [...holds.entries()].map(([txHash, hold]) => ({
@@ -295,8 +298,16 @@ export function createRiskGate(config: RiskConfig = {}): RiskGate {
         ...(hold.minedAtBlock === undefined ? {} : { minedAtBlock: hold.minedAtBlock }),
       })),
 
-    retireOutflow(txHash) {
-      holds.delete(txHash);
+    applySnapshot(balances, block, settled) {
+      // A hold spans every account its transaction owes; this read covers only these.
+      const refreshed = new Set(balances.map(({ account }) => key(account)));
+      for (const txHash of settled) {
+        const hold = holds.get(txHash);
+        if (hold === undefined) continue;
+        hold.entries = hold.entries.filter(({ k }) => !refreshed.has(k));
+        if (hold.entries.length === 0) holds.delete(txHash);
+      }
+      for (const { account, amount } of balances) setAvailable(account, amount, block);
     },
 
     reserved: (account) => get(reserved, key(account)),

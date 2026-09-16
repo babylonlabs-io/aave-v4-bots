@@ -16,6 +16,7 @@ import {
   buildSecretsConfig,
   bytes32Schema,
   indexerEnvFields,
+  nonNegativeBigIntSchema,
   nonNegativeIntSchema,
   parseEnv,
   portSchema,
@@ -83,6 +84,8 @@ const envSchema = z.object({
   // throttle between broadcasts for rate-limited RPCs — not a per-acquisition pause.
   VAULT_PROCESSING_DELAY_MS: nonNegativeIntSchema.optional().default("0"),
   MAX_SLIPPAGE_BPS: bpsSchema.optional().default("100"),
+  // Sats one keeper claim costs on Bitcoin. Profit is measured net of it.
+  BTC_REDEMPTION_COST_SATS: nonNegativeBigIntSchema.optional().default("0"),
   METRICS_PORT: portSchema.optional().default("9091"),
   /**
    * Interface the metrics/health server binds. Unset ⇒ every interface, which is what a container
@@ -247,6 +250,7 @@ export function loadConfig(): Config {
     pollingIntervalMs: Number.parseInt(env.POLLING_INTERVAL_MS, 10),
     vaultProcessingDelayMs: Number.parseInt(env.VAULT_PROCESSING_DELAY_MS, 10),
     maxSlippageBps: Number.parseInt(env.MAX_SLIPPAGE_BPS, 10),
+    btcRedemptionCostSats: BigInt(env.BTC_REDEMPTION_COST_SATS),
     metricsPort: Number.parseInt(env.METRICS_PORT, 10),
     metricsHost: env.METRICS_HOST,
     retryConfig,

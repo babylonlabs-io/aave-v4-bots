@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { type FetchLike, createFlashbotsProtectSubmitter, parseRelayStatus } from "./flashbots";
+import {
+  type FetchLike,
+  createFlashbotsProtectSubmitter,
+  describeEndpoint,
+  parseRelayStatus,
+} from "./flashbots";
 import { SubmitRejectedError } from "./index";
 
 // The relay is scripted, never reached. The response bodies here are the shapes the live API
@@ -346,5 +351,18 @@ describe("parseRelayStatus", () => {
       seenInMempool: false,
     });
     expect(parseRelayStatus({ ...valid, isRevert: "yes" })).toMatchObject({ isRevert: false });
+  });
+});
+
+// The boot banner logs both relay endpoints, and a custom relay can carry its key in the URL.
+describe("describeEndpoint", () => {
+  it("keeps only the origin of a URL that carries credentials", () => {
+    expect(describeEndpoint("https://user:secret@relay.example:8443/rpc/sk_live?token=abc#x")).toBe(
+      "https://relay.example:8443"
+    );
+  });
+
+  it("does not echo a string that is not a URL", () => {
+    expect(describeEndpoint("relay.example/rpc?token=abc")).toBe("<unparseable URL>");
   });
 });

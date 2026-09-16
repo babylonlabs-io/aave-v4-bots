@@ -3,7 +3,7 @@ import { readBalance } from "@repo/chain";
 import type { TokenSpend } from "@repo/risk";
 import type { Hex } from "viem";
 import type { AllowanceResult } from "../../shared/executor";
-import { retireSettledOutflows } from "../../shared/outflows";
+import { settledOutflows } from "../../shared/outflows";
 import type { AcquisitionCall, ArbitrageFunding, FundingContext } from "./types";
 
 type Deps = Pick<
@@ -44,13 +44,17 @@ export class InventoryFunding implements ArbitrageFunding {
     const { publicClient, risk, metrics, wbtcAddress, executor } = this.deps;
     const owner = executor.identity.from;
     // Pinned, and the holds retired against that same height — see the liquidation inventory mode,
-    // and `retireSettledOutflows` for what counts as evidence. This account is usually the one the
+    // and `settledOutflows` for what counts as evidence. This account is usually the one the
     // liquidation engine spends too, so both halves of this matter here: an outflow either engine
     // broadcast is held against the balance both of them read.
     const block = await publicClient.getBlockNumber();
     const balance = await readBalance(publicClient, wbtcAddress, owner, block);
-    await retireSettledOutflows({ publicClient, risk, executor, block });
-    risk.setAvailable({ owner, token: wbtcAddress }, balance, block);
+    const settled = await settledOutflows({ publicClient, risk, executor, block });
+    risk.applySnapshot(
+      [{ account: { owner, token: wbtcAddress }, amount: balance }],
+      block,
+      settled
+    );
     // No allowance leg: the signer spends its own balance, with nothing to approve.
     metrics.recordFundingCapacity({ owner, balance });
   }

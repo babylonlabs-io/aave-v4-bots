@@ -14,6 +14,7 @@ when `RISK_CONTROL_TOKEN_REF` is set.
 | `indexer_lag_blocks` | Gauge | - | Blocks the indexer is behind the chain at the last check |
 | `indexer_cycles_skipped_total` | Counter | - | Poll cycles skipped because the indexer was lagging or unreadable (`INDEXER_MAX_LAG_BLOCKS`; off when unset) |
 | `indexer_halts_total` | Counter | - | Times sustained indexer lag halted the risk gate (`INDEXER_MAX_LAG_HALT_MS`) |
+| `risk_gate_halted` | Gauge | - | 1 while the risk gate is HALTED (kill switch, breaker, code-hash or indexer halt), else 0. Alert on it. `/health` stays healthy while HALTED: a halt lives only in memory, and a probe that restarted the process would clear it |
 
 ## Liquidator Metrics
 
@@ -47,6 +48,9 @@ when `RISK_CONTROL_TOKEN_REF` is set.
 | `batch_error` | Exception escaped the send batch: broadcasting, receipt waiting or outcome recording. Transactions may be in flight |
 | `ponder_fetch_error` | Failed to fetch `/liquidatable-positions` |
 | `positions_unscanned` | The indexer had no answer for part of the position table: a batch of `estimateLiquidation` calls failed whole, or probes reverted for a reason other than the position being healthy. The cycle acts on what it saw. Sustained, the table has outgrown one batch's gas budget, the RPC refuses the batch, or a contract the lens reads is faulting (the indexer log names the revert) |
+| `positions_malformed` | Candidate entries without a usable `proxyAddress` or `borrower`, or a repeated proxy. Dropped before any RPC call. Sustained, the indexer is faulty |
+| `positions_truncated` | The indexer returned more than 500 distinct positions. The cycle acts on 500 of them. The window moves on each cycle, so every position is covered within a few cycles |
+| `positions_mismatched` | The adapter does not map the candidate's `borrower` to its `proxyAddress`, or has no position for it. Dropped before any Lens call, because the Lens estimates the proxy but the liquidation charges the borrower. Sustained, the indexer's proxy mapping is wrong |
 | `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate |
 | `flash_probe_error` | The flash probe threw for a candidate. A malfunction, not a "not fundable" verdict (`flash` only) |
 | `router_balance_read_error` | The router's WBTC balance could not be read, so the cycle was skipped: every quote is net of that balance (`flash` only) |

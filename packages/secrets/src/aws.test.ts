@@ -19,7 +19,18 @@ describe("createAwsSecrets", () => {
     await expect(secrets.get("bin/secret", "TEST_REF")).resolves.toBe("hunter2");
   });
 
-  it("wraps client errors with the ref (never the value)", async () => {
+  it("sends a Secrets Manager ARN as the SecretId", async () => {
+    const arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/bot-AbCdEf";
+    const send = vi.fn(async (command: GetSecretValueCommand) => {
+      expect(command.input.SecretId).toBe(arn);
+      return { SecretString: "value" };
+    });
+    await expect(createAwsSecrets({ client: { send } }).get(arn, "TEST_REF")).resolves.toBe(
+      "value"
+    );
+  });
+
+  it("wraps client errors without echoing the ref", async () => {
     const send = vi.fn(async () => {
       throw new Error(
         "ResourceNotFoundException: Secrets Manager can't find the specified secret."
@@ -27,7 +38,7 @@ describe("createAwsSecrets", () => {
     });
     const secrets = createAwsSecrets({ client: { send } });
     await expect(secrets.get("missing/ref", "TEST_REF")).rejects.toThrow(
-      /failed to fetch secret "missing\/ref".*ResourceNotFound/
+      /failed to fetch secret <11 chars>.*ResourceNotFound/
     );
   });
 
@@ -67,7 +78,7 @@ describe("createAwsSecrets", () => {
     it("throws when the JSON key is absent", async () => {
       const secrets = createAwsSecrets({ client: { send: jsonSecret() } });
       await expect(secrets.get("prod/liquidator/config#NOPE", "TEST_REF")).rejects.toThrow(
-        /has no JSON key "NOPE"/
+        /has no JSON key <4 chars>/
       );
     });
 
@@ -77,6 +88,41 @@ describe("createAwsSecrets", () => {
       await expect(secrets.get("plain/secret#KEY", "TEST_REF")).rejects.toThrow(
         /is not valid JSON/
       );
+    });
+
+    // The selector is part of the ref, so a secret pasted after `#` is refused like one before it.
+    it("refuses a secret-shaped selector before the fetch", async () => {
+      const send = vi.fn();
+      const key = "ab".repeat(32);
+      const error = await createAwsSecrets({ client: { send } })
+        .get(`prod/bot/config#${key}`, "SIGNER_KEY_REF")
+        .then(
+          () => new Error("expected the lookup to be refused"),
+          (e: Error) => e
+        );
+
+      expect(send).not.toHaveBeenCalled();
+      expect(error.message).toMatch(/SIGNER_KEY_REF \(JSON key\) is not the name of a secret/);
+      expect(error.message).not.toContain(key);
+    });
+
+    // A selector that passes the gate can still be a secret of another shape.
+    it.each([
+      ["not valid JSON", "not-json"],
+      ["not a JSON object", "[1]"],
+      ["missing the key", JSON.stringify({ OTHER: "x" })],
+    ])("never echoes the selector when the secret is %s", async (_label, secretString) => {
+      const selector = "q3Vx7Zk2Lm9Pn4Rt8Ws1Yb6Cd0Ef5Gh2Ij3Kl7Mn8=";
+      const send = vi.fn(async () => ({ SecretString: secretString }));
+      const error = await createAwsSecrets({ client: { send } })
+        .get(`prod/bot/config#${selector}`, "TEST_REF")
+        .then(
+          () => new Error("expected the lookup to fail"),
+          (e: Error) => e
+        );
+
+      expect(send).toHaveBeenCalled();
+      expect(error.message).not.toContain(selector);
     });
   });
 });

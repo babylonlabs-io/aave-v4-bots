@@ -51,9 +51,16 @@ export function startObservabilityServer(config: ObservabilityServerConfig): Ser
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     // Parse rather than string-compare `req.url`, so `/metrics?foo=1` still routes. The base is a
-    // placeholder; only the path is used.
-    const { pathname } = new URL(req.url || "/", "http://localhost");
-    const url = pathname;
+    // placeholder; only the path is used. Node admits targets `URL` rejects, such as `//[`, and a
+    // throw here would end the process, so an unparseable target gets a 400.
+    let url: string;
+    try {
+      url = new URL(req.url || "/", "http://localhost").pathname;
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Bad request" }));
+      return;
+    }
 
     try {
       if (url === "/health" || url === "/healthz") {

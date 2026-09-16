@@ -1,7 +1,7 @@
 import type { Address, PublicClient } from "viem";
 import { describe, expect, it, vi } from "vitest";
 
-import { MAX_SPOKE_RESERVES, borrowableTokens, discoverSpokeReserves } from "./reserves";
+import { MAX_SPOKE_RESERVES, discoverSpokeReserves, repayableTokens } from "./reserves";
 
 const ADAPTER = "0xadapter" as Address;
 const SPOKE = "0xspoke" as Address;
@@ -10,8 +10,8 @@ const COLLATERAL_ONLY = 0x00;
 
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-/** A Spoke listing `reserves` in id order. */
-const client = (reserves: { flags: number; underlying: string }[], count?: bigint) =>
+/** A Spoke listing `reserves` in id order. `debt` is the reserve's total debt, 0 when omitted. */
+const client = (reserves: { flags: number; underlying: string; debt?: bigint }[], count?: bigint) =>
   ({
     readContract: vi.fn(
       ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
@@ -20,6 +20,8 @@ const client = (reserves: { flags: number; underlying: string }[], count?: bigin
           return Promise.resolve(count ?? BigInt(reserves.length));
         if (functionName === "getReserve")
           return Promise.resolve(reserves[Number(args?.[0] ?? 0n)]);
+        if (functionName === "getReserveTotalDebt")
+          return Promise.resolve(reserves[Number(args?.[0] ?? 0n)].debt ?? 0n);
         return Promise.resolve(0n);
       }
     ),
@@ -47,10 +49,40 @@ describe("discoverSpokeReserves", () => {
 
     expect(topology.spoke).toBe(SPOKE);
     expect(topology.reserves).toEqual([
-      { id: 0, token: "0xvaultbtc", borrowable: false },
-      { id: 1, token: "0xusdc", borrowable: true },
-      { id: 2, token: "0xusdt", borrowable: true },
+      { id: 0, token: "0xvaultbtc", borrowable: false, repayable: false },
+      { id: 1, token: "0xusdc", borrowable: true, repayable: true },
+      { id: 2, token: "0xusdt", borrowable: true, repayable: true },
     ]);
+  });
+
+  // Governance can clear `borrowable` while borrowers still owe the reserve. That debt is still
+  // liquidatable, so the signer must keep holding and approving its token.
+  it("marks a reserve that is not borrowable but still carries debt as repayable", async () => {
+    const topology = await discover(
+      client([
+        { flags: COLLATERAL_ONLY, underlying: "0xvaultbtc" },
+        { flags: COLLATERAL_ONLY, underlying: "0xusdt", debt: 5n },
+      ])
+    );
+
+    expect(topology.reserves).toEqual([
+      { id: 0, token: "0xvaultbtc", borrowable: false, repayable: false },
+      { id: 1, token: "0xusdt", borrowable: false, repayable: true },
+    ]);
+  });
+
+  it("reads the debt only of a reserve that is not borrowable", async () => {
+    const publicClient = client([
+      { flags: BORROWABLE, underlying: "0xusdc" },
+      { flags: COLLATERAL_ONLY, underlying: "0xusdt" },
+    ]);
+
+    await discover(publicClient);
+
+    const debtReads = vi
+      .mocked(publicClient.readContract)
+      .mock.calls.filter(([call]) => call.functionName === "getReserveTotalDebt");
+    expect(debtReads.map(([call]) => call.args)).toEqual([[1n]]);
   });
 
   it("has no reserves to report on an empty Spoke", async () => {
@@ -76,8 +108,8 @@ describe("discoverSpokeReserves", () => {
     expect((await discover(publicClient)).reserves).toHaveLength(1);
     reserves.push({ flags: BORROWABLE, underlying: "0xusdt" });
     expect((await discover(publicClient)).reserves).toEqual([
-      { id: 0, token: "0xusdc", borrowable: true },
-      { id: 1, token: "0xusdt", borrowable: true },
+      { id: 0, token: "0xusdc", borrowable: true, repayable: true },
+      { id: 1, token: "0xusdt", borrowable: true, repayable: true },
     ]);
   });
 
@@ -109,26 +141,27 @@ describe("discoverSpokeReserves", () => {
   });
 });
 
-describe("borrowableTokens", () => {
-  it("keeps only what a borrower can still owe", () => {
-    const tokens = borrowableTokens({
+describe("repayableTokens", () => {
+  it("keeps what a borrower can owe: borrowable reserves and reserves that still carry debt", () => {
+    const tokens = repayableTokens({
       spoke: SPOKE,
       reserves: [
-        { id: 0, token: "0xvaultbtc" as Address, borrowable: false },
-        { id: 1, token: "0xusdc" as Address, borrowable: true },
+        { id: 0, token: "0xvaultbtc" as Address, borrowable: false, repayable: false },
+        { id: 1, token: "0xusdc" as Address, borrowable: true, repayable: true },
+        { id: 2, token: "0xusdt" as Address, borrowable: false, repayable: true },
       ],
     });
 
-    expect(tokens).toEqual(["0xusdc"]);
+    expect(tokens).toEqual(["0xusdc", "0xusdt"]);
   });
 
   // Two reserves can list the same underlying; the balance and allowance behind them are one.
   it("names a token once however many reserves list it", () => {
-    const tokens = borrowableTokens({
+    const tokens = repayableTokens({
       spoke: SPOKE,
       reserves: [
-        { id: 0, token: "0xUSDC" as Address, borrowable: true },
-        { id: 1, token: "0xusdc" as Address, borrowable: true },
+        { id: 0, token: "0xUSDC" as Address, borrowable: true, repayable: true },
+        { id: 1, token: "0xusdc" as Address, borrowable: true, repayable: true },
       ],
     });
 

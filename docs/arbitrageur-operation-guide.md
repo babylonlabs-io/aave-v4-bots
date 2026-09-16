@@ -10,6 +10,7 @@ Bitcoin Vaults protocol.
 3. [Architecture Overview](#3-architecture-overview)
 4. [Installation](#4-installation)
 5. [Configuration](#5-configuration)
+
 6. [Wallet Setup](#6-wallet-setup)
 7. [Starting the Service](#7-starting-the-service)
 8. [Operations](#8-operations)
@@ -184,7 +185,7 @@ Keep `VAULT_SWAP_ADDRESS` and the database in step between the two files.
 | `SPOKE_ADDRESS`, `ADAPTER_ADDRESS`, `LENS_ADDRESS` | Position indexing for the optional liquidation engine. Set all or none | liquidation | |
 | `POSITION_PROBE_CHUNK_SIZE` | See the liquidator guide | No | `25` |
 | `CHAIN_ID` | Network chain ID | No | `1` |
-| `START_BLOCK` | First block to index | No | `0` |
+| `START_BLOCK` | First block to index. Must be at or before the BTCVaultSwap deployment block (and the AaveAdapter's, when the liquidation engine is on), or earlier vaults and borrowers are missed | No | `0` |
 | `PONDER_POLLING_INTERVAL` | Block poll interval (ms) | No | `4000` |
 | `PONDER_PORT` | API port. The `arbitrageur:indexer*` scripts and Compose both set it themselves, so a value here only applies when you run Ponder directly. Compose publishes the host port as `ARBITRAGEUR_PONDER_PORT` | No | `42070` |
 | `MULTICALL3_ADDRESS` | Multicall3 for the API's batched reads. Falls back to single reads when absent on chain | No | `0xcA11bde05977b3631167028862bE2a173976CA11` |
@@ -201,6 +202,7 @@ VAULT_SWAP_ADDRESS=0x...
 WBTC_ADDRESS=0x...
 ARBITRAGEUR_PRIVATE_KEY=0x...
 DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
+
 ```
 
 Everything else has a default, listed in the tables below. Under Docker, `PONDER_URL` and
@@ -217,6 +219,7 @@ not `localhost`.
 | `WBTC_ADDRESS` | WBTC token | Yes | |
 | `VAULT_KEEPER_ADDRESS` | Registered keeper the vault is redeemed to, via `swapWbtcForVaultOnBehalf`. Set it when the executor is not a keeper (a Safe, or a treasury). Unset: the executor must be a keeper. Point it only at a keeper you control; the BTC lands there while the WBTC leaves the bot | router | |
 | `MAX_SLIPPAGE_BPS` | Ceiling above the previewed cost the bot authorizes. Max `10000` | No | `100` |
+| `BTC_REDEMPTION_COST_SATS` | Bitcoin cost of the keeper's claim on one vault, in sats: the Claim, Assert and Payout fees and anchors. The preview prices the gross vault BTC, and the keeper receives it net of these. See §9 | No | `0` |
 | `POLLING_INTERVAL_MS` | Poll interval | No | `30000` |
 | `VAULT_PROCESSING_DELAY_MS` | Throttle between broadcasts, for rate-limited RPCs. `0` is off | No | `0` |
 | `TX_RECEIPT_TIMEOUT_MS` | Receipt wait per transaction | No | `120000` |
@@ -264,7 +267,7 @@ As on the liquidator, with two differences:
 
 | Parameter | Description | Required | Default |
 |-----------|-------------|----------|---------|
-| `RISK_MIN_PROFIT` | Floor in sats on the worst case the transaction authorizes: vault BTC minus `maxWbtcIn`. Rejected at boot when the liquidation engine is on and inventory-funded. Unset is not a floor of zero: a vault can preview profitably while `maxWbtcIn` exceeds its value, and the bot signs it. `RISK_MIN_PROFIT=0` makes the worst case non-negative | No | |
+| `RISK_MIN_PROFIT` | Floor in sats on the worst case the transaction authorizes: vault BTC minus `maxWbtcIn` minus `BTC_REDEMPTION_COST_SATS`. Rejected at boot when the liquidation engine is on and inventory-funded. Unset is not a floor of zero: a vault can preview profitably while `maxWbtcIn` exceeds its value, and the bot signs it. `RISK_MIN_PROFIT=0` makes the worst case non-negative | No | |
 | `RISK_MAX_IN_FLIGHT` | Cap across both engines | No | unlimited |
 
 ### 5.4. Execution Modes
@@ -344,6 +347,28 @@ Testnet addresses are provided during onboarding.
 |----------|----------|
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap. `swapWbtcForVault`, `previewEscrowedVaults` |
 | `WBTC_ADDRESS` | WBTC token |
+
+### 5.7. Database roles
+
+The indexer is untrusted: it only decides which candidates the bot looks at, and the bot checks
+every candidate on chain. The bot's crash-safety schema (`PERSISTENCE_SCHEMA`, default `bot`) is
+trusted: it holds the intents that fence the signer's nonce, so write access to it can stall
+trading. In production, the two services therefore connect as separate roles:
+
+- The bot connects as its own role, which owns `PERSISTENCE_SCHEMA`. `operator-cli` uses the same
+  role.
+- The indexer connects as `arbitrageur_indexer`. That role must not be a superuser, own the bot's schema, or
+  be a member of the bot's role.
+
+Run this once in the bot's database, as an administrator:
+
+```sql
+CREATE ROLE arbitrageur_bot LOGIN PASSWORD '<password>';
+CREATE SCHEMA bot AUTHORIZATION arbitrageur_bot;
+```
+
+A schema created this way grants nothing to other roles. The local Docker setup uses one superuser
+for both services, which is acceptable for development only.
 
 ## 6. Wallet Setup
 
@@ -434,6 +459,8 @@ Same endpoints and semantics as the liquidator, on port 9091. See
   expr: arbitrageur_funding_wbtc_balance < 10000000   # 0.1 WBTC in sats
 - alert: ArbitrageurLowAllowance
   expr: arbitrageur_funding_wbtc_allowance < 10000000  # router funding only
+- alert: RiskGateHalted
+  expr: risk_gate_halted == 1
 ```
 
 ### 8.3. Kill switch
@@ -502,8 +529,13 @@ and the router's recent events explain the failures, and resume.
 The indexer serves `currentDebt` (`amountWbtcToAcquire`) and `isProfitable`
 (`amountProfitEst > 0`). The bot re-reads the preview before each acquisition and authorizes
 `maxWbtcIn = amountWbtcToAcquire + amountWbtcToAcquire * MAX_SLIPPAGE_BPS / 10000`. A vault whose
-`amountProfitEst` is zero is skipped. Debt accrues while a vault sits in escrow, so the discount
-shrinks over time.
+`amountProfitEst` does not exceed `BTC_REDEMPTION_COST_SATS` is skipped. Debt accrues while a vault
+sits in escrow, so the discount shrinks over time.
+
+`amountVault` is the gross vault BTC. The keeper's claim on Bitcoin pays the Claim, Assert and
+Payout fees and anchors, and the Payout takes its fee out of the vault BTC. A keeper claim carries
+no vault provider commission: only a claim by the vault provider itself does. Set
+`BTC_REDEMPTION_COST_SATS` to your measured claim cost, so the profit floor is net of it.
 
 Acquisition is first-come-first-served. The first successful transaction wins the vault.
 

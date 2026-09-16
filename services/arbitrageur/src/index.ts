@@ -114,6 +114,7 @@ async function createBot(config: Config): Promise<BotWithClients> {
     vaultKeeperAddress: config.vaultKeeperAddress,
     indexer,
     maxSlippageBps: config.maxSlippageBps,
+    btcRedemptionCostSats: config.btcRedemptionCostSats,
     vaultProcessingDelayMs: config.vaultProcessingDelayMs,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
     funding: config.funding,
@@ -190,6 +191,7 @@ async function runPollingMode(config: Config): Promise<void> {
   }
 
   logger.info(`Max slippage: ${config.maxSlippageBps / 100}%`);
+  logger.info(`BTC redemption cost per vault: ${config.btcRedemptionCostSats ?? 0n} sats`);
   logger.info(`Retry attempts: ${config.retryConfig.maxAttempts}`);
   logger.info(`Transaction timeout: ${config.txReceiptTimeoutMs / 1000}s`);
 

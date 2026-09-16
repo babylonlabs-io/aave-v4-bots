@@ -241,7 +241,7 @@ export interface RiskGate {
    * What it does **not** clear is a hold: an outflow whose transaction is broadcast but whose fate
    * the chain has not yet settled is still owed by this balance, and a read taken while that
    * transaction is un-mined reports the money as if it were still there. Those are released by
-   * `retireOutflow`, on evidence, never by the passage of a refresh.
+   * `applySnapshot`, on evidence, never by the passage of a refresh.
    *
    * `block` is the height the read was taken at. Supply it: two engines refresh the same account
    * concurrently and the last writer wins, so without it a read taken earlier can overwrite a
@@ -259,17 +259,20 @@ export interface RiskGate {
    */
   outflows(): readonly { txHash: string; minedAtBlock?: bigint }[];
   /**
-   * Release a held outflow, because a balance read that accounts for it is about to be published.
+   * Publish balances read at `block`, and release the held outflows that read accounts for, in one
+   * synchronous step, so no action is judged against a balance that has lost a hold but not yet
+   * gained the read.
    *
-   * Only two things are evidence: a receipt at or below the height of that read (the money moved,
-   * or the transaction reverted and it did not — either way the read is the truth), or a transaction
-   * the chain no longer has any way to include. Elapsed time is not evidence, and never retires a
-   * hold: a claim on this balance does not expire because a timer did.
-   *
-   * Call it in the same synchronous step as the `setAvailable` it belongs to, so no action can be
-   * judged against a balance that has dropped the hold but not yet gained the fresh read.
+   * `settled` are the transactions with evidence (see `outflows`): a receipt at or below `block`, or
+   * a transaction the chain can no longer include. Elapsed time is not evidence. A hold spans every
+   * account its transaction owes, but the read covers only the accounts in `balances`, so only
+   * those entries are released; the rest stay until a read of their own accounts for them.
    */
-  retireOutflow(txHash: string): void;
+  applySnapshot(
+    balances: readonly { account: TokenAccount; amount: bigint }[],
+    block: bigint,
+    settled: readonly string[]
+  ): void;
   /** Declared spend currently reserved by in-flight actions, per account/token — logs and metrics. */
   reserved(account: TokenAccount): bigint;
   /**
