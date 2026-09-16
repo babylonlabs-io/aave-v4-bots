@@ -39,9 +39,9 @@ const ENTRIES = [`morpho:${MORPHO}`, pool(USDC, 3000), pool(USDC, 500), pool(USD
 const TOPOLOGY: SpokeReserves = {
   spoke: SPOKE,
   reserves: [
-    { id: 0, token: USDC, borrowable: true },
-    { id: 1, token: WBTC, borrowable: true },
-    { id: 2, token: USDT, borrowable: true },
+    { id: 0, token: USDC, borrowable: true, repayable: true },
+    { id: 1, token: WBTC, borrowable: true, repayable: true },
+    { id: 2, token: USDT, borrowable: true, repayable: true },
   ],
 };
 
@@ -276,7 +276,7 @@ describe("FlashFunding with venue ranking", () => {
     const { funding, probes, quotes } = setup({
       topology: {
         spoke: SPOKE,
-        reserves: [...TOPOLOGY.reserves, { id: 3, token: USDC, borrowable: true }],
+        reserves: [...TOPOLOGY.reserves, { id: 3, token: USDC, borrowable: true, repayable: true }],
       },
     });
 
@@ -290,7 +290,7 @@ describe("FlashFunding with venue ranking", () => {
     const { funding, probes } = setup({
       topology: {
         spoke: SPOKE,
-        reserves: [...TOPOLOGY.reserves, { id: 3, token: USDC, borrowable: true }],
+        reserves: [...TOPOLOGY.reserves, { id: 3, token: USDC, borrowable: true, repayable: true }],
       },
     });
 

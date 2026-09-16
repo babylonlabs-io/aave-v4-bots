@@ -75,8 +75,8 @@ const ARTIFACT = join(
 const TOPOLOGY: SpokeReserves = {
   spoke: ZERO,
   reserves: [
-    { id: 0, token: USDC, borrowable: true },
-    { id: 1, token: WBTC, borrowable: true },
+    { id: 0, token: USDC, borrowable: true, repayable: true },
+    { id: 1, token: WBTC, borrowable: true, repayable: true },
   ],
 };
 

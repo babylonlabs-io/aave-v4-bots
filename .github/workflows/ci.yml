@@ -185,6 +185,10 @@ jobs:
           set -o pipefail
           pnpm --filter @repo/engine test src/liquidation/funding/ranking.fork.test.ts 2>&1 | tee /tmp/ranking.log
 
+          # Vitest colors its output under CI, and the color codes split the summary line. Strip
+          # them so the patterns below match the plain text.
+          sed -i 's/\x1b\[[0-9;]*m//g' /tmp/ranking.log
+
           # The suite skips itself when ETHEREUM_FORK_RPC_URL is unset. Set here, a skip means it never ran.
           if grep -qE 'ranking\.fork\.test\.ts .*skipped' /tmp/ranking.log \
             || ! grep -qE '✓ .*ranking\.fork\.test\.ts' /tmp/ranking.log; then

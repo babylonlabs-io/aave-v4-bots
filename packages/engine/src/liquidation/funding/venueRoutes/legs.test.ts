@@ -9,7 +9,12 @@ const VBTC = "0x5555555555555555555555555555555555555555" as Address;
 
 const topology = (...tokens: Address[]): SpokeReserves => ({
   spoke: SPOKE,
-  reserves: tokens.map((token, id) => ({ id, token, borrowable: token !== VBTC })),
+  reserves: tokens.map((token, id) => ({
+    id,
+    token,
+    borrowable: token !== VBTC,
+    repayable: token !== VBTC,
+  })),
 });
 
 describe("sizeOwedLegs", () => {
