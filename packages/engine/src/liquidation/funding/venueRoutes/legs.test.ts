@@ -94,57 +94,56 @@ describe("sizeOwedLegs", () => {
   });
 
   describe("a token listed under two reserve ids", () => {
-    // The router sizes the borrow from the first reserve with that token, but the adapter pulls
-    // every reserve's debt — so any debt beyond the first reserve is unborrowed.
+    // The router borrows once per token for the debt summed over its reserves, and approves the
+    // adapter once for that same sum, so one leg carries the whole size.
 
-    it("skips a candidate owing it on both ids", () => {
+    it("sums the amounts owed on both ids into one leg", () => {
       const legs = sizeOwedLegs(
         { debtReserveIds: [0n, 2n], debtToCoverAmounts: [100n, 50n], wbtcPayment: 0n },
         topology(USDC, WBTC, USDC),
         WBTC
       );
 
-      expect(legs.kind).toBe("skip");
-      expect(legs.kind === "skip" && legs.reason).toMatch(
-        /reserve 2, but reserve 0 lists it first/
-      );
+      expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 150n }] });
     });
 
-    it("sizes a candidate owing it only on the first id, which the router borrows in full", () => {
+    it("places the summed leg at its first owed reserve", () => {
       const legs = sizeOwedLegs(
-        { debtReserveIds: [0n], debtToCoverAmounts: [100n], wbtcPayment: 0n },
+        { debtReserveIds: [0n, 1n, 3n], debtToCoverAmounts: [100n, 40n, 50n], wbtcPayment: 0n },
+        topology(USDC, USDT, WBTC, USDC),
+        WBTC
+      );
+
+      expect(legs).toEqual({
+        kind: "sized",
+        legs: [
+          { token: USDC, amount: 150n },
+          { token: USDT, amount: 40n },
+        ],
+      });
+    });
+
+    it("sizes a candidate owing it only on the later id", () => {
+      const legs = sizeOwedLegs(
+        { debtReserveIds: [2n], debtToCoverAmounts: [50n], wbtcPayment: 0n },
         topology(USDC, WBTC, USDC),
         WBTC
       );
 
-      expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 100n }] });
+      expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 50n }] });
     });
 
-    it("sizes WBTC owed only on the first WBTC reserve when there is no fairness payment", () => {
+    it("sums WBTC owed on both reserves with the fairness payment", () => {
       const legs = sizeOwedLegs(
-        { debtReserveIds: [0n], debtToCoverAmounts: [100n], wbtcPayment: 0n },
+        { debtReserveIds: [0n, 2n], debtToCoverAmounts: [100n, 50n], wbtcPayment: 5n },
         topology(WBTC, USDC, WBTC),
         WBTC
       );
 
-      expect(legs).toEqual({ kind: "sized", legs: [{ token: WBTC, amount: 100n }] });
+      expect(legs).toEqual({ kind: "sized", legs: [{ token: WBTC, amount: 155n }] });
     });
 
-    it("skips WBTC owed on the first WBTC reserve with a fairness payment", () => {
-      // The later WBTC reserve's approval (the payment alone) replaces the first one's (debt plus
-      // payment), so the adapter cannot pull the debt.
-      const legs = sizeOwedLegs(
-        { debtReserveIds: [0n], debtToCoverAmounts: [100n], wbtcPayment: 5n },
-        topology(WBTC, USDC, WBTC),
-        WBTC
-      );
-
-      expect(legs.kind).toBe("skip");
-      expect(legs.kind === "skip" && legs.reason).toMatch(/with a fairness payment/);
-    });
-
-    it("sizes a fairness payment alone when two reserves share WBTC", () => {
-      // Every WBTC reserve approves the payment alone, so the last approval still covers it.
+    it("adds the fairness payment once when two reserves share WBTC", () => {
       const legs = sizeOwedLegs(
         { debtReserveIds: [1n], debtToCoverAmounts: [100n], wbtcPayment: 5n },
         topology(WBTC, USDC, WBTC),
@@ -160,17 +159,7 @@ describe("sizeOwedLegs", () => {
       });
     });
 
-    it("skips a candidate owing it only on the later id, where the router's lookup reads zero", () => {
-      const legs = sizeOwedLegs(
-        { debtReserveIds: [2n], debtToCoverAmounts: [50n], wbtcPayment: 0n },
-        topology(USDC, WBTC, USDC),
-        WBTC
-      );
-
-      expect(legs.kind).toBe("skip");
-    });
-
-    it("does not skip a candidate that owes nothing on that token", () => {
+    it("leaves out a shared token that owes nothing", () => {
       const legs = sizeOwedLegs(
         { debtReserveIds: [1n, 2n], debtToCoverAmounts: [40n, 0n], wbtcPayment: 0n },
         topology(USDC, WBTC, USDC),

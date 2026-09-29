@@ -16,6 +16,11 @@ export type OwedLegs = { kind: "sized"; legs: OwedLeg[] } | { kind: "skip"; reas
  * Amounts are resolved to tokens through the reserve at each paired id, never by position, for the
  * same reason as everywhere else a preview amount is read: the preview pairs amounts with ids.
  *
+ * One leg per token, carrying the sum over every reserve that lists it: reserves can share an
+ * underlying, and the router borrows once per token for the summed debt and approves the adapter
+ * once for the same sum. A leg per reserve would quote each venue at part of the size the router
+ * actually draws.
+ *
  * Non-WBTC legs come first in reserve-id order, WBTC last, the order `flashDatas` uses.
  *
  * @throws when the candidate names a reserve id the topology does not have — the two were read
@@ -33,12 +38,6 @@ export function sizeOwedLegs(
     throw new Error(
       `candidate pairs ${debtReserveIds.length} reserve ids with ${debtToCoverAmounts.length} amounts`
     );
-  }
-
-  const reserveIdsByToken = new Map<string, number[]>();
-  for (const reserve of topology.reserves) {
-    const key = getAddress(reserve.token);
-    reserveIdsByToken.set(key, [...(reserveIdsByToken.get(key) ?? []), reserve.id]);
   }
 
   if (wbtcPayment < 0n) {
@@ -64,7 +63,7 @@ export function sizeOwedLegs(
     .filter((d) => d.amount > 0n)
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-  const legs: OwedLeg[] = [];
+  const amountsByToken = new Map<Address, bigint>();
   let wbtcAmount = wbtcPayment;
 
   for (const { id, amount } of debts) {
@@ -76,32 +75,11 @@ export function sizeOwedLegs(
     }
     const token = getAddress(reserve.token);
 
-    // The router sizes a borrow by looking the token up among the reserves and taking the *first*
-    // match, but hands the adapter every reserve's debt. Debt on a later reserve with the same token
-    // is therefore never borrowed. Debt on the first one is borrowed in full, because the lookup
-    // returns that reserve's entry.
-    const sharing = reserveIdsByToken.get(token) ?? [];
-    const first = sharing[0];
-    if (first !== undefined && BigInt(first) !== id) {
-      return {
-        kind: "skip",
-        reason: `owes ${token} on reserve ${id}, but reserve ${first} lists it first; the router borrows only the first reserve's debt for a token`,
-      };
-    }
-    // The router approves the adapter one reserve at a time, and every WBTC reserve adds the fairness
-    // payment. A later WBTC reserve that owes nothing then replaces the first reserve's allowance
-    // (debt plus payment) with the payment alone, and the adapter's pull of the debt reverts.
-    if (sharing.length > 1 && token === wbtcKey && wbtcPayment > 0n) {
-      return {
-        kind: "skip",
-        reason: `owes ${token}, which reserves ${sharing.join(", ")} share, with a fairness payment; the router's last WBTC approval covers only the payment`,
-      };
-    }
-
     if (token === wbtcKey) wbtcAmount += amount;
-    else legs.push({ token, amount });
+    else amountsByToken.set(token, (amountsByToken.get(token) ?? 0n) + amount);
   }
 
+  const legs: OwedLeg[] = [...amountsByToken].map(([token, amount]) => ({ token, amount }));
   if (wbtcAmount > 0n) legs.push({ token: wbtcKey, amount: wbtcAmount });
 
   if (legs.length === 0) {
