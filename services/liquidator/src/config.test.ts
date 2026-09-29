@@ -136,6 +136,31 @@ describe("config validation", () => {
       );
     });
 
+    it("refuses direct redemption with BTC_REDEEM_KEY unset or zero", async () => {
+      const zero = "0x0000000000000000000000000000000000000000000000000000000000000000";
+      for (const key of [undefined, "", zero]) {
+        vi.resetModules();
+        process.env = { ...validEnv, IS_DIRECT_REDEMPTION: "true" };
+        if (key !== undefined) process.env.BTC_REDEEM_KEY = key;
+
+        const { loadConfig } = await import("./config");
+        expect(() => loadConfig()).toThrow(
+          /IS_DIRECT_REDEMPTION=true requires a non-zero BTC_REDEEM_KEY/
+        );
+      }
+    });
+
+    it("accepts direct redemption with a non-zero BTC_REDEEM_KEY", async () => {
+      const key = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+      process.env = { ...validEnv, IS_DIRECT_REDEMPTION: "true", BTC_REDEEM_KEY: key };
+
+      const { loadConfig } = await import("./config");
+      const config = loadConfig();
+
+      expect(config.isDirectRedemption).toBe(true);
+      expect(config.btcRedeemKey).toBe(key);
+    });
+
     it("should treat empty-string optional vars as unset (apply defaults)", async () => {
       process.env = {
         ...validEnv,

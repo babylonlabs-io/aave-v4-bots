@@ -251,6 +251,26 @@ describe("config validation", () => {
       expect(liq?.pollingIntervalMs).toBe(12000); // default
     });
 
+    it("refuses direct redemption with a zero BTC_REDEEM_KEY", async () => {
+      process.env = {
+        ...validEnv,
+        ADAPTER_ADDRESS: adapter,
+        LENS_ADDRESS: lens,
+        IS_DIRECT_REDEMPTION: "true",
+      };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(
+        /IS_DIRECT_REDEMPTION=true requires a non-zero BTC_REDEEM_KEY/
+      );
+    });
+
+    it("ignores the redemption key when the liquidation engine is off", async () => {
+      // Arbitrage never reads it, so a stray flag must not block an arbitrage-only boot.
+      process.env = { ...validEnv, IS_DIRECT_REDEMPTION: "true" };
+      const { loadConfig } = await import("./config");
+      expect(loadConfig().liquidation).toBeUndefined();
+    });
+
     it("throws on a half-configured liquidation mode (only ADAPTER_ADDRESS)", async () => {
       process.env = { ...validEnv, ADAPTER_ADDRESS: adapter };
       const { loadConfig } = await import("./config");

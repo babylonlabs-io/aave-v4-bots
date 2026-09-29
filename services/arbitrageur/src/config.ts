@@ -28,6 +28,7 @@ import {
 import {
   type ArbitrageEngineParams,
   type LiquidationEngineParams,
+  assertRedemptionTarget,
   buildArbitrageFundingParams,
   buildFundingParams,
 } from "@repo/engine";
@@ -231,6 +232,7 @@ export function loadConfig(): Config {
           pollingIntervalMs: Number.parseInt(env.LIQUIDATION_POLLING_INTERVAL_MS, 10),
         }
       : undefined;
+  if (liquidation) assertRedemptionTarget(liquidation);
 
   // Arbitrage prices its own actions, so the floor is always enforceable for it. What can make it
   // unenforceable is an *inventory-funded* liquidation engine, which cannot. A flash-funded one

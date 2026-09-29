@@ -17,6 +17,7 @@ export {
   type LiquidationEngineConfig,
   type LiquidationEngineParams,
   type LiquidationMetrics,
+  assertRedemptionTarget,
 } from "./liquidation/engine";
 export type { LiquidatablePosition } from "./liquidation/types";
 

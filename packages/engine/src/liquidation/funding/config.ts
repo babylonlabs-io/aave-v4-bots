@@ -81,6 +81,7 @@ export function buildFundingParams(env: {
   UNISWAP_V4_STATE_VIEW_ADDRESS?: string;
   FLASH_MAX_SLIPPAGE_BPS?: string;
   WBTC_ADDRESS: string;
+  IS_DIRECT_REDEMPTION?: string;
 }): FundingParams {
   // The variables that mean nothing outside flash mode. None of them carries a schema default, so
   // "did the operator set this?" is answerable for every one, and each can be both required where it
@@ -115,6 +116,17 @@ export function buildFundingParams(env: {
       );
     }
     return { mode: "inventory" };
+  }
+
+  // The router repays its flash loans out of the WBTC the LLP pays for the seized vault, inside the
+  // same transaction, so it only ever calls `liquidateWithLLP`. A direct redemption sends the vault
+  // to Bitcoin and returns nothing on chain to repay with. Accepting both flags would liquidate
+  // through the LLP anyway: the vault would go to escrow, not to BTC_REDEEM_KEY, with a WBTC cap
+  // sized for a redemption fee this path does not charge.
+  if (env.IS_DIRECT_REDEMPTION === "true") {
+    throw new Error(
+      "LIQUIDATION_FUNDING=flash cannot run with IS_DIRECT_REDEMPTION=true: LiquidationRouter liquidates only through the LLP, so the seized vault would go to escrow, not to BTC_REDEEM_KEY. Set LIQUIDATION_FUNDING=inventory for direct redemption, or unset IS_DIRECT_REDEMPTION."
+    );
   }
 
   const base = {

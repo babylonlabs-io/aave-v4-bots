@@ -75,6 +75,25 @@ describe("buildFundingParams", () => {
     });
   });
 
+  describe("redemption mode", () => {
+    it("accepts direct redemption under inventory funding", () => {
+      expect(buildFundingParams({ ...defaults, IS_DIRECT_REDEMPTION: "true" })).toEqual({
+        mode: "inventory",
+      });
+    });
+
+    it("refuses direct redemption under flash funding, whose router liquidates only via the LLP", () => {
+      for (const env of [fixed, ranked]) {
+        expect(() => buildFundingParams({ ...env, IS_DIRECT_REDEMPTION: "true" })).toThrow(
+          /LIQUIDATION_FUNDING=flash cannot run with IS_DIRECT_REDEMPTION=true/
+        );
+      }
+      expect(buildFundingParams({ ...fixed, IS_DIRECT_REDEMPTION: "false" })).toMatchObject({
+        mode: "flash",
+      });
+    });
+  });
+
   describe("flash mode with ranking off", () => {
     it("builds the fixed venue registry, as without ranking at all", () => {
       const params = buildFundingParams(fixed);

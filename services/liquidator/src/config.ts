@@ -23,7 +23,11 @@ import {
   runtimeEnvFields,
   urlSchema,
 } from "@repo/config";
-import { type LiquidationEngineParams, buildFundingParams } from "@repo/engine";
+import {
+  type LiquidationEngineParams,
+  assertRedemptionTarget,
+  buildFundingParams,
+} from "@repo/engine";
 import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { type SignerConfig, buildSignerConfig } from "@repo/signer";
@@ -172,6 +176,10 @@ export function loadConfig(): Config {
   const env = parseEnv(envSchema);
 
   const funding = buildFundingParams(env);
+  assertRedemptionTarget({
+    isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
+    btcRedeemKey: env.BTC_REDEEM_KEY as Hex,
+  });
 
   // A profit floor is enforceable here only under flash funding, which probes the router and hands
   // the gate a real WBTC figure. Inventory funding cannot price its own actions, so the floor would
