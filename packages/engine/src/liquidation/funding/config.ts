@@ -74,26 +74,29 @@ export function buildFundingParams(env: {
   FLASH_SWAP_VENUE_ADDRESS?: string;
   FLASH_SWAP_POOLS?: string;
   WBTC_FLASH_LOAN_ADDRESS?: string;
-  WBTC_FLASH_LOAN_VENUE: string;
+  WBTC_FLASH_LOAN_VENUE?: string;
   FLASH_VENUE_RANKING?: string;
   FLASH_VENUES?: string;
   UNISWAP_V4_QUOTER_ADDRESS?: string;
   UNISWAP_V4_STATE_VIEW_ADDRESS?: string;
-  FLASH_MAX_SLIPPAGE_BPS: string;
+  FLASH_MAX_SLIPPAGE_BPS?: string;
   WBTC_ADDRESS: string;
 }): FundingParams {
-  // The variables that mean nothing outside flash mode. `WBTC_FLASH_LOAN_VENUE` and
-  // `FLASH_MAX_SLIPPAGE_BPS` are absent on purpose — both carry schema defaults, so by this point
-  // they are always populated and "did the operator set this?" is no longer answerable for them.
+  // The variables that mean nothing outside flash mode. None of them carries a schema default, so
+  // "did the operator set this?" is answerable for every one, and each can be both required where it
+  // is read and refused where nothing reads it.
   //
   // `WBTC_FLASH_LOAN_ADDRESS` is a fixed venue even though only some liquidations draw on it: vaults
   // are indivisible, so the common case is seizing one worth more than the debt and owing the
-  // remainder back as the WBTC fairness payment.
+  // remainder back as the WBTC fairness payment. `WBTC_FLASH_LOAN_VENUE` names that venue's protocol
+  // and belongs with it — under ranking each `FLASH_VENUES` entry carries its own.
   const router: EnvVar = ["LIQUIDATION_ROUTER_ADDRESS", env.LIQUIDATION_ROUTER_ADDRESS];
+  const slippage: EnvVar = ["FLASH_MAX_SLIPPAGE_BPS", env.FLASH_MAX_SLIPPAGE_BPS];
   const fixedVenues: EnvVar[] = [
     ["FLASH_SWAP_VENUE_ADDRESS", env.FLASH_SWAP_VENUE_ADDRESS],
     ["FLASH_SWAP_POOLS", env.FLASH_SWAP_POOLS],
     ["WBTC_FLASH_LOAN_ADDRESS", env.WBTC_FLASH_LOAN_ADDRESS],
+    ["WBTC_FLASH_LOAN_VENUE", env.WBTC_FLASH_LOAN_VENUE],
   ];
   const rankedVenues: EnvVar[] = [
     ["FLASH_VENUES", env.FLASH_VENUES],
@@ -103,7 +106,7 @@ export function buildFundingParams(env: {
   const ranking = env.FLASH_VENUE_RANKING === "true";
 
   if (env.LIQUIDATION_FUNDING !== "flash") {
-    const stray = namesOf([router, ...fixedVenues, ...rankedVenues].filter(isSet));
+    const stray = namesOf([router, slippage, ...fixedVenues, ...rankedVenues].filter(isSet));
     // Only `true` counts as set: `false` asks for nothing flash mode would do.
     if (ranking) stray.push("FLASH_VENUE_RANKING");
     if (stray.length > 0) {
@@ -117,7 +120,7 @@ export function buildFundingParams(env: {
   const base = {
     mode: "flash" as const,
     routerAddress: env.LIQUIDATION_ROUTER_ADDRESS as Address,
-    maxSlippageBps: Number.parseInt(env.FLASH_MAX_SLIPPAGE_BPS, 10),
+    maxSlippageBps: Number.parseInt(env.FLASH_MAX_SLIPPAGE_BPS as string, 10),
   };
 
   if (!ranking) {
@@ -129,7 +132,7 @@ export function buildFundingParams(env: {
         `${listed(ignored)} set but FLASH_VENUE_RANKING is not "true", so they would be ignored and each token would use its one fixed venue. Set FLASH_VENUE_RANKING=true, or remove them.`
       );
     }
-    const missing = namesOf([router, ...fixedVenues].filter((v) => !isSet(v)));
+    const missing = namesOf([router, slippage, ...fixedVenues].filter((v) => !isSet(v)));
     if (missing.length > 0) {
       throw new Error(`LIQUIDATION_FUNDING=flash requires ${missing.join(", ")}`);
     }
@@ -158,7 +161,7 @@ export function buildFundingParams(env: {
       `${listed(leftover)} set but FLASH_VENUE_RANKING=true reads venues from FLASH_VENUES only, so they would be ignored. Move those venues into FLASH_VENUES and remove them.`
     );
   }
-  const missing = namesOf([router, rankedVenues[0]].filter((v) => !isSet(v)));
+  const missing = namesOf([router, slippage, rankedVenues[0]].filter((v) => !isSet(v)));
   if (missing.length > 0) {
     throw new Error(
       `LIQUIDATION_FUNDING=flash with FLASH_VENUE_RANKING=true requires ${missing.join(", ")}`

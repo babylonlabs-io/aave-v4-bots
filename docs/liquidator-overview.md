@@ -251,12 +251,12 @@ The bot automates monitoring and execution.
 | `FLASH_SWAP_VENUE_ADDRESS` | UniswapV4SwapVenue bound to that router | flash, ranking off | — |
 | `FLASH_SWAP_POOLS` | `token:currency0:currency1:fee:tickSpacing[:hooks]`; each must be WBTC/`<token>` | flash, ranking off | — |
 | `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash, ranking off | — |
-| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3`; ignored with ranking on | No | `morpho` |
+| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3`, the protocol at `WBTC_FLASH_LOAN_ADDRESS`; must be unset with ranking on | flash, ranking off | — |
 | `FLASH_VENUE_RANKING` | `true` quotes several venues per token and uses the cheapest; venues then come from `FLASH_VENUES` | No | off |
 | `FLASH_VENUES` | `morpho:<morpho>`, `aavev3:<pool>`, `univ4:<venueAddress>:<token>:<currency0>:<currency1>:<fee>:<tickSpacing>[:hooks]`, comma-separated | ranking on | — |
 | `UNISWAP_V4_QUOTER_ADDRESS` | UniswapV4 V4Quoter | ranking on, `univ4` entry | — |
 | `UNISWAP_V4_STATE_VIEW_ADDRESS` | UniswapV4 StateView | ranking on, `univ4` entry | — |
-| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the quote before the chain reverts; derives `minWbtcProfit` | No | `2000` |
+| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the quote before the chain reverts; derives `minWbtcProfit` | flash | — |
 | `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | No | `false` |
 | `BTC_REDEEM_KEY` | BTC key for direct mode (must be non-zero) | direct mode | `bytes32(0)` |
 | `LLP_ADDRESS` | LLP (BTCVaultSwap) address for LLP mode (must be non-zero) | LLP mode | `address(0)` |

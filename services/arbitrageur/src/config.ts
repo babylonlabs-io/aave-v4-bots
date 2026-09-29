@@ -125,12 +125,12 @@ const envSchema = z.object({
   FLASH_SWAP_VENUE_ADDRESS: addressSchema.optional(),
   FLASH_SWAP_POOLS: z.string().optional(),
   WBTC_FLASH_LOAN_ADDRESS: addressSchema.optional(),
-  WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional().default("morpho"),
+  WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional(),
   FLASH_VENUE_RANKING: z.enum(["true", "false"]).optional(),
   FLASH_VENUES: z.string().optional(),
   UNISWAP_V4_QUOTER_ADDRESS: addressSchema.optional(),
   UNISWAP_V4_STATE_VIEW_ADDRESS: addressSchema.optional(),
-  FLASH_MAX_SLIPPAGE_BPS: bpsSchema.optional().default("2000"),
+  FLASH_MAX_SLIPPAGE_BPS: bpsSchema.optional(),
 });
 
 /** The liquidation engine's params plus its own poll interval — present iff enabled. */

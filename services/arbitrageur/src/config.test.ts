@@ -273,6 +273,8 @@ describe("config validation", () => {
         FLASH_SWAP_VENUE_ADDRESS: "0x6666666666666666666666666666666666666666",
         FLASH_SWAP_POOLS: `${usdc}:${wbtc}:${usdc}:3000:60`,
         WBTC_FLASH_LOAN_ADDRESS: "0x7777777777777777777777777777777777777777",
+        WBTC_FLASH_LOAN_VENUE: "morpho",
+        FLASH_MAX_SLIPPAGE_BPS: "2000",
       };
 
       it("defaults the liquidation engine to inventory funding", async () => {
@@ -296,6 +298,7 @@ describe("config validation", () => {
           ...liqEnv,
           LIQUIDATION_FUNDING: "flash",
           LIQUIDATION_ROUTER_ADDRESS: flashEnv.LIQUIDATION_ROUTER_ADDRESS,
+          FLASH_MAX_SLIPPAGE_BPS: flashEnv.FLASH_MAX_SLIPPAGE_BPS,
           FLASH_VENUE_RANKING: "true",
           FLASH_VENUES: `morpho:${flashEnv.WBTC_FLASH_LOAN_ADDRESS}`,
         };

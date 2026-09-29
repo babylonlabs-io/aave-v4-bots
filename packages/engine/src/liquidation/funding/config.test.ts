@@ -8,29 +8,32 @@ const VENUE = "0x1111111111111111111111111111111111111111";
 const QUOTER = "0x7777777777777777777777777777777777777777";
 const STATE_VIEW = "0x8888888888888888888888888888888888888888";
 
-// What the schema always populates, whatever the operator set.
+// What every mode is given. No flash-only variable carries a schema default, so each one is absent
+// here and set only by the mode that reads it.
 const defaults = {
   LIQUIDATION_FUNDING: "inventory",
-  WBTC_FLASH_LOAN_VENUE: "morpho",
-  FLASH_MAX_SLIPPAGE_BPS: "2000",
   WBTC_ADDRESS: WBTC,
 };
 
-const fixed = {
+const flash = {
   ...defaults,
   LIQUIDATION_FUNDING: "flash",
   LIQUIDATION_ROUTER_ADDRESS: "0x9999999999999999999999999999999999999999",
+  FLASH_MAX_SLIPPAGE_BPS: "2000",
+};
+
+const fixed = {
+  ...flash,
   FLASH_SWAP_VENUE_ADDRESS: VENUE,
   FLASH_SWAP_POOLS: `${USDC}:${WBTC}:${USDC}:3000:60`,
   WBTC_FLASH_LOAN_ADDRESS: MORPHO,
+  WBTC_FLASH_LOAN_VENUE: "morpho",
 };
 
 const pool = `univ4:${VENUE}:${USDC}:${WBTC}:${USDC}:3000:60`;
 
 const ranked = {
-  ...defaults,
-  LIQUIDATION_FUNDING: "flash",
-  LIQUIDATION_ROUTER_ADDRESS: "0x9999999999999999999999999999999999999999",
+  ...flash,
   FLASH_VENUE_RANKING: "true",
   FLASH_VENUES: `morpho:${MORPHO},${pool}`,
   UNISWAP_V4_QUOTER_ADDRESS: QUOTER,
@@ -61,6 +64,15 @@ describe("buildFundingParams", () => {
         })
       ).toThrow(/UNISWAP_V4_QUOTER_ADDRESS, UNISWAP_V4_STATE_VIEW_ADDRESS are set/);
     });
+
+    it("refuses the slippage bound and the WBTC venue, which only flash mode reads", () => {
+      expect(() => buildFundingParams({ ...defaults, FLASH_MAX_SLIPPAGE_BPS: "2000" })).toThrow(
+        /FLASH_MAX_SLIPPAGE_BPS is set/
+      );
+      expect(() => buildFundingParams({ ...defaults, WBTC_FLASH_LOAN_VENUE: "morpho" })).toThrow(
+        /WBTC_FLASH_LOAN_VENUE is set/
+      );
+    });
   });
 
   describe("flash mode with ranking off", () => {
@@ -85,9 +97,18 @@ describe("buildFundingParams", () => {
       );
     });
 
-    it("still requires every fixed venue variable", () => {
+    it("still requires every fixed venue variable, the WBTC venue among them", () => {
       expect(() => buildFundingParams({ ...fixed, FLASH_SWAP_POOLS: undefined })).toThrow(
         /requires FLASH_SWAP_POOLS/
+      );
+      expect(() => buildFundingParams({ ...fixed, WBTC_FLASH_LOAN_VENUE: undefined })).toThrow(
+        /requires WBTC_FLASH_LOAN_VENUE/
+      );
+    });
+
+    it("requires the slippage bound, which has no default to fall back on", () => {
+      expect(() => buildFundingParams({ ...fixed, FLASH_MAX_SLIPPAGE_BPS: undefined })).toThrow(
+        /requires FLASH_MAX_SLIPPAGE_BPS/
       );
     });
   });
@@ -109,10 +130,10 @@ describe("buildFundingParams", () => {
       );
     });
 
-    it("ignores WBTC_FLASH_LOAN_VENUE, whose schema default cannot say it was set", () => {
-      expect(() =>
-        buildFundingParams({ ...ranked, WBTC_FLASH_LOAN_VENUE: "aavev3" })
-      ).not.toThrow();
+    it("refuses WBTC_FLASH_LOAN_VENUE, since each FLASH_VENUES entry names its own protocol", () => {
+      expect(() => buildFundingParams({ ...ranked, WBTC_FLASH_LOAN_VENUE: "aavev3" })).toThrow(
+        /WBTC_FLASH_LOAN_VENUE is set but FLASH_VENUE_RANKING=true/
+      );
     });
 
     it("requires FLASH_VENUES and the router, and refuses an empty list", () => {
@@ -122,6 +143,9 @@ describe("buildFundingParams", () => {
       expect(() =>
         buildFundingParams({ ...ranked, LIQUIDATION_ROUTER_ADDRESS: undefined })
       ).toThrow(/requires LIQUIDATION_ROUTER_ADDRESS/);
+      expect(() => buildFundingParams({ ...ranked, FLASH_MAX_SLIPPAGE_BPS: undefined })).toThrow(
+        /requires FLASH_MAX_SLIPPAGE_BPS/
+      );
       expect(() => buildFundingParams({ ...ranked, FLASH_VENUES: " , " })).toThrow(
         /lists no venues/
       );

@@ -142,10 +142,10 @@ const envSchema = z.object({
   FLASH_SWAP_POOLS: z.string().optional(),
   /** Where WBTC is flash-*loaned* for the fairness payment: repaid in WBTC, which we hold. */
   WBTC_FLASH_LOAN_ADDRESS: addressSchema.optional(),
-  WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional().default("morpho"),
+  WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional(),
   /**
    * `true` quotes several venues per token and uses the cheapest for each candidate. Venues then
-   * come from `FLASH_VENUES`, and the three fixed venue variables above must be unset. Off when
+   * come from `FLASH_VENUES`, and the four fixed venue variables above must be unset. Off when
    * unset, which keeps one fixed venue per token and quotes nothing.
    */
   FLASH_VENUE_RANKING: z.enum(["true", "false"]).optional(),
@@ -165,7 +165,7 @@ const envSchema = z.object({
    * off-chain before sending; this one is relative and enforced on-chain at execution. When both
    * are set the on-chain floor is whichever binds harder.
    */
-  FLASH_MAX_SLIPPAGE_BPS: bpsSchema.optional().default("2000"),
+  FLASH_MAX_SLIPPAGE_BPS: bpsSchema.optional(),
 });
 
 export function loadConfig(): Config {

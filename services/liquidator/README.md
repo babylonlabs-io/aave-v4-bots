@@ -119,7 +119,7 @@ WBTC_ADDRESS=0x...
 
 # Funding mode: inventory (default) repays from this signer's balances; flash
 # repays through LiquidationRouter and needs no debt-token inventory at all.
-# The four below are required together when LIQUIDATION_FUNDING=flash.
+# The five below are required together when LIQUIDATION_FUNDING=flash.
 # See env.liquidator.example for the full explanation of each.
 # LIQUIDATION_FUNDING=inventory
 # LIQUIDATION_ROUTER_ADDRESS=0x...
@@ -128,11 +128,12 @@ WBTC_ADDRESS=0x...
 # WBTC_FLASH_LOAN_ADDRESS=0x...
 # WBTC_FLASH_LOAN_VENUE=morpho
 # Venue ranking: quote several venues per token and use the cheapest.
-# FLASH_VENUES then replaces the three fixed venue variables above.
+# FLASH_VENUES then replaces the four fixed venue variables above.
 # FLASH_VENUE_RANKING=true
 # FLASH_VENUES=morpho:0x...,univ4:0x...:0xUSDC:0xWBTC:0xUSDC:3000:60
 # UNISWAP_V4_QUOTER_ADDRESS=0x...
 # UNISWAP_V4_STATE_VIEW_ADDRESS=0x...
+# Required in flash mode, with or without ranking.
 # FLASH_MAX_SLIPPAGE_BPS=2000
 
 # Comma-separated debt tokens. If unset, auto-discovered from the Spoke.

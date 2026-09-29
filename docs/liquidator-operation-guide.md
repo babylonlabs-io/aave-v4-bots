@@ -227,12 +227,12 @@ not `localhost`.
 | `FLASH_SWAP_VENUE_ADDRESS` | The `UniswapV4SwapVenue` bound to that router. One venue serves every pool | flash, ranking off | |
 | `FLASH_SWAP_POOLS` | One `token:currency0:currency1:fee:tickSpacing[:hooks]` per debt token, comma-separated. Each pool must be WBTC/`<token>`; currencies in Uniswap order | flash, ranking off | |
 | `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash, ranking off | |
-| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3`. Ignored with ranking on | No | `morpho` |
-| `FLASH_VENUE_RANKING` | `true` quotes several venues per token and uses, per token, the one that takes back the least WBTC for the size. Venues then come from `FLASH_VENUES`, and the three fixed venue variables above must be unset. The probe still prices each liquidation | No | off |
+| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3`, the protocol at `WBTC_FLASH_LOAN_ADDRESS`. Must be unset with ranking on, where each `FLASH_VENUES` entry names its own | flash, ranking off | |
+| `FLASH_VENUE_RANKING` | `true` quotes several venues per token and uses, per token, the one that takes back the least WBTC for the size. Venues then come from `FLASH_VENUES`, and the four fixed venue variables above must be unset. The probe still prices each liquidation | No | off |
 | `FLASH_VENUES` | Comma-separated `morpho:<morpho>`, `aavev3:<pool>`, `univ4:<venueAddress>:<token>:<currency0>:<currency1>:<fee>:<tickSpacing>[:hooks]`. At least one WBTC flash loan. A tie goes to the entry listed first | ranking on | |
 | `UNISWAP_V4_QUOTER_ADDRESS` | UniswapV4 `V4Quoter`. Must use the swap venues' pool manager; checked at boot | ranking on, `univ4` entry | |
 | `UNISWAP_V4_STATE_VIEW_ADDRESS` | UniswapV4 `StateView`. Same pool-manager check | ranking on, `univ4` entry | |
-| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the transaction reverts. Enforced on-chain; the only slippage bound in flash mode. `10000` removes it | No | `2000` |
+| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the transaction reverts. Enforced on-chain; the only slippage bound in flash mode. `10000` removes it | flash | |
 | `IS_DIRECT_REDEMPTION` | `true` calls `liquidate` and redeems to `BTC_REDEEM_KEY`; `false` calls `liquidateWithLLP`. Also selects the Lens estimate, so keep `false` under flash | No | `false` |
 | `BTC_REDEEM_KEY` | Inventory, direct mode. Must be non-zero | direct | |
 | `LLP_ADDRESS` | Inventory, LLP mode. BTCVaultSwap. Must be non-zero | LLP | |
@@ -504,7 +504,7 @@ fails whole batches into `unscanned`.
 |---------|-------|--------|
 | `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
 | `Database schema required` from the indexer | `DATABASE_SCHEMA` unset | Set it in `.env.liquidator.indexer` |
-| `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set all four flash variables, or none |
+| `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set every flash variable the log names, or none |
 | `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |
 | `EXECUTION_MODE=MANUAL is keyless` | A signer variable or the key env var is present | Unset it |
 | `RISK_MIN_PROFIT is set but this process runs an inventory-funded liquidation engine` | Inventory funding cannot price actions | Unset it, or use flash |
