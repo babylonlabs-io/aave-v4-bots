@@ -111,11 +111,9 @@ docker compose build arbitrageur-ponder arbitrageur-bot
 `build` needs no configuration. `docker compose up` reads `.env.arbitrageur` and
 `.env.arbitrageur.indexer` and fails if either is missing, so create them first (§5.1).
 
-Compose reads both files as written and sets nothing of its own, so after copying them:
+Compose reads both files as written and sets nothing of its own. The examples carry the Docker
+values, so after copying them:
 
-- Point both `DATABASE_URL` values at `arbitrageur-postgres:5432`, and `PONDER_URL` in
-  `.env.arbitrageur` at `http://arbitrageur-ponder:42070`. The examples carry the native values,
-  and `localhost` inside a container is that container itself.
 - Keep `PONDER_PORT=42070` in `.env.arbitrageur.indexer` and `METRICS_PORT=9091` in
   `.env.arbitrageur`. The published mappings and the healthchecks are pinned to those ports, so a
   container that listens elsewhere never reports healthy and nothing downstream of it starts.
@@ -186,6 +184,10 @@ cp env.arbitrageur.indexer.example .env.arbitrageur.indexer
 cp .env.arbitrageur.indexer services/ponder/.env.local
 ```
 
+The examples carry the Docker values. For a native run, point each `DATABASE_URL` at
+`localhost:5433` and `PONDER_URL` at `http://localhost:42070`. The Compose service names do not
+resolve on the host. The comment above each value gives the native line.
+
 Keep `VAULT_SWAP_ADDRESS` and the database in step between the two files.
 
 ### 5.2. Ponder Indexer Configuration
@@ -194,7 +196,7 @@ Keep `VAULT_SWAP_ADDRESS` and the database in step between the two files.
 |-----------|-------------|----------|---------|
 | `PONDER_RPC_URL` | RPC for indexing. May differ from the bot's | Yes | |
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap | Yes | |
-| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. Under Docker it must name the Compose service, `arbitrageur-postgres:5432`, not `localhost` | Yes | |
+| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. The example names the Compose service, `arbitrageur-postgres:5432`. A native run uses `localhost:5433` | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
 | `DB_AUTH` | How the indexer authenticates to Postgres: `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
 | `SPOKE_ADDRESS`, `ADAPTER_ADDRESS`, `LENS_ADDRESS` | Position indexing for the optional liquidation engine. Set all or none | liquidation | |
@@ -244,19 +246,18 @@ connects with a password.
 Minimal `.env.arbitrageur`:
 
 ```bash
-PONDER_URL=http://localhost:42070
+PONDER_URL=http://arbitrageur-ponder:42070
 CLIENT_RPC_URL=https://...
 VAULT_SWAP_ADDRESS=0x...
 WBTC_ADDRESS=0x...
 ARBITRAGEUR_PRIVATE_KEY=0x...
-DATABASE_URL=postgresql://ponder:ponder@localhost:5433/ponder
+DATABASE_URL=postgresql://ponder:ponder@arbitrageur-postgres:5432/ponder
 
 ```
 
-Everything else has a default, listed in the tables below. Under Docker this file is the only
-source: `PONDER_URL` must name the indexer's service, `http://arbitrageur-ponder:42070`, and
-`DATABASE_URL` must point at `arbitrageur-postgres:5432`, not `localhost`. Keep `METRICS_PORT`
-at 9091, which the published mapping and the healthcheck are pinned to.
+Everything else has a default, listed in the tables below. The URLs above are the Docker values.
+For a native run, use `http://localhost:42070` and `localhost:5433` (§5.1). Under Docker, keep
+`METRICS_PORT` at 9091, which the published mapping and the healthcheck are pinned to.
 
 **Core**
 
@@ -621,10 +622,11 @@ compromised too. Its `owner` is this signer, and it sweeps proceeds there.
 |---------|-------|--------|
 | `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
 | `Database schema required` from the indexer | `DATABASE_SCHEMA` unset | Set it in `.env.arbitrageur.indexer` |
-| `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` still names `localhost`, which is the indexer's own container | Point it at `arbitrageur-postgres:5432` in `.env.arbitrageur.indexer` |
+| `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` names `localhost`, which is the indexer's own container | Point it at `arbitrageur-postgres:5432` in `.env.arbitrageur.indexer` |
+| `getaddrinfo ENOTFOUND arbitrageur-postgres` on a native run | `DATABASE_URL` still carries the Docker value | Point it at `localhost:5433` |
 | Indexer container never reports healthy | `PONDER_PORT` is not `42070`, so the healthcheck and the mapping reach nothing | Set `PONDER_PORT=42070` in `.env.arbitrageur.indexer` |
 | Bot container never reports healthy | `METRICS_PORT` is not `9091`, so the healthcheck and the mapping reach nothing | Set `METRICS_PORT=9091` in `.env.arbitrageur` |
-| Bot reports `ponderReachable: false` under Docker | `PONDER_URL` still names `localhost`, which is the bot's own container | Point it at `http://arbitrageur-ponder:42070` in `.env.arbitrageur` |
+| Bot reports `ponderReachable: false` under Docker | `PONDER_URL` names `localhost`, which is the bot's own container | Point it at `http://arbitrageur-ponder:42070` in `.env.arbitrageur` |
 | `DB_AUTH must be ...` | `DB_AUTH` is neither `password` nor `iam` | Correct the value. The check is case-sensitive |
 | `DB_AUTH=iam: ...` at indexer start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
 | `ARBITRAGE_FUNDING=router requires ...` or `... is set but ARBITRAGE_FUNDING is "inventory"` | Half-configured funding | Set `ARBITRAGE_FUNDING=router` with `ARBITRAGE_ROUTER_ADDRESS` and `VAULT_KEEPER_ADDRESS`, or none |

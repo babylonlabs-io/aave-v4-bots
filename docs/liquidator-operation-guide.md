@@ -104,11 +104,9 @@ docker compose build liquidator-ponder liquidator-bot
 `build` needs no configuration. `docker compose up` reads `.env.liquidator` and
 `.env.liquidator.indexer` and fails if either is missing, so create them first (§5.1).
 
-Compose reads both files as written and sets nothing of its own, so after copying them:
+Compose reads both files as written and sets nothing of its own. The examples carry the Docker
+values, so after copying them:
 
-- Point both `DATABASE_URL` values at `liquidator-postgres:5432`, and `PONDER_URL` in
-  `.env.liquidator` at `http://liquidator-ponder:42069`. The examples carry the native values, and
-  `localhost` inside a container is that container itself.
 - Keep `PONDER_PORT=42069` in `.env.liquidator.indexer` and `METRICS_PORT=9090` in
   `.env.liquidator`. The published mappings and the healthchecks are pinned to those ports, so a
   container that listens elsewhere never reports healthy and nothing downstream of it starts.
@@ -174,6 +172,10 @@ cp env.liquidator.indexer.example .env.liquidator.indexer
 cp .env.liquidator.indexer services/ponder/.env.local
 ```
 
+The examples carry the Docker values. For a native run, point each `DATABASE_URL` at
+`localhost:5432` and `PONDER_URL` at `http://localhost:42069`. The Compose service names do not
+resolve on the host. The comment above each value gives the native line.
+
 Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two files.
 
 ### 5.2. Ponder Indexer Configuration
@@ -184,7 +186,7 @@ Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two 
 | `SPOKE_ADDRESS` | Babylon Core Spoke | Yes | |
 | `ADAPTER_ADDRESS` | AaveAdapter | Yes | |
 | `LENS_ADDRESS` | AaveAdapterLiquidationPreview. The API previews positions through it | Yes | |
-| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. Under Docker it must name the Compose service, `liquidator-postgres:5432`, not `localhost` | Yes | |
+| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. The example names the Compose service, `liquidator-postgres:5432`. A native run uses `localhost:5432` | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
 | `DB_AUTH` | How the indexer authenticates to Postgres: `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
 | `CHAIN_ID` | Network chain ID | No | `1` |
@@ -233,21 +235,20 @@ connects with a password.
 Minimal `.env.liquidator`:
 
 ```bash
-PONDER_URL=http://localhost:42069
+PONDER_URL=http://liquidator-ponder:42069
 CLIENT_RPC_URL=https://...
 ADAPTER_ADDRESS=0x...
 LENS_ADDRESS=0x...
 WBTC_ADDRESS=0x...
 LLP_ADDRESS=0x...
 LIQUIDATOR_PRIVATE_KEY=0x...
-DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder
+DATABASE_URL=postgresql://ponder:ponder@liquidator-postgres:5432/ponder
 
 ```
 
-Everything else has a default, listed in the tables below. Under Docker this file is the only
-source: `PONDER_URL` must name the indexer's service, `http://liquidator-ponder:42069`, and
-`DATABASE_URL` must point at `liquidator-postgres:5432`, not `localhost`. Keep `METRICS_PORT`
-at 9090, which the published mapping and the healthcheck are pinned to.
+Everything else has a default, listed in the tables below. The URLs above are the Docker values.
+For a native run, use `http://localhost:42069` and `localhost:5432` (§5.1). Under Docker, keep
+`METRICS_PORT` at 9090, which the published mapping and the healthcheck are pinned to.
 
 **Core**
 
@@ -547,10 +548,11 @@ fails whole batches into `unscanned`.
 |---------|-------|--------|
 | `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
 | `Database schema required` from the indexer | `DATABASE_SCHEMA` unset | Set it in `.env.liquidator.indexer` |
-| `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` still names `localhost`, which is the indexer's own container | Point it at `liquidator-postgres:5432` in `.env.liquidator.indexer` |
+| `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` names `localhost`, which is the indexer's own container | Point it at `liquidator-postgres:5432` in `.env.liquidator.indexer` |
+| `getaddrinfo ENOTFOUND liquidator-postgres` on a native run | `DATABASE_URL` still carries the Docker value | Point it at `localhost:5432` |
 | Indexer container never reports healthy | `PONDER_PORT` is not `42069`, so the healthcheck and the mapping reach nothing | Set `PONDER_PORT=42069` in `.env.liquidator.indexer` |
 | Bot container never reports healthy | `METRICS_PORT` is not `9090`, so the healthcheck and the mapping reach nothing | Set `METRICS_PORT=9090` in `.env.liquidator` |
-| Bot reports `ponderReachable: false` under Docker | `PONDER_URL` still names `localhost`, which is the bot's own container | Point it at `http://liquidator-ponder:42069` in `.env.liquidator` |
+| Bot reports `ponderReachable: false` under Docker | `PONDER_URL` names `localhost`, which is the bot's own container | Point it at `http://liquidator-ponder:42069` in `.env.liquidator` |
 | `DB_AUTH must be ...` | `DB_AUTH` is neither `password` nor `iam` | Correct the value. The check is case-sensitive |
 | `DB_AUTH=iam: ...` at indexer start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
 | `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set all four flash variables, or none |
