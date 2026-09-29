@@ -147,6 +147,10 @@ cp env.arbitrageur.indexer.example  .env.arbitrageur.indexer
 # Edit each with your values
 ```
 
+The examples carry the Docker values: `DATABASE_URL` and `PONDER_URL` name the Compose
+services. For a native run, replace them with the `localhost` lines in the comment above each
+value. The service names do not resolve on the host.
+
 **Ponder Indexer** — a single unified indexer (`services/ponder`) serves both
 services. The index mode is derived from which addresses are set: `ADAPTER_ADDRESS`
 + `SPOKE_ADDRESS` enable liquidation, `VAULT_SWAP_ADDRESS` enables arbitrage; set
