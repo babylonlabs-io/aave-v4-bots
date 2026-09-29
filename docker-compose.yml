@@ -32,10 +32,6 @@ services:
     # three in the environment of the most exposed process in the stack.
     env_file:
       - .env.liquidator.indexer
-    environment:
-      DATABASE_URL: postgresql://ponder:ponder@liquidator-postgres:5432/ponder
-      DATABASE_SCHEMA: public
-      PONDER_PORT: 42069
     ports:
       - "${LIQUIDATOR_PONDER_PORT:-42069}:42069"
     depends_on:
@@ -58,9 +54,6 @@ services:
     container_name: liquidator-bot
     env_file:
       - .env.liquidator
-    environment:
-      PONDER_URL: http://liquidator-ponder:42069
-      METRICS_PORT: 9090
     ports:
       - "${LIQUIDATOR_METRICS_PORT:-9090}:9090"
     depends_on:
@@ -109,10 +102,6 @@ services:
     # three in the environment of the most exposed process in the stack.
     env_file:
       - .env.arbitrageur.indexer
-    environment:
-      DATABASE_URL: postgresql://ponder:ponder@arbitrageur-postgres:5432/ponder
-      DATABASE_SCHEMA: public
-      PONDER_PORT: 42070
     ports:
       - "${ARBITRAGEUR_PONDER_PORT:-42070}:42070"
     depends_on:
@@ -135,9 +124,6 @@ services:
     container_name: arbitrageur-bot
     env_file:
       - .env.arbitrageur
-    environment:
-      PONDER_URL: http://arbitrageur-ponder:42070
-      METRICS_PORT: 9091
     ports:
       - "${ARBITRAGEUR_METRICS_PORT:-9091}:9091"
     depends_on:

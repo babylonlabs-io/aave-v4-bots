@@ -104,6 +104,20 @@ docker compose build liquidator-ponder liquidator-bot
 `build` needs no configuration. `docker compose up` reads `.env.liquidator` and
 `.env.liquidator.indexer` and fails if either is missing, so create them first (§5.1).
 
+Compose reads both files as written and sets nothing of its own, so after copying them:
+
+- Point both `DATABASE_URL` values at `liquidator-postgres:5432`, and `PONDER_URL` in
+  `.env.liquidator` at `http://liquidator-ponder:42069`. The examples carry the native values, and
+  `localhost` inside a container is that container itself.
+- Keep `PONDER_PORT=42069` in `.env.liquidator.indexer` and `METRICS_PORT=9090` in
+  `.env.liquidator`. The published mappings and the healthchecks are pinned to those ports, so a
+  container that listens elsewhere never reports healthy and nothing downstream of it starts.
+
+To move only the HOST side of a mapping, for example when 9090 is already taken, set
+`LIQUIDATOR_PONDER_PORT` or `LIQUIDATOR_METRICS_PORT` in the shell that runs `docker compose`, or
+in a `.env` beside `docker-compose.yml`. Compose resolves them there, never from the two files
+above.
+
 ### 4.4. Router contract (flash funding only)
 
 Skip this under `LIQUIDATION_FUNDING=inventory`.
@@ -170,15 +184,49 @@ Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two 
 | `SPOKE_ADDRESS` | Babylon Core Spoke | Yes | |
 | `ADAPTER_ADDRESS` | AaveAdapter | Yes | |
 | `LENS_ADDRESS` | AaveAdapterLiquidationPreview. The API previews positions through it | Yes | |
-| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use | Yes | |
+| `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. Under Docker it must name the Compose service, `liquidator-postgres:5432`, not `localhost` | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
+| `DB_AUTH` | How the indexer authenticates to Postgres: `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
 | `CHAIN_ID` | Network chain ID | No | `1` |
 | `START_BLOCK` | First block to index. Must be at or before the AaveAdapter deployment block, or earlier borrowers are never probed. A rising `unmapped` count is the sign | No | `0` |
 | `PONDER_POLLING_INTERVAL` | Block poll interval (ms) | No | `4000` |
-| `PONDER_PORT` | API port. The `liquidator:indexer*` scripts and Compose both set it themselves, so a value here only applies when you run Ponder directly. Compose publishes the host port as `LIQUIDATOR_PONDER_PORT` | No | `42069` |
+| `PONDER_PORT` | Port the indexer's API listens on. The `liquidator:indexer*` scripts export it themselves, so a value here applies to Docker and to a direct `ponder` run. Under Docker keep it at `42069`: the published mapping and the healthcheck are pinned to it. Move the host port with `LIQUIDATOR_PONDER_PORT` instead | No | `42069` |
 | `POSITION_PROBE_CHUNK_SIZE` | Probes sent in one wave by `/liquidatable-positions`, split into calls of 15. It sets concurrency, not per-call gas. A throttled wave fails whole and reports its positions as `unscanned`. See §8.5 | No | `25` |
 | `MULTICALL3_ADDRESS` | Multicall3 for the API's batched reads. Falls back to single reads when absent on chain | No | `0xcA11bde05977b3631167028862bE2a173976CA11` |
 | `CONFIG_SECRET_ID` | AWS Secrets Manager id holding `PONDER_RPC_URL` and `DATABASE_URL` as JSON, for values not set in the env | No | |
+
+**RDS IAM database authentication**
+
+`DB_AUTH=iam` takes the database password out of the deployment. `DATABASE_URL` then carries no
+password, and every new connection presents a 15-minute token that the indexer mints with its own
+AWS credentials. On EKS those are the ServiceAccount's IAM role, which needs `rds-db:connect` for
+this database user. The token is a bearer credential, so the URL must also verify the server:
+
+```bash
+DB_AUTH=iam
+DATABASE_URL=postgresql://liquidation_indexer@<host>:5432/liquidation_ponder?sslmode=verify-full&sslrootcert=/app/services/ponder/certs/rds-global-bundle.pem
+AWS_REGION=us-east-1
+```
+
+The RDS CA bundle ships in the image at that path. Outside Docker, point `sslrootcert` at
+`services/ponder/certs/rds-global-bundle.pem` in the checkout.
+
+Boot fails, rather than falling back to a password, when:
+
+- `DATABASE_URL` is unset. Ponder would start on its embedded database instead of the shared one.
+- The URL carries a password, or `PGPASSWORD` is set. Either overrides the token.
+- The URL has no user, or no host.
+- `sslmode` is not `verify-full`, `sslrootcert` is unset, or that file is not on disk.
+- `NODE_TLS_REJECT_UNAUTHORIZED=0` is set. It cancels the check `verify-full` asks for.
+- The URL has no port while `PGPORT` is set. The driver would take the port from `PGPORT`, and the
+  token is signed for one port.
+- The URL repeats a query parameter, or carries `user`, `password`, `host`, `port` or `ssl` as one.
+  The driver lets a query parameter replace the URL's own value.
+- AWS resolves no credentials or no region. One token is minted at boot, so this fails the start
+  rather than the first query.
+
+`DB_AUTH` covers the indexer only. The bot's own `DATABASE_URL`, which holds the StateStore,
+connects with a password.
 
 ### 5.3. Liquidation Client Configuration
 
@@ -196,9 +244,10 @@ DATABASE_URL=postgresql://ponder:ponder@localhost:5432/ponder
 
 ```
 
-Everything else has a default, listed in the tables below. Under Docker, `PONDER_URL` and
-`METRICS_PORT` are set by Compose, and `DATABASE_URL` must point at `liquidator-postgres:5432`,
-not `localhost`.
+Everything else has a default, listed in the tables below. Under Docker this file is the only
+source: `PONDER_URL` must name the indexer's service, `http://liquidator-ponder:42069`, and
+`DATABASE_URL` must point at `liquidator-postgres:5432`, not `localhost`. Keep `METRICS_PORT`
+at 9090, which the published mapping and the healthcheck are pinned to.
 
 **Core**
 
@@ -498,6 +547,12 @@ fails whole batches into `unscanned`.
 |---------|-------|--------|
 | `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
 | `Database schema required` from the indexer | `DATABASE_SCHEMA` unset | Set it in `.env.liquidator.indexer` |
+| `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` still names `localhost`, which is the indexer's own container | Point it at `liquidator-postgres:5432` in `.env.liquidator.indexer` |
+| Indexer container never reports healthy | `PONDER_PORT` is not `42069`, so the healthcheck and the mapping reach nothing | Set `PONDER_PORT=42069` in `.env.liquidator.indexer` |
+| Bot container never reports healthy | `METRICS_PORT` is not `9090`, so the healthcheck and the mapping reach nothing | Set `METRICS_PORT=9090` in `.env.liquidator` |
+| Bot reports `ponderReachable: false` under Docker | `PONDER_URL` still names `localhost`, which is the bot's own container | Point it at `http://liquidator-ponder:42069` in `.env.liquidator` |
+| `DB_AUTH must be ...` | `DB_AUTH` is neither `password` nor `iam` | Correct the value. The check is case-sensitive |
+| `DB_AUTH=iam: ...` at indexer start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
 | `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set all four flash variables, or none |
 | `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |
 | `EXECUTION_MODE=MANUAL is keyless` | A signer variable or the key env var is present | Unset it |
