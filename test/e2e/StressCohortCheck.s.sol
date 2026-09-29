@@ -3,7 +3,7 @@ pragma solidity 0.8.28;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {AaveAdapterLiquidationPreview} from "vault-contracts/applications/aave/AaveAdapterLiquidationPreview.sol";
+import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
 import {BaseBot} from "./abstract/BaseBot.sol";
 
 /// @title StressCohortCheck
@@ -26,8 +26,7 @@ contract StressCohortCheck is Script, BaseBot {
         init(vm);
 
         uint256 phase = vm.envUint("STRESS_PHASE");
-        AaveAdapterLiquidationPreview lens =
-            AaveAdapterLiquidationPreview(vm.parseAddress(vm.readFile(".e2e-stress-lens")));
+        AaveAdapterLens lens = AaveAdapterLens(vm.parseAddress(vm.readFile(".e2e-stress-lens")));
 
         address[] memory cohortA = _readAddresses(".e2e-stress-cohort-a");
         address[] memory cohortB = _readAddresses(".e2e-stress-cohort-b");
@@ -59,14 +58,12 @@ contract StressCohortCheck is Script, BaseBot {
     }
 
     /// @dev Liquidatable *right now*. A position the bot already cleared has no proxy debt left and
-    ///      the preview reverts on it, which reads the same as healthy — so this is only meaningful
+    ///      the lens reverts on it, which reads the same as healthy — so this is only meaningful
     ///      before the bot has had a chance to act on the cohort.
-    function _liquidatable(AaveAdapterLiquidationPreview lens, address borrower) internal view returns (bool) {
+    function _liquidatable(AaveAdapterLens lens, address borrower) internal view returns (bool) {
         address proxy = aaveAdapter.getPosition(borrower).proxyContract;
         if (proxy == address(0)) return false;
-        try lens.estimateLiquidation(proxy, false) returns (
-            uint256[] memory, uint256[] memory, uint256, bytes32, uint256
-        ) {
+        try lens.estimateLiquidation(proxy, false) returns (uint256[] memory, uint256, bytes32[] memory) {
             return true;
         } catch {
             return false;

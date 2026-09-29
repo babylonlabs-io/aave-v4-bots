@@ -48,9 +48,8 @@ let metrics: ReturnType<typeof createMetrics>;
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
-const mockReserveIds = [0n] as const;
 const mockAmounts = [1000000n] as const;
-/** The fairness payment the preview quotes; buffered like the debt before it becomes the cap. */
+/** The fairness payment the lens quotes; buffered like the debt before the gate reserves it. */
 const mockWbtcPayment = 5000n;
 
 const mockPosition: LiquidatablePosition = {
@@ -141,16 +140,9 @@ function createMockClients() {
               return Promise.resolve({ flags: 0x04, underlying: "0xdebt" });
             }
             if (functionName === "estimateLiquidation") {
-              // [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId, amountCollateralToSeize] —
-              // wbtcPayment is the WBTC the adapter pulls from msg.sender for fairness + redemption
-              // fee, and doubles as the `maxWbtcPayment` cap on the call.
-              return Promise.resolve([
-                mockReserveIds,
-                mockAmounts,
-                mockWbtcPayment,
-                "0xvault1",
-                0n,
-              ]);
+              // [amounts, wbtcPayment, vaults] — wbtcPayment is the WBTC the adapter pulls from
+              // msg.sender for fairness + redemption fee, and vaults is the seized prefix.
+              return Promise.resolve([mockAmounts, mockWbtcPayment, ["0xvault1"]]);
             }
             // Default: the position still holds collateral, so a reverted liquidation reads as a genuine
             // failure (a lost-race test overrides this with totalCollateralBTC 0n).
@@ -472,8 +464,9 @@ describe("LiquidationEngine", () => {
         blockNumber: 1n,
         logs: [],
       });
-      // The case single-vault seizure makes ordinary. The adapter takes exactly the head vault, so
-      // a competitor liquidating a borrower who holds two leaves the second one behind. Judged on
+      // The case prefix seizure makes ordinary. The adapter takes only as many vaults as the debt
+      // needs, so a competitor liquidating a borrower who holds two can leave the second one
+      // behind. Judged on
       // collateral alone this reads as "still there to take", and every lost race against a
       // multi-vault borrower would be charged to the breaker. The mirror case — our vault still in
       // the list, so nobody outran us — is the default mock, asserted as HALTED above.
@@ -649,6 +642,30 @@ describe("LiquidationEngine", () => {
       expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
       expect(clients.sender.send).not.toHaveBeenCalled();
     });
+
+    // The seized prefix is never empty for a liquidatable position. An empty one leaves no vault to
+    // tell a lost race by, so the engine treats it as an estimate failure.
+    it("skips a position whose Lens estimate seizes no vault", async () => {
+      const clients = createMockClients();
+      overrideRead(clients, "estimateLiquidation", [mockAmounts, mockWbtcPayment, []]);
+      const bot = createBot(clients);
+
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            liquidatable: [mockPosition],
+            total: 1,
+            checked: 1,
+          }),
+      });
+
+      await bot.run();
+
+      expect(metrics.recordError).toHaveBeenCalledWith("lens_estimate_error");
+      expect(clients.publicClient.simulateContract).not.toHaveBeenCalled();
+      expect(clients.sender.send).not.toHaveBeenCalled();
+    });
   });
 
   describe("run() - simulation filtering", () => {
@@ -726,10 +743,20 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
+      const buffer = (amt: bigint) => (amt * 10100n) / 10000n;
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 42,
           functionName: "liquidateWithLLP",
+          // Buffered amounts, one per reserve; priorityOrder lists every reserve index in
+          // ascending order; no requested tokens.
+          args: [
+            mockPosition.borrower,
+            "0xllpaddress000000000000000000000000000000",
+            mockAmounts.map(buffer),
+            [0n],
+            [],
+          ],
         }),
         expect.any(Function),
         expect.any(Function)
@@ -755,23 +782,23 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      // Bot adds 1% buffer to the preview's figures to cover interest accrual — to the debt so it
-      // does not leave dust, and to the payment because that figure is also the cap the adapter
-      // checks its own recomputed payment against.
+      // Bot adds 1% buffer to the lens's debt amounts to cover interest accrual, so the call does
+      // not leave dust.
       const buffer = (amt: bigint) => (amt * 10100n) / 10000n;
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
-          // minVaultBtcOut=0n disables BTC-out slippage protection; the reserve ids are passed
-          // through unbuffered, since they name reserves rather than amounts.
+          // priorityOrder lists every reserve index in ascending order. minVaultBtcOut=0n disables
+          // BTC-out slippage protection, and numVaultsToLiquidate=maxUint256 lets the adapter seize
+          // as many vaults as the debt needs.
           args: [
             mockPosition.borrower,
-            [...mockReserveIds],
-            mockAmounts.map(buffer),
-            0n,
-            buffer(mockWbtcPayment),
             nonZeroRedeemKey,
+            mockAmounts.map(buffer),
+            [0n],
+            0n,
+            maxUint256,
           ],
         }),
         expect.any(Function),

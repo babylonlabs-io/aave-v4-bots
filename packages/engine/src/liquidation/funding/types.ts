@@ -78,36 +78,34 @@ export interface LiquidationFunding {
   vet(candidates: readonly LiquidationCandidate[]): Promise<FundedCandidate[]>;
 }
 
-/** A liquidatable position priced by the liquidation preview, before any funding decision. */
+/** A liquidatable position priced by the liquidation lens, before any funding decision. */
 export interface LiquidationCandidate {
   position: LiquidatablePosition;
   /**
-   * The Spoke reserve ids whose debt this liquidation covers, in the order the preview costed
-   * them.
+   * Debt to cover per Spoke reserve, indexed by reserve id, already buffered for interest accrual.
    *
-   * Only the reserves that carry debt: the preview leaves out every reserve it covers nothing on,
-   * and the adapter rejects both an empty list and a zero amount. So the token behind an amount is
-   * the token of the reserve at the *paired id*, never at its position in the array.
+   * One entry for every reserve, zero where the lens covers nothing: the adapter takes the array
+   * in this shape, with a `priorityOrder` that lists every index. So the token behind an amount is
+   * the token of the reserve whose id is its index.
    */
-  debtReserveIds: readonly bigint[];
-  /** Debt to cover, one per entry of `debtReserveIds`, already buffered for interest accrual. */
-  debtToCoverAmounts: readonly bigint[];
+  amounts: readonly bigint[];
   /**
-   * The head vault this liquidation would seize — the one the adapter takes, not a prefix.
+   * The first vault of the prefix this liquidation would seize.
    *
-   * Carried so a reverted tx can be told apart from a lost race. The adapter seizes exactly this
-   * vault, so a competitor that got there first is visible as this id leaving the borrower's list,
-   * whatever collateral it left behind. See `LiquidationEngine.wasPositionTaken`.
+   * Carried so a reverted tx can be told apart from a lost race. The adapter seizes a prefix of
+   * the borrower's ordered list, and every prefix starts at this vault, so a competitor that got
+   * there first is visible as this id leaving the borrower's list, whatever collateral it left
+   * behind. See `LiquidationEngine.wasPositionTaken`.
    */
   vaultId: Hex;
   /**
    * The LLP fairness payment (plus, in direct-redemption mode, the redemption fee), buffered the
    * same way the debt amounts are.
    *
-   * Buffered because it is also the `maxWbtcPayment` cap sent on-chain: the adapter recomputes the
-   * payment at execution and reverts with `ExcessiveWbtcPayment` if it exceeds the cap, so passing
-   * the bare estimate would fail every liquidation that drifted upward between the read and the
-   * send. The gate is told this figure too, since it is what the call can actually pull.
+   * The adapter takes no cap on this payment: it recomputes it at execution and pulls it from
+   * msg.sender, so only the caller's allowance and balance bound it. Buffered so the gate reserves
+   * what the call can plausibly pull after an upward drift between the read and the send, rather
+   * than the bare estimate.
    */
   wbtcPayment: bigint;
 }

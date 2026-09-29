@@ -267,7 +267,7 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
     }
 
     function _setUpRouter() internal returns (LiquidationRouter router, UniswapV4SwapVenue venue) {
-        router = new LiquidationRouter(ADMIN, address(preview), address(vaultSwap));
+        router = new LiquidationRouter(ADMIN, address(lens), address(vaultSwap));
         venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(router));
     }
 }

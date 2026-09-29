@@ -52,7 +52,7 @@ function findArtifact(contract: string): string | undefined {
 const SOURCE_CONTRACTS = [
   "BTCVaultSwap",
   "AaveAdapter",
-  "AaveAdapterLiquidationPreview",
+  "AaveAdapterLens",
   "LiquidationRouter",
   "ArbitrageRouter",
   "Spoke",

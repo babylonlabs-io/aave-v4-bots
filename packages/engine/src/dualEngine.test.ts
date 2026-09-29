@@ -106,16 +106,15 @@ function setup(
     getBlockNumber: vi.fn(async () => 1n),
     readContract: vi.fn(
       async ({ functionName, args }: { functionName: string; args: unknown[] }) => {
-        // One reserve, so the only id the Lens can name is one the Spoke lists — the liquidation
-        // engine refuses to attribute a spend for an id it cannot resolve to a token.
+        // One reserve, matching the Lens's single amount — the liquidation engine refuses to
+        // attribute a spend when the Lens vector and the Spoke's reserve list disagree in length.
         if (functionName === "BTC_VAULT_CORE_SPOKE") return "0xspoke";
         if (functionName === "getReserveCount") return 1n;
         if (functionName === "getReserve") return { flags: 0x04, underlying: "0xdebt" };
         // A NON-ZERO wbtcPayment on purpose: it is the one part of the liquidation's spend that
         // lands on the same WBTC balance the arbitrage engine draws from, so a zero here would let
         // the engine drop it entirely without any assertion below noticing.
-        if (functionName === "estimateLiquidation")
-          return [[0n], [1000000n], 40_000n, "0xvault1", 0n];
+        if (functionName === "estimateLiquidation") return [[1000000n], 40_000n, ["0xvault1"]];
         if (functionName === "previewEscrowedVaults") {
           const ids = args[0] as `0x${string}`[];
           return ids.map((vaultId) => ({
@@ -124,9 +123,8 @@ function setup(
             amountDebt: 50000000n,
             amountInterest: 0n,
             amountFee: 0n,
-            amountWbtcEquivalent: 100000000n,
             amountWbtcToAcquire: 50000000n,
-            amountProfitEst: 50000000n,
+            isProfitable: true,
           }));
         }
         // Both engines declare token spend to the gate, which reserves it against this figure.
@@ -323,8 +321,8 @@ describe("dual-engine shared risk gate", () => {
     const liquidation = declared.find((a) => a.kind === "liquidation");
     const acquisition = declared.find((a) => a.kind === "vault-acquisition");
 
-    // Every debt repayment plus the adapter's WBTC pull, both at the 1% buffered figure the call
-    // actually carries — the debt as `debtToCoverAmounts`, the payment as `maxWbtcPayment`.
+    // Every debt repayment plus the adapter's WBTC pull, both at the 1% buffered figure — the debt
+    // as the `amounts` the call carries, the payment as the most the adapter may pull.
     // Asserted exactly: a length check cannot tell a missing WBTC entry from a present one, and
     // that entry is what stops this liquidation and the acquisition below double-spending WBTC.
     expect(liquidation?.spend).toEqual([

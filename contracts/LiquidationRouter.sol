@@ -5,13 +5,10 @@ pragma solidity 0.8.28;
 import {AaveAdapter, TokenAmountLib} from "vault-contracts/applications/aave/AaveAdapter.sol";
 import {VenueManager} from "./VenueManager.sol";
 import {Types} from "./lib/Types.sol";
-import {
-    AaveAdapterLiquidationPreview,
-    ISpoke
-} from "vault-contracts/applications/aave/AaveAdapterLiquidationPreview.sol";
+import {AaveAdapterLens, ISpoke} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {BTCVaultSwap} from "vault-contracts/applications/aave/llps/BTCVaultSwap/BTCVaultSwap.sol";
+import {BTCVaultSwap} from "vault-contracts/applications/aave/llps/BTCVaultSwap.sol";
 
 /// @notice Owner-operated bot that liquidates an Aave v4 position, funding the debt repayment with flash
 ///         liquidity and selling the seized WBTC collateral back into the borrowed assets.
@@ -39,7 +36,7 @@ contract LiquidationRouter is VenueManager {
 
     /// @notice The only address allowed to run a liquidation; also the recipient of all proceeds.
     address public immutable owner;
-    /// @notice `AaveAdapterLiquidationPreview` used to enumerate reserves and estimate the liquidation payment.
+    /// @notice `AaveAdapterLens` used to enumerate reserves and estimate the liquidation payment.
     address public immutable lens;
     /// @notice Aave v4 adapter through which the liquidation is executed.
     address public immutable aaveAdapter;
@@ -65,15 +62,15 @@ contract LiquidationRouter is VenueManager {
     }
 
     /// @param _owner The address allowed to liquidate and receive the proceeds.
-    /// @param _lens The `AaveAdapterLiquidationPreview`; the adapter, spoke and BTC reserve id are read from it.
+    /// @param _lens The `AaveAdapterLens`; the adapter, spoke and BTC reserve id are read from it.
     /// @param _btcVaultSwap The LLP used to realise seized BTC vault collateral as WBTC.
     constructor(address _owner, address _lens, address _btcVaultSwap) {
         require(_owner != address(0), "LiquidationRouter: Invalid owner address");
         owner = _owner;
         lens = _lens;
-        aaveAdapter = AaveAdapterLiquidationPreview(_lens).adapter();
-        spoke = AaveAdapterLiquidationPreview(_lens).spoke();
-        vaultBtcReserveId = AaveAdapterLiquidationPreview(_lens).vaultBtcReserveId();
+        aaveAdapter = AaveAdapterLens(_lens).adapter();
+        spoke = AaveAdapterLens(_lens).spoke();
+        vaultBtcReserveId = AaveAdapterLens(_lens).vaultBtcReserveId();
         btcVaultSwap = _btcVaultSwap;
         wbtc = address(BTCVaultSwap(_btcVaultSwap).WBTC());
     }
@@ -226,22 +223,22 @@ contract LiquidationRouter is VenueManager {
     ///         collateral as WBTC.
     /// @dev Runs with every flash loan already drawn, so this contract holds the tokens the adapter pulls. Approvals
     ///      are granted for exactly the payment amounts and revoked immediately after.
+    ///
+    ///      The adapter pulls every `amounts` entry up front, then pulls the WBTC fairness payment with a separate
+    ///      `transferFrom`, and only then refunds the amounts it did not use. It takes no cap on that payment, so the
+    ///      approval is the cap: it grants the WBTC debt plus exactly the `wbtcPayment` the lens quoted, so the
+    ///      allowance left for the fairness pull is that quote. A payment that grew between the estimate and this
+    ///      frame fails that pull rather than being paid out of whatever else the router is holding
+    ///      mid-liquidation.
     function _executeLiquidationPhase(Types.LiquidationIteration memory iteration) internal virtual {
         _approveForAdapter(iteration.reserveTokens, iteration.reserveDebtsToLiquidate, iteration.wbtcPayment);
 
-        (uint256[] memory debtReserveIds, uint256[] memory debtToCoverAmounts) =
-            _toDebtReserveArgs(iteration.reserveDebtsToLiquidate);
-
-        // `wbtcPayment` doubles as the cap: it is what the preview quoted and exactly what the approval above
-        // grants, so a payment that grew between the estimate and this frame is refused by the adapter rather
-        // than paid out of whatever else the router is holding mid-liquidation.
         AaveAdapter(aaveAdapter)
             .liquidateWithLLP(
                 iteration.liquidationData.borrower,
                 btcVaultSwap,
-                debtReserveIds,
-                debtToCoverAmounts,
-                iteration.wbtcPayment,
+                iteration.reserveDebtsToLiquidate,
+                _ascendingOrder(iteration.reserveDebtsToLiquidate.length),
                 new TokenAmountLib.TokenAmount[](0)
             );
 
@@ -277,11 +274,9 @@ contract LiquidationRouter is VenueManager {
 
     // ---------------------- ESTIMATE LIQUIDATION PAYMENT ----------------------
 
-    /// @notice Asks the preview what it costs to fully liquidate `borrower`.
-    /// @dev The preview answers sparsely — only the reserves it actually covers, paired with their ids — while the
-    ///      flash sizing and the adapter approvals both index debts by reserve id, alongside `reserveTokens`.
-    ///      Spreading the pair back out here keeps that single indexing rule for the rest of the router;
-    ///      `_toDebtReserveArgs` folds it back for the one call that wants the pair.
+    /// @notice Asks the lens what it costs to fully liquidate `borrower`.
+    /// @dev The lens answers with one amount per reserve, indexed by reserve id — the same indexing the flash sizing,
+    ///      the adapter approvals and the adapter itself use, alongside `reserveTokens`.
     /// @param borrower The account being liquidated.
     /// @return reserveTokens Every reserve underlying, in spoke order. `reserveDebtsToLiquidate` is indexed by it.
     /// @return reserveDebtsToLiquidate The amount of each reserve token needed to repay the borrower's debt.
@@ -293,15 +288,9 @@ contract LiquidationRouter is VenueManager {
     {
         reserveTokens = _getReserves();
 
-        uint256[] memory debtReserveIds;
-        uint256[] memory debtToCoverAmounts;
-        (debtReserveIds, debtToCoverAmounts, wbtcPayment,,) = AaveAdapterLiquidationPreview(lens)
+        (reserveDebtsToLiquidate, wbtcPayment,) = AaveAdapterLens(lens)
             .estimateLiquidation(AaveAdapter(aaveAdapter).getPosition(borrower).proxyContract, false);
-
-        reserveDebtsToLiquidate = new uint256[](reserveTokens.length);
-        for (uint256 i = 0; i < debtReserveIds.length; i++) {
-            reserveDebtsToLiquidate[debtReserveIds[i]] = debtToCoverAmounts[i];
-        }
+        require(reserveDebtsToLiquidate.length == reserveTokens.length, "LiquidationRouter: Reserve count mismatch");
     }
 
     /// @notice Lists the underlying token of every reserve on the spoke, in reserve-id order.
@@ -408,37 +397,13 @@ contract LiquidationRouter is VenueManager {
         }
     }
 
-    /// @notice Folds the per-reserve debt array back into the `(ids, amounts)` pair the adapter takes.
-    /// @dev The adapter rejects an empty array and a zero amount, so only reserves carrying debt are listed. The
-    ///      preview leaves out every reserve it covers nothing on, so no entry it returned is dropped here — this
-    ///      is the exact inverse of the spreading done in `_estLiquidationPayment`. Ascending reserve-id order is
-    ///      preserved, which is the order `estimateLiquidation` costed the liquidation in.
-    /// @param reserveDebts The debt to cover per reserve, indexed by reserve id.
-    /// @return debtReserveIds The reserve ids carrying debt, ascending.
-    /// @return debtToCoverAmounts The debt to cover, one per entry of `debtReserveIds`.
-    function _toDebtReserveArgs(uint256[] memory reserveDebts)
-        internal
-        pure
-        returns (uint256[] memory debtReserveIds, uint256[] memory debtToCoverAmounts)
-    {
-        uint256 count = 0;
-        for (uint256 i = 0; i < reserveDebts.length; i++) {
-            if (reserveDebts[i] != 0) {
-                count++;
-            }
-        }
-
-        debtReserveIds = new uint256[](count);
-        debtToCoverAmounts = new uint256[](count);
-
-        uint256 next = 0;
-        for (uint256 i = 0; i < reserveDebts.length; i++) {
-            if (reserveDebts[i] == 0) {
-                continue;
-            }
-            debtReserveIds[next] = i;
-            debtToCoverAmounts[next] = reserveDebts[i];
-            next++;
+    /// @notice The adapter's `priorityOrder` for a liquidation over `count` reserves: every reserve id, ascending.
+    /// @dev The adapter requires a permutation of every index of `amounts`, zero entries included, and ascending
+    ///      order is the order `estimateLiquidation` costed the liquidation in.
+    function _ascendingOrder(uint256 count) internal pure returns (uint256[] memory order) {
+        order = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            order[i] = i;
         }
     }
 }

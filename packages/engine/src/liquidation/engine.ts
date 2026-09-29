@@ -150,9 +150,9 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
    * Whether another liquidator took the vault we were going for. Used only to classify a reverted
    * liquidation, so that losing a race does not feed the breaker as a malfunction.
    *
-   * Matched on the *vault*, not on the collateral reaching zero. The adapter seizes exactly one
-   * vault — the head of the borrower's ordered list — so a competitor liquidating a borrower who
-   * holds several leaves the rest of the collateral behind. Against a collateral-zero test that
+   * Matched on the *vault*, not on the collateral reaching zero. The adapter seizes a prefix of
+   * the borrower's ordered list — only as many vaults as the debt needs — so a competitor
+   * liquidating a borrower who holds several can leave the rest of the collateral behind. Against a collateral-zero test that
    * reads as "still there to take", and every such race would be charged to the breaker; on a
    * multi-vault borrower that is the normal outcome of competition, not an edge case. Our target
    * leaving the borrower's list is the thing that actually happened, at any collateral level.
@@ -165,7 +165,8 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
    * must never exempt a real failure from the breaker.
    *
    * @param borrower The account the reverted liquidation targeted.
-   * @param vaultId The head vault that liquidation would have seized, from our own estimate.
+   * @param vaultId The first vault of the prefix that liquidation would have seized, from our own
+   *   estimate.
    */
   private async wasPositionTaken(borrower: Address, vaultId: Hex): Promise<boolean> {
     try {
@@ -325,20 +326,26 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
       const pos = positions[i];
 
       if (result.status === "fulfilled") {
-        const [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId] = result.value;
+        const [amounts, wbtcPayment, vaults] = result.value;
+        // The lens returns the seized prefix, which is never empty for a liquidatable position.
+        // An empty one leaves nothing to tell a lost race by, so it is an estimate failure.
+        if (vaults.length === 0) {
+          this.metrics.recordError("lens_estimate_error");
+          this.logger.warn(`Lens estimate for ${pos.proxyAddress} seizes no vault — skipped`);
+          continue;
+        }
         // Buffer every figure (default 1%) to cover interest accrual between the Lens read and
         // execution. `wbtcPayment` (fairness top-up +, in direct-redemption mode, the redemption
-        // fee) is pulled from msg.sender by the adapter on top of the debt, and it is also the
-        // `maxWbtcPayment` cap the call carries — so it is buffered on the same grounds as the debt
-        // rather than left bare, and declared at the buffered figure to the risk gate, which
-        // reserves it against the WBTC the arbitrage engine is spending from the same signer.
-        // Already mode-correct: the Lens was asked with `isDirectRedemption`.
+        // fee) is pulled from msg.sender by the adapter on top of the debt, with no cap, so it is
+        // buffered on the same grounds as the debt rather than left bare, and declared at the
+        // buffered figure to the risk gate, which reserves it against the WBTC the arbitrage engine
+        // is spending from the same signer. Already mode-correct: the Lens was asked with
+        // `isDirectRedemption`.
         candidates.push({
           position: pos,
-          debtReserveIds,
-          debtToCoverAmounts: bufferAmounts(debtToCoverAmounts),
+          amounts: bufferAmounts(amounts),
           wbtcPayment: bufferAmount(wbtcPayment),
-          vaultId,
+          vaultId: vaults[0],
         });
       } else {
         this.metrics.recordError("lens_estimate_error");

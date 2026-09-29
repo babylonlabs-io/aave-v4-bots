@@ -28,7 +28,7 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVForkFixture, TBVHelper {
         _setUpUniswap(debtTokens, _getWbtcPriceAgainstTokens(address(adapter), debtTokens), wbtc);
 
         PoolKey[] memory poolKeys = _getPoolKeys();
-        LiquidationRouter router = new LiquidationRouter(ADMIN, address(preview), address(vaultSwap));
+        LiquidationRouter router = new LiquidationRouter(ADMIN, address(lens), address(vaultSwap));
 
         LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](2);
         flashDatas[0] = LiquidationTypes.FlashData({

@@ -126,7 +126,7 @@ Flash funding repays each debt token through a `LiquidationRouter`. Deploy it on
 git submodule update --init --recursive
 
 export LIQUIDATION_ROUTER_OWNER=0x...   # this bot's signer: the only address the router acts for
-export LENS_ADDRESS=0x...               # AaveAdapterLiquidationPreview
+export LENS_ADDRESS=0x...               # AaveAdapterLens
 export VAULT_SWAP_ADDRESS=0x...         # BTCVaultSwap (LLP)
 export DEPLOYER_PRIVATE_KEY=0x...
 export RPC_URL=https://...
@@ -185,7 +185,7 @@ Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two 
 | `PONDER_RPC_URL` | RPC for indexing. May differ from the bot's | Yes | |
 | `SPOKE_ADDRESS` | Babylon Core Spoke | Yes | |
 | `ADAPTER_ADDRESS` | AaveAdapter | Yes | |
-| `LENS_ADDRESS` | AaveAdapterLiquidationPreview. The API previews positions through it | Yes | |
+| `LENS_ADDRESS` | AaveAdapterLens. The API previews positions through it | Yes | |
 | `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. The example names the Compose service, `liquidator-postgres:5432`. A native run uses `localhost:5432` | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
 | `DB_AUTH` | How the indexer authenticates to Postgres: `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
@@ -257,7 +257,7 @@ For a native run, use `http://localhost:42069` and `localhost:5432` (§5.1). Und
 | `PONDER_URL` | Indexer API endpoint | Yes | |
 | `CLIENT_RPC_URL` | RPC for execution | Yes | |
 | `ADAPTER_ADDRESS` | AaveAdapter | Yes | |
-| `LENS_ADDRESS` | AaveAdapterLiquidationPreview | Yes | |
+| `LENS_ADDRESS` | AaveAdapterLens | Yes | |
 | `WBTC_ADDRESS` | WBTC token | Yes | |
 | `POLLING_INTERVAL_MS` | Poll interval | No | `12000` |
 | `TX_RECEIPT_TIMEOUT_MS` | Receipt wait per transaction | No | `120000` |
@@ -357,7 +357,7 @@ Testnet addresses are provided during onboarding.
 |----------|----------|
 | `SPOKE_ADDRESS` | Core Spoke. Source of the position set (indexer only) |
 | `ADAPTER_ADDRESS` | AaveAdapter. Entry point for `liquidate` and `liquidateWithLLP` |
-| `LENS_ADDRESS` | AaveAdapterLiquidationPreview. `estimateLiquidation` |
+| `LENS_ADDRESS` | AaveAdapterLens. `estimateLiquidation` |
 | `WBTC_ADDRESS` | WBTC token |
 | `LLP_ADDRESS` | BTCVaultSwap, for LLP-mode redemption under inventory funding |
 

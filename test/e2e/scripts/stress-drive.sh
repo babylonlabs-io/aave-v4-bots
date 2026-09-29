@@ -340,7 +340,7 @@ if [[ -n "${STRESS_ROUTER:-}" ]]; then
         printf "  copying %s (vault %s) as the front-runner\n" "$FR_HASH" "$FRONTRUN_VAULT"
         # `--gas-limit` is load-bearing: it suppresses estimation. Estimation runs against the
         # PENDING block, which already holds the bot's own queued relay for this vault, so it
-        # reverts `VaultNotAcquirable` on a state that has already applied the transaction we are
+        # reverts `VaultNotEscrowed` on a state that has already applied the transaction we are
         # racing. `--legacy` because `--gas-price` alone yields a 1559 tx whose priority fee
         # exceeds its max fee. `--async` returns the hash so both can share one block, which is why
         # the receipt below — not the send — decides whether this actually executed.

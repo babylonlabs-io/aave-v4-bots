@@ -16,7 +16,7 @@ import type { ArbitrageMetrics } from "../engine";
 export interface EscrowedVaultPreview {
   amountVault: bigint;
   amountWbtcToAcquire: bigint;
-  amountProfitEst: bigint;
+  isProfitable: boolean;
 }
 
 export interface ArbitrageFunding {

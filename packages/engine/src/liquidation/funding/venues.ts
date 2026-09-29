@@ -38,8 +38,9 @@ export interface VenueRegistry {
   wbtc: Address;
   flashSwaps: readonly FlashSwapVenue[];
   /**
-   * Required, not optional. Vaults are indivisible, so a liquidation seizes whole vaults and the
-   * value left over once the debt is cleared is owed back to the borrower as the LLP fairness
+   * Required, not optional. Vaults are indivisible, so a liquidation seizes whole vaults. The
+   * value the seized vaults carry over the liquidation first repays more of the borrower's debt,
+   * and what is left once the debt is cleared is owed back to the borrower as the LLP fairness
    * payment — which the adapter pulls from the router in WBTC. Only a position deep enough
    * underwater to consume its vault entirely avoids one, and that is the exception rather than the
    * rule, so a flash setup without this venue would decline most of the work it was configured for.
@@ -63,9 +64,9 @@ const eq = (a: Address, b: Address) => getAddress(a) === getAddress(b);
 /**
  * Every token the registry can fund, WBTC last — the safe default for `buildFlashDatas`.
  *
- * Prefer this over deriving the list from the Lens estimate. `estimateLiquidation` pairs each
- * amount with a reserve id, and `LiquidationRouter` spreads those pairs back out over every
- * reserve (`_getReserves()`), so a list of *tokens* cannot describe them. Inventory funding
+ * Prefer this over deriving the list from the Lens estimate. `estimateLiquidation` indexes each
+ * amount by reserve id, and `LiquidationRouter` maps those ids to tokens through every reserve
+ * (`_getReserves()`), so a list of *tokens* cannot describe them. Inventory funding
  * resolves them through the reserve list for exactly this reason (`SpokeReserves`); flash funding
  * sidesteps the question instead.
  *

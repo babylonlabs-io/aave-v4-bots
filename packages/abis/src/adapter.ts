@@ -11,25 +11,23 @@ export const adapterAbi = [
     outputs: [{ name: "", type: "address" }],
     stateMutability: "view",
   },
-  // Both liquidation entry points seize exactly one vault — the head of the borrower's ordered
-  // list — and take the debt they cover as an (ids, amounts) pair rather than one slot per reserve.
-  // `maxWbtcPayment` caps the WBTC the adapter pulls on top of that debt, so an estimate that went
-  // stale between the read and the send is refused on-chain instead of charged.
+  // Both liquidation entry points seize a prefix of the borrower's ordered vault list. They take
+  // one debt amount per reserve, indexed by reserve id, and `priorityOrder` must list every index
+  // of `amounts` exactly once. The adapter pulls every amount up front and refunds what it does not
+  // use. It pulls the WBTC fairness payment separately and takes no cap on it, so the caller's WBTC
+  // allowance is the only bound.
   {
     type: "function",
     name: "liquidate",
     inputs: [
       { name: "borrower", type: "address" },
-      { name: "debtReserveIds", type: "uint256[]" },
-      { name: "debtToCoverAmounts", type: "uint256[]" },
-      { name: "minVaultBtcOut", type: "uint256" },
-      { name: "maxWbtcPayment", type: "uint256" },
       { name: "directBtcRedeemKey", type: "bytes32" },
+      { name: "amounts", type: "uint256[]" },
+      { name: "priorityOrder", type: "uint256[]" },
+      { name: "minVaultBtcOut", type: "uint256" },
+      { name: "numVaultsToLiquidate", type: "uint256" },
     ],
-    outputs: [
-      { name: "vaultIdLiquidated", type: "bytes32" },
-      { name: "amountCollateralLiquidated", type: "uint256" },
-    ],
+    outputs: [{ name: "vaultIds", type: "bytes32[]" }],
     stateMutability: "nonpayable",
   },
   {
@@ -38,9 +36,8 @@ export const adapterAbi = [
     inputs: [
       { name: "borrower", type: "address" },
       { name: "llp", type: "address" },
-      { name: "debtReserveIds", type: "uint256[]" },
-      { name: "debtToCoverAmounts", type: "uint256[]" },
-      { name: "maxWbtcPayment", type: "uint256" },
+      { name: "amounts", type: "uint256[]" },
+      { name: "priorityOrder", type: "uint256[]" },
       {
         name: "requestedTokens",
         type: "tuple[]",
@@ -50,18 +47,7 @@ export const adapterAbi = [
         ],
       },
     ],
-    outputs: [
-      { name: "vaultIdLiquidated", type: "bytes32" },
-      { name: "amountCollateralLiquidated", type: "uint256" },
-      {
-        name: "payouts",
-        type: "tuple[]",
-        components: [
-          { name: "token", type: "address" },
-          { name: "amount", type: "uint256" },
-        ],
-      },
-    ],
+    outputs: [{ name: "vaultIds", type: "bytes32[]" }],
     stateMutability: "nonpayable",
   },
   {

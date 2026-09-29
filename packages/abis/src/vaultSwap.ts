@@ -27,7 +27,7 @@ export const vaultSwapAbi = [
       { name: "maxWbtcIn", type: "uint256" },
       { name: "onBehalfOf", type: "address" },
     ],
-    outputs: [{ name: "wbtcPaid", type: "uint256" }],
+    outputs: [{ name: "amountWbtcIn", type: "uint256" }],
     stateMutability: "nonpayable",
   },
   // Whether a vault is still in escrow and available to acquire. Goes false once acquired — the
@@ -35,7 +35,7 @@ export const vaultSwapAbi = [
   // there first) from a genuine failure.
   {
     type: "function",
-    name: "isVaultAcquirable",
+    name: "isVaultEscrowed",
     inputs: [{ name: "vaultId", type: "bytes32" }],
     outputs: [{ name: "", type: "bool" }],
     stateMutability: "view",
@@ -75,9 +75,8 @@ export const vaultSwapAbi = [
           { name: "amountDebt", type: "uint256" },
           { name: "amountInterest", type: "uint256" },
           { name: "amountFee", type: "uint256" },
-          { name: "amountWbtcEquivalent", type: "uint256" },
           { name: "amountWbtcToAcquire", type: "uint256" },
-          { name: "amountProfitEst", type: "uint256" },
+          { name: "isProfitable", type: "bool" },
         ],
       },
     ],
@@ -113,6 +112,5 @@ export type VaultSwapErrorName = Extract<(typeof vaultSwapAbi)[number], { type: 
  * rather than a silently-never-matching string at a call site.
  */
 export const VAULT_GONE_ERRORS = [
-  "VaultNotAcquirable",
-  "InvalidEscrowedVaultStatus",
+  "VaultNotEscrowed",
 ] as const satisfies readonly VaultSwapErrorName[];

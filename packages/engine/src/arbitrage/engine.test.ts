@@ -95,18 +95,17 @@ function createMockClients() {
                   amountDebt: 50000000n,
                   amountInterest: 0n,
                   amountFee: 0n,
-                  amountWbtcEquivalent: 100000000n,
                   amountWbtcToAcquire: 50000000n,
-                  amountProfitEst: 50000000n,
+                  isProfitable: true,
                 }))
               );
             }
             if (functionName === "allowance") {
               return Promise.resolve(BigInt("1000000000000")); // High allowance
             }
-            // Default: the vault is still acquirable, so a reverted swap reads as a genuine failure
+            // Default: the vault is still in escrow, so a reverted swap reads as a genuine failure
             // (a lost-race test overrides this to false).
-            if (functionName === "isVaultAcquirable") {
+            if (functionName === "isVaultEscrowed") {
               return Promise.resolve(true);
             }
             return Promise.resolve(0n);
@@ -227,6 +226,8 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).not.toHaveBeenCalled();
     });
 
+    // The LLP flag decides alone: the margin in sats is positive here, but the LLP sells a vault it
+    // marks unprofitable at full debt.
     it("skips vault when not profitable for arbitrageur", async () => {
       const clients = createMockClients();
       clients.publicClient.readContract.mockImplementation(
@@ -243,9 +244,8 @@ describe("ArbitrageEngine", () => {
                 amountDebt: 100000n,
                 amountInterest: 1000n,
                 amountFee: 10n,
-                amountWbtcEquivalent: 100000n,
                 amountWbtcToAcquire: 100010n,
-                amountProfitEst: 0n,
+                isProfitable: false,
               }))
             );
           }
@@ -306,9 +306,8 @@ describe("ArbitrageEngine", () => {
                 amountDebt: 50000000n,
                 amountInterest: 0n,
                 amountFee: 0n,
-                amountWbtcEquivalent: 100000000n,
                 amountWbtcToAcquire: 50000000n,
-                amountProfitEst: 50000000n,
+                isProfitable: true,
               }))
             );
           }
@@ -349,9 +348,8 @@ describe("ArbitrageEngine", () => {
                 amountDebt: 50000000n,
                 amountInterest: 0n,
                 amountFee: 0n,
-                amountWbtcEquivalent: 100000000n,
                 amountWbtcToAcquire: 50000000n,
-                amountProfitEst: 50000000n,
+                isProfitable: true,
               }))
             );
           }
@@ -382,7 +380,7 @@ describe("ArbitrageEngine", () => {
         ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
           if (functionName === "balanceOf") return Promise.resolve(10n ** 18n);
           if (functionName === "allowance") return Promise.resolve(BigInt("1000000000000"));
-          if (functionName === "isVaultAcquirable") return Promise.resolve(true);
+          if (functionName === "isVaultEscrowed") return Promise.resolve(true);
           if (functionName === "previewEscrowedVaults") {
             const vaultIds = args[0] as readonly `0x${string}`[];
             return Promise.resolve(
@@ -392,9 +390,8 @@ describe("ArbitrageEngine", () => {
                 amountDebt: 1n,
                 amountInterest: 0n,
                 amountFee: 0n,
-                amountWbtcEquivalent: 100000000n,
                 amountWbtcToAcquire: 1n,
-                amountProfitEst: 50000000n,
+                isProfitable: true,
               }))
             );
           }
@@ -893,7 +890,7 @@ describe("ArbitrageEngine", () => {
         reverted(clients);
         const inner = clients.publicClient.readContract.getMockImplementation();
         clients.publicClient.readContract.mockImplementation((arg: { functionName: string }) => {
-          if (arg.functionName === "isVaultAcquirable") return Promise.resolve(false); // lost race
+          if (arg.functionName === "isVaultEscrowed") return Promise.resolve(false); // lost race
           return inner?.(arg);
         });
 
@@ -1008,10 +1005,10 @@ describe("ArbitrageEngine", () => {
     it("keeps the spend counted when an unsent acquisition was authorized and paid anyway", async () => {
       const clients = createMockClients();
       fundedWith(clients, balanceFor(1n));
-      clients.publicClient.estimateContractGas.mockRejectedValue(new Error("VaultNotAcquirable"));
+      clients.publicClient.estimateContractGas.mockRejectedValue(new Error("VaultNotEscrowed"));
       const inner = clients.publicClient.readContract.getMockImplementation();
       clients.publicClient.readContract.mockImplementation((arg: { functionName: string }) => {
-        if (arg.functionName === "isVaultAcquirable") return Promise.resolve(false);
+        if (arg.functionName === "isVaultEscrowed") return Promise.resolve(false);
         return inner?.(arg);
       });
 
@@ -1049,7 +1046,7 @@ describe("ArbitrageEngine", () => {
       // The vault is gone by the time we classify — from the receipt alone, an ordinary lost race.
       const inner = clients.publicClient.readContract.getMockImplementation();
       clients.publicClient.readContract.mockImplementation((arg: { functionName: string }) => {
-        if (arg.functionName === "isVaultAcquirable") return Promise.resolve(false);
+        if (arg.functionName === "isVaultEscrowed") return Promise.resolve(false);
         return inner?.(arg);
       });
 
@@ -1168,7 +1165,7 @@ describe("ArbitrageEngine", () => {
       expect(risk.state()).toBe("HALTED");
     });
 
-    it("does NOT trip the breaker when the revert is a lost race (vault no longer acquirable)", async () => {
+    it("does NOT trip the breaker when the revert is a lost race (vault no longer in escrow)", async () => {
       const clients = createMockClients();
       clients.publicClient.waitForTransactionReceipt.mockImplementation(
         ({ hash }: { hash: string }) =>
@@ -1180,7 +1177,7 @@ describe("ArbitrageEngine", () => {
           // The batch path budgets acquisitions against real WBTC inventory, so a
           // zero balance now (correctly) blocks every send. Fund the fixture.
           if (functionName === "balanceOf") return Promise.resolve(10n ** 18n);
-          if (functionName === "isVaultAcquirable") return Promise.resolve(false); // taken
+          if (functionName === "isVaultEscrowed") return Promise.resolve(false); // taken
           if (functionName === "previewEscrowedVaults") {
             const vaultIds = args[0] as readonly `0x${string}`[];
             return Promise.resolve(
@@ -1190,9 +1187,8 @@ describe("ArbitrageEngine", () => {
                 amountDebt: 50000000n,
                 amountInterest: 0n,
                 amountFee: 0n,
-                amountWbtcEquivalent: 100000000n,
                 amountWbtcToAcquire: 50000000n,
-                amountProfitEst: 50000000n,
+                isProfitable: true,
               }))
             );
           }
@@ -1297,9 +1293,9 @@ describe("ArbitrageEngine", () => {
       expect(metrics.recordError).toHaveBeenCalledWith("risk_blocked");
     });
 
-    it("skips a vault whose previewed profit does not cover the BTC redemption cost", async () => {
+    it("skips a vault whose previewed margin does not cover the BTC redemption cost", async () => {
       const clients = createMockClients();
-      // The mock previews `amountProfitEst` 50_000_000.
+      // The mock previews a margin of 50_000_000: amountVault − amountWbtcToAcquire.
       const bot = createBot(clients, { btcRedemptionCostSats: 50_000_000n });
 
       expect(await bot.acquireVault(mockVault)).toBe("skipped");
@@ -1617,7 +1613,7 @@ describe("ArbitrageEngine + router funding", () => {
           if (functionName === "balanceOf" || functionName === "allowance") {
             return Promise.resolve(capacity);
           }
-          if (functionName === "isVaultAcquirable") return Promise.resolve(true);
+          if (functionName === "isVaultEscrowed") return Promise.resolve(true);
           if (functionName === "previewEscrowedVaults") {
             return Promise.resolve(
               (args?.[0] as readonly `0x${string}`[]).map((vaultId) => ({
@@ -1626,9 +1622,8 @@ describe("ArbitrageEngine + router funding", () => {
                 amountDebt: 50_000_000n,
                 amountInterest: 0n,
                 amountFee: 0n,
-                amountWbtcEquivalent: 100_000_000n,
                 amountWbtcToAcquire: 50_000_000n,
-                amountProfitEst: 50_000_000n,
+                isProfitable: true,
               }))
             );
           }

@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 
 import {AaveAdapterMultiCollateralLoanBase} from "tbv-test/applications/aave/AaveAdapterMultiCollateralLoanBase.sol";
 import {IAaveSpoke as ISpoke} from "vault-contracts/applications/aave/interfaces/IAaveSpoke.sol";
+import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
 import {IAaveAdapterConfig} from "vault-contracts/applications/aave/interfaces/IAaveAdapterConfig.sol";
 import {TokenValueLib} from "vault-contracts/applications/aave/lib/TokenValueLib.sol";
 import {Types} from "./Types.sol";
@@ -40,6 +41,9 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
     ///      `_createLiquidatablePosition` so collateral values stay expressible in USD after the drop.
     TokenValueLib.TokenData internal vaultBTCData = TokenValueLib.TokenData({price: BTC_PRICE_USD * 1e8, unit: 1e8});
 
+    /// @notice The lens the router estimates liquidations with, deployed by `_deployTbvOnFork`.
+    AaveAdapterLens internal lens;
+
     /// @notice The borrower every scenario builds. `alice` from the contracts repo's test base.
     address internal borrower;
 
@@ -50,8 +54,8 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
     function setUp() public virtual override {}
 
     /// @notice Deploy the whole TBV stack onto the currently selected fork.
-    /// @dev Beyond the base deployment this wires the two things a router-driven liquidation needs
-    ///      and the plain adapter tests do not: the LLP as a spoke on the Hub's WBTC asset, so
+    /// @dev Beyond the base deployment this wires the three things a router-driven liquidation needs
+    ///      and the plain adapter tests do not: the lens the router estimates with, the LLP as a spoke on the Hub's WBTC asset, so
     ///      `BTCVaultSwap` can draw the WBTC it pays the liquidator, and WBTC as a listed reserve, so
     ///      the router's `_getReserves()` sees it and can size a WBTC flash borrow for the fairness
     ///      payment.
@@ -62,6 +66,8 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
         // A suite that forks twice in one test would otherwise size its second position against the
         // first one's post-drop price and quietly build a different scenario than the one it names.
         vaultBTCData = TokenValueLib.TokenData({price: BTC_PRICE_USD * 1e8, unit: 1e8});
+
+        lens = new AaveAdapterLens(address(btcVaultRegistry), address(adapter), address(spoke), reserveId);
 
         _addSpokeToHub(wbtcAssetId, address(vaultSwap));
         _addSpokeToHub(wbtcAssetId, address(spoke));
@@ -105,9 +111,8 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
         who = alice;
         borrower = who;
 
-        // One vault. The adapter seizes exactly the head of the borrower's list, so a single vault
-        // makes the seized collateral — and therefore the profit these suites assert on — the whole
-        // position rather than a prefix of it.
+        // One vault. The adapter seizes a prefix of the borrower's list, so a single vault makes the
+        // seized collateral — and therefore the profit these suites assert on — the whole position.
         createActiveVault(who, TokenValueLib.valueToAmountUp(scenario.collateralValueUsd * USD, vaultBTCData));
 
         _borrowMultiLoans(who, scenario.borrowValueUsd * USD, USDC_AND_USDT);

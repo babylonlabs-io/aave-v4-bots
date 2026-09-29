@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { LENS_HEALTHY_POSITION_ERROR, lensAbi } from "@repo/abis";
+import { LENS_HEALTHY_POSITION_REASON, lensAbi } from "@repo/abis";
 import { ContractFunctionRevertedError, encodeErrorResult } from "viem";
 import {
   type ChunkedProbe,
@@ -140,12 +140,20 @@ describe("probeInChunks", () => {
 });
 
 describe("summarizeProbes", () => {
+  const ERROR_STRING_ABI = [
+    { type: "error", name: "Error", inputs: [{ name: "reason", type: "string" }] },
+  ] as const;
+
   /** The lens's healthy-position revert, decoded the way viem decodes one off the wire. */
   const healthy = (): ChunkedProbe<number> => ({
     status: "failure",
     error: new ContractFunctionRevertedError({
       abi: lensAbi,
-      data: encodeErrorResult({ abi: lensAbi, errorName: LENS_HEALTHY_POSITION_ERROR }),
+      data: encodeErrorResult({
+        abi: ERROR_STRING_ABI,
+        errorName: "Error",
+        args: [LENS_HEALTHY_POSITION_REASON],
+      }),
       functionName: "estimateLiquidation",
     }),
   });

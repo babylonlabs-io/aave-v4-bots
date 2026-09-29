@@ -49,7 +49,7 @@ set in [liquidator-metrics.md](liquidator-metrics.md).
 | `ponder_fetch_error` | Failed to fetch `/escrowed-vaults` |
 | `vaults_unreadable` | The indexer answered but could not preview some escrowed vaults, for a reason other than the vault leaving escrow. Those vaults are missing from the list. Sustained, a vault or the RPC serving that read is persistently failing |
 | `vaults_malformed` | The indexer described some vaults in a shape the bot cannot use: a `vaultId` that is not 32-byte hex, or a `btcAmount`/`currentDebt` that is not a decimal integer. Those entries are dropped. Sustained, the indexer's wire format has changed |
-| `vault_skipped` | Vault not in escrow at preview time, or its previewed profit was zero |
+| `vault_skipped` | Vault not in escrow at preview time, or the preview is not profitable after `BTC_REDEMPTION_COST_SATS` |
 | `risk_blocked` | Risk gate denied the action |
 | `intent_in_flight` | A live persisted intent already exists for the vault |
 | `gas_estimation_failed` | Gas estimation for the swap failed and the vault is still in escrow. Covers a revert and an RPC error alike; an estimate that reverts because the vault is gone counts as `race_lost` instead |

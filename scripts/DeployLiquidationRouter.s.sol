@@ -12,8 +12,8 @@ import {LiquidationRouter} from "../contracts/LiquidationRouter.sol";
 /// @dev Usage:
 ///
 ///        LIQUIDATION_ROUTER_OWNER=0x…  # the bot's key. The only address the router will act for
-///        LENS_ADDRESS=0x…             # AaveAdapterLiquidationPreview; the router reads the adapter/spoke from it
-///        VAULT_SWAP_ADDRESS=0x…       # the BTCVaultSwap (LLP) the seized vault is sold to
+///        LENS_ADDRESS=0x…             # AaveAdapterLens; the router reads the adapter/spoke from it
+///        VAULT_SWAP_ADDRESS=0x…       # the BTCVaultSwap (LLP) the seized vaults are sold to
 ///        forge script scripts/DeployLiquidationRouter.s.sol:DeployLiquidationRouter \
 ///          --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
 ///

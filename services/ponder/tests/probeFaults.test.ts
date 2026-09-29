@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { LENS_HEALTHY_POSITION_ERROR, lensAbi, vaultSwapAbi } from "@repo/abis";
+import { LENS_HEALTHY_POSITION_REASON, lensAbi, vaultSwapAbi } from "@repo/abis";
 import {
   ContractFunctionExecutionError,
   ContractFunctionRevertedError,
@@ -54,7 +54,7 @@ const asThrown = (revert: ContractFunctionRevertedError) =>
 
 describe("isHealthyPositionRevert", () => {
   it("recognises the lens's healthy-position revert, wrapped or bare", () => {
-    const revert = customRevert(lensAbi, LENS_HEALTHY_POSITION_ERROR);
+    const revert = stringRevert(LENS_HEALTHY_POSITION_REASON);
     assert.equal(isHealthyPositionRevert(revert), true);
     assert.equal(isHealthyPositionRevert(asThrown(revert)), true);
   });
@@ -75,18 +75,17 @@ describe("isHealthyPositionRevert", () => {
   });
 
   // Neighbouring guard in the same call, and a genuinely different condition: an estimate that
-  // cannot clear the position without leaving debt behind. Worth surfacing, so it must not be
-  // swallowed.
-  it("does not accept the lens's other liquidation-state error", () => {
-    const revert = customRevert(lensAbi, "InvalidPostLiquidationState");
+  // cannot bring the position back to health. Worth surfacing, so it must not be swallowed.
+  it("does not accept the lens's other liquidation-state revert", () => {
+    const revert = stringRevert("Position must be healthy after liquidation");
     assert.equal(isHealthyPositionRevert(revert), false);
     assert.equal(isHealthyPositionRevert(asThrown(revert)), false);
   });
 
-  // A `require` string decodes to `errorName: "Error"` with the text in `reason`. The classifier
-  // reads `errorName`, so it must not be reachable by any string — including this one.
-  it("does not accept a require string, whatever it says", () => {
-    assert.equal(isHealthyPositionRevert(stringRevert(LENS_HEALTHY_POSITION_ERROR)), false);
+  // Every `require` string decodes to `errorName: "Error"`, so the reason alone tells them apart.
+  it("does not accept a require string with any other reason", () => {
+    assert.equal(isHealthyPositionRevert(stringRevert("nope")), false);
+    assert.equal(isHealthyPositionRevert(stringRevert("")), false);
   });
 
   it("does not accept a transport failure", () => {
@@ -97,9 +96,7 @@ describe("isHealthyPositionRevert", () => {
 
 describe("isVaultGoneRevert", () => {
   it("recognises a vault that has left escrow", () => {
-    for (const name of ["VaultNotAcquirable", "InvalidEscrowedVaultStatus"]) {
-      assert.equal(isVaultGoneRevert(asThrown(customRevert(vaultSwapAbi, name))), true);
-    }
+    assert.equal(isVaultGoneRevert(asThrown(customRevert(vaultSwapAbi, "VaultNotEscrowed"))), true);
   });
 
   it("does not accept an unrelated protocol error", () => {

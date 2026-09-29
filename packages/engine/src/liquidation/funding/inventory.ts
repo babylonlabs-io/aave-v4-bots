@@ -203,39 +203,29 @@ export class InventoryFunding implements LiquidationFunding {
 
   /** The adapter call — the same description simulated above and committed later. */
   private call(candidate: LiquidationCandidate): ContractCall {
-    const { position, debtReserveIds, debtToCoverAmounts, wbtcPayment } = candidate;
+    const { position, amounts } = candidate;
     const { adapterAddress, btcRedeemKey, llpAddress, isDirectRedemption } = this.deps;
 
-    // `wbtcPayment` is the cap, not an amount to send: the adapter recomputes the payment and
-    // refuses to charge more than this. It is the buffered estimate, so ordinary accrual between
-    // the read and the send passes while a payment that moved by more than the buffer reverts
-    // rather than draining the WBTC the arbitrage engine is spending from the same signer.
+    // The adapter requires `priorityOrder` to list every index of `amounts`, zero entries
+    // included. Ascending is the order the lens costed the liquidation in.
+    const priorityOrder = amounts.map((_, i) => BigInt(i));
+
+    // The adapter takes no cap on the WBTC payment: it recomputes it at execution and pulls it
+    // against the standing allowance, so only the signer's WBTC balance bounds it on-chain. The
+    // gate reserves the buffered `wbtcPayment`, which keeps the arbitrage engine from spending the
+    // WBTC an ordinary upward drift needs.
     return isDirectRedemption
       ? {
           address: adapterAddress,
           abi: adapterAbi,
           functionName: "liquidate",
-          args: [
-            position.borrower,
-            [...debtReserveIds],
-            [...debtToCoverAmounts],
-            0n,
-            wbtcPayment,
-            btcRedeemKey,
-          ],
+          args: [position.borrower, btcRedeemKey, [...amounts], priorityOrder, 0n, maxUint256],
         }
       : {
           address: adapterAddress,
           abi: adapterAbi,
           functionName: "liquidateWithLLP",
-          args: [
-            position.borrower,
-            llpAddress,
-            [...debtReserveIds],
-            [...debtToCoverAmounts],
-            wbtcPayment,
-            [],
-          ],
+          args: [position.borrower, llpAddress, [...amounts], priorityOrder, []],
         };
   }
 
@@ -244,9 +234,9 @@ export class InventoryFunding implements LiquidationFunding {
    * in that reserve's token) plus the adapter's WBTC payment. Declared so the arbitrage engine
    * sharing this signer cannot commit the same balance to a vault.
    *
-   * No `expectedProfit`: liquidation profit is not derivable off-chain on this path. The preview
-   * returns debt amounts and the seized vault's BTC amount, and `liquidate`/`liquidateWithLLP`
-   * return the same, so nothing yields a WBTC-denominated figure. The gate skips its profit floor
+   * No `expectedProfit`: liquidation profit is not derivable off-chain on this path. The lens
+   * returns debt amounts and the seized vault ids, and `liquidate`/`liquidateWithLLP` return the
+   * vault ids, so nothing yields a WBTC-denominated figure. The gate skips its profit floor
    * when it is undefined — which is why a profit floor is rejected outright for an
    * inventory-funded engine.
    */
@@ -257,13 +247,12 @@ export class InventoryFunding implements LiquidationFunding {
   /**
    * What this candidate's call can pull from the signer, per token.
    *
-   * A candidate names its debt as `(reserve id, amount)` pairs, and the adapter pulls each amount
-   * in the underlying of the reserve at that **id** — not at that position in the array, which
-   * lists only the reserves carrying debt. So the token behind an amount comes from the reserve at
-   * the paired id and from nowhere else. Deriving it from the borrowable subset (which skips
-   * reserve ids) charges one token's outflow to another's balance the moment any non-borrowable
-   * reserve sorts before a borrowable one, and the gate then admits liquidations the signer cannot
-   * fund while blocking ones it can.
+   * A candidate names its debt as one amount per reserve, and the adapter pulls each amount in the
+   * underlying of the reserve whose **id** is its index. So the token behind an amount comes from
+   * the reserve at that id and from nowhere else. Deriving it from the borrowable subset (which
+   * skips reserve ids) charges one token's outflow to another's balance the moment any
+   * non-borrowable reserve sorts before a borrowable one, and the gate then admits liquidations the
+   * signer cannot fund while blocking ones it can.
    *
    * Everything that could make the mapping a guess throws instead. A wrong entry here is not a bad
    * estimate — it is the shared signer's overdraw guard pointed at the wrong balance, and since a
@@ -278,11 +267,13 @@ export class InventoryFunding implements LiquidationFunding {
         "inventory funding vetted a candidate before refreshInventory read the Spoke"
       );
     }
-    if (candidate.debtReserveIds.length !== candidate.debtToCoverAmounts.length) {
-      // Not zipped to the shorter of the two: the pairing *is* the token mapping, so a length that
-      // disagrees means every pair past the shorter array is a guess.
+    if (candidate.amounts.length !== reserves.length) {
+      // The lens and the Spoke disagree about what is listed, which means one of them is not the
+      // deployment we think it is. The index *is* the token mapping, so every amount past the
+      // shorter list has no token to charge it to, and guessing is the failure this function
+      // exists to prevent.
       throw new Error(
-        `Lens returned ${candidate.debtReserveIds.length} reserve id(s) but ${candidate.debtToCoverAmounts.length} amount(s) for ${candidate.position.proxyAddress} — refusing to attribute the spend`
+        `Lens returned ${candidate.amounts.length} amount(s) for ${candidate.position.proxyAddress} but the Spoke lists ${reserves.length} reserve(s) — refusing to attribute the spend`
       );
     }
 
@@ -309,17 +300,8 @@ export class InventoryFunding implements LiquidationFunding {
     // frozen reserve is still liquidatable by anyone holding its token — and where that token is
     // one we already hold (another reserve lists it, or it is WBTC) this liquidation simply works.
     // Where we do not hold it, the gate has no balance for it and blocks the action by itself.
-    for (const [i, id] of candidate.debtReserveIds.entries()) {
-      const reserve = reserves[Number(id)];
-      if (!reserve) {
-        // The preview and the Spoke disagree about what is listed, which means one of them is not
-        // the deployment we think it is. There is no token to charge this to, and guessing is the
-        // failure this whole function exists to prevent.
-        throw new Error(
-          `Lens returned reserve id ${id} for ${candidate.position.proxyAddress} but the Spoke lists ${reserves.length} reserve(s) — refusing to attribute the spend`
-        );
-      }
-      add(reserve.token, candidate.debtToCoverAmounts[i]);
+    for (const [i, amount] of candidate.amounts.entries()) {
+      add(reserves[i].token, amount);
     }
 
     // The adapter's fairness payment (plus the redemption fee in direct mode) is a separate pull

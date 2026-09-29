@@ -7,7 +7,7 @@ export interface LiquidatablePosition {
   debtReserveIds: string[];
   /** Debt to cover, one per entry of `debtReserveIds`. */
   debtToCoverAmounts: string[];
-  /** The head vault the liquidation would seize. */
+  /** The first vault of the prefix the liquidation would seize. */
   vaultId: string;
   suppliedShares: string;
 }

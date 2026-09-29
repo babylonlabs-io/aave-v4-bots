@@ -161,14 +161,15 @@ app.get("/liquidatable-positions", async (c) => {
   }
 
   // estimateLiquidation reverts for healthy positions and returns
-  // [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId,
-  // amountCollateralToSeize] for liquidatable ones. The wbtcPayment is pulled
+  // [amounts, wbtcPayment, vaults] for liquidatable ones: one debt amount per
+  // reserve, indexed by reserve id, and the prefix of vaults the liquidation
+  // seizes. The wbtcPayment is pulled
   // directly from msg.sender by the adapter at liquidation time, so the API
   // response doesn't need to expose it — the client just needs enough WBTC
   // approved + balance. We unify both paths to a
   // { status: "success" | "failure", value/error } shape so the loop below
   // doesn't care which one ran.
-  type Estimate = readonly [readonly bigint[], readonly bigint[], bigint, `0x${string}`, bigint];
+  type Estimate = readonly [readonly bigint[], bigint, readonly `0x${string}`[]];
 
   // A batch that fails as a whole costs its own positions and nothing more, and `unscanned` says
   // how many that was — see `probeInChunks`.
@@ -242,14 +243,17 @@ app.get("/liquidatable-positions", async (c) => {
   // Each candidate counts once: a success or a healthy revert is checked, anything else is
   // unscanned. See `summarizeProbes`.
   const { succeeded, checked, unscanned, faults } = summarizeProbes(candidates, probes);
+  // The wire format lists only the reserves carrying debt, as (id, amount) pairs, and names the
+  // first vault of the seized prefix.
   const liquidatable = succeeded.map(({ candidate: { position, borrower }, value }) => {
-    const [debtReserveIds, debtToCoverAmounts, , vaultId] = value;
+    const [amounts, , vaults] = value;
+    const covered = amounts.flatMap((amt, id) => (amt > 0n ? [{ id, amt }] : []));
     return {
       proxyAddress: position.proxyAddress,
       borrower,
-      debtReserveIds: debtReserveIds.map((id) => id.toString()),
-      debtToCoverAmounts: debtToCoverAmounts.map((amt) => amt.toString()),
-      vaultId,
+      debtReserveIds: covered.map(({ id }) => id.toString()),
+      debtToCoverAmounts: covered.map(({ amt }) => amt.toString()),
+      vaultId: vaults[0] ?? "",
       suppliedShares: position.suppliedShares.toString(),
     };
   });
@@ -348,14 +352,13 @@ app.get("/escrowed-vaults", async (c) => {
     amountDebt: bigint;
     amountInterest: bigint;
     amountFee: bigint;
-    amountWbtcEquivalent: bigint;
     amountWbtcToAcquire: bigint;
-    amountProfitEst: bigint;
+    isProfitable: boolean;
   }) => ({
     vaultId: info.vaultId,
     btcAmount: info.amountVault.toString(),
     currentDebt: info.amountWbtcToAcquire.toString(),
-    isProfitable: info.amountProfitEst > 0n,
+    isProfitable: info.isProfitable,
     createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
   });
 

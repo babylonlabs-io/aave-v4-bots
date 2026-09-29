@@ -15,7 +15,7 @@ const VAULT_SWAP = "0x5555555555555555555555555555555555555555" as const;
 const KEEPER = "0x6666666666666666666666666666666666666666" as const;
 const VAULT_ID = `0x${"7".repeat(64)}` as `0x${string}`;
 
-const PREVIEW = { amountVault: 100n, amountWbtcToAcquire: 80n, amountProfitEst: 20_000n };
+const PREVIEW = { amountVault: 100n, amountWbtcToAcquire: 80n, isProfitable: true };
 
 function build(
   opts: {
@@ -268,23 +268,29 @@ describe("RouterFunding", () => {
       expect(message.deadline).toBe(1_700_000_120n);
     });
 
-    // Not `RISK_MIN_PROFIT`: that floor is raw-BTC-denominated and already carried by `maxWbtcIn`.
-    // This one only bounds how far the LLP's own oracle-denominated estimate may drift downward.
-    it("floors the router's profit check at the preview less slippage", async () => {
-      const { funding } = build();
-      await funding.prepare();
+    // Not `RISK_MIN_PROFIT`: the gate applied that floor before it admitted the acquisition. This
+    // one holds the router to the worst case the spend ceiling allows, `amountVault - maxWbtcIn`.
+    // The argument is a `uint256`, so a ceiling above the vault's value clamps the floor at zero.
+    it.each([
+      ["below", 90n, 10n],
+      ["above", 120n, 0n],
+    ])(
+      "floors the router's profit check at the vault less the ceiling (ceiling %s the vault)",
+      async (_label, maxWbtcIn, floor) => {
+        const { funding } = build();
+        await funding.prepare();
 
-      const { call } = await funding.buildAcquisition({
-        vaultId: VAULT_ID,
-        preview: PREVIEW,
-        maxWbtcIn: 90n,
-      });
+        const { call } = await funding.buildAcquisition({
+          vaultId: VAULT_ID,
+          preview: PREVIEW,
+          maxWbtcIn,
+        });
 
-      const [message] = call.args as [{ calls: readonly { data: `0x${string}` }[] }];
-      const inner = decodeFunctionData({ abi: arbitrageRouterAbi, data: message.calls[0].data });
-      // 20_000 * (10_000 - 100) / 10_000
-      expect(inner.args?.[3]).toBe(19_800n);
-    });
+        const [message] = call.args as [{ calls: readonly { data: `0x${string}` }[] }];
+        const inner = decodeFunctionData({ abi: arbitrageRouterAbi, data: message.calls[0].data });
+        expect(inner.args?.[3]).toBe(floor);
+      }
+    );
   });
 
   describe("authorizationExpired", () => {
