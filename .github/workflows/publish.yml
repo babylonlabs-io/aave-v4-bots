@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to a branch supersedes its image. A tag build runs to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 # Two images, matching the production architecture proposal: one bot service
 # (the arbitrageur composition root, which also runs the liquidation engine
 # when ADAPTER_ADDRESS+LENS_ADDRESS are set) and one mode-gated ponder
@@ -21,7 +26,6 @@ permissions:
 jobs:
   docker_bots_indexer:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
-    secrets: inherit
     with:
       publish: true
       dockerfile: ./docker/ponder.Dockerfile
@@ -35,7 +39,6 @@ jobs:
 
   docker_bots_svc:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
-    secrets: inherit
     with:
       publish: true
       dockerfile: ./docker/arbitrageur.Dockerfile
