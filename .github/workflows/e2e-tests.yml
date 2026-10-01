@@ -6,8 +6,11 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Only pull request runs share a group, so a new push to a PR cancels its
+# superseded run. Every other run gets its own group and is never cancelled
+# or replaced, as without a concurrency block.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

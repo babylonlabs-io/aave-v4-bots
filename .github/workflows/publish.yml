@@ -13,10 +13,12 @@ on:
 permissions:
   contents: read
 
-# A newer push to a branch supersedes its image. A tag build runs to the end.
+# Only pull request runs share a group, so a new push to a PR cancels its
+# superseded run. Every other run gets its own group and is never cancelled
+# or replaced, as without a concurrency block.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Two images, matching the production architecture proposal: one bot service
 # (the arbitrageur composition root, which also runs the liquidation engine
@@ -25,7 +27,7 @@ concurrency:
 # runs but is not published as an image.
 jobs:
   docker_bots_indexer:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@902082b8e5c0a1fed7be6980fa6a1b77fc005c06 # v0.23.0
     with:
       publish: true
       dockerfile: ./docker/ponder.Dockerfile
@@ -38,7 +40,7 @@ jobs:
       packages: read
 
   docker_bots_svc:
-    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@98e4de18638b3d0738c9cbf7e7dfc6e34524db54 # v0.19.1 https://github.com/babylonlabs-io/.github/releases/tag/v0.19.1
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@902082b8e5c0a1fed7be6980fa6a1b77fc005c06 # v0.23.0
     with:
       publish: true
       dockerfile: ./docker/arbitrageur.Dockerfile
