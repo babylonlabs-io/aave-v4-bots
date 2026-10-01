@@ -1,14 +1,14 @@
 {
   "lib/tbv-contracts": {
-    "rev": "2c9028e15dc3ee1108472dff3c0609b7518cf82b"
+    "rev": "74de8a7ad86708a3b7ae08d04857ebb57a392bb7"
   },
   "lib/universal-router": {
     "branch": {
       "name": "main",
-      "rev": "cb222d358a2ea780feedee6990ff8a3c185301bf"
+      "rev": "d203e7f5525aeae385800f9490b93886711701df"
     }
   },
   "lib/v4-periphery": {
-    "rev": "363226d9e1e2180b67bf6857023dbaad751010c5"
+    "rev": "545a5d2a87228167edde48f3b9eda122d1e3c4d6"
   }
 }
