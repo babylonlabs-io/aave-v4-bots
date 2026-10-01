@@ -110,11 +110,11 @@ abstract contract BaseBot is BaseE2E {
         }
     }
 
-    /// @notice Whether a vault still sits escrowed in the VaultSwap awaiting a buyer. The VaultSwap
-    ///         drops its escrow entry on acquisition, so this returns false once the vault left escrow.
-    function _isVaultEscrowed(bytes32 vaultId) internal returns (bool) {
+    /// @notice Whether a vault still sits escrowed in the VaultSwap awaiting a buyer. Once acquired
+    ///         its status flips to Redeemed and this returns false — the proxy for "left escrow".
+    function _isVaultAcquirable(bytes32 vaultId) internal returns (bool) {
         bytes memory result =
-            ffi_castCall(address(vaultSwap), "isVaultEscrowed(bytes32)", ArrayHelper.create(_vm.toString(vaultId)));
+            ffi_castCall(address(vaultSwap), "isVaultAcquirable(bytes32)", ArrayHelper.create(_vm.toString(vaultId)));
         return abi.decode(result, (bool));
     }
 
@@ -149,17 +149,17 @@ abstract contract BaseBot is BaseE2E {
     }
 
     /// @notice Poll until the vault is acquired, up to `timeoutSeconds`. Redeemed **or** no longer
-    ///         escrowed both count: `swapWbtcForVault*` redeems atomically, so a vault that left
+    ///         acquirable both count: `swapWbtcForVault*` redeems atomically, so a vault that left
     ///         escrow was bought even if a status read races the redemption.
     function _waitForAcquisition(bytes32 vaultId, uint256 timeoutSeconds) internal returns (bool acquired) {
         for (uint256 elapsed = 0;; elapsed += 5) {
             (BTCVaultTypes.BTCVaultStatus status,) = _getVaultStatusAndAmount(vaultId);
             bool redeemed = status == BTCVaultTypes.BTCVaultStatus.Redeemed;
-            bool escrowed = _isVaultEscrowed(vaultId);
-            if (redeemed || !escrowed) {
+            bool acquirable = _isVaultAcquirable(vaultId);
+            if (redeemed || !acquirable) {
                 console.log("Acquisition detected after", elapsed, "seconds");
                 console.log("  vault redeemed:", redeemed);
-                console.log("  still escrowed:", escrowed);
+                console.log("  still acquirable (escrowed):", acquirable);
                 return true;
             }
             if (elapsed >= timeoutSeconds) return false;

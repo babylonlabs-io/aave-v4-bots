@@ -352,19 +352,19 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
 
   /**
    * Whether the vault has left escrow — i.e. another arbitrageur acquired it. Used only to classify
-   * a reverted swap: `isVaultEscrowed` returns a clean bool, so a genuine RPC failure throws and
+   * a reverted swap: `isVaultAcquirable` returns a clean bool, so a genuine RPC failure throws and
    * is caught as `false` (still acquirable ⇒ treat the revert as a real failure). Failing toward
    * "not a lost race" is deliberate: a blip must never exempt a real failure from the breaker.
    */
   private async wasVaultTaken(vaultId: Hex): Promise<boolean> {
     try {
-      const escrowed = await this.publicClient.readContract({
+      const acquirable = await this.publicClient.readContract({
         address: this.vaultSwapAddress,
         abi: vaultSwapAbi,
-        functionName: "isVaultEscrowed",
+        functionName: "isVaultAcquirable",
         args: [vaultId],
       });
-      return !escrowed;
+      return !acquirable;
     } catch {
       return false;
     }
@@ -503,13 +503,8 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
       }
 
       const preview = previewResults[0];
-      // The LLP sells a vault it marks unprofitable at full debt, so its flag is checked first. The
-      // margin is on the gross vault BTC (both legs in sats), so it must also cover the claim's
-      // cost.
-      if (
-        !preview.isProfitable ||
-        preview.amountVault - preview.amountWbtcToAcquire <= this.btcRedemptionCostSats
-      ) {
+      // The preview's profit is on the gross vault BTC, so it must also cover the claim's cost.
+      if (preview.amountProfitEst <= this.btcRedemptionCostSats) {
         this.logger.warn(
           `Vault ${vaultId} is currently unprofitable after a ${this.btcRedemptionCostSats} sat BTC redemption cost, skipping`
         );

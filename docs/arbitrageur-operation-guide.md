@@ -571,18 +571,16 @@ and the router's recent events explain the failures, and resume.
 | `amountVault` | BTC in the vault (sats) |
 | `amountDebt` | Current Hub debt: principal plus accrued interest |
 | `amountInterest` | Interest accrued since escrow |
-| `amountFee` | Protocol commission on the oracle WBTC value of the vault minus `amountDebt`. Zero when `isProfitable` is `false` |
+| `amountWbtcEquivalent` | Oracle value of the vault in WBTC |
+| `amountFee` | Protocol commission on `amountWbtcEquivalent - amountDebt`. Zero when that is not positive |
 | `amountWbtcToAcquire` | What the arbitrageur pays: `amountDebt + amountFee` |
-| `isProfitable` | `true` when `amountDebt` is below the oracle WBTC value of the vault |
+| `amountProfitEst` | `max(0, amountWbtcEquivalent - amountWbtcToAcquire)` |
 
-The contract sells a vault with `isProfitable = false` at its full debt. The bot does not buy it.
-
-The indexer serves `currentDebt` (`amountWbtcToAcquire`) and `isProfitable`. The bot re-reads the
-preview before each acquisition and authorizes
-`maxWbtcIn = amountWbtcToAcquire + amountWbtcToAcquire * MAX_SLIPPAGE_BPS / 10000`. The bot skips a
-vault when `isProfitable` is `false` or when `amountVault - amountWbtcToAcquire` does not exceed
-`BTC_REDEMPTION_COST_SATS`. Debt accrues while a vault sits in escrow, so the discount shrinks over
-time.
+The indexer serves `currentDebt` (`amountWbtcToAcquire`) and `isProfitable`
+(`amountProfitEst > 0`). The bot re-reads the preview before each acquisition and authorizes
+`maxWbtcIn = amountWbtcToAcquire + amountWbtcToAcquire * MAX_SLIPPAGE_BPS / 10000`. A vault whose
+`amountProfitEst` does not exceed `BTC_REDEMPTION_COST_SATS` is skipped. Debt accrues while a vault
+sits in escrow, so the discount shrinks over time.
 
 `amountVault` is the gross vault BTC. The keeper's claim on Bitcoin pays the Claim, Assert and
 Payout fees and anchors, and the Payout takes its fee out of the vault BTC. A keeper claim carries
@@ -637,7 +635,7 @@ compromised too. Its `owner` is this signer, and it sweeps proceeds there.
 | `EXECUTION_MODE=MANUAL is keyless` | A signer variable or the key env var is present | Unset it |
 | `Indexer ... was not ready within ...` | Backfill longer than `INDEXER_READY_TIMEOUT_MS` | Wait, or raise it |
 | `halted (...)` in logs | Risk gate HALTED | `GET /status`, read `reason`, then `POST /resume` |
-| `vault_skipped` | Vault left escrow, or the preview is not profitable after `BTC_REDEMPTION_COST_SATS` | Normal |
+| `vault_skipped` | Vault left escrow, or previewed profit is zero | Normal |
 | `race_lost` | Another arbitrageur took the vault | Normal competition |
 | `swap_reverted` | Reverted with the vault still in escrow | Inspect the revert. Counts toward the breaker |
 | `authorization_expired` | Signed batch sat behind a stalled nonce past `ARBITRAGE_RELAY_DEADLINE_SECONDS` | Look at nonce gaps, not the market |

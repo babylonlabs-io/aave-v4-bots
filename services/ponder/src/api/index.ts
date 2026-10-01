@@ -118,9 +118,9 @@ app.use("/sql/*", client({ db, schema }));
  * GET /liquidatable-positions
  *
  * Returns all positions that are liquidatable by calling estimateLiquidation
- * on the AaveAdapterLiquidationPreview contract. The call reverts for healthy
+ * on the AaveAdapterLens contract. The call reverts for healthy
  * positions and succeeds for liquidatable ones, returning the required inputs
- * and the vault that will be seized.
+ * and the vaults that will be seized.
  */
 app.get("/liquidatable-positions", async (c) => {
   const publicClient = Object.values(publicClients)[0] as PublicClient | undefined;
@@ -352,13 +352,14 @@ app.get("/escrowed-vaults", async (c) => {
     amountDebt: bigint;
     amountInterest: bigint;
     amountFee: bigint;
+    amountWbtcEquivalent: bigint;
     amountWbtcToAcquire: bigint;
-    isProfitable: boolean;
+    amountProfitEst: bigint;
   }) => ({
     vaultId: info.vaultId,
     btcAmount: info.amountVault.toString(),
     currentDebt: info.amountWbtcToAcquire.toString(),
-    isProfitable: info.isProfitable,
+    isProfitable: info.amountProfitEst > 0n,
     createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
   });
 

@@ -28,8 +28,7 @@ import {IBTCVaultSwap} from "vault-contracts/applications/aave/interfaces/IBTCVa
 ///      operational response to a lost signer key is for `payer` to revoke its approval.
 ///
 ///      Profit is not realized on-chain. The router pays WBTC and the vault is redeemed to a Bitcoin key
-///      off-chain, so `minProfit` bounds the margin the LLP preview shows at execution time, not settlement.
-///      That margin is `amountVault - amountWbtcToAcquire`: BTC received minus WBTC paid, both in satoshis.
+///      off-chain, so `minProfit` bounds the estimate the LLP reports at execution time, not settlement.
 contract ArbitrageRouter is SelfCallRelayer {
     using SafeERC20 for IERC20;
 
@@ -80,7 +79,7 @@ contract ArbitrageRouter is SelfCallRelayer {
     /// @notice Buys one escrowed vault from `vaultSwap` and has it redeemed to `onBehalfOf`'s BTC key.
     /// @dev Reachable only through {SelfCallRelayer-relay}, so every execution is signer-authorized.
     ///
-    ///      Flow: preview the vault, check the profit margin, pull exactly `amountWbtcToAcquire` from
+    ///      Flow: preview the vault, check the estimated profit, pull exactly `amountWbtcToAcquire` from
     ///      `payer`, approve the LLP for that amount, swap, reset the approval to zero, and sweep any WBTC
     ///      left on this contract back to `payer`.
     ///
@@ -93,7 +92,7 @@ contract ArbitrageRouter is SelfCallRelayer {
     /// @param vaultSwap BTCVaultSwap (LLP) holding the vault in escrow
     /// @param vaultId Vault to acquire
     /// @param onBehalfOf Registered, non-blocklisted vault keeper whose BTC key receives the vault
-    /// @param minProfit Minimum acceptable `amountVault - amountWbtcToAcquire`, in satoshis, at execution time
+    /// @param minProfit Minimum acceptable `amountProfitEst`, in WBTC terms, at execution time
     /// @param maxWbtcIn Maximum WBTC to spend on the swap; must be at least `amountWbtcToAcquire` from the preview
     function swapWbtcToVault(
         address vaultSwap,
@@ -103,13 +102,7 @@ contract ArbitrageRouter is SelfCallRelayer {
         uint256 maxWbtcIn
     ) external onlySelf {
         IBTCVaultSwap.EscrowedVaultPreviewResult memory preview = _preview(vaultSwap, vaultId);
-        // The LLP sells an unprofitable vault at full debt, so its own flag gates the swap first. The margin check is
-        // stated without a subtraction that can underflow, so a vault priced above its BTC gives the message below.
-        require(
-            preview.isProfitable && preview.amountVault >= preview.amountWbtcToAcquire
-                && preview.amountVault - preview.amountWbtcToAcquire >= minProfit,
-            "ArbitrageRouter: insufficient profit"
-        );
+        require(preview.amountProfitEst >= minProfit, "ArbitrageRouter: insufficient profit");
         require(preview.amountWbtcToAcquire <= maxWbtcIn, "ArbitrageRouter: exceeds maxWbtcIn");
 
         IERC20(wbtc).safeTransferFrom(payer, address(this), preview.amountWbtcToAcquire);
@@ -126,10 +119,10 @@ contract ArbitrageRouter is SelfCallRelayer {
     }
 
     /// @dev Previews a single vault through the LLP's batch preview entrypoint.
-    ///      Reverts inside the LLP if the vault is not escrowed.
+    ///      Reverts inside the LLP if the vault is not escrowed or is marked as deficit.
     /// @param vaultSwap BTCVaultSwap (LLP) to query
     /// @param vaultId Vault to preview
-    /// @return Current cost, profitability flag, and vault accounting for `vaultId`
+    /// @return Current cost, profit estimate, and vault accounting for `vaultId`
     function _preview(address vaultSwap, bytes32 vaultId)
         internal
         view

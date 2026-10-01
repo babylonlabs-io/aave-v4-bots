@@ -8,6 +8,7 @@ import {BtcHelpers} from "test-utils/BtcHelpers.sol";
 import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
 import {AaveAdapterLens} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
+import {PeginFingerprintLib} from "test-utils/PeginFingerprintLib.sol";
 import {E2EConstants} from "../E2EConstants.sol";
 
 /// @title BaseE2ESetup
@@ -196,7 +197,10 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         bytes32 secret = keccak256(abi.encodePacked("e2e_liq_secret", block.number, depositor));
         bytes32 hashlock = sha256(abi.encodePacked(secret));
 
-        bytes32 vaultProviderBtcKey = btcVaultRegistry.getVaultProviderBTCKey(vp);
+        // The key the validators will re-derive this peg-in against is the provider's *current*
+        // operation key, not its genesis key. They differ once the provider rotates, and a peg-in
+        // built from the genesis key is rejected at that point.
+        bytes32 vaultProviderBtcKey = btcVaultRegistry.getCurrentOperationBtcKey(vp);
         bytes memory btcPopSignature =
             PopHelpers.getBip322P2wpkh(vm, depositorBtcPubKey, PopHelpers.ACTION_PEGIN, address(btcVaultRegistry));
         (bytes memory unsignedPeginTx, string memory prevoutTxid, uint32 prevoutVout, uint64 utxoAmount) =
@@ -218,7 +222,11 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
             hashlock,
             0,
             _E2E_DUMMY_PAYOUT_ADDRESS,
-            _E2E_WOTS_PK_HASH
+            _E2E_WOTS_PK_HASH,
+            // The registry recomputes this from live state and rejects any mismatch, so it has to be
+            // built from the same block the Pre-PegIn above was built against. Read here rather than
+            // earlier for that reason; the suite rotates nothing, so it always matches.
+            PeginFingerprintLib.compute(btcVaultRegistry, applicationRegistry, protocolParams, vp)
         );
         vm.stopBroadcast();
 

@@ -8,7 +8,7 @@ import {Types} from "./lib/Types.sol";
 import {AaveAdapterLens, ISpoke} from "vault-contracts/applications/aave/AaveAdapterLens.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {BTCVaultSwap} from "vault-contracts/applications/aave/llps/BTCVaultSwap.sol";
+import {BTCVaultSwap} from "vault-contracts/applications/aave/llps/BTCVaultSwap/BTCVaultSwap.sol";
 
 /// @notice Owner-operated bot that liquidates an Aave v4 position, funding the debt repayment with flash
 ///         liquidity and selling the seized WBTC collateral back into the borrowed assets.

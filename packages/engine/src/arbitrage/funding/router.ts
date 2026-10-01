@@ -469,13 +469,7 @@ export class RouterFunding implements ArbitrageFunding {
     const data = encodeFunctionData({
       abi: arbitrageRouterAbi,
       functionName: "swapWbtcToVault",
-      args: [
-        vaultSwapAddress,
-        vaultId,
-        vaultKeeperAddress,
-        this.minProfit(preview, maxWbtcIn),
-        maxWbtcIn,
-      ],
+      args: [vaultSwapAddress, vaultId, vaultKeeperAddress, this.minProfit(preview), maxWbtcIn],
     });
 
     // Chain time, not wall clock: the router compares against `block.timestamp`, and a node whose
@@ -558,21 +552,22 @@ export class RouterFunding implements ArbitrageFunding {
   }
 
   /**
-   * The floor the router enforces on the LLP's margin at execution time.
+   * The floor the router enforces on the LLP's own estimate at execution time.
    *
-   * The router measures `amountVault - amountWbtcToAcquire`, both in sats, on the preview it reads
-   * in the same transaction. The cost may rise between our read and execution as interest accrues,
-   * and `maxWbtcIn` already bounds how far: the router refuses to pay above it. So the margin at
-   * execution is at least `amountVault - maxWbtcIn`, and that is the floor — it holds the router to
-   * the same worst case the spend ceiling allows, and never refuses a swap the ceiling admits.
+   * Deliberately **not** `RISK_MIN_PROFIT`. That floor is denominated in raw BTC sats against the
+   * worst-case spend (`amountVault - maxWbtcIn`), and it is already carried on-chain by `maxWbtcIn`:
+   * the gate admitted this acquisition because the ceiling cleared the floor, and the router refuses
+   * to pay above that ceiling. The router's own `minProfit` measures something else —
+   * `max(0, amountVault * oraclePrice - amountWbtcToAcquire)`, oracle-denominated and clamped at
+   * zero — so passing the operator's floor here would apply it to a quantity they never chose.
    *
-   * Deliberately **not** `RISK_MIN_PROFIT`. The gate applied that floor to this same worst case,
-   * net of the BTC redemption cost, before admitting the acquisition.
-   *
-   * Clamped at zero: the argument is a `uint256`. The router also requires the LLP's own
-   * `isProfitable` flag, so a zero floor still refuses a vault the LLP prices above its value.
+   * What it does bound is drift: the estimate may fall between our read and execution as interest
+   * accrues, and this allows it to fall by the same slippage the spend ceiling allows it to rise.
    */
-  private minProfit(preview: EscrowedVaultPreview, maxWbtcIn: bigint): bigint {
-    return preview.amountVault > maxWbtcIn ? preview.amountVault - maxWbtcIn : 0n;
+  private minProfit(preview: EscrowedVaultPreview): bigint {
+    // Clamped at 100%: the argument is a `uint256`, and a slippage above 10_000 bps would make this
+    // negative and fail to encode. Past that point the floor is zero anyway — every drop allowed.
+    const slippage = BigInt(Math.min(this.deps.maxSlippageBps, 10_000));
+    return (preview.amountProfitEst * (10_000n - slippage)) / 10_000n;
   }
 }

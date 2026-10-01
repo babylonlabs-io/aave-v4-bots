@@ -96,7 +96,9 @@ describe("isHealthyPositionRevert", () => {
 
 describe("isVaultGoneRevert", () => {
   it("recognises a vault that has left escrow", () => {
-    assert.equal(isVaultGoneRevert(asThrown(customRevert(vaultSwapAbi, "VaultNotEscrowed"))), true);
+    for (const name of ["VaultNotAcquirable", "InvalidEscrowedVaultStatus"]) {
+      assert.equal(isVaultGoneRevert(asThrown(customRevert(vaultSwapAbi, name))), true);
+    }
   });
 
   it("does not accept an unrelated protocol error", () => {
