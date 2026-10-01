@@ -197,7 +197,7 @@ Keep `VAULT_SWAP_ADDRESS` and the database in step between the two files.
 | `PONDER_RPC_URL` | RPC for indexing. May differ from the bot's | Yes | |
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap | Yes | |
 | `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. The example names the Compose service, `arbitrageur-postgres:5432`. A native run uses `localhost:5433` | Yes | |
-| `DATABASE_SCHEMA` | Schema for Ponder's tables. `ponder start` requires it | Yes | |
+| `DATABASE_SCHEMA` | Schema for Ponder's tables. Leave it unset to derive one for each build. See [5.8](#58-indexer-schema) | No | derived |
 | `DB_AUTH` | How the indexer authenticates to Postgres: `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
 | `SPOKE_ADDRESS`, `ADAPTER_ADDRESS`, `LENS_ADDRESS` | Position indexing for the optional liquidation engine. Set all or none | liquidation | |
 | `POSITION_PROBE_CHUNK_SIZE` | See the liquidator guide | No | `25` |
@@ -420,6 +420,38 @@ CREATE SCHEMA bot AUTHORIZATION arbitrageur_bot;
 A schema created this way grants nothing to other roles. The local Docker setup uses one superuser
 for both services, which is acceptable for development only.
 
+### 5.8. Indexer schema
+
+`ponder start` writes a build ID into its schema. The build ID hashes the ABIs, the contract
+addresses, `START_BLOCK`, the indexer schema and the indexing code. On the next start, Ponder
+stops if the build ID is not the same:
+
+```
+MigrationError: Schema 'x' was previously used by a different Ponder app. Drop the schema first, or use a different schema.
+```
+
+So an upgrade of the indexer, or a new contract address, needs a new schema. Ponder does not
+migrate data between schemas.
+
+Leave `DATABASE_SCHEMA` unset. The Docker image and `pnpm arbitrageur:indexer:start` then derive the
+name `ponder_<hash>` from the same inputs as the build ID. The indexer logs the name at startup.
+
+- **Upgrade:** the new build indexes into a new schema from `START_BLOCK`. The bot waits until the
+  indexer `/ready` returns 200. For no downtime, start the new indexer next to the old one. Move
+  `PONDER_URL` to it when its `/ready` returns 200.
+- **Rollback:** the previous build finds its own schema and continues from its last checkpoint.
+- **Clean up:** each upgrade leaves the previous schema in the database. Keep the current schema and
+  the one before it, for rollback. Drop the others:
+
+  ```sql
+  SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'ponder\_%';
+  DROP SCHEMA ponder_<hash> CASCADE;
+  ```
+
+- **Database role:** Ponder creates the schema. The indexer role needs `CREATE` on the database.
+
+Set `DATABASE_SCHEMA` only if you manage schemas yourself. Then give each upgrade a new name.
+
 ## 6. Wallet Setup
 
 **`inventory`**
@@ -621,7 +653,8 @@ compromised too. Its `owner` is this signer, and it sweeps proceeds there.
 | Symptom | Cause | Action |
 |---------|-------|--------|
 | `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
-| `Database schema required` from the indexer | `DATABASE_SCHEMA` unset | Set it in `.env.arbitrageur.indexer` |
+| `Database schema required` from the indexer | `ponder start` runs directly, with `DATABASE_SCHEMA` unset | Start the indexer with `pnpm arbitrageur:indexer:start` or the Docker image |
+| `Schema '...' was previously used by a different Ponder app` | `DATABASE_SCHEMA` is a fixed name, and the build or the contract addresses changed | Unset `DATABASE_SCHEMA` in `.env.arbitrageur.indexer`. See [5.8](#58-indexer-schema) |
 | `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` names `localhost`, which is the indexer's own container | Point it at `arbitrageur-postgres:5432` in `.env.arbitrageur.indexer` |
 | `getaddrinfo ENOTFOUND arbitrageur-postgres` on a native run | `DATABASE_URL` still carries the Docker value | Point it at `localhost:5433` |
 | Indexer container never reports healthy | `PONDER_PORT` is not `42070`, so the healthcheck and the mapping reach nothing | Set `PONDER_PORT=42070` in `.env.arbitrageur.indexer` |
