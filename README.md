@@ -219,6 +219,11 @@ pnpm arbitrageur:run
 
 ### Start All Services
 
+These commands start each bot as soon as its indexer container is healthy, which can be during the
+backfill. For production, follow "Starting the Service" and "Restarting or replacing the indexer" in
+[docs/liquidator-operation-guide.md](docs/liquidator-operation-guide.md) and
+[docs/arbitrageur-operation-guide.md](docs/arbitrageur-operation-guide.md).
+
 ```bash
 # Build and start everything
 docker compose up -d

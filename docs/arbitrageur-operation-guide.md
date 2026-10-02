@@ -434,37 +434,15 @@ So an upgrade of the indexer, or a new contract address, needs a new schema. Pon
 migrate data between schemas.
 
 Leave `DATABASE_SCHEMA` unset. The Docker image and `pnpm arbitrageur:indexer:start` then derive the
-name `ponder_<hash>` from the same inputs as the build ID. The indexer logs the name at startup.
+name `ponder_<hash>`. The hash covers every input of the build ID, plus some more, such as
+`CHAIN_ID`. The indexer logs the name at startup.
 
-- **Upgrade:** the new build indexes into a new schema from `START_BLOCK`. During the backfill,
-  its data routes can return 200 with incomplete or empty data. The Compose healthcheck reads those
-  routes, so a healthy container does not mean a complete index. Use the indexer `/ready` as the
-  signal to switch. The bot reads `PONDER_URL` and `INDEXER_READY_TIMEOUT_MS` only when it starts.
-  Under Docker, `docker compose restart` keeps the old values. Recreate the container to apply a
-  change.
-  - **In-place upgrade:** this is the path for the Compose file in this repo. It has one indexer
-    service, with a fixed container name and port. Set `INDEXER_READY_TIMEOUT_MS` in `.env.arbitrageur`
-    longer than the backfill. Then:
-
-    ```bash
-    docker compose stop arbitrageur-bot
-    docker compose up -d --build arbitrageur-ponder
-    docker compose up -d --no-deps --force-recreate arbitrageur-bot
-    ```
-
-    The bot waits for `/ready` at startup, and fails if the time passes. On a native run, stop the
-    bot, restart the indexer, then start the bot.
-  - **Rolling upgrade:** this gives the bot no wait for the backfill. Start the new indexer next to
-    the old one. Under Docker, it needs its own service and container name, and its own host
-    port if you publish one. On a native run, it needs its own port. Wait until its `/ready`
-    returns 200. Set `PONDER_URL` in `.env.arbitrageur` to it, and recreate the bot:
-    `docker compose up -d --no-deps --force-recreate arbitrageur-bot`. On a native run, restart the bot
-    process. Then stop the old indexer.
-
-  Also set `INDEXER_MAX_LAG_BLOCKS`. The bot then skips a cycle when the indexer `/status` is not
-  available or too far behind the chain. This is a second guard. It does not replace the wait for
-  `/ready`.
-- **Rollback:** the previous build finds its own schema and continues from its last checkpoint.
+- **New schema:** a change to the indexer source, the workspace packages it imports, or the Ponder
+  version gives a new schema. So does a change to `CHAIN_ID`, `START_BLOCK`,
+  `SPOKE_ADDRESS`, `ADAPTER_ADDRESS` or `VAULT_SWAP_ADDRESS`. The indexer then backfills from
+  `START_BLOCK`. Apply the change with [8.6](#86-restarting-or-replacing-the-indexer).
+- **Rollback:** the previous build finds its own schema and catches up from its last checkpoint.
+  Apply it with [8.6](#86-restarting-or-replacing-the-indexer) too.
 - **Clean up:** each upgrade leaves the previous schema in the database. Keep the current schema and
   the one before it, for rollback. Stop every indexer that uses a schema before you drop it. List
   the derived schemas, and drop the old ones:
@@ -538,11 +516,18 @@ take precedence over that file.
 ### 7.2. Docker
 
 ```bash
-docker compose up -d arbitrageur-postgres arbitrageur-ponder arbitrageur-bot
+docker compose up -d arbitrageur-postgres arbitrageur-ponder
+
+# Fails during the backfill. Run it again until it succeeds.
+docker compose exec arbitrageur-ponder wget -q --spider http://localhost:42070/ready
+
+docker compose up -d arbitrageur-bot
 docker compose logs -f arbitrageur-bot
 ```
 
-Each service starts after the previous one is healthy. `restart: unless-stopped` restarts a
+The indexer healthcheck reads a data route, which answers during the backfill. So start the bot
+only when `/ready` returns 200, or set `INDEXER_READY_TIMEOUT_MS` to make the bot wait. Each
+service starts after the previous one is healthy. `restart: unless-stopped` restarts a
 container that exits. A running container that reports unhealthy is not restarted.
 
 Compose does not publish the kill-switch port. Reach it from inside the container, or bind
@@ -622,6 +607,53 @@ outstanding.
 block or two. If the gate halted during it, read `GET /status`, confirm that the treasury balance
 and the router's recent events explain the failures, and resume.
 
+### 8.6. Restarting or replacing the indexer
+
+After each start, the indexer backfills or catches up before its `/ready` returns 200. During that
+time, its data routes can return 200 with incomplete or old data. The Compose healthcheck reads
+those routes, so a healthy indexer container is not a ready indexer. A bot that reads it then can
+miss candidates.
+
+Use one of the two procedures below for every planned change to the indexer: an upgrade, a
+rollback, a change to `.env.arbitrageur.indexer`, or a restart. The bot reads its env only when it
+starts. Under Docker, `docker compose restart` keeps the old values, so recreate a container to
+apply a change.
+
+**In-place.** Use this with the Compose file in this repo, which has one indexer service. The bot
+stops until the indexer is ready.
+
+1. Set `INDEXER_READY_TIMEOUT_MS` in `.env.arbitrageur` longer than the backfill.
+2. Under router funding, do the planned stop in [8.5](#85-restarting-under-router-funding) first.
+3. Run:
+
+   ```bash
+   docker compose stop arbitrageur-bot
+   docker compose up -d --build --no-deps --force-recreate arbitrageur-ponder
+   docker compose up -d --no-deps --force-recreate arbitrageur-bot
+   ```
+
+The bot waits for `/ready` at startup. If the time passes, it exits. Wait for `/ready`, then run
+the last command again. On a native run, stop the bot, restart the indexer, wait until
+`curl -f http://localhost:42070/ready` succeeds, then start the bot.
+
+**Rolling.** The bot keeps the old indexer while the new one backfills. This works only when the
+change gives a new schema (see [5.8](#58-indexer-schema)). Two indexers on the same schema do not
+run at the same time.
+
+1. Start the new indexer next to the old one, on the same database. Under Docker, it needs its own
+   service and container name, and its own host port if you publish one. On a native run, it
+   needs its own port.
+2. Wait until its `/ready` returns 200.
+3. Under router funding, do the planned stop in [8.5](#85-restarting-under-router-funding).
+4. Set `PONDER_URL` in `.env.arbitrageur` to it. Recreate the bot:
+   `docker compose up -d --no-deps --force-recreate arbitrageur-bot`. On a native run, restart the bot.
+5. Stop the old indexer.
+
+**Unplanned restart.** If the indexer exits, `restart: unless-stopped` starts it again on the same
+schema, and it catches up from its last checkpoint. The bot keeps running and reads it during the
+catch-up. `INDEXER_READY_TIMEOUT_MS` does not protect a running bot. Set `INDEXER_MAX_LAG_BLOCKS`:
+the bot then skips a cycle when the indexer `/status` is not available or too far behind the chain.
+
 ## 9. Vault Acquisition
 
 `BTCVaultSwap.previewEscrowedVaults(bytes32[])` returns, per vault:
@@ -682,12 +714,12 @@ compromised too. Its `owner` is this signer, and it sweeps proceeds there.
 |---------|-------|--------|
 | `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
 | `Database schema required` from the indexer | `ponder start` runs directly, with `DATABASE_SCHEMA` unset | Start the indexer with `pnpm arbitrageur:indexer:start` or the Docker image |
-| `Schema '...' was previously used by a different Ponder app` | `DATABASE_SCHEMA` is a fixed name, and the build or the contract addresses changed | Unset `DATABASE_SCHEMA` in `.env.arbitrageur.indexer`. Recreate the indexer: `docker compose up -d --no-deps --force-recreate arbitrageur-ponder`. On a native run, restart it. See [5.8](#58-indexer-schema) |
-| `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` names `localhost`, which is the indexer's own container | Point it at `arbitrageur-postgres:5432` in `.env.arbitrageur.indexer` |
-| `getaddrinfo ENOTFOUND arbitrageur-postgres` on a native run | `DATABASE_URL` still carries the Docker value | Point it at `localhost:5433` |
-| Indexer container never reports healthy | `PONDER_PORT` is not `42070`, so the healthcheck and the mapping reach nothing | Set `PONDER_PORT=42070` in `.env.arbitrageur.indexer` |
-| Bot container never reports healthy | `METRICS_PORT` is not `9091`, so the healthcheck and the mapping reach nothing | Set `METRICS_PORT=9091` in `.env.arbitrageur` |
-| Bot reports `ponderReachable: false` under Docker | `PONDER_URL` names `localhost`, which is the bot's own container | Point it at `http://arbitrageur-ponder:42070` in `.env.arbitrageur` |
+| `Schema '...' was previously used by a different Ponder app` | `DATABASE_SCHEMA` is a fixed name, and the build or the contract addresses changed | Unset `DATABASE_SCHEMA` in `.env.arbitrageur.indexer`. Apply it with [8.6](#86-restarting-or-replacing-the-indexer) |
+| `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` names `localhost`, which is the indexer's own container | Point it at `arbitrageur-postgres:5432` in `.env.arbitrageur.indexer`. Apply it with [8.6](#86-restarting-or-replacing-the-indexer) |
+| `getaddrinfo ENOTFOUND arbitrageur-postgres` on a native run | `DATABASE_URL` still carries the Docker value | Point it at `localhost:5433`. Apply it with [8.6](#86-restarting-or-replacing-the-indexer) |
+| Indexer container never reports healthy | `PONDER_PORT` is not `42070`, so the healthcheck and the mapping reach nothing | Set `PONDER_PORT=42070` in `.env.arbitrageur.indexer`. Apply it with [8.6](#86-restarting-or-replacing-the-indexer) |
+| Bot container never reports healthy | `METRICS_PORT` is not `9091`, so the healthcheck and the mapping reach nothing | Set `METRICS_PORT=9091` in `.env.arbitrageur`. Recreate the bot: `docker compose up -d --no-deps --force-recreate arbitrageur-bot` |
+| Bot reports `ponderReachable: false` under Docker | `PONDER_URL` names `localhost`, which is the bot's own container | Point it at `http://arbitrageur-ponder:42070` in `.env.arbitrageur`. Recreate the bot: `docker compose up -d --no-deps --force-recreate arbitrageur-bot` |
 | `DB_AUTH must be ...` | `DB_AUTH` is neither `password` nor `iam` | Correct the value. The check is case-sensitive |
 | `DB_AUTH=iam: ...` at indexer start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
 | `ARBITRAGE_FUNDING=router requires ...` or `... is set but ARBITRAGE_FUNDING is "inventory"` | Half-configured funding | Set `ARBITRAGE_FUNDING=router` with `ARBITRAGE_ROUTER_ADDRESS` and `VAULT_KEEPER_ADDRESS`, or none |
