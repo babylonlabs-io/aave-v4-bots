@@ -402,25 +402,42 @@ name `ponder_<hash>` from the same inputs as the build ID. The indexer logs the 
 - **Upgrade:** the new build indexes into a new schema from `START_BLOCK`. During the backfill,
   its data routes can return 200 with incomplete or empty data. The Compose healthcheck reads those
   routes, so a healthy container does not mean a complete index. Use the indexer `/ready` as the
-  signal to switch:
-  - **Rolling upgrade:** start the new indexer next to the old one. Wait until its `/ready`
-    returns 200. Then set `PONDER_URL` to it and restart the bot. The old indexer
-    serves the bot during the backfill, so the only downtime is the bot restart.
-  - **In-place upgrade:** stop the bot before you replace the indexer. Set
-    `INDEXER_READY_TIMEOUT_MS` longer than the backfill. Start the new indexer, then start the bot.
-    The bot waits for `/ready` only at startup, and fails if the time passes.
+  signal to switch. The bot reads `PONDER_URL` and `INDEXER_READY_TIMEOUT_MS` only when it starts.
+  Under Docker, `docker compose restart` keeps the old values. Recreate the container to apply a
+  change.
+  - **In-place upgrade:** this is the path for the Compose file in this repo. It has one indexer
+    service, with a fixed container name and port. Set `INDEXER_READY_TIMEOUT_MS` in `.env.liquidator`
+    longer than the backfill. Then:
+
+    ```bash
+    docker compose stop liquidator-bot
+    docker compose up -d --build liquidator-ponder
+    docker compose up -d --no-deps --force-recreate liquidator-bot
+    ```
+
+    The bot waits for `/ready` at startup, and fails if the time passes. On a native run, stop the
+    bot, restart the indexer, then start the bot.
+  - **Rolling upgrade:** this gives the bot no wait for the backfill. Start the new indexer next to
+    the old one. Under Docker, it needs its own service and container name, and its own host
+    port if you publish one. On a native run, it needs its own port. Wait until its `/ready`
+    returns 200. Set `PONDER_URL` in `.env.liquidator` to it, and recreate the bot:
+    `docker compose up -d --no-deps --force-recreate liquidator-bot`. On a native run, restart the bot
+    process. Then stop the old indexer.
 
   Also set `INDEXER_MAX_LAG_BLOCKS`. The bot then skips a cycle when the indexer `/status` is not
   available or too far behind the chain. This is a second guard. It does not replace the wait for
   `/ready`.
 - **Rollback:** the previous build finds its own schema and continues from its last checkpoint.
 - **Clean up:** each upgrade leaves the previous schema in the database. Keep the current schema and
-  the one before it, for rollback. Drop the others:
+  the one before it, for rollback. Stop every indexer that uses a schema before you drop it. List
+  the derived schemas, and drop the old ones:
 
   ```sql
-  SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'ponder\_%';
+  SELECT schema_name FROM information_schema.schemata WHERE schema_name ~ '^ponder_[0-9a-f]{12}$';
   DROP SCHEMA ponder_<hash> CASCADE;
   ```
+
+  Do not drop `ponder_sync`. Ponder keeps its shared sync data and RPC cache there.
 
 - **Database role:** Ponder creates the schema. The indexer role needs `CREATE` on the database.
 
@@ -591,7 +608,7 @@ fails whole batches into `unscanned`.
 |---------|-------|--------|
 | `Configuration validation failed` | Bad or missing env var in the bot | The log names the field |
 | `Database schema required` from the indexer | `ponder start` runs directly, with `DATABASE_SCHEMA` unset | Start the indexer with `pnpm liquidator:indexer:start` or the Docker image |
-| `Schema '...' was previously used by a different Ponder app` | `DATABASE_SCHEMA` is a fixed name, and the build or the contract addresses changed | Unset `DATABASE_SCHEMA` in `.env.liquidator.indexer`. See [5.8](#58-indexer-schema) |
+| `Schema '...' was previously used by a different Ponder app` | `DATABASE_SCHEMA` is a fixed name, and the build or the contract addresses changed | Unset `DATABASE_SCHEMA` in `.env.liquidator.indexer`. Recreate the indexer: `docker compose up -d --no-deps --force-recreate liquidator-ponder`. On a native run, restart it. See [5.8](#58-indexer-schema) |
 | `ECONNREFUSED` to `127.0.0.1:5432` from the indexer under Docker | `DATABASE_URL` names `localhost`, which is the indexer's own container | Point it at `liquidator-postgres:5432` in `.env.liquidator.indexer` |
 | `getaddrinfo ENOTFOUND liquidator-postgres` on a native run | `DATABASE_URL` still carries the Docker value | Point it at `localhost:5432` |
 | Indexer container never reports healthy | `PONDER_PORT` is not `42069`, so the healthcheck and the mapping reach nothing | Set `PONDER_PORT=42069` in `.env.liquidator.indexer` |
