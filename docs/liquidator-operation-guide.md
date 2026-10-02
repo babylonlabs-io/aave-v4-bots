@@ -399,9 +399,20 @@ migrate data between schemas.
 Leave `DATABASE_SCHEMA` unset. The Docker image and `pnpm liquidator:indexer:start` then derive the
 name `ponder_<hash>` from the same inputs as the build ID. The indexer logs the name at startup.
 
-- **Upgrade:** the new build indexes into a new schema from `START_BLOCK`. The bot waits until the
-  indexer `/ready` returns 200. For no downtime, start the new indexer next to the old one. Move
-  `PONDER_URL` to it when its `/ready` returns 200.
+- **Upgrade:** the new build indexes into a new schema from `START_BLOCK`. During the backfill,
+  its data routes can return 200 with incomplete or empty data. The Compose healthcheck reads those
+  routes, so a healthy container does not mean a complete index. Use the indexer `/ready` as the
+  signal to switch:
+  - **Rolling upgrade:** start the new indexer next to the old one. Wait until its `/ready`
+    returns 200. Then set `PONDER_URL` to it and restart the bot. The old indexer
+    serves the bot during the backfill, so the only downtime is the bot restart.
+  - **In-place upgrade:** stop the bot before you replace the indexer. Set
+    `INDEXER_READY_TIMEOUT_MS` longer than the backfill. Start the new indexer, then start the bot.
+    The bot waits for `/ready` only at startup, and fails if the time passes.
+
+  Also set `INDEXER_MAX_LAG_BLOCKS`. The bot then skips a cycle when the indexer `/status` is not
+  available or too far behind the chain. This is a second guard. It does not replace the wait for
+  `/ready`.
 - **Rollback:** the previous build finds its own schema and continues from its last checkpoint.
 - **Clean up:** each upgrade leaves the previous schema in the database. Keep the current schema and
   the one before it, for rollback. Drop the others:
