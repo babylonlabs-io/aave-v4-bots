@@ -142,6 +142,11 @@ an engine declaring `spend` must publish balances via `setAvailable` each cycle.
   `packages/abis/src/artifacts.test.ts` pins every one of them to `forge build` output, so a
   submodule bump that changes a signature fails that test rather than a bot at runtime. Deployment
   addresses come from env.
+- `foundry.lock` pins a `rev` for each `lib/` submodule. A submodule bump moves only the gitlink,
+  so set the matching `rev` in the same commit. Take it from `git ls-tree HEAD lib/<dep>`, not from
+  the checked-out submodule, which can be left over from another branch. The Docker images never
+  read the lock, but `forge install` and `forge update` do, so a stale lock builds the contracts at
+  the wrong commit on a fresh clone.
 - Everything risky is opt-in and off by default (KMS, Postgres persistence, code-hash guard, kill
   switch, every `RISK_*` guard), so a minimal deployment behaves like a plain keeper. Preserve
   that: a new guard should be inert until its env var is set.
