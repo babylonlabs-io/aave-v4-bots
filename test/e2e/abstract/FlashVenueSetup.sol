@@ -33,12 +33,12 @@ interface IMintableERC20 {
 ///         cannot use `deal`. It does not need to: the suite's tokens are its own mocks, so pool
 ///         liquidity is just a `mint`.
 abstract contract FlashVenueSetup {
-    /// @dev The real UniswapV4 deployment on the forked chain.
-    address internal constant UNISWAP_V4_POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-    address internal constant UNISWAP_V4_POSITION_MANAGER = 0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4;
+    /// @dev The real UniswapV4 deployment on the forked chain, Ethereum mainnet.
+    address internal constant UNISWAP_V4_POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
+    address internal constant UNISWAP_V4_POSITION_MANAGER = 0xbD216513d74C8cf14cf4747E6AaA6420FF64ee9e;
     address internal constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     /// @dev The real Morpho Blue deployment — the same one the fork tests flash-borrow from.
-    address internal constant MORPHO_BLUE = 0xd011EE229E7459ba1ddd22631eF7bF528d424A14;
+    address internal constant MORPHO_BLUE = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
 
     uint24 internal constant POOL_FEE = 3000;
     int24 internal constant TICK_SPACING = 60;

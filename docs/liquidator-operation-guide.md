@@ -272,13 +272,17 @@ For a native run, use `http://localhost:42069` and `localhost:5432` (§5.1). Und
 
 | Parameter | Description | Required | Default |
 |-----------|-------------|----------|---------|
-| `LIQUIDATION_FUNDING` | `inventory` repays from the signer's balances. `flash` repays through `LiquidationRouter`. The mode is never inferred: flash variables without `flash`, or `flash` without all four, fail at boot | No | `inventory` |
+| `LIQUIDATION_FUNDING` | `inventory` repays from the signer's balances. `flash` repays through `LiquidationRouter`. The mode is never inferred: flash variables without `flash`, or `flash` without its required variables, fail at boot | No | `inventory` |
 | `LIQUIDATION_ROUTER_ADDRESS` | LiquidationRouter. Its `owner` must be this signer | flash | |
-| `FLASH_SWAP_VENUE_ADDRESS` | The `UniswapV4SwapVenue` bound to that router. One venue serves every pool | flash | |
-| `FLASH_SWAP_POOLS` | One `token:currency0:currency1:fee:tickSpacing[:hooks]` per debt token, comma-separated. Each pool must be WBTC/`<token>`; currencies in Uniswap order | flash | |
-| `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | |
-| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
-| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the transaction reverts. Enforced on-chain; the only slippage bound in flash mode. `10000` removes it | No | `2000` |
+| `FLASH_SWAP_VENUE_ADDRESS` | The `UniswapV4SwapVenue` bound to that router. One venue serves every pool | flash, ranking off | |
+| `FLASH_SWAP_POOLS` | One `token:currency0:currency1:fee:tickSpacing[:hooks]` per debt token, comma-separated. Each pool must be WBTC/`<token>`; currencies in Uniswap order | flash, ranking off | |
+| `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash, ranking off | |
+| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3`, the protocol at `WBTC_FLASH_LOAN_ADDRESS`. Must be unset with ranking on, where each `FLASH_VENUES` entry names its own | flash, ranking off | |
+| `FLASH_VENUE_RANKING` | `true` quotes several venues per token and uses, per token, the one that takes back the least WBTC for the size. Venues then come from `FLASH_VENUES`, and the four fixed venue variables above must be unset. The probe still prices each liquidation | No | off |
+| `FLASH_VENUES` | Comma-separated `morpho:<morpho>`, `aavev3:<pool>`, `univ4:<venueAddress>:<token>:<currency0>:<currency1>:<fee>:<tickSpacing>[:hooks]`. At least one WBTC flash loan. A tie goes to the entry listed first | ranking on | |
+| `UNISWAP_V4_QUOTER_ADDRESS` | UniswapV4 `V4Quoter`. Must use the swap venues' pool manager; checked at boot | ranking on, `univ4` entry | |
+| `UNISWAP_V4_STATE_VIEW_ADDRESS` | UniswapV4 `StateView`. Same pool-manager check | ranking on, `univ4` entry | |
+| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the transaction reverts. Enforced on-chain; the only slippage bound in flash mode. `10000` removes it | flash | |
 | `IS_DIRECT_REDEMPTION` | `true` calls `liquidate` and redeems to `BTC_REDEEM_KEY`; `false` calls `liquidateWithLLP`. Also selects the Lens estimate, so keep `false` under flash | No | `false` |
 | `BTC_REDEEM_KEY` | Inventory, direct mode. Must be non-zero | direct | |
 | `LLP_ADDRESS` | Inventory, LLP mode. BTCVaultSwap. Must be non-zero | LLP | |
@@ -437,9 +441,11 @@ Set `DATABASE_SCHEMA` only if you manage schemas yourself. Then give each upgrad
 |-------|---------|
 | ETH | Gas. The only balance the bot needs |
 
-Under `flash`, profit is swept to the signer as WBTC. Each `FLASH_SWAP_POOLS` entry needs enough
-depth for a liquidation-sized swap. A thin pool does not fail loudly: the probe quotes an
-unprofitable result and the bot declines, which looks like the bot doing nothing.
+Under `flash`, profit is swept to the signer as WBTC. Each pool — a `FLASH_SWAP_POOLS` entry, or a
+`univ4` entry in `FLASH_VENUES` — needs enough depth for a liquidation-sized swap. A thin pool does
+not fail loudly: the probe quotes an unprofitable result and the bot declines, which looks like the
+bot doing nothing. With `FLASH_VENUE_RANKING=true` a pool that cannot fill the size is skipped for
+a deeper one on the same token, and a candidate no venue can fill is skipped before the probe.
 
 Monitoring:
 
@@ -646,7 +652,7 @@ the bot then skips a cycle when the indexer `/status` is not available or too fa
 | Bot reports `ponderReachable: false` under Docker | `PONDER_URL` names `localhost`, which is the bot's own container | Point it at `http://liquidator-ponder:42069` in `.env.liquidator`. Recreate the bot: `docker compose up -d --no-deps --force-recreate liquidator-bot` |
 | `DB_AUTH must be ...` | `DB_AUTH` is neither `password` nor `iam` | Correct the value. The check is case-sensitive |
 | `DB_AUTH=iam: ...` at indexer start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
-| `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set all four flash variables, or none |
+| `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set every flash variable the log names, or none |
 | `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |
 | `EXECUTION_MODE=MANUAL is keyless` | A signer variable or the key env var is present | Unset it |
 | `RISK_MIN_PROFIT is set but this process runs an inventory-funded liquidation engine` | Inventory funding cannot price actions | Unset it, or use flash |

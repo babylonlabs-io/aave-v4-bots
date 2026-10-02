@@ -184,6 +184,10 @@ contract LiquidationE2ESetup is BaseE2ESetup, FlashVenueSetup {
             "WBTC_FLASH_LOAN_ADDRESS=",
             vm.toString(MORPHO_BLUE),
             "\n",
+            "WBTC_FLASH_LOAN_VENUE=morpho\n",
+            // Required in flash mode. 2000 is the figure the examples carry, and the e2e pool is
+            // seeded deep enough for it: the assertion is that the liquidation lands.
+            "FLASH_MAX_SLIPPAGE_BPS=2000\n",
             "DEBT_TOKEN_ADDRESSES=",
             vm.toString(address(usdc)),
             "\n",

@@ -54,6 +54,8 @@ when `RISK_CONTROL_TOKEN_REF` is set.
 | `lens_estimate_error` | `Lens.estimateLiquidation` reverted for a candidate |
 | `flash_probe_error` | The flash probe threw for a candidate. A malfunction, not a "not fundable" verdict (`flash` only) |
 | `router_balance_read_error` | The router's WBTC balance could not be read, so the cycle was skipped: every quote is net of that balance (`flash` only) |
+| `venue_quote_degraded` | For a token a candidate owes, no venue gave a usable quote and at least one quote failed (an RPC or quoter error, not a verdict). The token used the first venue that failed to quote, in configuration order, and the probe decided (`flash` with `FLASH_VENUE_RANKING=true` only) |
+| `venue_quote_divergence` | The probe owed a venue more WBTC than the venue's quote. The probe still priced the liquidation. Sustained, the quotes that ranking chooses from are stale or wrong (`flash` with `FLASH_VENUE_RANKING=true` only) |
 | `risk_blocked` | Risk gate denied the action |
 | `intent_in_flight` | A live persisted intent already exists for the position |
 | `tx_send_error` | Failed to broadcast |

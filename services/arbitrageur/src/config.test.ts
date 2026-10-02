@@ -251,6 +251,26 @@ describe("config validation", () => {
       expect(liq?.pollingIntervalMs).toBe(12000); // default
     });
 
+    it("refuses direct redemption with a zero BTC_REDEEM_KEY", async () => {
+      process.env = {
+        ...validEnv,
+        ADAPTER_ADDRESS: adapter,
+        LENS_ADDRESS: lens,
+        IS_DIRECT_REDEMPTION: "true",
+      };
+      const { loadConfig } = await import("./config");
+      expect(() => loadConfig()).toThrow(
+        /IS_DIRECT_REDEMPTION=true requires a non-zero BTC_REDEEM_KEY/
+      );
+    });
+
+    it("ignores the redemption key when the liquidation engine is off", async () => {
+      // Arbitrage never reads it, so a stray flag must not block an arbitrage-only boot.
+      process.env = { ...validEnv, IS_DIRECT_REDEMPTION: "true" };
+      const { loadConfig } = await import("./config");
+      expect(loadConfig().liquidation).toBeUndefined();
+    });
+
     it("throws on a half-configured liquidation mode (only ADAPTER_ADDRESS)", async () => {
       process.env = { ...validEnv, ADAPTER_ADDRESS: adapter };
       const { loadConfig } = await import("./config");
@@ -273,6 +293,8 @@ describe("config validation", () => {
         FLASH_SWAP_VENUE_ADDRESS: "0x6666666666666666666666666666666666666666",
         FLASH_SWAP_POOLS: `${usdc}:${wbtc}:${usdc}:3000:60`,
         WBTC_FLASH_LOAN_ADDRESS: "0x7777777777777777777777777777777777777777",
+        WBTC_FLASH_LOAN_VENUE: "morpho",
+        FLASH_MAX_SLIPPAGE_BPS: "2000",
       };
 
       it("defaults the liquidation engine to inventory funding", async () => {
@@ -287,6 +309,23 @@ describe("config validation", () => {
         expect(loadConfig().liquidation?.funding).toMatchObject({
           mode: "flash",
           routerAddress: flashEnv.LIQUIDATION_ROUTER_ADDRESS,
+        });
+      });
+
+      it("threads venue ranking into the liquidation engine", async () => {
+        process.env = {
+          ...validEnv,
+          ...liqEnv,
+          LIQUIDATION_FUNDING: "flash",
+          LIQUIDATION_ROUTER_ADDRESS: flashEnv.LIQUIDATION_ROUTER_ADDRESS,
+          FLASH_MAX_SLIPPAGE_BPS: flashEnv.FLASH_MAX_SLIPPAGE_BPS,
+          FLASH_VENUE_RANKING: "true",
+          FLASH_VENUES: `morpho:${flashEnv.WBTC_FLASH_LOAN_ADDRESS}`,
+        };
+        const { loadConfig } = await import("./config");
+        expect(loadConfig().liquidation?.funding).toMatchObject({
+          mode: "flash",
+          ranking: { entries: [{ tag: "morpho" }] },
         });
       });
 

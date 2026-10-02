@@ -42,7 +42,7 @@ export interface LiquidationEngineParams {
   adapterAddress: Address;
   lensAddress: Address;
   wbtcAddress: Address;
-  /** BTC redeem key; bytes32(0) means WBTC payout via VaultSwap. */
+  /** BTC key the seized vault is redeemed to. Read only under direct redemption, which needs it non-zero. */
   btcRedeemKey: Hex;
   /** Direct BTC redemption vs WBTC payout via VaultSwap. */
   isDirectRedemption: boolean;
@@ -58,6 +58,23 @@ export interface LiquidationEngineParams {
    * signer spends only gas, and needs no debt-token inventory at all.
    */
   funding?: FundingParams;
+}
+
+/**
+ * Refuse direct redemption without a BTC key to redeem to.
+ *
+ * The key defaults to bytes32(0) because LLP mode never reads it. Under direct redemption the adapter
+ * reverts on a zero key, so every candidate fails simulation and is dropped: the bot would run,
+ * report healthy, and never liquidate.
+ */
+export function assertRedemptionTarget(
+  params: Pick<LiquidationEngineParams, "isDirectRedemption" | "btcRedeemKey">
+): void {
+  if (params.isDirectRedemption && /^0x0*$/.test(params.btcRedeemKey)) {
+    throw new Error(
+      "IS_DIRECT_REDEMPTION=true requires a non-zero BTC_REDEEM_KEY: the adapter rejects a zero key, so no liquidation could ever succeed. Set BTC_REDEEM_KEY to the vault keeper's operation BTC key, or unset IS_DIRECT_REDEMPTION."
+    );
+  }
 }
 
 export interface LiquidationEngineConfig

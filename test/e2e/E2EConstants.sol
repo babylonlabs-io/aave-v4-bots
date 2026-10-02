@@ -71,8 +71,8 @@ library E2EConstants {
     string internal constant RPC_URL = "http://localhost:8545";
 
     // Chain ID for local Anvil
-    /// @dev Bare anvil. Scripts that write a bot's env should use `block.chainid` instead — under
-    ///      `E2E_FORK_URL` the suite runs on a fork and keeps the forked chain's id, so a hardcoded
-    ///      31337 would have the bot signing for the wrong chain.
+    /// @dev Bare anvil and the `E2E_FORK_URL` fork both run on this id: `scripts/e2e-local.sh` and CI
+    ///      start the fork with `--chain-id 31337`. Scripts that write a bot's env read `block.chainid`,
+    ///      so the bot signs for the chain anvil actually runs.
     uint256 internal constant CHAIN_ID = 31337;
 }

@@ -30,6 +30,13 @@ export const erc20Abi = [
   },
   {
     type: "function",
+    name: "totalSupply",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "symbol",
     inputs: [],
     outputs: [{ name: "", type: "string" }],

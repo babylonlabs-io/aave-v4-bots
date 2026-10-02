@@ -267,7 +267,7 @@ For a native run, use `http://localhost:42070` and `localhost:5433` (§5.1). Und
 | `CLIENT_RPC_URL` | RPC for execution | Yes | |
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap | Yes | |
 | `WBTC_ADDRESS` | WBTC token | Yes | |
-| `VAULT_KEEPER_ADDRESS` | Registered keeper the vault is redeemed to, via `swapWbtcForVaultOnBehalf`. Set it when the executor is not a keeper (a Safe, or a treasury). Unset: the executor must be a keeper. Point it only at a keeper you control; the BTC lands there while the WBTC leaves the bot | router | |
+| `VAULT_KEEPER_ADDRESS` | Registered keeper the vault is redeemed to, via `swapWbtcForVaultOnBehalf`. Set it when the executor is not a keeper (a hot wallet separate from the keeper, a Safe, or a treasury). Unset: the executor must be a keeper. Point it only at a keeper you control; the BTC lands there while the WBTC leaves the bot | router. Optional under `inventory` | |
 | `MAX_SLIPPAGE_BPS` | Ceiling above the previewed cost the bot authorizes. Max `10000` | No | `100` |
 | `BTC_REDEMPTION_COST_SATS` | Bitcoin cost of the keeper's claim on one vault, in sats: the Claim, Assert and Payout fees and anchors. The preview prices the gross vault BTC, and the keeper receives it net of these. See §9 | No | `0` |
 | `POLLING_INTERVAL_MS` | Poll interval | No | `30000` |

@@ -23,7 +23,11 @@ import {
   runtimeEnvFields,
   urlSchema,
 } from "@repo/config";
-import { type LiquidationEngineParams, buildFundingParams } from "@repo/engine";
+import {
+  type LiquidationEngineParams,
+  assertRedemptionTarget,
+  buildFundingParams,
+} from "@repo/engine";
 import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import { type SignerConfig, buildSignerConfig } from "@repo/signer";
@@ -142,7 +146,22 @@ const envSchema = z.object({
   FLASH_SWAP_POOLS: z.string().optional(),
   /** Where WBTC is flash-*loaned* for the fairness payment: repaid in WBTC, which we hold. */
   WBTC_FLASH_LOAN_ADDRESS: addressSchema.optional(),
-  WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional().default("morpho"),
+  WBTC_FLASH_LOAN_VENUE: z.enum(["morpho", "aavev3"]).optional(),
+  /**
+   * `true` quotes several venues per token and uses the cheapest for each candidate. Venues then
+   * come from `FLASH_VENUES`, and the four fixed venue variables above must be unset. Off when
+   * unset, which keeps one fixed venue per token and quotes nothing.
+   */
+  FLASH_VENUE_RANKING: z.enum(["true", "false"]).optional(),
+  /**
+   * The venues ranking chooses between, comma-separated: `morpho:<morpho>`, `aavev3:<pool>`, and
+   * `univ4:<venueAddress>:<token>:<currency0>:<currency1>:<fee>:<tickSpacing>[:hooks]` per pool.
+   */
+  FLASH_VENUES: z.string().optional(),
+  /** The UniswapV4 `V4Quoter`. Required when `FLASH_VENUES` lists a `univ4` pool. */
+  UNISWAP_V4_QUOTER_ADDRESS: addressSchema.optional(),
+  /** The UniswapV4 `StateView`. Required when `FLASH_VENUES` lists a `univ4` pool. */
+  UNISWAP_V4_STATE_VIEW_ADDRESS: addressSchema.optional(),
   /**
    * How far the realised profit may fall below the probe's quote before the chain reverts, in bps.
    * With flash-swap funding this is the only slippage bound there is — the venue fills at whatever
@@ -150,13 +169,17 @@ const envSchema = z.object({
    * off-chain before sending; this one is relative and enforced on-chain at execution. When both
    * are set the on-chain floor is whichever binds harder.
    */
-  FLASH_MAX_SLIPPAGE_BPS: bpsSchema.optional().default("2000"),
+  FLASH_MAX_SLIPPAGE_BPS: bpsSchema.optional(),
 });
 
 export function loadConfig(): Config {
   const env = parseEnv(envSchema);
 
   const funding = buildFundingParams(env);
+  assertRedemptionTarget({
+    isDirectRedemption: env.IS_DIRECT_REDEMPTION === "true",
+    btcRedeemKey: env.BTC_REDEEM_KEY as Hex,
+  });
 
   // A profit floor is enforceable here only under flash funding, which probes the router and hands
   // the gate a real WBTC figure. Inventory funding cannot price its own actions, so the floor would
