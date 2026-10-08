@@ -65,6 +65,7 @@ export function buildFundingParams(env: {
   WBTC_FLASH_LOAN_VENUE: string;
   FLASH_MAX_SLIPPAGE_BPS: string;
   WBTC_ADDRESS: string;
+  IS_DIRECT_REDEMPTION?: string;
 }): FundingParams {
   // The variables that mean nothing outside flash mode, and that flash mode cannot run without.
   // `WBTC_FLASH_LOAN_ADDRESS` belongs here even though only some liquidations draw on it: vaults are
@@ -95,6 +96,15 @@ export function buildFundingParams(env: {
   const missing = flashOnly.filter((entry) => !isSet(entry)).map(([name]) => name);
   if (missing.length > 0) {
     throw new Error(`LIQUIDATION_FUNDING=flash requires ${missing.join(", ")}`);
+  }
+
+  // `LiquidationRouter` always calls `liquidateWithLLP`, so flash funding cannot redeem directly.
+  // Accepting the flag would ignore it on-chain, and the operator would expect vaults on their BTC
+  // key that never arrive.
+  if (env.IS_DIRECT_REDEMPTION === "true") {
+    throw new Error(
+      "IS_DIRECT_REDEMPTION=true cannot be used with LIQUIDATION_FUNDING=flash: LiquidationRouter always settles through the LLP. Unset IS_DIRECT_REDEMPTION, or use LIQUIDATION_FUNDING=inventory."
+    );
   }
 
   const venues: VenueRegistry = {

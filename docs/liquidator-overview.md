@@ -147,7 +147,7 @@ Set by `LIQUIDATION_FUNDING`. Funding decides where the repayment money
 comes from, redemption decides what the liquidator gets back. Inventory
 funding works with both redemption modes. Flash funding always redeems
 through the LLP, because `LiquidationRouter` calls `liquidateWithLLP`;
-keep `IS_DIRECT_REDEMPTION=false` under flash.
+boot fails if `IS_DIRECT_REDEMPTION=true` under flash.
 
 | Mode | Contract called | Repayment source | Signer must hold |
 |------|-----------------|------------------|------------------|
@@ -256,7 +256,7 @@ The bot automates monitoring and execution.
 | `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | — |
 | `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
 | `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the quote before the chain reverts; derives `minWbtcProfit` | No | `2000` |
-| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP`. Inventory funding only; keep `false` under flash | No | `false` |
+| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP`. Inventory funding only; boot fails if `true` under flash | No | `false` |
 | `BTC_REDEEM_KEY` | BTC key for direct mode (must be non-zero) | direct mode | `bytes32(0)` |
 | `LLP_ADDRESS` | LLP (BTCVaultSwap) address for LLP mode (must be non-zero) | LLP mode | `address(0)` |
 | `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |

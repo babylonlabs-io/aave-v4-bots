@@ -151,9 +151,8 @@ constructor arguments are immutable. A router deployed for another signer must b
 
 The bot does not verify `owner` at boot. A wrong owner shows as every flash probe reverting.
 
-The router always calls `liquidateWithLLP` on the `vaultSwap` it was deployed with. Under flash
-funding keep `IS_DIRECT_REDEMPTION=false`, so the bot sizes the WBTC payment for that path;
-`BTC_REDEEM_KEY` and `LLP_ADDRESS` are unused.
+The router always calls `liquidateWithLLP` on the `vaultSwap` it was deployed with. Boot fails if
+`IS_DIRECT_REDEMPTION=true` under flash funding. `BTC_REDEEM_KEY` and `LLP_ADDRESS` are unused.
 
 ## 5. Configuration
 
@@ -279,7 +278,7 @@ For a native run, use `http://localhost:42069` and `localhost:5432` (§5.1). Und
 | `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | |
 | `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
 | `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the transaction reverts. Enforced on-chain; the only slippage bound in flash mode. `10000` removes it | No | `2000` |
-| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate` and redeems to `BTC_REDEEM_KEY`; `false` calls `liquidateWithLLP`. Also selects which WBTC payment the bot sizes, so keep `false` under flash | No | `false` |
+| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate` and redeems to `BTC_REDEEM_KEY`; `false` calls `liquidateWithLLP`. Inventory funding only; boot fails if `true` under flash | No | `false` |
 | `BTC_REDEEM_KEY` | Inventory, direct mode. Must be non-zero | direct | |
 | `LLP_ADDRESS` | Inventory, LLP mode. BTCVaultSwap. Must be non-zero | LLP | |
 
@@ -647,6 +646,7 @@ the bot then skips a cycle when the indexer `/status` is not available or too fa
 | `DB_AUTH must be ...` | `DB_AUTH` is neither `password` nor `iam` | Correct the value. The check is case-sensitive |
 | `DB_AUTH=iam: ...` at indexer start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
 | `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set all four flash variables, or none |
+| `IS_DIRECT_REDEMPTION=true cannot be used with LIQUIDATION_FUNDING=flash` | The router always settles through the LLP | Unset `IS_DIRECT_REDEMPTION`, or use inventory funding |
 | `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |
 | `EXECUTION_MODE=MANUAL is keyless` | A signer variable or the key env var is present | Unset it |
 | `RISK_MIN_PROFIT is set but this process runs an inventory-funded liquidation engine` | Inventory funding cannot price actions | Unset it, or use flash |
