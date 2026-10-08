@@ -36,7 +36,7 @@ contract ArbitrageRouter is SelfCallRelayer {
     /// @param vaultSwap The BTCVaultSwap (LLP) the vault was acquired from
     /// @param vaultId The acquired vault
     /// @param onBehalfOf Vault keeper whose BTC key received the redeemed vault
-    /// @param amountWbtcToAcquire WBTC paid to the LLP (Hub debt + protocol fee)
+    /// @param amountWbtcToAcquire WBTC paid to the LLP: the Hub debt, capped by the minimum profit threshold
     /// @param amountVault Original BTC amount held in the vault
     event SwapWbtcToVault(
         address indexed vaultSwap,
@@ -60,7 +60,7 @@ contract ArbitrageRouter is SelfCallRelayer {
 
     /// @param _signer Address whose signature authorizes relayed batches; must be non-zero
     /// @param _payer Address supplying the WBTC; must be non-zero and must approve this contract
-    /// @param _wbtc WBTC token address; must be non-zero and must match the LLP's WBTC
+    /// @param _wbtc WBTC token address; must be non-zero and must match the LLP's exitBTC
     constructor(address _signer, address _payer, address _wbtc) EIP712(NAME, VERSION) SelfCallRelayer(_signer) {
         require(_payer != address(0), "ArbitrageRouter: invalid payer");
         require(_wbtc != address(0), "ArbitrageRouter: invalid wbtc");
@@ -79,11 +79,11 @@ contract ArbitrageRouter is SelfCallRelayer {
     /// @notice Buys one escrowed vault from `vaultSwap` and has it redeemed to `onBehalfOf`'s BTC key.
     /// @dev Reachable only through {SelfCallRelayer-relay}, so every execution is signer-authorized.
     ///
-    ///      Flow: preview the vault, check the estimated profit, pull exactly `amountWbtcToAcquire` from
+    ///      Flow: preview the vault, check the estimated profit, pull exactly `amountExitBtcToAcquire` from
     ///      `payer`, approve the LLP for that amount, swap, reset the approval to zero, and sweep any WBTC
     ///      left on this contract back to `payer`.
     ///
-    ///      `amountWbtcToAcquire` is read and spent within the same transaction, so the LLP recomputes the
+    ///      `amountExitBtcToAcquire` is read and spent within the same transaction, so the LLP recomputes the
     ///      same cost when it re-previews; passing it as `maxWbtcIn` makes the swap revert rather than
     ///      overspend if that ever stops holding.
     ///
@@ -93,7 +93,7 @@ contract ArbitrageRouter is SelfCallRelayer {
     /// @param vaultId Vault to acquire
     /// @param onBehalfOf Registered, non-blocklisted vault keeper whose BTC key receives the vault
     /// @param minProfit Minimum acceptable `amountProfitEst`, in WBTC terms, at execution time
-    /// @param maxWbtcIn Maximum WBTC to spend on the swap; must be at least `amountWbtcToAcquire` from the preview
+    /// @param maxWbtcIn Maximum WBTC to spend on the swap; must be at least `amountExitBtcToAcquire` from the preview
     function swapWbtcToVault(
         address vaultSwap,
         bytes32 vaultId,
@@ -103,11 +103,11 @@ contract ArbitrageRouter is SelfCallRelayer {
     ) external onlySelf {
         IBTCVaultSwap.EscrowedVaultPreviewResult memory preview = _preview(vaultSwap, vaultId);
         require(preview.amountProfitEst >= minProfit, "ArbitrageRouter: insufficient profit");
-        require(preview.amountWbtcToAcquire <= maxWbtcIn, "ArbitrageRouter: exceeds maxWbtcIn");
+        require(preview.amountExitBtcToAcquire <= maxWbtcIn, "ArbitrageRouter: exceeds maxWbtcIn");
 
-        IERC20(wbtc).safeTransferFrom(payer, address(this), preview.amountWbtcToAcquire);
-        IERC20(wbtc).forceApprove(vaultSwap, preview.amountWbtcToAcquire);
-        IBTCVaultSwap(vaultSwap).swapWbtcForVaultOnBehalf(vaultId, preview.amountWbtcToAcquire, onBehalfOf);
+        IERC20(wbtc).safeTransferFrom(payer, address(this), preview.amountExitBtcToAcquire);
+        IERC20(wbtc).forceApprove(vaultSwap, preview.amountExitBtcToAcquire);
+        IBTCVaultSwap(vaultSwap).swapExitBtcForVaultOnBehalf(vaultId, preview.amountExitBtcToAcquire, onBehalfOf);
         IERC20(wbtc).forceApprove(vaultSwap, 0);
 
         uint256 wbtcBalance = IERC20(wbtc).balanceOf(address(this));
@@ -115,7 +115,7 @@ contract ArbitrageRouter is SelfCallRelayer {
             IERC20(wbtc).safeTransfer(payer, wbtcBalance);
         }
 
-        emit SwapWbtcToVault(vaultSwap, vaultId, onBehalfOf, preview.amountWbtcToAcquire, preview.amountVault);
+        emit SwapWbtcToVault(vaultSwap, vaultId, onBehalfOf, preview.amountExitBtcToAcquire, preview.amountVault);
     }
 
     /// @dev Previews a single vault through the LLP's batch preview entrypoint.

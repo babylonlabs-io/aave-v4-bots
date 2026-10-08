@@ -7,7 +7,6 @@ import {
   LENS_ESTIMATE_CHUNK,
   MAX_LIQUIDATION_CANDIDATES,
   bufferAmount,
-  bufferAmounts,
   selectPositions,
 } from "./domain";
 import {
@@ -309,7 +308,7 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
         address: this.lensAddress,
         abi: lensAbi,
         functionName: "estimateLiquidation",
-        args: [p.proxyAddress, this.isDirectRedemption],
+        args: [p.proxyAddress],
       });
     const estimateResults: PromiseSettledResult<Awaited<ReturnType<typeof estimate>>>[] = [];
     for (let i = 0; i < positions.length; i += LENS_ESTIMATE_CHUNK) {
@@ -325,18 +324,22 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
       const pos = positions[i];
 
       if (result.status === "fulfilled") {
-        const [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId] = result.value;
+        const [debtReserveId, debtToCover, liquidationFee, fairnessPayment, vaultId] = result.value;
+        // The caller pays the liquidation fee only on direct redemption; through the LLP, the LLP
+        // pays it out of the vault's value.
+        const wbtcPayment = this.isDirectRedemption
+          ? liquidationFee + fairnessPayment
+          : fairnessPayment;
         // Buffer every figure (default 1%) to cover interest accrual between the Lens read and
-        // execution. `wbtcPayment` (fairness top-up +, in direct-redemption mode, the redemption
-        // fee) is pulled from msg.sender by the adapter on top of the debt, and it is also the
-        // `maxWbtcPayment` cap the call carries — so it is buffered on the same grounds as the debt
-        // rather than left bare, and declared at the buffered figure to the risk gate, which
-        // reserves it against the WBTC the arbitrage engine is spending from the same signer.
-        // Already mode-correct: the Lens was asked with `isDirectRedemption`.
+        // execution. `wbtcPayment` is pulled from msg.sender by the adapter on top of the debt,
+        // and it is also the `maxExitBtcPayment` cap the call carries — so it is buffered on the
+        // same grounds as the debt rather than left bare, and declared at the buffered figure to
+        // the risk gate, which reserves it against the WBTC the arbitrage engine is spending from
+        // the same signer.
         candidates.push({
           position: pos,
-          debtReserveIds,
-          debtToCoverAmounts: bufferAmounts(debtToCoverAmounts),
+          debtReserveId,
+          debtToCover: bufferAmount(debtToCover),
           wbtcPayment: bufferAmount(wbtcPayment),
           vaultId,
         });

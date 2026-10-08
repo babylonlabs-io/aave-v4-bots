@@ -63,11 +63,10 @@ const eq = (a: Address, b: Address) => getAddress(a) === getAddress(b);
 /**
  * Every token the registry can fund, WBTC last — the safe default for `buildFlashDatas`.
  *
- * Prefer this over deriving the list from the Lens estimate. `estimateLiquidation` pairs each
- * amount with a reserve id, and `LiquidationRouter` spreads those pairs back out over every
- * reserve (`_getReserves()`), so a list of *tokens* cannot describe them. Inventory funding
- * resolves them through the reserve list for exactly this reason (`SpokeReserves`); flash funding
- * sidesteps the question instead.
+ * Prefer this over deriving the list from the Lens estimate. `estimateLiquidation` names the debt
+ * by reserve id, not by token, and the router resolves it through every reserve
+ * (`_getReserves()`). Inventory funding resolves it through the reserve list for exactly this
+ * reason (`SpokeReserves`); flash funding sidesteps the question instead.
  *
  * Passing every fundable token sidesteps that entirely: the router looks each one up by token and
  * skips the ones owing nothing (`LiquidationRouter._executeSingleFlashLoanPhase`). The cost is a few wasted loop

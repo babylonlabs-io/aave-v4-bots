@@ -5,7 +5,7 @@
  *
  * The Lens returns an exact figure for the block it read; interest accrues between that read and
  * execution, so a small buffer avoids `MustNotLeaveDust` reverts on the debt amounts and
- * `ExcessiveWbtcPayment` on the payment cap (a single mined block of growth is enough on
+ * `ExcessiveExitBtcPayment` on the payment cap (a single mined block of growth is enough on
  * auto-mining chains).
  *
  * Rounded up so that every nonzero amount is buffered by at least one unit. Truncating instead
@@ -17,11 +17,6 @@
  */
 export function bufferAmount(amount: bigint, bufferBps = 100): bigint {
   return (amount * BigInt(10_000 + bufferBps) + 9_999n) / 10_000n;
-}
-
-/** `bufferAmount` over a whole estimate. */
-export function bufferAmounts(amounts: readonly bigint[], bufferBps = 100): bigint[] {
-  return amounts.map((amt) => bufferAmount(amt, bufferBps));
 }
 
 /**

@@ -6,31 +6,14 @@ export const lensAbi = [
   {
     type: "function",
     name: "estimateLiquidation",
-    inputs: [
-      { name: "borrowerProxy", type: "address" },
-      { name: "isDirectRedemption", type: "bool" },
-    ],
+    inputs: [{ name: "borrowerProxy", type: "address" }],
+    // One debt reserve: the Core Spoke allows one per position. The caller pays `exitBtcFee` only
+    // on `liquidate`; on `liquidateWithLLP` the LLP pays it.
     outputs: [
-      { name: "debtReserveIds", type: "uint256[]" },
-      { name: "debtToCoverAmounts", type: "uint256[]" },
-      { name: "wbtcPayment", type: "uint256" },
-      { name: "vaultId", type: "bytes32" },
-      { name: "amountCollateralToSeize", type: "uint256" },
-    ],
-    stateMutability: "view",
-  },
-  {
-    type: "function",
-    name: "estimateLiquidationWithPriority",
-    inputs: [
-      { name: "borrowerProxy", type: "address" },
-      { name: "priorityLoanTokenIds", type: "uint256[]" },
-      { name: "isDirectRedemption", type: "bool" },
-    ],
-    outputs: [
-      { name: "debtReserveIds", type: "uint256[]" },
-      { name: "debtToCoverAmounts", type: "uint256[]" },
-      { name: "wbtcPayment", type: "uint256" },
+      { name: "debtReserveId", type: "uint256" },
+      { name: "debtToCover", type: "uint256" },
+      { name: "exitBtcFee", type: "uint256" },
+      { name: "exitBtcFairnessPayment", type: "uint256" },
       { name: "vaultId", type: "bytes32" },
       { name: "amountCollateralToSeize", type: "uint256" },
     ],

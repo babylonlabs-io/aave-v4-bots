@@ -34,7 +34,7 @@ when `RISK_CONTROL_TOKEN_REF` is set.
 
 - `inventory`: the balances are working capital. A debt-token balance near zero means the bot
   skips positions it cannot afford. Alert on it.
-- `flash`: `LiquidationRouter` borrows every debt token and repays it in the same transaction, so
+- `flash`: `LiquidationRouter` borrows the debt token and repays it in the same transaction, so
   a zero debt-token balance is the steady state. Watch WBTC rising (profit is swept to the signer)
   and alert on `liquidator_liquidations_failed_total` instead.
 

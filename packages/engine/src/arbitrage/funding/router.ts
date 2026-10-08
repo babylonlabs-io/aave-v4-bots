@@ -225,7 +225,7 @@ export class RouterFunding implements ArbitrageFunding {
     const llpWbtc = (await publicClient.readContract({
       address: this.deps.vaultSwapAddress,
       abi: vaultSwapAbi,
-      functionName: "WBTC",
+      functionName: "EXIT_BTC",
     })) as Address;
     if (!same(llpWbtc, wbtc)) {
       throw new Error(
@@ -558,8 +558,9 @@ export class RouterFunding implements ArbitrageFunding {
    * worst-case spend (`amountVault - maxWbtcIn`), and it is already carried on-chain by `maxWbtcIn`:
    * the gate admitted this acquisition because the ceiling cleared the floor, and the router refuses
    * to pay above that ceiling. The router's own `minProfit` measures something else —
-   * `max(0, amountVault * oraclePrice - amountWbtcToAcquire)`, oracle-denominated and clamped at
-   * zero — so passing the operator's floor here would apply it to a quantity they never chose.
+   * `amountExitBtcEquivalent - amountExitBtcToAcquire`, oracle-denominated and never below the
+   * LLP's minimum profit threshold — so passing the operator's floor here would apply it to a
+   * quantity they never chose.
    *
    * What it does bound is drift: the estimate may fall between our read and execution as interest
    * accrues, and this allows it to fall by the same slippage the spend ceiling allows it to rise.

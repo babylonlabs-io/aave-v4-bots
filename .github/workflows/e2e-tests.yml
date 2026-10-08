@@ -47,14 +47,14 @@ jobs:
           # `drive_kind` selects the operator custody the drive step plays.
           #
           # EOA: the executor is ARBITRAGEUR, itself a registered vault keeper, so the acquisition
-          # uses the direct `swapWbtcForVault` and the AUTO verification assertions hold unchanged.
+          # uses the direct `swapExitBtcForVault` and the suite verifies with the AUTO assertions.
           - suite: manual-arbitrageur
             setup: ManualArbitrageurE2ESetup
             verify: ArbitrageurE2EVerify
             drive_kind: eoa
           # Safe: the executor is a Safe{Wallet} multisig, which can never be a vault keeper (they
           # are registered by BTC public key against a roster frozen at vault creation). It pays
-          # while the registered keeper receives, via `swapWbtcForVaultOnBehalf`.
+          # while the registered keeper receives, via `swapExitBtcForVaultOnBehalf`.
           - suite: manual-safe-arbitrageur
             setup: ManualSafeArbitrageurE2ESetup
             verify: ManualSafeArbitrageurE2EVerify

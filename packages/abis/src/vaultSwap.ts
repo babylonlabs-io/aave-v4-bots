@@ -7,12 +7,12 @@ export const vaultSwapAbi = [
   // registered vault keeper — the vault is redeemed to its registered BTC key.
   {
     type: "function",
-    name: "swapWbtcForVault",
+    name: "swapExitBtcForVault",
     inputs: [
       { name: "vaultId", type: "bytes32" },
-      { name: "maxWbtcIn", type: "uint256" },
+      { name: "maxExitBtcIn", type: "uint256" },
     ],
-    outputs: [{ name: "amountWbtcIn", type: "uint256" }],
+    outputs: [{ name: "exitBtcPaid", type: "uint256" }],
     stateMutability: "nonpayable",
   },
   // Same acquisition, but the payer and the beneficiary are separate: `msg.sender` pays the
@@ -21,13 +21,13 @@ export const vaultSwapAbi = [
   // Safe in MANUAL custody) fund acquisitions for a permissioned keeper.
   {
     type: "function",
-    name: "swapWbtcForVaultOnBehalf",
+    name: "swapExitBtcForVaultOnBehalf",
     inputs: [
       { name: "vaultId", type: "bytes32" },
-      { name: "maxWbtcIn", type: "uint256" },
+      { name: "maxExitBtcIn", type: "uint256" },
       { name: "onBehalfOf", type: "address" },
     ],
-    outputs: [{ name: "wbtcPaid", type: "uint256" }],
+    outputs: [{ name: "exitBtcPaid", type: "uint256" }],
     stateMutability: "nonpayable",
   },
   // Whether a vault is still in escrow and available to acquire. Goes false once acquired — the
@@ -40,27 +40,17 @@ export const vaultSwapAbi = [
     outputs: [{ name: "", type: "bool" }],
     stateMutability: "view",
   },
-  // Repay interest on an escrowed vault
+  // The LLP's own WBTC, which it calls exitBTC. Read at boot under router funding: the router's
+  // WBTC is immutable while its `vaultSwap` is a per-call argument, so the two can disagree and
+  // every acquisition would revert.
   {
     type: "function",
-    name: "repayVaultInterest",
-    inputs: [
-      { name: "vaultId", type: "bytes32" },
-      { name: "wbtcToRepay", type: "uint256" },
-    ],
-    outputs: [{ name: "wbtcPaid", type: "uint256" }],
-    stateMutability: "nonpayable",
-  },
-  // Batch preview of escrowed vaults with full debt/profitability info
-  // The LLP's own WBTC. Read at boot under router funding: the router's WBTC is immutable while its
-  // `vaultSwap` is a per-call argument, so the two can disagree and every acquisition would revert.
-  {
-    type: "function",
-    name: "WBTC",
+    name: "EXIT_BTC",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
     stateMutability: "view",
   },
+  // Batch preview of escrowed vaults with full debt/profitability info
   {
     type: "function",
     name: "previewEscrowedVaults",
@@ -74,10 +64,10 @@ export const vaultSwapAbi = [
           { name: "amountVault", type: "uint256" },
           { name: "amountDebt", type: "uint256" },
           { name: "amountInterest", type: "uint256" },
-          { name: "amountFee", type: "uint256" },
-          { name: "amountWbtcEquivalent", type: "uint256" },
-          { name: "amountWbtcToAcquire", type: "uint256" },
+          { name: "amountExitBtcEquivalent", type: "uint256" },
+          { name: "amountExitBtcToAcquire", type: "uint256" },
           { name: "amountProfitEst", type: "uint256" },
+          { name: "amountDeficitEst", type: "uint256" },
         ],
       },
     ],
@@ -95,7 +85,7 @@ export const vaultSwapAbi = [
     inputs: [{ name: "vaultId", type: "bytes32", indexed: true }],
   },
   // Every custom error in the call graph, not just BTCVaultSwap's own. The acquisition path
-  // (`swapWbtcForVault`, `swapWbtcForVaultOnBehalf`) reverts from inside the registries at least
+  // (`swapExitBtcForVault`, `swapExitBtcForVaultOnBehalf`) reverts from inside the registries at least
   // as often as it does from this contract — `UnauthorizedVaultKeeper()` is an ApplicationRegistry
   // error — and viem can only name a selector the call's own ABI declares. See `protocolErrors.ts`.
   ...protocolErrorsAbi,

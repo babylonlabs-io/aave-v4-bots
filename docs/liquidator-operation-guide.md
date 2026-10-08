@@ -120,7 +120,7 @@ above.
 
 Skip this under `LIQUIDATION_FUNDING=inventory`.
 
-Flash funding repays each debt token through a `LiquidationRouter`. Deploy it once:
+Flash funding repays the debt through a `LiquidationRouter`. Deploy it once:
 
 ```bash
 git submodule update --init --recursive
@@ -152,7 +152,7 @@ constructor arguments are immutable. A router deployed for another signer must b
 The bot does not verify `owner` at boot. A wrong owner shows as every flash probe reverting.
 
 The router always calls `liquidateWithLLP` on the `vaultSwap` it was deployed with. Under flash
-funding keep `IS_DIRECT_REDEMPTION=false`, so the Lens estimate matches that path;
+funding keep `IS_DIRECT_REDEMPTION=false`, so the bot sizes the WBTC payment for that path;
 `BTC_REDEEM_KEY` and `LLP_ADDRESS` are unused.
 
 ## 5. Configuration
@@ -279,7 +279,7 @@ For a native run, use `http://localhost:42069` and `localhost:5432` (§5.1). Und
 | `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | |
 | `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
 | `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the transaction reverts. Enforced on-chain; the only slippage bound in flash mode. `10000` removes it | No | `2000` |
-| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate` and redeems to `BTC_REDEEM_KEY`; `false` calls `liquidateWithLLP`. Also selects the Lens estimate, so keep `false` under flash | No | `false` |
+| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate` and redeems to `BTC_REDEEM_KEY`; `false` calls `liquidateWithLLP`. Also selects which WBTC payment the bot sizes, so keep `false` under flash | No | `false` |
 | `BTC_REDEEM_KEY` | Inventory, direct mode. Must be non-zero | direct | |
 | `LLP_ADDRESS` | Inventory, LLP mode. BTCVaultSwap. Must be non-zero | LLP | |
 
@@ -429,7 +429,7 @@ Set `DATABASE_SCHEMA` only if you manage schemas yourself. Then give each upgrad
 |-------|---------|
 | ETH | Gas |
 | Debt tokens | Repay borrower debt. A position larger than the balance is skipped |
-| WBTC | LLP fairness payment, and the redemption fee in direct mode |
+| WBTC | Fairness payment, and the liquidation fee in direct mode |
 
 **`flash`**
 
@@ -444,7 +444,7 @@ unprofitable result and the bot declines, which looks like the bot doing nothing
 Monitoring:
 
 - ETH: the bot does not export its ETH balance. Use an external balance monitor.
-- `inventory`: alert on `liquidator_token_balance` for each debt token and WBTC.
+- `inventory`: alert on `liquidator_token_balance` for every debt-reserve token and WBTC.
 - `flash`: debt-token balances are not capacity. Alert on `liquidator_liquidations_failed_total`.
 - MANUAL: watch `operator-cli list` and the notifier.
 
@@ -558,11 +558,11 @@ the `intent-stuck` alert run every cycle while HALTED. None of them sends a tran
 stops the trading half: the indexer is not asked and no candidate is acted on.
 
 **A code-hash halt also withdraws the adapter's allowances.** While it stands, every cycle sends
-`approve(adapter, 0)` for each debt token and WBTC whose allowance is not zero. This is the one
-transaction a HALTED gate sends: the adapter needs nothing more from the bot to pull what it was
-already approved for. A kill-switch halt does not do this. Under `EXECUTION_MODE=MANUAL` each
-withdrawal is a proposal to sign. After the pin is corrected and the gate resumes, the next cycle
-re-approves what it needs.
+`approve(adapter, 0)` for every debt-reserve token and WBTC whose allowance is not zero. This is
+the one transaction a HALTED gate sends: the adapter needs nothing more from the bot to pull what
+it was already approved for. A kill-switch halt does not do this. Under `EXECUTION_MODE=MANUAL`
+each withdrawal is a proposal to sign. After the pin is corrected and the gate resumes, the next
+cycle re-approves what it needs.
 
 ### 8.5. Indexer endpoints
 

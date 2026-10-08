@@ -29,20 +29,20 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
         vm.deal(ADMIN, 100 ether);
 
         address[] memory debtTokens = _debtTokens();
-        wbtcAddr = address(vaultSwap.WBTC());
+        wbtcAddr = address(vaultSwap.EXIT_BTC());
         _setUpUniswap(debtTokens, _getWbtcPriceAgainstTokens(address(adapter), debtTokens), wbtcAddr);
         poolKeys = _getPoolKeys();
     }
 
-    /// @notice The two USDC/USDT flash-swap venues every scenario draws its debt from.
+    /// @notice The flash-swap venues every scenario draws its debt from, one per debt token.
     function _debtFlashDatas(UniswapV4SwapVenue venue, PoolKey[] memory poolKeys)
         internal
         view
         returns (LiquidationTypes.FlashData[] memory flashDatas)
     {
         address[] memory debtTokens = _debtTokens();
-        flashDatas = new LiquidationTypes.FlashData[](2);
-        for (uint256 i = 0; i < 2; i++) {
+        flashDatas = new LiquidationTypes.FlashData[](debtTokens.length);
+        for (uint256 i = 0; i < debtTokens.length; i++) {
             flashDatas[i] = LiquidationTypes.FlashData({
                 venueType: LiquidationTypes.VenueType.UniswapV4FlashSwap,
                 venueAddress: address(venue),
@@ -61,14 +61,15 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
 
             (LiquidationRouter router, UniswapV4SwapVenue venue) = _setUpRouter();
 
-            // Three venues: the two debt tokens by flash swap, and WBTC by flash loan for the
-            // fairness payment. The WBTC entry is passed either way — the router skips a venue whose
-            // token is owed nothing, so the no-fairness scenario simply never draws on it.
+            // The debt venues by flash swap, and WBTC by flash loan for the fairness payment. The
+            // WBTC entry is passed either way — the router skips a venue whose token is owed nothing,
+            // so the no-fairness scenario simply never draws on it.
             LiquidationTypes.FlashData[] memory debtDatas = _debtFlashDatas(venue, poolKeys);
-            LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](3);
-            flashDatas[0] = debtDatas[0];
-            flashDatas[1] = debtDatas[1];
-            flashDatas[2] = LiquidationTypes.FlashData({
+            LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](debtDatas.length + 1);
+            for (uint256 j = 0; j < debtDatas.length; j++) {
+                flashDatas[j] = debtDatas[j];
+            }
+            flashDatas[debtDatas.length] = LiquidationTypes.FlashData({
                 venueType: LiquidationTypes.VenueType.Morpho,
                 venueAddress: MORPHO_BLUE,
                 token: wbtc,

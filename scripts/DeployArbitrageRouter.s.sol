@@ -13,7 +13,7 @@ import {ArbitrageRouter} from "../contracts/ArbitrageRouter.sol";
 ///
 ///        ARBITRAGE_ROUTER_SIGNER=0x…  # the bot's key. Authorizes acquisitions; holds no funds
 ///        ARBITRAGE_ROUTER_PAYER=0x…   # the treasury. Supplies the WBTC
-///        WBTC_ADDRESS=0x…             # must match the LLP's WBTC
+///        WBTC_ADDRESS=0x…             # must match the LLP's EXIT_BTC()
 ///        forge script scripts/DeployArbitrageRouter.s.sol:DeployArbitrageRouter \
 ///          --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
 ///

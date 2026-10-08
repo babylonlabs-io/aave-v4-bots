@@ -16,9 +16,9 @@ import {E2EConstants} from "./E2EConstants.sol";
 ///      (`test/e2e/scripts/operator-confirm.sh`) between setup and verify.
 ///
 ///      The executor is `ARBITRAGEUR` itself, which is APP_OPERATOR_0 — a **registered vault
-///      keeper**. That is what lets this suite use the direct `swapWbtcForVault`: the account that
+///      keeper**. That is what lets this suite use the direct `swapExitBtcForVault`: the account that
 ///      broadcasts is the account the vault is redeemed to. (The `safe` suite cannot, and uses
-///      `swapWbtcForVaultOnBehalf` instead — see ManualSafeArbitrageurE2ESetup.)
+///      `swapExitBtcForVaultOnBehalf` instead — see ManualSafeArbitrageurE2ESetup.)
 ///
 ///      Verify with ArbitrageurE2EVerify: the funded account and the executor are the same address
 ///      here, so the AUTO assertions (position cleared, vault acquired) hold unchanged.

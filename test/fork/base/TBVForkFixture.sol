@@ -3,7 +3,6 @@
 pragma solidity 0.8.28;
 
 import {AaveAdapterMultiCollateralLoanBase} from "tbv-test/applications/aave/AaveAdapterMultiCollateralLoanBase.sol";
-import {IAaveSpoke as ISpoke} from "vault-contracts/applications/aave/interfaces/IAaveSpoke.sol";
 import {IAaveAdapterConfig} from "vault-contracts/applications/aave/interfaces/IAaveAdapterConfig.sol";
 import {TokenValueLib} from "vault-contracts/applications/aave/lib/TokenValueLib.sol";
 import {Types} from "./Types.sol";
@@ -31,10 +30,6 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
     /// @notice Aave base currency, 1e26 per USD. Scenario values are denominated in this.
     uint256 internal constant USD = AAVE_VALUE_BASE;
 
-    /// @dev `_borrowMultiLoans` base-11 selector for an equal USDC/USDT split and no DAI.
-    ///      Both fork suites fund exactly two debt venues, so every scenario borrows exactly these.
-    uint256 internal constant USDC_AND_USDT = 12;
-
     /// @notice Price and unit of the vaultBTC collateral, tracked across the scenario's price drop.
     /// @dev Mirrors what the base configures the vaultBTC feed at, and is kept in step by
     ///      `_createLiquidatablePosition` so collateral values stay expressible in USD after the drop.
@@ -50,11 +45,11 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
     function setUp() public virtual override {}
 
     /// @notice Deploy the whole TBV stack onto the currently selected fork.
-    /// @dev Beyond the base deployment this wires the two things a router-driven liquidation needs
+    /// @dev Beyond the base deployment this wires the one thing a router-driven liquidation needs
     ///      and the plain adapter tests do not: the LLP as a spoke on the Hub's WBTC asset, so
-    ///      `BTCVaultSwap` can draw the WBTC it pays the liquidator, and WBTC as a listed reserve, so
-    ///      the router's `_getReserves()` sees it and can size a WBTC flash borrow for the fairness
-    ///      payment.
+    ///      `BTCVaultSwap` can draw the WBTC it pays the liquidator. The base already lists WBTC as
+    ///      a Spoke reserve, so the router's `_getReserves()` sees it and can size a WBTC flash
+    ///      borrow for the fairness payment.
     function _deployTbvOnFork() internal {
         AaveAdapterMultiCollateralLoanBase.setUp();
 
@@ -64,17 +59,6 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
         vaultBTCData = TokenValueLib.TokenData({price: BTC_PRICE_USD * 1e8, unit: 1e8});
 
         _addSpokeToHub(wbtcAssetId, address(vaultSwap));
-        _addSpokeToHub(wbtcAssetId, address(spoke));
-        spoke.updateReserveConfig(
-            wbtcReserveId,
-            ISpoke.ReserveConfig({
-                collateralRisk: collateralRisk,
-                paused: false,
-                frozen: false,
-                borrowable: true,
-                receiveSharesEnabled: false
-            })
-        );
 
         // Uncapped: the scenarios below choose position sizes to land on a specific health factor,
         // and a cap would silently clip one of them into a different scenario.
@@ -110,16 +94,19 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
         // position rather than a prefix of it.
         createActiveVault(who, TokenValueLib.valueToAmountUp(scenario.collateralValueUsd * USD, vaultBTCData));
 
-        _borrowMultiLoans(who, scenario.borrowValueUsd * USD, USDC_AND_USDT);
+        // The Core Spoke allows one debt reserve per position, so the whole borrow is USDC.
+        vm.prank(who);
+        adapter.borrowFromCorePosition(
+            loanReserveId, TokenValueLib.valueToAmountDown(scenario.borrowValueUsd * USD, loanAssetData), who
+        );
 
         priceFeed.simulatePriceDrop(scenario.dropPercent);
         vaultBTCData = dropPrice(vaultBTCData, scenario.dropPercent);
     }
 
-    /// @notice The two debt tokens every fork scenario borrows, in reserve-id order.
+    /// @notice The debt token every fork scenario borrows.
     function _debtTokens() internal view returns (address[] memory tokens) {
-        tokens = new address[](2);
+        tokens = new address[](1);
         tokens[0] = address(loanAsset);
-        tokens[1] = address(usdtToken);
     }
 }

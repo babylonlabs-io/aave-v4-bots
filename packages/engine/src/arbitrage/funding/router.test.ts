@@ -15,7 +15,7 @@ const VAULT_SWAP = "0x5555555555555555555555555555555555555555" as const;
 const KEEPER = "0x6666666666666666666666666666666666666666" as const;
 const VAULT_ID = `0x${"7".repeat(64)}` as `0x${string}`;
 
-const PREVIEW = { amountVault: 100n, amountWbtcToAcquire: 80n, amountProfitEst: 20_000n };
+const PREVIEW = { amountVault: 100n, amountExitBtcToAcquire: 80n, amountProfitEst: 20_000n };
 
 function build(
   opts: {
@@ -41,7 +41,7 @@ function build(
   };
   const readContract = vi.fn(({ functionName }: { functionName: string }) => {
     if (functionName in immutables) return Promise.resolve(immutables[functionName]);
-    if (functionName === "WBTC") return Promise.resolve(opts.llpWbtc ?? WBTC);
+    if (functionName === "EXIT_BTC") return Promise.resolve(opts.llpWbtc ?? WBTC);
     if (functionName === "balanceOf") return Promise.resolve(opts.balance ?? 1_000n);
     if (functionName === "allowance") return Promise.resolve(opts.allowance ?? 500n);
     throw new Error(`unexpected read: ${functionName}`);

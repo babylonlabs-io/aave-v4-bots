@@ -713,7 +713,7 @@ if [[ -n "${STRESS_ROUTER:-}" ]]; then
       || printf "! bot never reached %s in 90s; taking it anyway, but there is no race to lose\n" \
            "$COMP_VAULT" >&2
     freeze_chain
-    COMP_OUT="$(cast send "$VAULT_SWAP" 'swapWbtcForVaultOnBehalf(bytes32,uint256,address)' \
+    COMP_OUT="$(cast send "$VAULT_SWAP" 'swapExitBtcForVaultOnBehalf(bytes32,uint256,address)' \
          "$COMP_VAULT" 100000000000 "$SIGNER" --async --gas-limit 3000000 \
          --private-key "$COMP_KEY" --legacy --gas-price 60000000000 --rpc-url "$RPC" 2>&1 | tail -1)" \
       && COMP_SENT=1 || COMP_SENT=0

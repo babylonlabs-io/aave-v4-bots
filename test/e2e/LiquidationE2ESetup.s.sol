@@ -130,28 +130,7 @@ contract LiquidationE2ESetup is BaseE2ESetup, FlashVenueSetup {
         inputs[1] = "-c";
         inputs[2] = string.concat(
             "cat > .env.liquidator << 'EOF'\n",
-            "# Ponder Indexer\n",
-            "PONDER_RPC_URL=",
-            E2EConstants.RPC_URL,
-            "\n",
-            "SPOKE_ADDRESS=",
-            vm.toString(address(aaveSpoke)),
-            "\n",
-            "ADAPTER_ADDRESS=",
-            vm.toString(address(aaveAdapter)),
-            "\n",
-            "CHAIN_ID=",
-            vm.toString(block.chainid),
-            "\n",
-            "START_BLOCK=",
-            startBlock,
-            "\n",
-            "PONDER_POLLING_INTERVAL=1000\n",
-            "DATABASE_URL=",
-            E2EConstants.LIQUIDATOR_DB_URL,
-            "\n",
-            "DATABASE_SCHEMA=public\n",
-            "\n",
+            _indexerEnv(startBlock),
             "# Liquidation Client\n",
             "LIQUIDATOR_PRIVATE_KEY=",
             vm.toString(bytes32(E2EConstants.LIQUIDATOR_PRIVATE_KEY)),
@@ -203,6 +182,36 @@ contract LiquidationE2ESetup is BaseE2ESetup, FlashVenueSetup {
             "EOF"
         );
         vm.ffi(inputs);
+    }
+
+    /// @notice Ponder indexer env for the liquidator suite.
+    /// @dev Kept out of `_createEnvFile`: one `string.concat` over every line is too deep for the
+    ///      stack.
+    function _indexerEnv(string memory startBlock) internal view returns (string memory) {
+        return string.concat(
+            "# Ponder Indexer\n",
+            "PONDER_RPC_URL=",
+            E2EConstants.RPC_URL,
+            "\n",
+            "SPOKE_ADDRESS=",
+            vm.toString(address(aaveSpoke)),
+            "\n",
+            "ADAPTER_ADDRESS=",
+            vm.toString(address(aaveAdapter)),
+            "\n",
+            "CHAIN_ID=",
+            vm.toString(block.chainid),
+            "\n",
+            "START_BLOCK=",
+            startBlock,
+            "\n",
+            "PONDER_POLLING_INTERVAL=1000\n",
+            "DATABASE_URL=",
+            E2EConstants.LIQUIDATOR_DB_URL,
+            "\n",
+            "DATABASE_SCHEMA=public\n",
+            "\n"
+        );
     }
 
     /// @notice Risk-gate env for the bot under test.

@@ -161,14 +161,13 @@ app.get("/liquidatable-positions", async (c) => {
   }
 
   // estimateLiquidation reverts for healthy positions and returns
-  // [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId,
-  // amountCollateralToSeize] for liquidatable ones. The wbtcPayment is pulled
-  // directly from msg.sender by the adapter at liquidation time, so the API
-  // response doesn't need to expose it — the client just needs enough WBTC
-  // approved + balance. We unify both paths to a
+  // [debtReserveId, debtToCover, exitBtcFee, exitBtcFairnessPayment, vaultId,
+  // amountCollateralToSeize] for liquidatable ones. The bot re-reads the fee and
+  // the fairness payment from the Lens before it liquidates, so the API response
+  // doesn't need to expose them. We unify both paths to a
   // { status: "success" | "failure", value/error } shape so the loop below
   // doesn't care which one ran.
-  type Estimate = readonly [readonly bigint[], readonly bigint[], bigint, `0x${string}`, bigint];
+  type Estimate = readonly [bigint, bigint, bigint, bigint, `0x${string}`, bigint];
 
   // A batch that fails as a whole costs its own positions and nothing more, and `unscanned` says
   // how many that was — see `probeInChunks`.
@@ -191,7 +190,7 @@ app.get("/liquidatable-positions", async (c) => {
               address: lensAddress,
               abi: lensAbi,
               functionName: "estimateLiquidation" as const,
-              args: [position.proxyAddress as Address, false] as const,
+              args: [position.proxyAddress as Address] as const,
             })),
             allowFailure: true,
             multicallAddress: MULTICALL3_ADDRESS,
@@ -221,7 +220,7 @@ app.get("/liquidatable-positions", async (c) => {
                 address: lensAddress,
                 abi: lensAbi,
                 functionName: "estimateLiquidation",
-                args: [position.proxyAddress as Address, false],
+                args: [position.proxyAddress as Address],
                 blockNumber: blockRef?.blockNumber,
               })
             )
@@ -243,12 +242,12 @@ app.get("/liquidatable-positions", async (c) => {
   // unscanned. See `summarizeProbes`.
   const { succeeded, checked, unscanned, faults } = summarizeProbes(candidates, probes);
   const liquidatable = succeeded.map(({ candidate: { position, borrower }, value }) => {
-    const [debtReserveIds, debtToCoverAmounts, , vaultId] = value;
+    const [debtReserveId, debtToCover, , , vaultId] = value;
     return {
       proxyAddress: position.proxyAddress,
       borrower,
-      debtReserveIds: debtReserveIds.map((id) => id.toString()),
-      debtToCoverAmounts: debtToCoverAmounts.map((amt) => amt.toString()),
+      debtReserveId: debtReserveId.toString(),
+      debtToCover: debtToCover.toString(),
       vaultId,
       suppliedShares: position.suppliedShares.toString(),
     };
@@ -347,14 +346,14 @@ app.get("/escrowed-vaults", async (c) => {
     amountVault: bigint;
     amountDebt: bigint;
     amountInterest: bigint;
-    amountFee: bigint;
-    amountWbtcEquivalent: bigint;
-    amountWbtcToAcquire: bigint;
+    amountExitBtcEquivalent: bigint;
+    amountExitBtcToAcquire: bigint;
     amountProfitEst: bigint;
+    amountDeficitEst: bigint;
   }) => ({
     vaultId: info.vaultId,
     btcAmount: info.amountVault.toString(),
-    currentDebt: info.amountWbtcToAcquire.toString(),
+    currentDebt: info.amountExitBtcToAcquire.toString(),
     isProfitable: info.amountProfitEst > 0n,
     createdAt: createdAtMap.get(info.vaultId)?.toString() ?? "0",
   });

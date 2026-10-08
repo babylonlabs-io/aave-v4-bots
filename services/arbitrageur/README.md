@@ -16,14 +16,14 @@ WBTC to BTCVaultSwap. Vault redemption happens atomically in the same tx.
 1. **Poll** — fetches `/escrowed-vaults` from the indexer every
    `POLLING_INTERVAL_MS`. The indexer enriches DB rows with live data via
    `BTCVaultSwap.previewEscrowedVaults` so each entry already includes the
-   full WBTC cost and an `isProfitable` flag.
+   WBTC cost and an `isProfitable` flag.
 2. **Re-check on chain** — for every vault, the bot calls
    `previewEscrowedVaults([vaultId])` directly before swapping. The bot
    trusts the on-chain answer, not the indexer's cached one.
 3. **Approve** — once if `allowance(self, BTCVaultSwap) < required`,
    approves `MAX_UINT256` so future swaps are no-op on allowance.
 4. **Acquire** — calls
-   `BTCVaultSwap.swapWbtcForVault(vaultId, maxWbtcIn)`. The contract
+   `BTCVaultSwap.swapExitBtcForVault(vaultId, maxWbtcIn)`. The contract
    redeems the vault to the arbitrageur in the same tx — there is no
    separate redemption step.
 
@@ -38,9 +38,9 @@ throttle between broadcasts, off by default.
 ```
 Bot                          BTCVaultSwap
  │                                │
- │ swapWbtcForVault(id, max) ────▶│
+ │ swapExitBtcForVault(id, max) ────▶│
  │                                │── pull WBTC from bot
- │                                │── repay Hub draw + protocol fee
+ │                                │── repay Hub debt (capped)
  │                                │── transfer + redeem vault to bot
  │◀────── tx receipt ─────────────│
 ```
@@ -52,17 +52,23 @@ Bot                          BTCVaultSwap
 | Field | Meaning |
 |---|---|
 | `amountVault` | Original BTC in the vault (sats) |
-| `amountDebt` | Current Hub debt = principal + accrued interest |
-| `amountInterest` | Interest accrued above the escrow-time principal |
-| `amountFee` | Protocol fee (only set when profitable) |
-| `amountWbtcToAcquire` | What the arbitrageur pays = `amountDebt + amountFee` |
-| `isProfitable` | `true` iff vault BTC value (oracle) > `amountDebt` |
+| `amountDebt` | Current Hub debt = escrow-time Hub draw + accrued interest |
+| `amountInterest` | Hub debt above the escrow-time Hub draw; zero while debt sits below it |
+| `amountExitBtcEquivalent` | Vault BTC value (oracle) in WBTC |
+| `amountExitBtcToAcquire` | What the arbitrageur pays = `min(amountDebt, amountExitBtcEquivalent - minProfitThreshold)` |
+| `amountProfitEst` | `amountExitBtcEquivalent - amountExitBtcToAcquire`; never below `minProfitThreshold` |
+| `amountDeficitEst` | `amountDebt - amountExitBtcToAcquire`; Hub deficit reported on acquisition |
 
-The Ponder API renames `amountWbtcToAcquire` to `currentDebt` in its JSON
-response, and that's the value the bot uses for slippage:
+`minProfitThreshold` is `amountExitBtcEquivalent * minimumProfitThresholdBps / 10000`.
+There is no fee on acquisition.
+
+The Ponder API serves `amountExitBtcToAcquire` as `currentDebt` and
+`amountProfitEst > 0` as `isProfitable` in its JSON response. The bot
+skips a vault whose fresh `amountProfitEst` does not exceed
+`BTC_REDEMPTION_COST_SATS`, and prices slippage off the fresh preview:
 
 ```
-maxWbtcIn = currentDebt + currentDebt * MAX_SLIPPAGE_BPS / 10000
+maxWbtcIn = amountExitBtcToAcquire + amountExitBtcToAcquire * MAX_SLIPPAGE_BPS / 10000
 ```
 
 ## Environment Variables
@@ -89,8 +95,8 @@ WBTC_ADDRESS=0x...
 
 # Registered vault keeper the acquired vault is redeemed to. Set it when the
 # executor is NOT itself a keeper (e.g. a Safe in MANUAL custody): the bot pays
-# and this keeper receives, via swapWbtcForVaultOnBehalf. Unset, the executor
-# must be a keeper and pays for itself, via swapWbtcForVault.
+# and this keeper receives, via swapExitBtcForVaultOnBehalf. Unset, the executor
+# must be a keeper and pays for itself, via swapExitBtcForVault.
 # VAULT_KEEPER_ADDRESS=0x...
 
 # Poll interval (default: 30000 ms)
