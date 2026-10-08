@@ -239,11 +239,13 @@ describe("ArbitrageEngine", () => {
             return Promise.resolve(
               vaultIds.map((vaultId) => ({
                 vaultId,
+                // A zero minimum profit threshold and debt equal to `amountExitBtcEquivalent`: the
+                // LLP charges that whole value, so nothing is left over.
                 amountVault: 100000000n,
                 amountDebt: 100000n,
                 amountInterest: 1000n,
                 amountExitBtcEquivalent: 100000n,
-                amountExitBtcToAcquire: 100010n,
+                amountExitBtcToAcquire: 100000n,
                 amountProfitEst: 0n,
                 amountDeficitEst: 0n,
               }))
@@ -488,6 +490,54 @@ describe("ArbitrageEngine", () => {
           args: [mockVault.vaultId, MAX_WBTC_IN, KEEPER],
         })
       );
+    });
+  });
+
+  describe("capped acquisition price", () => {
+    // Debt above the vault's value: the LLP charges `amountExitBtcEquivalent - minProfitThreshold`
+    // (1.00 - 0.02 BTC) and reports the remaining 0.22 BTC of debt as a Hub deficit.
+    const CAPPED_PREVIEW = {
+      amountVault: 100_000_000n,
+      amountDebt: 120_000_000n,
+      amountInterest: 0n,
+      amountExitBtcEquivalent: 100_000_000n,
+      amountExitBtcToAcquire: 98_000_000n,
+      amountProfitEst: 2_000_000n,
+      amountDeficitEst: 22_000_000n,
+    };
+    // The capped price + 1% slippage. Priced off the debt instead, it would be 121_200_000.
+    const MAX_WBTC_IN = 98_980_000n;
+
+    it("prices and budgets the acquisition from the capped cost, not the full debt", async () => {
+      const clients = createMockClients();
+      const base = clients.publicClient.readContract.getMockImplementation();
+      clients.publicClient.readContract.mockImplementation(
+        (call: { functionName: string; args: readonly unknown[] }) => {
+          if (call.functionName === "previewEscrowedVaults") {
+            const vaultIds = call.args[0] as readonly `0x${string}`[];
+            return Promise.resolve(vaultIds.map((vaultId) => ({ vaultId, ...CAPPED_PREVIEW })));
+          }
+          return base?.(call);
+        }
+      );
+      const risk = createRiskGate();
+      const openSlot = vi.spyOn(risk, "openSlot");
+      const bot = createBot(clients, { risk });
+
+      const result = await bot.acquireVault(mockVault);
+
+      expect(result).toBe("acquired");
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionName: "swapExitBtcForVault",
+          args: [mockVault.vaultId, MAX_WBTC_IN],
+        }),
+        expect.any(Function),
+        expect.any(Function)
+      );
+      const action = openSlot.mock.calls[0]?.[0];
+      expect(action?.spend).toEqual([expect.objectContaining({ amount: MAX_WBTC_IN })]);
+      expect(action?.expectedProfit).toBe(CAPPED_PREVIEW.amountVault - MAX_WBTC_IN);
     });
   });
 
