@@ -16,7 +16,7 @@ import type { VenueRegistry } from "./venues";
  * - `inventory` repays out of the signer's own token inventory, calling `AaveAdapter`. That is why it
  *   must approve the adapter at boot, publish its balances to the risk gate every cycle, and
  *   declare a `spend` vector per action.
- * - `flash` calls `LiquidationRouter`, which borrows each debt token from a venue and repays itself
+ * - `flash` calls `LiquidationRouter`, which borrows the debt token from a venue and repays itself
  *   from the seized collateral. The signer spends only gas — so there are no approvals, no
  *   inventory, and no `spend`; instead the probe yields a real WBTC `expectedProfit`.
  *

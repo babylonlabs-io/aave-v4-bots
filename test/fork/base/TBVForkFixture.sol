@@ -47,9 +47,7 @@ abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {
     /// @notice Deploy the whole TBV stack onto the currently selected fork.
     /// @dev Beyond the base deployment this wires the one thing a router-driven liquidation needs
     ///      and the plain adapter tests do not: the LLP as a spoke on the Hub's WBTC asset, so
-    ///      `BTCVaultSwap` can draw the WBTC it pays the liquidator. The base already lists WBTC as
-    ///      a Spoke reserve, so the router's `_getReserves()` sees it and can size a WBTC flash
-    ///      borrow for the fairness payment.
+    ///      `BTCVaultSwap` can draw the WBTC it pays the liquidator.
     function _deployTbvOnFork() internal {
         AaveAdapterMultiCollateralLoanBase.setUp();
 

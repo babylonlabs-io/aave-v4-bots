@@ -53,7 +53,7 @@ export interface LiquidationEngineParams {
    *
    * `inventory` (default) pays out of the signer's own inventory, which is why every candidate
    * declares a `spend` vector to the risk gate. `flash` routes through `LiquidationRouter`, which
-   * borrows each debt token from a venue and repays itself out of the seized collateral — the
+   * borrows the debt token from a venue and repays itself out of the seized collateral — the
    * signer spends only gas, and needs no debt-token inventory at all.
    */
   funding?: FundingParams;

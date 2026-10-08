@@ -32,20 +32,46 @@ contract VaultSwapStub {
     }
 }
 
-/// @dev Exposes the helpers that size the flash loans and the adapter approvals.
+/// @dev A UniswapV4 venue that needs setup and refuses it, so a test can see whether setup was attempted.
+contract SetupRefusingVenueStub {
+    function requireSetup() external pure returns (bool) {
+        return true;
+    }
+
+    function setUp(bytes calldata) external pure {
+        revert("setUp called");
+    }
+}
+
+/// @dev Exposes the helpers that size the flash loans and the adapter approvals, and one Setup step.
 contract LiquidationRouterHarness is LiquidationRouter {
+    /// @dev The phase the state machine moved to after the last step this harness ran.
+    Types.LiquidationPhase public advancedTo;
+    /// @dev The venue index the state machine moved to after the last step this harness ran.
+    uint256 public advancedToIndex;
+
     constructor(address lens, address vaultSwap) LiquidationRouter(msg.sender, lens, vaultSwap) {}
+
+    function runSetupStep(Types.LiquidationIteration memory iteration) external {
+        _executeSingleSetupPhase(iteration);
+    }
+
+    /// @dev Records the next step instead of running it.
+    function _iterateLiquidation(Types.LiquidationIteration memory iteration) internal override {
+        advancedTo = iteration.phase;
+        advancedToIndex = iteration.i;
+    }
 
     function paymentIn(Types.LiquidationIteration memory iteration, address token) external view returns (uint256) {
         return _paymentIn(iteration, token);
     }
 
     function approveForAdapter(Types.LiquidationIteration memory iteration) external {
-        _approveForAdapter(iteration, iteration.reserveTokens[iteration.debtReserveId]);
+        _approveForAdapter(iteration, iteration.debtToken);
     }
 
     function revokeApprovalForAdapter(Types.LiquidationIteration memory iteration) external {
-        _revokeApprovalForAdapter(iteration.reserveTokens[iteration.debtReserveId]);
+        _revokeApprovalForAdapter(iteration.debtToken);
     }
 }
 
@@ -65,37 +91,61 @@ contract LiquidationRouterTest is Test {
         router = new LiquidationRouterHarness(address(lens), address(new VaultSwapStub(address(wbtc))));
     }
 
-    /// @dev Reserve 0 is the vaultBTC collateral, reserve 1 USDC, reserve 2 WBTC.
-    function _iteration(uint256 debtReserveId, uint256 debtToCover, uint256 wbtcPayment)
+    function _iteration(address debtToken, uint256 debtToCover, uint256 wbtcPayment)
         internal
-        view
+        pure
         returns (Types.LiquidationIteration memory iteration)
     {
-        address[] memory reserveTokens = new address[](3);
-        reserveTokens[0] = address(0xB7C);
-        reserveTokens[1] = address(usdc);
-        reserveTokens[2] = address(wbtc);
-        iteration.debtReserveId = debtReserveId;
+        iteration.debtToken = debtToken;
         iteration.debtToCover = debtToCover;
         iteration.wbtcPayment = wbtcPayment;
-        iteration.reserveTokens = reserveTokens;
+    }
+
+    /// @dev A Setup-phase iteration over two UniswapV4 venues, the first for `token`.
+    function _setupIteration(address token, uint256 debtToCover, uint256 wbtcPayment)
+        internal
+        returns (Types.LiquidationIteration memory iteration)
+    {
+        iteration = _iteration(address(usdc), debtToCover, wbtcPayment);
+        iteration.phase = Types.LiquidationPhase.Setup;
+        iteration.flashDatas = new Types.FlashData[](2);
+        address venue = address(new SetupRefusingVenueStub());
+        iteration.flashDatas[0] = Types.FlashData({
+            venueType: Types.VenueType.UniswapV4FlashSwap, venueAddress: venue, token: token, swapData: ""
+        });
+        iteration.flashDatas[1] = iteration.flashDatas[0];
+    }
+
+    function test_setupPhase_skipsAVenueWhoseTokenIsOwedNothing() public {
+        // The debt is USDC and there is no fairness payment, so a WBTC venue is never drawn on.
+        router.runSetupStep(_setupIteration(address(wbtc), 20, 0));
+
+        assertEq(uint256(router.advancedTo()), uint256(Types.LiquidationPhase.Setup));
+        assertEq(router.advancedToIndex(), 1);
+    }
+
+    function test_setupPhase_setsUpAVenueWhoseTokenIsOwed() public {
+        Types.LiquidationIteration memory iteration = _setupIteration(address(usdc), 20, 0);
+
+        vm.expectRevert(bytes("setUp called"));
+        router.runSetupStep(iteration);
     }
 
     function test_paymentIn_splitsDebtAndFairnessPaymentByToken() public view {
-        Types.LiquidationIteration memory iteration = _iteration(1, 20, 3);
+        Types.LiquidationIteration memory iteration = _iteration(address(usdc), 20, 3);
         assertEq(router.paymentIn(iteration, address(usdc)), 20);
         assertEq(router.paymentIn(iteration, address(wbtc)), 3);
         assertEq(router.paymentIn(iteration, address(0xB7C)), 0);
     }
 
     function test_paymentIn_sumsWhenTheDebtIsWbtc() public view {
-        Types.LiquidationIteration memory iteration = _iteration(2, 20, 3);
+        Types.LiquidationIteration memory iteration = _iteration(address(wbtc), 20, 3);
         assertEq(router.paymentIn(iteration, address(wbtc)), 23);
         assertEq(router.paymentIn(iteration, address(usdc)), 0);
     }
 
     function test_approveForAdapter_approvesDebtTokenAndWbtcSeparately() public {
-        Types.LiquidationIteration memory iteration = _iteration(1, 20, 3);
+        Types.LiquidationIteration memory iteration = _iteration(address(usdc), 20, 3);
 
         vm.expectCall(address(usdc), abi.encodeCall(IERC20.approve, (adapter, 20)), 1);
         vm.expectCall(address(wbtc), abi.encodeCall(IERC20.approve, (adapter, 3)), 1);
@@ -110,7 +160,7 @@ contract LiquidationRouterTest is Test {
     }
 
     function test_approveForAdapter_approvesWbtcOnceForTheSumWhenTheDebtIsWbtc() public {
-        Types.LiquidationIteration memory iteration = _iteration(2, 20, 3);
+        Types.LiquidationIteration memory iteration = _iteration(address(wbtc), 20, 3);
 
         vm.expectCall(address(wbtc), abi.encodeCall(IERC20.approve, (adapter, 23)), 1);
         router.approveForAdapter(iteration);

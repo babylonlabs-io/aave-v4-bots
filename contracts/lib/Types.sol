@@ -66,9 +66,9 @@ library Types {
     /// @param flashDatas The flash venues to draw from, in order.
     /// @param swapDatas The dex-aggregator calls to run after liquidating.
     /// @param debtReserveId The spoke reserve the borrower owes; the Core Spoke allows one debt reserve per position.
-    /// @param debtToCover The amount of `reserveTokens[debtReserveId]` the liquidation repays.
+    /// @param debtToCover The amount of `debtToken` the liquidation repays.
     /// @param wbtcPayment The WBTC fairness payment the adapter pulls from the router for the borrower.
-    /// @param reserveTokens Every reserve underlying, in spoke order.
+    /// @param debtToken The underlying of the `debtReserveId` reserve.
     struct LiquidationIteration {
         LiquidationPhase phase;
         uint256 i;
@@ -81,7 +81,7 @@ library Types {
         uint256 debtToCover;
         uint256 wbtcPayment;
 
-        address[] reserveTokens;
+        address debtToken;
     }
 
     /// @notice An amount of a token owed back to a flash venue before the transaction can end.

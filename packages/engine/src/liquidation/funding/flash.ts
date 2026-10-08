@@ -14,7 +14,7 @@ import { allFundableTokens, assertRegistryValid, buildFlashDatas } from "./venue
 /**
  * Repay from flash liquidity, through `LiquidationRouter`.
  *
- * The router borrows each debt token from a venue, liquidates, and repays the venues out of the
+ * The router borrows the debt token from a venue, liquidates, and repays the venues out of the
  * seized WBTC — so the signer needs no inventory, grants no approvals, and spends only gas. What it
  * costs instead is a probe per candidate: `liquidate` with a sentinel `minWbtcProfit` runs the whole
  * liquidation and reverts with `BelovedError`, which is the only way to learn the realised WBTC and
@@ -109,7 +109,7 @@ export class FlashFunding implements LiquidationFunding {
 
         const call: ContractCall = {
           // The router recomputes the amounts itself, so it takes the borrower rather than the
-          // repay vector. `swapDatas` is empty: every venue debt is WBTC-denominated, which is the
+          // debt to cover. `swapDatas` is empty: every venue debt is WBTC-denominated, which is the
           // whole point of the venue selection.
           address: routerAddress,
           abi: liquidationRouterAbi,

@@ -19,9 +19,9 @@ import {BTCVaultSwap} from "vault-contracts/applications/aave/llps/BTCVaultSwap/
 ///         because every flash venue hands control back through a callback. Each phase re-enters the router via
 ///         `VenueManager._resumeAfterCallback`, so the whole flow happens inside the outermost `liquidate` call:
 ///
-///         Setup     -> for each flash venue that needs it (e.g. unlocking the UniswapV4 pool manager), one nested
-///                      callback per venue.
-///         FlashLoan -> for each flash venue, borrow that venue's token; each borrow nests another callback.
+///         Setup     -> for each flash venue that needs it (e.g. unlocking the UniswapV4 pool manager) and whose
+///                      token the liquidation pays in, one nested callback per venue.
+///         FlashLoan -> for each flash venue whose token is owed, borrow it; each borrow nests another callback.
 ///         LiquidationAndSwap -> innermost frame: repay the borrower's debt through the Aave adapter, receive WBTC
 ///                      collateral, then swap WBTC back to the borrowed tokens via the supplied dex-aggregator calls.
 ///
@@ -42,11 +42,11 @@ contract LiquidationRouter is VenueManager {
 
     /// @notice The only address allowed to run a liquidation; also the recipient of all proceeds.
     address public immutable owner;
-    /// @notice `AaveAdapterLiquidationPreview` used to enumerate reserves and estimate the liquidation payment.
+    /// @notice `AaveAdapterLiquidationPreview` used to estimate the debt to cover and the fairness payment.
     address public immutable lens;
     /// @notice Aave v4 adapter through which the liquidation is executed.
     address public immutable aaveAdapter;
-    /// @notice Aave v4 spoke, the source of the reserve list.
+    /// @notice Aave v4 spoke, the source of the reserve tokens.
     address public immutable spoke;
     /// @notice Reserve id of the BTC vault token in the spoke.
     uint256 public immutable vaultBtcReserveId;
@@ -128,7 +128,7 @@ contract LiquidationRouter is VenueManager {
             debtReserveId: debtReserveId,
             debtToCover: debtToCover,
             wbtcPayment: wbtcPayment,
-            reserveTokens: _getReserves()
+            debtToken: ISpoke(spoke).getReserve(debtReserveId).underlying
         });
 
         _iterateLiquidation(iteration);
@@ -144,7 +144,7 @@ contract LiquidationRouter is VenueManager {
             "LiquidationRouter: Insufficient WBTC profit"
         );
         wbtcProfit = wbtcAfter - wbtcBefore;
-        _transferAllReservesOut(iteration.reserveTokens);
+        _transferAllReservesOut();
     }
 
     /// @inheritdoc VenueManager
@@ -197,12 +197,13 @@ contract LiquidationRouter is VenueManager {
     // ---------------------- PHASE IMPLEMENTATION ----------------------
 
     /// @notice Setup phase: prepares venue `iteration.i`, if that venue needs it.
-    /// @dev Venues that need no setup are skipped without a callback; the rest continue the state machine from inside
-    ///      their setup callback.
+    /// @dev Venues that need no setup, and venues whose token the liquidation does not pay in, are skipped without a
+    ///      callback; the FlashLoan phase skips the latter too. The rest continue the state machine from inside their
+    ///      setup callback.
     function _executeSingleSetupPhase(Types.LiquidationIteration memory iteration) internal virtual {
-        (Types.VenueType venueType, address venueAddress) =
-            (iteration.flashDatas[iteration.i].venueType, iteration.flashDatas[iteration.i].venueAddress);
-        if (!_venueRequiresSetup(venueType, venueAddress)) {
+        Types.FlashData memory flashData = iteration.flashDatas[iteration.i];
+        (Types.VenueType venueType, address venueAddress) = (flashData.venueType, flashData.venueAddress);
+        if (_paymentIn(iteration, flashData.token) == 0 || !_venueRequiresSetup(venueType, venueAddress)) {
             _iterateLiquidation(_toNextIteration(iteration));
             return;
         }
@@ -229,7 +230,7 @@ contract LiquidationRouter is VenueManager {
     /// @dev Runs with every flash loan already drawn, so this contract holds the tokens the adapter pulls. Approvals
     ///      are granted for exactly the payment amounts and revoked immediately after.
     function _executeLiquidationPhase(Types.LiquidationIteration memory iteration) internal virtual {
-        address debtToken = iteration.reserveTokens[iteration.debtReserveId];
+        address debtToken = iteration.debtToken;
         _approveForAdapter(iteration, debtToken);
 
         // `wbtcPayment` doubles as the cap: it is what the preview quoted and exactly what the approval above
@@ -294,26 +295,20 @@ contract LiquidationRouter is VenueManager {
             .estimateLiquidation(AaveAdapter(aaveAdapter).getPosition(borrower).proxyContract);
     }
 
-    /// @notice Lists the underlying token of every reserve on the spoke, in reserve-id order.
-    function _getReserves() internal view returns (address[] memory reserveTokens) {
-        uint256 reserveCount = ISpoke(spoke).getReserveCount();
-        reserveTokens = new address[](reserveCount);
-        for (uint256 i = 0; i < reserveCount; i++) {
-            reserveTokens[i] = ISpoke(spoke).getReserve(i).underlying;
-        }
-    }
-
     // ---------------------- ERC20 Handlers ----------------------
 
     /// @notice Sweeps this contract's balance of every reserve token to `owner`. Called once the venues are repaid,
     ///         so anything left is profit or swap dust.
-    function _transferAllReservesOut(address[] memory reserveTokens) internal {
-        address to = owner;
-        for (uint256 i = 0; i < reserveTokens.length; i++) {
-            address token = reserveTokens[i];
+    /// @dev Every reserve, not only the debt token and WBTC: a `swapDatas` route can leave dust in any token it
+    ///      passes through.
+    function _transferAllReservesOut() internal {
+        ISpoke reserves = ISpoke(spoke);
+        uint256 reserveCount = reserves.getReserveCount();
+        for (uint256 i = 0; i < reserveCount; i++) {
+            address token = reserves.getReserve(i).underlying;
             uint256 balance = IERC20(token).balanceOf(address(this));
             if (balance > 0) {
-                IERC20(token).safeTransfer(to, balance);
+                IERC20(token).safeTransfer(owner, balance);
             }
         }
     }
@@ -365,7 +360,6 @@ contract LiquidationRouter is VenueManager {
     /// @notice How much of `token` the liquidation pays: the debt to cover when `token` is the debt token, plus the
     ///         fairness payment when `token` is WBTC. Both apply when the borrower owes WBTC.
     function _paymentIn(Types.LiquidationIteration memory iteration, address token) internal view returns (uint256) {
-        return (token == iteration.reserveTokens[iteration.debtReserveId] ? iteration.debtToCover : 0)
-            + (token == wbtc ? iteration.wbtcPayment : 0);
+        return (token == iteration.debtToken ? iteration.debtToCover : 0) + (token == wbtc ? iteration.wbtcPayment : 0);
     }
 }
