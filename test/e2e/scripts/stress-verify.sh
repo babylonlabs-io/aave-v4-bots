@@ -112,10 +112,10 @@ if [[ -f .e2e-stress-report.json ]]; then
     flunk "A10 only ${w2_done} of ${pos_total} positions liquidated across both bots"
   fi
 
-  # Vaults taken by this run's own antagonists are not the bot's to acquire. The front-run phase
-  # executes OUR authorization from another account, and the competitor buys with its own WBTC —
-  # both leave the escrow legitimately empty by one, so the target has to come down to match or the
-  # assertion punishes the bot for a race the harness deliberately made it lose.
+  # Vaults taken by this run's own antagonists are not the bot's to acquire. The competitor buys
+  # with its own WBTC, which leaves the escrow legitimately empty by one, so the target has to come
+  # down to match or the assertion punishes the bot for a race the harness made it lose. A
+  # front-runner that executed our authorization also takes one; A13 fails that case.
   taken=0
   [[ "$(jq -r '.frontrunResult // ""' .e2e-stress-report.json)" == "executed" ]] && taken=$((taken + 1))
   [[ "$(jq -r '.competitorResult // ""' .e2e-stress-report.json)" == "won" ]] && taken=$((taken + 1))
@@ -158,23 +158,25 @@ if [[ -f .e2e-stress-report.json ]]; then
   esac
 fi
 
-# ── A13: a front-run authorization is settled as spent, not as a lost race ───
-# Our batch executed, but from someone else's transaction, so ours reverted on a vault already gone.
-# By receipt alone that is an ordinary lost race — and treating it as one releases a reservation for
-# money that has already left the treasury, letting the next acquisition overdraw it.
+# ── A13: the router refuses a copied authorization ───────────────────────────
+# A separate account submitted an unmined batch of ours. `ArbitrageRouter` admits only its signer
+# as the submitter, so the copy must revert on that check, and our own transaction then acquires the
+# vault (A11). A copy that executes moves the treasury's WBTC under our signature from someone else's
+# transaction.
 if [[ -f .e2e-stress-report.json ]]; then
   frontrun="$(jq -r '.frontrunResult // "skipped"' .e2e-stress-report.json)"
   fr_vault="$(jq -r '.frontrunVault // ""' .e2e-stress-report.json)"
   case "$frontrun" in
-    executed)
-      elsewhere="$(metric_value 'arbitrageur_errors_total{type="relay_executed_elsewhere"}')"
-      if [[ "${elsewhere:-0}" -lt 1 ]]; then
-        flunk "A13 our authorization was executed by another submitter (vault ${fr_vault}) but the bot never recorded relay_executed_elsewhere — it released a spend that already happened"
-      else
-        pass "A13 front-run authorization settled as spent, not as a lost race (${elsewhere} occurrence(s))"
-      fi
+    refused)
+      pass "A13 router refused a copied authorization from another submitter (vault ${fr_vault})"
       ;;
-    *) printf "[SKIP] A13 no authorization was front-run (%s)\n" "$frontrun" ;;
+    executed)
+      flunk "A13 another submitter executed our authorization (vault ${fr_vault}) — the router's submitter check did not hold"
+      ;;
+    reverted)
+      flunk "A13 the copied authorization reverted, but not on the submitter check (vault ${fr_vault}) — see the drive log"
+      ;;
+    *) printf "[SKIP] A13 no authorization was copied (%s)\n" "$frontrun" ;;
   esac
 fi
 
@@ -197,8 +199,8 @@ if [[ -f .e2e-stress-report.json ]]; then
 fi
 
 # ── A14: a competitor's own-funded win is NOT reported as our spend ──────────
-# The mirror of A13. Same observable revert, opposite ledger consequence: nothing of ours moved, so
-# the reservation must be released. A false positive here strands capacity on every lost race.
+# Our transaction reverts on a vault the competitor took. Nothing of ours moved, so the reservation
+# must be released. A false positive here strands capacity on every lost race.
 if [[ -f .e2e-stress-report.json ]]; then
   competitor="$(jq -r '.competitorResult // "skipped"' .e2e-stress-report.json)"
   case "$competitor" in
