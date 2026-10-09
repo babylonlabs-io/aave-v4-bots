@@ -4,7 +4,7 @@ A monorepo of keeper bots for Babylon's Aave V4 integration:
 
 - **Liquidator** — monitors positions and liquidates unhealthy ones. Repayment is funded
   either from the bot's own token balances or, with `LIQUIDATION_FUNDING=flash`, by
-  borrowing each debt token through `LiquidationRouter` and repaying it out of the seized
+  borrowing the debt token through `LiquidationRouter` and repaying it out of the seized
   collateral in the same transaction — which needs no trading inventory, only gas. See
   [Funding modes](./docs/liquidator-overview.md#funding-modes).
 - **Arbitrageur** — a single bot running **both engines** off one signer: it always
@@ -297,7 +297,7 @@ The two suites split the funding modes between them, so both paths stay covered:
 
 | Suite | Funding | Chain |
 |-------|---------|-------|
-| `liquidator` | `flash` — borrows every debt token, repays from the seized collateral | **fork** (`E2E_FORK_URL`) |
+| `liquidator` | `flash` — borrows the debt token, repays from the seized collateral | **fork** (`E2E_FORK_URL`) |
 | `arbitrageur` and the MANUAL/stress suites | `inventory` — repays from the bot's own balances | bare anvil |
 
 The liquidator suite needs a fork because it flash-borrows from the **real** UniswapV4 and Morpho

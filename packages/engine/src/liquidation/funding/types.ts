@@ -16,7 +16,7 @@ import type { VenueRegistry } from "./venues";
  * - `inventory` repays out of the signer's own token inventory, calling `AaveAdapter`. That is why it
  *   must approve the adapter at boot, publish its balances to the risk gate every cycle, and
  *   declare a `spend` vector per action.
- * - `flash` calls `LiquidationRouter`, which borrows each debt token from a venue and repays itself
+ * - `flash` calls `LiquidationRouter`, which borrows the debt token from a venue and repays itself
  *   from the seized collateral. The signer spends only gas — so there are no approvals, no
  *   inventory, and no `spend`; instead the probe yields a real WBTC `expectedProfit`.
  *
@@ -82,16 +82,15 @@ export interface LiquidationFunding {
 export interface LiquidationCandidate {
   position: LiquidatablePosition;
   /**
-   * The Spoke reserve ids whose debt this liquidation covers, in the order the preview costed
-   * them.
-   *
-   * Only the reserves that carry debt: the preview leaves out every reserve it covers nothing on,
-   * and the adapter rejects both an empty list and a zero amount. So the token behind an amount is
-   * the token of the reserve at the *paired id*, never at its position in the array.
+   * The Spoke reserve id the borrower owes. The Core Spoke allows one debt reserve per position,
+   * so the preview names exactly one, and the adapter pulls `debtToCover` in that reserve's token.
    */
-  debtReserveIds: readonly bigint[];
-  /** Debt to cover, one per entry of `debtReserveIds`, already buffered for interest accrual. */
-  debtToCoverAmounts: readonly bigint[];
+  debtReserveId: bigint;
+  /**
+   * Debt to cover in the `debtReserveId` reserve, already buffered for interest accrual. The
+   * adapter pulls all of it and refunds whatever the Spoke does not consume.
+   */
+  debtToCover: bigint;
   /**
    * The head vault this liquidation would seize — the one the adapter takes, not a prefix.
    *
@@ -101,13 +100,14 @@ export interface LiquidationCandidate {
    */
   vaultId: Hex;
   /**
-   * The LLP fairness payment (plus, in direct-redemption mode, the redemption fee), buffered the
-   * same way the debt amounts are.
+   * The WBTC the adapter pulls from the caller, buffered the same way the debt is: the fairness
+   * payment, plus the liquidation fee in direct-redemption mode. On `liquidateWithLLP` the LLP pays
+   * the fee, so it is not part of this figure.
    *
-   * Buffered because it is also the `maxWbtcPayment` cap sent on-chain: the adapter recomputes the
-   * payment at execution and reverts with `ExcessiveWbtcPayment` if it exceeds the cap, so passing
-   * the bare estimate would fail every liquidation that drifted upward between the read and the
-   * send. The gate is told this figure too, since it is what the call can actually pull.
+   * Buffered because it is also the `maxExitBtcPayment` cap sent on-chain: the adapter recomputes
+   * the payment at execution and reverts with `ExcessiveExitBtcPayment` if it exceeds the cap, so
+   * passing the bare estimate would fail every liquidation that drifted upward between the read
+   * and the send. The gate is told this figure too, since it is what the call can actually pull.
    */
   wbtcPayment: bigint;
 }

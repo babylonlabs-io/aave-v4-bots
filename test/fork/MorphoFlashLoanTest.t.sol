@@ -22,7 +22,7 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVForkFixture, TBVHelper {
         address who = _createLiquidatablePosition(scenario);
 
         address[] memory debtTokens = _debtTokens();
-        address wbtc = address(vaultSwap.WBTC());
+        address wbtc = address(vaultSwap.EXIT_BTC());
 
         _setUpMorphoBlue(debtTokens);
         _setUpUniswap(debtTokens, _getWbtcPriceAgainstTokens(address(adapter), debtTokens), wbtc);
@@ -30,20 +30,15 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVForkFixture, TBVHelper {
         PoolKey[] memory poolKeys = _getPoolKeys();
         LiquidationRouter router = new LiquidationRouter(ADMIN, address(preview), address(vaultSwap));
 
-        LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](2);
-        flashDatas[0] = LiquidationTypes.FlashData({
-            venueType: LiquidationTypes.VenueType.Morpho,
-            venueAddress: MORPHO_BLUE,
-            token: debtTokens[0],
-            swapData: abi.encode()
-        });
-
-        flashDatas[1] = LiquidationTypes.FlashData({
-            venueType: LiquidationTypes.VenueType.Morpho,
-            venueAddress: MORPHO_BLUE,
-            token: debtTokens[1],
-            swapData: abi.encode()
-        });
+        LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](debtTokens.length);
+        for (uint256 i = 0; i < debtTokens.length; i++) {
+            flashDatas[i] = LiquidationTypes.FlashData({
+                venueType: LiquidationTypes.VenueType.Morpho,
+                venueAddress: MORPHO_BLUE,
+                token: debtTokens[i],
+                swapData: abi.encode()
+            });
+        }
 
         uint256 netWbtcBeforePayment;
         LiquidationTypes.VenueDebt[] memory venueDebts;
@@ -75,9 +70,10 @@ contract MorphoFlashLoanTest is UniswapV4Base, TBVForkFixture, TBVHelper {
             "Expected net WBTC before payment to be greater than the sum of venue debts"
         );
 
-        LiquidationTypes.SwapData[] memory swapDatas = new LiquidationTypes.SwapData[](2);
-        swapDatas[0] = _encodeSwapWbtcExactDebtOut(poolKeys[0], wbtc, venueDebts[0].amount);
-        swapDatas[1] = _encodeSwapWbtcExactDebtOut(poolKeys[1], wbtc, venueDebts[1].amount);
+        LiquidationTypes.SwapData[] memory swapDatas = new LiquidationTypes.SwapData[](venueDebts.length);
+        for (uint256 i = 0; i < venueDebts.length; i++) {
+            swapDatas[i] = _encodeSwapWbtcExactDebtOut(poolKeys[i], wbtc, venueDebts[i].amount);
+        }
 
         vm.prank(ADMIN);
         router.liquidate(LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: 0}), flashDatas, swapDatas);

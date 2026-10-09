@@ -108,10 +108,10 @@ export class InventoryFunding implements ArbitrageFunding {
       call: this.deps.vaultKeeperAddress
         ? {
             ...target,
-            functionName: "swapWbtcForVaultOnBehalf",
+            functionName: "swapExitBtcForVaultOnBehalf",
             args: [vaultId, maxWbtcIn, this.deps.vaultKeeperAddress],
           }
-        : { ...target, functionName: "swapWbtcForVault", args: [vaultId, maxWbtcIn] },
+        : { ...target, functionName: "swapExitBtcForVault", args: [vaultId, maxWbtcIn] },
     };
   }
 }

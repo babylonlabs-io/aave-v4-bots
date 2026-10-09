@@ -68,7 +68,7 @@ const envSchema = z.object({
 
   // Registered vault keeper the acquired vault is redeemed to (optional). Set it when whoever
   // signs is not itself a keeper — the bot pays the WBTC and that keeper receives the vault via
-  // `swapWbtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself.
+  // `swapExitBtcForVaultOnBehalf`. Unset ⇒ the executor must be a keeper and pays for itself.
   VAULT_KEEPER_ADDRESS: addressSchema.optional(),
 
   // Where the WBTC for an acquisition comes from. `router` has a treasury pay through an

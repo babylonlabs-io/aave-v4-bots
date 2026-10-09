@@ -1,30 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  RESERVE_FLAG,
-  bufferAmount,
-  bufferAmounts,
-  isBorrowableReserve,
-  selectPositions,
-} from "./domain";
-
-describe("bufferAmounts", () => {
-  it("applies a 1% buffer by default", () => {
-    expect(bufferAmounts([10_000n, 200n])).toEqual([10_100n, 202n]);
-  });
-
-  it("supports a custom buffer in bps", () => {
-    expect(bufferAmounts([10_000n], 250)).toEqual([10_250n]);
-  });
-
-  it("buffers every nonzero amount by at least one unit", () => {
-    // Truncation would give 1n * 10100 / 10000 = 1: no buffer at all below 100 units.
-    expect(bufferAmounts([1n, 99n])).toEqual([2n, 100n]);
-  });
-
-  it("returns an empty array for no amounts", () => {
-    expect(bufferAmounts([])).toEqual([]);
-  });
-});
+import { RESERVE_FLAG, bufferAmount, isBorrowableReserve, selectPositions } from "./domain";
 
 describe("bufferAmount", () => {
   it("applies a 1% buffer by default", () => {

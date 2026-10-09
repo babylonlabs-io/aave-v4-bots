@@ -5,7 +5,7 @@
  *
  * A revert is decoded against the ABI passed to the call that made it, and viem can only name an
  * error whose selector it finds there. That matters here because the contracts the bots call are
- * thin: `swapWbtcForVault` reverts from inside `ApplicationRegistry` or `BTCVaultRegistry` at
+ * thin: `swapExitBtcForVault` reverts from inside `ApplicationRegistry` or `BTCVaultRegistry` at
  * least as often as it does with one of `BTCVaultSwap`'s own errors. `UnauthorizedVaultKeeper()`
  * — what an unregistered keeper hits on its first acquisition — is declared in
  * `ApplicationRegistry`, so a per-contract ABI misses it and viem surfaces a bare `0xc2732b47`
@@ -41,14 +41,8 @@ export const protocolErrorsAbi = [
   { type: "error", name: "ActivationDeadlineExpired", inputs: [] },
   { type: "error", name: "ActivationDelayNotElapsed", inputs: [] },
   { type: "error", name: "AddressEmptyCode", inputs: [{ name: "target", type: "address" }] },
-  {
-    type: "error",
-    name: "AmountMismatch",
-    inputs: [
-      { name: "expected", type: "uint256" },
-      { name: "actual", type: "uint256" },
-    ],
-  },
+  { type: "error", name: "AlreadyFrozen", inputs: [] },
+  { type: "error", name: "AlreadyPaused", inputs: [] },
   { type: "error", name: "ApplicationAlreadyRegistered", inputs: [] },
   { type: "error", name: "ApplicationNotActive", inputs: [] },
   { type: "error", name: "ApplicationNotRegistered", inputs: [] },
@@ -73,12 +67,10 @@ export const protocolErrorsAbi = [
   { type: "error", name: "BtcKeyAlreadyRegistered", inputs: [] },
   { type: "error", name: "BTCVaultNotFound", inputs: [] },
   { type: "error", name: "CannotReceiveShares", inputs: [] },
-  { type: "error", name: "DeficitReportedMismatch", inputs: [] },
   { type: "error", name: "DelegateeNotVerified", inputs: [] },
   { type: "error", name: "DepositorWotsPkHashAlreadyUsed", inputs: [] },
   { type: "error", name: "DuplicateHashlock", inputs: [] },
   { type: "error", name: "DuplicateParticipant", inputs: [] },
-  { type: "error", name: "DuplicateReserveId", inputs: [] },
   { type: "error", name: "DynamicConfigKeyUninitialized", inputs: [] },
   { type: "error", name: "ECDSAInvalidSignature", inputs: [] },
   {
@@ -90,6 +82,8 @@ export const protocolErrorsAbi = [
   { type: "error", name: "EmptyArray", inputs: [] },
   { type: "error", name: "EmptyPayoutAddress", inputs: [] },
   { type: "error", name: "EmptyVaultKeepers", inputs: [] },
+  { type: "error", name: "EnforcedFreeze", inputs: [] },
+  { type: "error", name: "EnforcedPause", inputs: [] },
   {
     type: "error",
     name: "ERC1967InvalidImplementation",
@@ -97,7 +91,7 @@ export const protocolErrorsAbi = [
   },
   { type: "error", name: "ERC1967NonPayable", inputs: [] },
   { type: "error", name: "EthKeyAlreadyRegistered", inputs: [] },
-  { type: "error", name: "ExcessiveWbtcPayment", inputs: [] },
+  { type: "error", name: "ExcessiveExitBtcPayment", inputs: [] },
   { type: "error", name: "FailedCall", inputs: [] },
   { type: "error", name: "HealthFactorBelowThreshold", inputs: [] },
   { type: "error", name: "HealthFactorNotBelowThreshold", inputs: [] },
@@ -110,7 +104,7 @@ export const protocolErrorsAbi = [
     ],
   },
   { type: "error", name: "InsufficientBorrowAllowance", inputs: [] },
-  { type: "error", name: "InsufficientLiquidationOutput", inputs: [] },
+  { type: "error", name: "InsufficientExitBtcForFee", inputs: [] },
   { type: "error", name: "InsufficientSettlementAmount", inputs: [] },
   {
     type: "error",
@@ -146,11 +140,9 @@ export const protocolErrorsAbi = [
   { type: "error", name: "InvalidFeeConfiguration", inputs: [] },
   { type: "error", name: "InvalidHashlock", inputs: [] },
   { type: "error", name: "InvalidInitialization", inputs: [] },
-  { type: "error", name: "InvalidLiquidationAmounts", inputs: [] },
   { type: "error", name: "InvalidLiquidationConfig", inputs: [] },
   { type: "error", name: "InvalidLiquidationFee", inputs: [] },
   { type: "error", name: "InvalidMaxUserReservesLimit", inputs: [] },
-  { type: "error", name: "InvalidNullVaultDeclaration", inputs: [] },
   { type: "error", name: "InvalidOracleDecimals", inputs: [] },
   { type: "error", name: "InvalidOraclePrice", inputs: [] },
   {
@@ -175,21 +167,20 @@ export const protocolErrorsAbi = [
   { type: "error", name: "InvalidPostLiquidationState", inputs: [] },
   { type: "error", name: "InvalidProxyContract", inputs: [] },
   { type: "error", name: "InvalidReceiver", inputs: [] },
-  { type: "error", name: "InvalidReserveId", inputs: [] },
   { type: "error", name: "InvalidSecret", inputs: [] },
   { type: "error", name: "InvalidShortString", inputs: [] },
   { type: "error", name: "InvalidSignature", inputs: [] },
   { type: "error", name: "InvalidVaultsArray", inputs: [] },
-  { type: "error", name: "InvalidVaultWriteOff", inputs: [] },
   { type: "error", name: "InvalidXOnlyKey", inputs: [{ name: "xOnly", type: "bytes32" }] },
   { type: "error", name: "LLPDisabled", inputs: [] },
   { type: "error", name: "MaxDataSizeExceeded", inputs: [] },
   { type: "error", name: "MaximumDynamicConfigKeyReached", inputs: [] },
   { type: "error", name: "MaximumUserReservesExceeded", inputs: [] },
   { type: "error", name: "MustNotLeaveDust", inputs: [] },
-  { type: "error", name: "NoAccruedInterest", inputs: [] },
   { type: "error", name: "NoCollateralizedVaults", inputs: [] },
+  { type: "error", name: "NotFrozen", inputs: [] },
   { type: "error", name: "NotInitializing", inputs: [] },
+  { type: "error", name: "NotPaused", inputs: [] },
   { type: "error", name: "OnlyAdapter", inputs: [] },
   { type: "error", name: "OperationKeyVersionOverflow", inputs: [] },
   { type: "error", name: "PayoutAddressTooLong", inputs: [] },
@@ -241,6 +232,7 @@ export const protocolErrorsAbi = [
       { name: "actualOut", type: "uint256" },
     ],
   },
+  { type: "error", name: "SpokeLiquidationManagerNotSetProperly", inputs: [] },
   { type: "error", name: "StringTooLong", inputs: [{ name: "str", type: "string" }] },
   { type: "error", name: "TBV_AlreadyFrozen", inputs: [] },
   { type: "error", name: "TBV_AlreadyPaused", inputs: [] },
@@ -253,6 +245,7 @@ export const protocolErrorsAbi = [
   { type: "error", name: "TBV_Unauthorized", inputs: [] },
   { type: "error", name: "Unauthorized", inputs: [] },
   { type: "error", name: "UnauthorizedVaultKeeper", inputs: [] },
+  { type: "error", name: "UnsupportedFeeToken", inputs: [] },
   { type: "error", name: "UnsupportedSettlementToken", inputs: [] },
   { type: "error", name: "UUPSUnauthorizedCallContext", inputs: [] },
   {
@@ -261,6 +254,7 @@ export const protocolErrorsAbi = [
     inputs: [{ name: "slot", type: "bytes32" }],
   },
   { type: "error", name: "VaultBTCSharesAssetsMismatch", inputs: [] },
+  { type: "error", name: "VaultDebtRepaymentExceeded", inputs: [] },
   { type: "error", name: "VaultNotAcquirable", inputs: [] },
   { type: "error", name: "VersionAlreadyExists", inputs: [] },
   { type: "error", name: "ZeroAddress", inputs: [] },

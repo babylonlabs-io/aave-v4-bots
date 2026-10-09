@@ -127,7 +127,7 @@ const envSchema = z.object({
 
   // ── Flash funding ──────────────────────────────────────────────────────────────────────
   // `inventory` (default) repays from this signer's own inventory. `flash` routes through
-  // LiquidationRouter, which borrows each debt token from a venue and repays itself out of the
+  // LiquidationRouter, which borrows the debt token from a venue and repays itself out of the
   // seized collateral — the signer then needs no debt-token inventory at all, only gas.
   LIQUIDATION_FUNDING: z.enum(["inventory", "flash"]).optional().default("inventory"),
   /** LiquidationRouter deployment. Its immutable `owner` must be this bot's signer. */

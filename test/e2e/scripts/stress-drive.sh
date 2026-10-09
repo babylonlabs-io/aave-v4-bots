@@ -290,18 +290,15 @@ thaw_chain() {
 }
 
 # ── 2c. front-run our own authorization (STRESS_ROUTER) ──────────────────────
-# The one hazard permissionless relaying introduces, reproduced against the running bot.
-#
 # Under router funding an acquisition is a signed `relay(message, signature)` batch. The signature
-# carries no nonce and is not bound to a submitter, so anyone holding the calldata can execute it —
-# and the calldata is visible before we broadcast, because gas estimation puts it in front of an RPC
-# first. Here a separate account lifts an unmined batch of ours and submits it with a higher gas
-# price. It wins; our own transaction then reverts on a vault that is already gone.
+# carries no nonce, and the calldata is visible before it is mined, because gas estimation puts it in
+# front of an RPC first. Here a separate account lifts an unmined batch of ours and submits it with a
+# higher gas price, so it is ordered first.
 #
-# From the receipt alone that is indistinguishable from losing a race. The difference is decisive
-# for the ledger: the treasury's WBTC *did* leave, under our own signature, so releasing the
-# reservation would let the next acquisition spend money that is already spent. The bot is expected
-# to see the router's `SwapWbtcToVault` event and settle `spent`, which A13 asserts.
+# `ArbitrageRouter` admits only its signer as the submitter, so the copy must revert with
+# "unauthorized submitter" and our own transaction must still acquire the vault. A copy that
+# executes would move the treasury's WBTC under our signature from someone else's transaction. A13
+# asserts the refusal.
 FRONTRUN_RESULT="skipped"; FRONTRUN_VAULT=""
 if [[ -n "${STRESS_ROUTER:-}" ]]; then
   ROUTER_ADDR="$(cat .e2e-arbitrage-router 2>/dev/null || true)"
@@ -338,12 +335,11 @@ if [[ -n "${STRESS_ROUTER:-}" ]]; then
         printf "! could not read calldata for %s; front-run phase skipped\n" "$FR_HASH" >&2
       else
         printf "  copying %s (vault %s) as the front-runner\n" "$FR_HASH" "$FRONTRUN_VAULT"
-        # `--gas-limit` is load-bearing: it suppresses estimation. Estimation runs against the
-        # PENDING block, which already holds the bot's own queued relay for this vault, so it
-        # reverts `VaultNotAcquirable` on a state that has already applied the transaction we are
-        # racing. `--legacy` because `--gas-price` alone yields a 1559 tx whose priority fee
-        # exceeds its max fee. `--async` returns the hash so both can share one block, which is why
-        # the receipt below — not the send — decides whether this actually executed.
+        # `--gas-limit` is load-bearing: it suppresses estimation, which would revert on the
+        # router's submitter check and never put the copy on-chain. A13 needs the mined revert to
+        # read its reason. `--legacy` because `--gas-price` alone yields a 1559 tx whose priority
+        # fee exceeds its max fee. `--async` returns the hash so both can share one block, which is
+        # why the receipt below — not the send — decides whether this actually executed.
         FR_OUT="$(cast send "$ROUTER_ADDR" --data "$FR_DATA" \
              --private-key "$FRONTRUNNER_KEY" --async --gas-limit 3000000 \
              --legacy --gas-price 50000000000 --rpc-url "$RPC" 2>&1 | tail -1)" && FR_SENT=1 || FR_SENT=0
@@ -358,9 +354,12 @@ if [[ -n "${STRESS_ROUTER:-}" ]]; then
           if [[ "$FR_STATUS" == "true" || "$FR_STATUS" == "1" || "$FR_STATUS" == "success" ]]; then
             FRONTRUN_RESULT="executed"
             ok "front-runner executed our authorization ($FR_OUT)"
+          elif cast run "$FR_OUT" --rpc-url "$RPC" 2>&1 | grep -q "unauthorized submitter"; then
+            FRONTRUN_RESULT="refused"
+            ok "router refused the copied authorization ($FR_OUT)"
           else
             FRONTRUN_RESULT="reverted"
-            printf "! front-runner tx %s reverted (status %s)\n" "$FR_OUT" "${FR_STATUS:-unknown}" >&2
+            printf "! front-runner tx %s reverted for a reason other than the submitter check (status %s)\n" "$FR_OUT" "${FR_STATUS:-unknown}" >&2
           fi
         fi
       fi
@@ -676,14 +675,13 @@ fi
 
 
 # ── 5b. a competitor buys a vault out from under us (STRESS_ROUTER) ──────────
-# The other side of the same classification, and the one that must NOT report a spend.
+# The lost race, which must NOT report a spend.
 #
 # A separate account acquires a vault with its OWN WBTC, straight through the LLP — only
 # `onBehalfOf` must be a registered keeper, so a non-keeper may pay. Our transaction then reverts on
-# a vault that is gone, exactly as in the front-run case. The difference is invisible in the receipt
-# and decisive for the ledger: no `SwapWbtcToVault` came from OUR router, so our treasury paid
-# nothing and the reservation must be released. Reporting a spend here would strand capacity every
-# time we simply lost a race.
+# a vault that is gone. No `SwapWbtcToVault` came from OUR router, so our treasury paid nothing and
+# the reservation must be released. Reporting a spend here would strand capacity every time we
+# simply lost a race.
 COMPETITOR_RESULT="skipped"; COMPETITOR_VAULT=""; COMPETITOR_RACED=0
 if [[ -n "${STRESS_ROUTER:-}" ]]; then
   COMP_KEY="$(cast --to-uint256 1001)"
@@ -713,7 +711,7 @@ if [[ -n "${STRESS_ROUTER:-}" ]]; then
       || printf "! bot never reached %s in 90s; taking it anyway, but there is no race to lose\n" \
            "$COMP_VAULT" >&2
     freeze_chain
-    COMP_OUT="$(cast send "$VAULT_SWAP" 'swapWbtcForVaultOnBehalf(bytes32,uint256,address)' \
+    COMP_OUT="$(cast send "$VAULT_SWAP" 'swapExitBtcForVaultOnBehalf(bytes32,uint256,address)' \
          "$COMP_VAULT" 100000000000 "$SIGNER" --async --gas-limit 3000000 \
          --private-key "$COMP_KEY" --legacy --gas-price 60000000000 --rpc-url "$RPC" 2>&1 | tail -1)" \
       && COMP_SENT=1 || COMP_SENT=0

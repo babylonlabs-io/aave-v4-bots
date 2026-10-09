@@ -22,7 +22,7 @@ abstract contract TBVHelper {
             reserves[i] = IAaveSpoke(spoke).getReserve(i);
         }
 
-        uint256 wbtcPrice = IAaveOracle(oracle).getReservePrice(AaveAdapter(adapter).WBTC_RESERVE_ID());
+        uint256 wbtcPrice = IAaveOracle(oracle).getReservePrice(AaveAdapter(adapter).EXIT_BTC_RESERVE_ID());
 
         uint256[] memory prices = new uint256[](tokens.length);
         for (uint256 i = 0; i < tokens.length; i++) {

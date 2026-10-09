@@ -31,7 +31,7 @@ interface SentAcquisition {
   intentId?: string;
   slot: RiskSlot;
   vaultId: string;
-  /** Fresh on-chain acquisition cost (`amountWbtcToAcquire`), not the indexer's figure. */
+  /** Fresh on-chain acquisition cost (`amountExitBtcToAcquire`), not the indexer's figure. */
   currentDebt: bigint;
   maxWbtcIn: bigint;
   /** Identity of the authorization this acquisition was built under, if the mode signs one. */
@@ -91,12 +91,12 @@ export interface ArbitrageEngineParams {
   /**
    * Registered vault keeper the acquired vault is redeemed to, splitting the payer from the
    * beneficiary: this process pays the WBTC, that keeper's BTC key receives the vault
-   * (`swapWbtcForVaultOnBehalf`). Set it when whoever signs is **not** itself a keeper — a
+   * (`swapExitBtcForVaultOnBehalf`). Set it when whoever signs is **not** itself a keeper — a
    * treasury multisig, or a Safe in MANUAL custody, which can never be one because keepers are
    * registered by BTC public key against a roster frozen at vault creation.
    *
    * Unset (the default) the executor must be a registered keeper and pays for itself
-   * (`swapWbtcForVault`).
+   * (`swapExitBtcForVault`).
    */
   vaultKeeperAddress?: Address;
   /** Where the WBTC for an acquisition comes from. Omitted ⇒ the signer's own balance. */
@@ -509,22 +509,23 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
           `Vault ${vaultId} is currently unprofitable after a ${this.btcRedemptionCostSats} sat BTC redemption cost, skipping`
         );
         this.logger.warn(
-          `   Debt: ${formatUnits(preview.amountDebt, 8)} WBTC | Interest: ${formatUnits(preview.amountInterest, 8)} WBTC | Fee: ${formatUnits(preview.amountFee, 8)} WBTC`
+          `   Debt: ${formatUnits(preview.amountDebt, 8)} WBTC | Interest: ${formatUnits(preview.amountInterest, 8)} WBTC`
         );
         this.metrics.recordError("vault_skipped");
         return { kind: "skipped" };
       }
 
-      // Slippage-adjusted ceiling on what we will pay. `swapWbtcForVault` charges the debt+fee
-      // prevailing at execution and only reverts *above* this ceiling, so `maxWbtcIn` — not the
-      // preview cost — is the amount the tx actually authorizes.
+      // Slippage-adjusted ceiling on what we will pay. `swapExitBtcForVault` charges the debt
+      // prevailing at execution, capped by the LLP's minimum profit threshold, and only reverts
+      // *above* this ceiling, so `maxWbtcIn` — not the preview cost — is the amount the tx
+      // actually authorizes.
       //
       // Priced off the FRESH on-chain preview, not the indexer's `currentDebt`. Escrow debt only
       // accrues, so a lagging indexer reports it too low, which would set the ceiling below the
       // real cost (the swap then reverts — and a revert with the vault still in escrow is not a
       // lost race, so it feeds the breaker), understate what the batch budget must reserve, and
       // overstate `expectedProfit` against `RISK_MIN_PROFIT`. The read is already made above.
-      const acquireCost = preview.amountWbtcToAcquire;
+      const acquireCost = preview.amountExitBtcToAcquire;
       const maxWbtcIn = maxWbtcInWithSlippage(acquireCost, this.maxSlippageBps);
 
       // Risk gate — check just before committing to the acquisition. The profit floor must bound

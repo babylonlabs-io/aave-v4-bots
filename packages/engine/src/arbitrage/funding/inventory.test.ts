@@ -133,7 +133,7 @@ describe("InventoryFunding", () => {
     });
 
     // No keeper ⇒ the signer must itself be a registered one, and the vault redeems to its BTC key.
-    expect(call.functionName).toBe("swapWbtcForVault");
+    expect(call.functionName).toBe("swapExitBtcForVault");
     expect(call.args).toEqual([VAULT_ID, 99n]);
   });
 
@@ -143,7 +143,7 @@ describe("InventoryFunding", () => {
       maxWbtcIn: 99n,
     });
 
-    expect(call.functionName).toBe("swapWbtcForVaultOnBehalf");
+    expect(call.functionName).toBe("swapExitBtcForVaultOnBehalf");
     expect(call.args).toEqual([VAULT_ID, 99n, KEEPER]);
   });
 });

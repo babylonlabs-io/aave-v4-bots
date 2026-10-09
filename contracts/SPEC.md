@@ -14,8 +14,8 @@ A **standard venue** is a flash-loan hub that transfers the borrowed token to `V
 
 Each liquidation proceeds through three phases:
 
-1. **`SetUp`** — Prepares any wrapped venue that requires initialization before use. For example, `UniswapV4` requires its `PositionManager` to be locked before it can be used.
-2. **`FlashLoan`** — `VenueManager` requests a flash loan or flash swap from every venue.
+1. **`SetUp`** — Prepares any wrapped venue that requires initialization before use. For example, `UniswapV4` requires its `PoolManager` to be unlocked before it can be used. A venue whose token the liquidation does not pay in is skipped.
+2. **`FlashLoan`** — `VenueManager` requests a flash loan or flash swap from every venue whose token is owed.
 3. **`LiquidationAndSwap`** — `LiquidationRouter` performs the liquidation and swaps the earned `WBTC` into the debt tokens required for repayment.
 
 ### Phases 1 & 2

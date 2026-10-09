@@ -12,10 +12,10 @@ import {E2ESafe} from "./helpers/E2ESafe.sol";
 ///         (WBTC + USDC) and is `msg.sender` of every action; the bot only proposes, and an
 ///         operator drives each proposal through `operator-cli`
 ///         (`test/e2e/scripts/operator-confirm.sh`).
-/// @dev This suite is the reason `swapWbtcForVaultOnBehalf` exists in the engine. Vault keepers are
+/// @dev This suite is the reason `swapExitBtcForVaultOnBehalf` exists in the engine. Vault keepers are
 ///      registered *by BTC public key* against a roster frozen at vault creation, so a Safe — a
 ///      contract, with no BTC key — can never be a keeper and can never be `msg.sender` of the
-///      direct `swapWbtcForVault`. Splitting payer from beneficiary is the only way a multisig can
+///      direct `swapExitBtcForVault`. Splitting payer from beneficiary is the only way a multisig can
 ///      fund acquisitions: the Safe pays, and `VAULT_KEEPER_ADDRESS` (the registered ARBITRAGEUR /
 ///      APP_OPERATOR_0) receives the redeemed vault. That is also the realistic production shape —
 ///      a treasury multisig funding a permissioned keeper.
@@ -53,7 +53,7 @@ contract ManualSafeArbitrageurE2ESetup is ArbitrageurE2ESetup {
     }
 
     /// @dev `VAULT_KEEPER_ADDRESS` is what routes the acquisition through
-    ///      `swapWbtcForVaultOnBehalf`: the Safe pays, ARBITRAGEUR (a registered keeper) receives.
+    ///      `swapExitBtcForVaultOnBehalf`: the Safe pays, ARBITRAGEUR (a registered keeper) receives.
     ///      Without it the swap would revert `UnauthorizedVaultKeeper()`.
     function _executionEnvLines() internal view override returns (string memory) {
         return string.concat(

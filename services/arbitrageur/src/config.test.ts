@@ -312,6 +312,13 @@ describe("config validation", () => {
         expect(() => loadConfig()).toThrow(/WBTC_FLASH_LOAN_ADDRESS/);
       });
 
+      it("refuses direct redemption under flash funding", async () => {
+        // The router always settles through the LLP, so the flag would be ignored on-chain.
+        process.env = { ...validEnv, ...liqEnv, ...flashEnv, IS_DIRECT_REDEMPTION: "true" };
+        const { loadConfig } = await import("./config");
+        expect(() => loadConfig()).toThrow(/IS_DIRECT_REDEMPTION=true cannot be used/);
+      });
+
       it("rejects flash funding without the liquidation engine", async () => {
         // The vars would otherwise parse cleanly and do nothing at all.
         process.env = { ...validEnv, ...flashEnv };

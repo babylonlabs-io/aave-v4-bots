@@ -3,10 +3,10 @@ import type { Address } from "viem";
 export interface LiquidatablePosition {
   proxyAddress: Address;
   borrower: Address;
-  /** Reserve ids the indexer's estimate covers debt on. Paired with `debtToCoverAmounts`. */
-  debtReserveIds: string[];
-  /** Debt to cover, one per entry of `debtReserveIds`. */
-  debtToCoverAmounts: string[];
+  /** The reserve id the borrower owes; the Core Spoke allows one debt reserve per position. */
+  debtReserveId: string;
+  /** Debt to cover in that reserve, per the indexer's estimate. */
+  debtToCover: string;
   /** The head vault the liquidation would seize. */
   vaultId: string;
   suppliedShares: string;
