@@ -62,4 +62,4 @@ gas_snapshot_check = false
 gas_limit = "max"
 
 [rpc_endpoints]
-sepolia = "${SEPOLIA_RPC}"
+mainnet = "${MAINNET_RPC}"

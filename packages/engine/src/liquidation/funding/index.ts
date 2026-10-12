@@ -31,11 +31,6 @@ export {
 export function createLiquidationFunding(context: FundingContext): LiquidationFunding {
   const params = context.funding ?? { mode: "inventory" };
   return params.mode === "flash"
-    ? new FlashFunding({
-        ...context,
-        routerAddress: params.routerAddress,
-        venues: params.venues,
-        maxSlippageBps: params.maxSlippageBps,
-      })
+    ? new FlashFunding({ ...context, ...params })
     : new InventoryFunding(context);
 }

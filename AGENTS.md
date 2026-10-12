@@ -30,12 +30,17 @@ Solidity lives here too (`contracts/`, `test/`), so the Foundry gates are part o
 ```bash
 forge build
 forge fmt --check                                    # CI gate; `forge fmt` to fix
-SEPOLIA_RPC=<url> forge test --match-path 'test/fork/**'   # fork tests, pinned blocks
+MAINNET_RPC=<url> forge test --match-path 'test/fork/**'   # fork tests, pinned blocks
+
+# Venue ranking on an Ethereum mainnet fork: starts its own anvil, needs `forge build` output.
+# Skips when the variable is unset.
+ETHEREUM_FORK_RPC_URL=<url> pnpm --filter @repo/engine test src/liquidation/funding/ranking.fork.test.ts
 ```
 
-The fork tests pin their blocks (`test/fork/base/TestSuites.sol`), so after the first run foundry
-serves them from `~/.foundry/cache/rpc` and the RPC is not called again — which is what makes them
-cheap enough to gate on.
+The fork tests pin their block (`test/fork/base/TestSuites.sol`), so after the first run foundry
+serves it from `~/.foundry/cache/rpc` and the RPC is not called again — which is what makes them
+cheap enough to gate on. The RPC must serve archive state at that block;
+`https://mainnet.gateway.tenderly.co` does.
 
 Running a bot locally needs its database and indexer first:
 
@@ -53,7 +58,7 @@ the `lib/tbv-contracts/` submodule, starts the real bot processes, and tears eve
 needs `foundry` and docker. Suites are selected with `SUITE` (default `liquidator`):
 
 ```bash
-E2E_FORK_URL=https://sepolia.gateway.tenderly.co ./scripts/e2e-local.sh  # liquidator (default) — needs a fork
+E2E_FORK_URL=https://mainnet.gateway.tenderly.co ./scripts/e2e-local.sh  # liquidator (default) — needs a fork
 SUITE=arbitrageur ./scripts/e2e-local.sh              # one bot, both engines
 SUITE=manual-arbitrageur ./scripts/e2e-local.sh       # keyless MANUAL mode + operator-cli
 SUITE=stress-arbitrageur ./scripts/e2e-local.sh       # mass-liquidation + nonce chaos
