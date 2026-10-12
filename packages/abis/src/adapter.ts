@@ -12,18 +12,19 @@ export const adapterAbi = [
     stateMutability: "view",
   },
   // Both liquidation entry points seize exactly one vault — the head of the borrower's ordered
-  // list — and take the debt they cover as an (ids, amounts) pair rather than one slot per reserve.
-  // `maxWbtcPayment` caps the WBTC the adapter pulls on top of that debt, so an estimate that went
-  // stale between the read and the send is refused on-chain instead of charged.
+  // list — and cover the debt of the one reserve the borrower owes. `maxExitBtcPayment` caps the
+  // WBTC the adapter pulls from the caller on top of that debt, so an estimate that went stale
+  // between the read and the send is refused on-chain instead of charged. It covers the fee and
+  // the fairness payment on `liquidate`, and the fairness payment alone on `liquidateWithLLP`,
+  // where the LLP pays the fee.
   {
     type: "function",
     name: "liquidate",
     inputs: [
       { name: "borrower", type: "address" },
-      { name: "debtReserveIds", type: "uint256[]" },
-      { name: "debtToCoverAmounts", type: "uint256[]" },
-      { name: "minVaultBtcOut", type: "uint256" },
-      { name: "maxWbtcPayment", type: "uint256" },
+      { name: "debtReserveId", type: "uint256" },
+      { name: "debtToCover", type: "uint256" },
+      { name: "maxExitBtcPayment", type: "uint256" },
       { name: "directBtcRedeemKey", type: "bytes32" },
     ],
     outputs: [
@@ -38,9 +39,9 @@ export const adapterAbi = [
     inputs: [
       { name: "borrower", type: "address" },
       { name: "llp", type: "address" },
-      { name: "debtReserveIds", type: "uint256[]" },
-      { name: "debtToCoverAmounts", type: "uint256[]" },
-      { name: "maxWbtcPayment", type: "uint256" },
+      { name: "debtReserveId", type: "uint256" },
+      { name: "debtToCover", type: "uint256" },
+      { name: "maxExitBtcPayment", type: "uint256" },
       {
         name: "requestedTokens",
         type: "tuple[]",

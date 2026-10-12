@@ -52,7 +52,7 @@ contract RouterArbitrageurE2ESetup is ArbitrageurE2ESetup {
     }
 
     /// @dev `VAULT_KEEPER_ADDRESS` is mandatory here: the router only ever calls
-    ///      `swapWbtcForVaultOnBehalf`. The bot is itself the registered keeper, so it receives the
+    ///      `swapExitBtcForVaultOnBehalf`. The bot is itself the registered keeper, so it receives the
     ///      vault while the treasury pays for it.
     function _executionEnvLines() internal view override returns (string memory) {
         return string.concat(

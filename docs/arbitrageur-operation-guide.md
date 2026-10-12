@@ -58,7 +58,7 @@ Ethereum RPC ──┬──▶ Ponder Indexer ──▶ /escrowed-vaults (with 
                └──▶ Arbitrageur Client
                      - AUTO: signs and broadcasts
                      - MANUAL: writes proposals for operator-cli
-                     - inventory: swapWbtcForVault[OnBehalf] on BTCVaultSwap
+                     - inventory: swapExitBtcForVault[OnBehalf] on BTCVaultSwap
                      - router: signed authorization through ArbitrageRouter
                      - optional: also runs the liquidation engine
                      - serves /metrics, /health, /ready
@@ -137,7 +137,7 @@ git submodule update --init --recursive
 
 export ARBITRAGE_ROUTER_SIGNER=0x...   # this bot's signer. Authorizes acquisitions, holds no funds
 export ARBITRAGE_ROUTER_PAYER=0x...    # the treasury
-export WBTC_ADDRESS=0x...              # must match the LLP's WBTC
+export WBTC_ADDRESS=0x...              # must match the LLP's EXIT_BTC()
 export DEPLOYER_PRIVATE_KEY=0x...
 export RPC_URL=https://...
 
@@ -267,7 +267,7 @@ For a native run, use `http://localhost:42070` and `localhost:5433` (§5.1). Und
 | `CLIENT_RPC_URL` | RPC for execution | Yes | |
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap | Yes | |
 | `WBTC_ADDRESS` | WBTC token | Yes | |
-| `VAULT_KEEPER_ADDRESS` | Registered keeper the vault is redeemed to, via `swapWbtcForVaultOnBehalf`. Set it when the executor is not a keeper (a Safe, or a treasury). Unset: the executor must be a keeper. Point it only at a keeper you control; the BTC lands there while the WBTC leaves the bot | router | |
+| `VAULT_KEEPER_ADDRESS` | Registered keeper the vault is redeemed to, via `swapExitBtcForVaultOnBehalf`. Set it when the executor is not a keeper (a Safe, or a treasury). Unset: the executor must be a keeper. Point it only at a keeper you control; the BTC lands there while the WBTC leaves the bot | router | |
 | `MAX_SLIPPAGE_BPS` | Ceiling above the previewed cost the bot authorizes. Max `10000` | No | `100` |
 | `BTC_REDEMPTION_COST_SATS` | Bitcoin cost of the keeper's claim on one vault, in sats: the Claim, Assert and Payout fees and anchors. The preview prices the gross vault BTC, and the keeper receives it net of these. See §9 | No | `0` |
 | `POLLING_INTERVAL_MS` | Poll interval | No | `30000` |
@@ -395,7 +395,7 @@ Testnet addresses are provided during onboarding.
 
 | Variable | Contract |
 |----------|----------|
-| `VAULT_SWAP_ADDRESS` | BTCVaultSwap. `swapWbtcForVault`, `previewEscrowedVaults` |
+| `VAULT_SWAP_ADDRESS` | BTCVaultSwap. `swapExitBtcForVault`, `previewEscrowedVaults` |
 | `WBTC_ADDRESS` | WBTC token |
 
 ### 5.7. Database roles
@@ -661,18 +661,21 @@ the bot then skips a cycle when the indexer `/status` is not available or too fa
 | Field | Meaning |
 |---|---|
 | `amountVault` | BTC in the vault (sats) |
-| `amountDebt` | Current Hub debt: principal plus accrued interest |
-| `amountInterest` | Interest accrued since escrow |
-| `amountWbtcEquivalent` | Oracle value of the vault in WBTC |
-| `amountFee` | Protocol commission on `amountWbtcEquivalent - amountDebt`. Zero when that is not positive |
-| `amountWbtcToAcquire` | What the arbitrageur pays: `amountDebt + amountFee` |
-| `amountProfitEst` | `max(0, amountWbtcEquivalent - amountWbtcToAcquire)` |
+| `amountDebt` | Current Hub debt: the escrow-time Hub draw plus accrued interest |
+| `amountInterest` | Hub debt above the escrow-time Hub draw. Zero while debt sits below it |
+| `amountExitBtcEquivalent` | Oracle value of the vault in WBTC |
+| `amountExitBtcToAcquire` | What the arbitrageur pays: `min(amountDebt, amountExitBtcEquivalent - minProfitThreshold)` |
+| `amountProfitEst` | `amountExitBtcEquivalent - amountExitBtcToAcquire`. Never below `minProfitThreshold` |
+| `amountDeficitEst` | `amountDebt - amountExitBtcToAcquire`. The Hub deficit reported on acquisition |
 
-The indexer serves `currentDebt` (`amountWbtcToAcquire`) and `isProfitable`
+`minProfitThreshold` is `amountExitBtcEquivalent * minimumProfitThresholdBps / 10000`, a WBTC
+amount. There is no fee on acquisition.
+
+The indexer serves `currentDebt` (`amountExitBtcToAcquire`) and `isProfitable`
 (`amountProfitEst > 0`). The bot re-reads the preview before each acquisition and authorizes
-`maxWbtcIn = amountWbtcToAcquire + amountWbtcToAcquire * MAX_SLIPPAGE_BPS / 10000`. A vault whose
-`amountProfitEst` does not exceed `BTC_REDEMPTION_COST_SATS` is skipped. Debt accrues while a vault
-sits in escrow, so the discount shrinks over time.
+`maxWbtcIn = amountExitBtcToAcquire + amountExitBtcToAcquire * MAX_SLIPPAGE_BPS / 10000`. A vault
+whose `amountProfitEst` does not exceed `BTC_REDEMPTION_COST_SATS` is skipped. Debt accrues while a
+vault sits in escrow, so the discount shrinks over time, down to `minProfitThreshold`.
 
 `amountVault` is the gross vault BTC. The keeper's claim on Bitcoin pays the Claim, Assert and
 Payout fees and anchors, and the Payout takes its fee out of the vault BTC. A keeper claim carries

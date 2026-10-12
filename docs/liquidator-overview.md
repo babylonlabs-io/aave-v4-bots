@@ -20,22 +20,25 @@ Any address with sufficient debt tokens can call one of two functions on
 the `AaveAdapter` contract to liquidate an undercollateralized position:
 
 Both seize exactly one vault: the head of the borrower's ordered list.
-`debtReserveIds` names the Spoke reserves whose debt the liquidator
-covers and `debtToCoverAmounts` bounds what it spends on each, one per
-id. `maxWbtcPayment` caps the WBTC the adapter pulls on top of that
-debt, so an estimate that went stale is refused rather than charged.
+The Core Spoke allows one debt reserve per position. `debtReserveId`
+names that reserve and `debtToCover` bounds what the liquidator spends
+on it; it must be non-zero. The adapter pulls all of `debtToCover` and
+refunds what the Spoke does not consume. `maxExitBtcPayment` caps the
+WBTC the adapter pulls on top of that debt, so an estimate that went
+stale is refused rather than charged.
 
-- `liquidate(borrower, debtReserveIds, debtToCoverAmounts, minVaultBtcOut, maxWbtcPayment, directBtcRedeemKey)` —
+- `liquidate(borrower, debtReserveId, debtToCover, maxExitBtcPayment, directBtcRedeemKey)` —
   direct redemption. The seized vault is redeemed in the same
   transaction to the BTC key supplied in `directBtcRedeemKey`. Suits
-  liquidators that hold a registered BTC keeper key. `minVaultBtcOut`
-  reverts the call if the head vault holds less BTC than the bound.
-- `liquidateWithLLP(borrower, llp, debtReserveIds, debtToCoverAmounts, maxWbtcPayment, requestedTokens)` —
+  liquidators that hold a registered BTC keeper key. The caller pays
+  the liquidation fee and the fairness payment.
+- `liquidateWithLLP(borrower, llp, debtReserveId, debtToCover, maxExitBtcPayment, requestedTokens)` —
   LLP-mediated. The seized vault is transferred to a Liquidation
   Liquidity Provider (in this integration: BTCVaultSwap). The LLP draws
   WBTC from the Aave Hub at a sell discount and pays it to the
   liquidator immediately, leaving the vault escrowed for an arbitrageur
-  to acquire later.
+  to acquire later. The LLP pays the liquidation fee out of its Hub
+  draw; the caller pays only the fairness payment.
 
 This dual path is what makes liquidation permissionless even though
 redeeming a BTC vault is not. Liquidators who are not registered BTC
@@ -59,16 +62,19 @@ arbitrageurs handle the eventual redemption.
 
 ## Key Contracts
 
+The LLP and the adapter call the WBTC token exitBTC.
+
 - **AaveAdapter** — entry point for liquidations. Calls into the Core
   Spoke to repay debt and seize collateral. Routes the seized vault
   either to direct redemption or to an LLP based on which liquidation
   function was called.
 - **AaveAdapterLiquidationPreview** — read-only contract that
-  pre-computes the `(debtReserveIds, debtToCoverAmounts, wbtcPayment,
-  vaultId, amountCollateralToSeize)` inputs needed for a liquidation
-  call. `wbtcPayment` is the WBTC the adapter pulls from `msg.sender`
-  for the fairness top-up and, in direct mode, the redemption fee; it
-  is also what a caller passes as `maxWbtcPayment`.
+  pre-computes the `(debtReserveId, debtToCover, exitBtcFee,
+  exitBtcFairnessPayment, vaultId, amountCollateralToSeize)` inputs
+  needed for a liquidation call. `exitBtcFee` is the liquidation fee
+  and `exitBtcFairnessPayment` is the fairness top-up, both in WBTC. A
+  caller of `liquidate` passes their sum as `maxExitBtcPayment`; a
+  caller of `liquidateWithLLP` passes `exitBtcFairnessPayment` alone.
 - **BTCVaultSwap** — the LLP. Pays the liquidator WBTC at a sell
   discount when called by the adapter, holds the vault in escrow, and
   later accepts WBTC from a registered arbitrageur to release the
@@ -81,7 +87,8 @@ Liquidator      LiquidationPreview          AaveAdapter              Spoke / LLP
     │                     │                       │                       │
     │ estimateLiquidation()                                                │
     │ ─────────────────▶                                                   │
-    │ ◀── debtReserveIds[], debtToCoverAmounts[], wbtcPayment, vaultId     │
+    │ ◀── debtReserveId, debtToCover, exitBtcFee, exitBtcFairnessPayment,  │
+    │     vaultId                                                          │
     │                                                                      │
     │ liquidate(...) OR liquidateWithLLP(...)                              │
     │ ─────────────────────────────────▶                                   │
@@ -100,29 +107,27 @@ Liquidator      LiquidationPreview          AaveAdapter              Spoke / LLP
 ### Step by Step
 
 1. **Identify Target** — find positions for which
-   `Lens.estimateLiquidation(proxyAddress, isDirectRedemption)` returns
-   without reverting (the Lens reverts on healthy positions). The
-   indexer pre-filters by calling the Lens with `isDirectRedemption=false`;
-   the bot re-estimates with its own mode before broadcast.
+   `Lens.estimateLiquidation(proxyAddress)` returns without reverting
+   (the Lens reverts with `PositionNotLiquidatable` on healthy
+   positions). The indexer pre-filters with this call; the bot
+   re-estimates before broadcast.
 2. **Estimate Inputs** — the Lens returns
-   `(uint256[] debtReserveIds, uint256[] debtToCoverAmounts, uint256 wbtcPayment, bytes32 vaultId, uint256 amountCollateralToSeize)`.
-   Only the reserves carrying debt are listed, each paired with its
-   reserve id — the amount at a position belongs to the reserve at the
-   *paired id*, not to the reserve at that position. The bot inflates
-   every amount and `wbtcPayment` by 1% to absorb interest accrual
-   between the read and the broadcast. `wbtcPayment` is pulled from
-   `msg.sender` by the adapter during liquidation and is also passed as
-   `maxWbtcPayment`, so the bot needs sufficient WBTC balance and
-   approval, and a payment that drifts past the buffer reverts.
+   `(uint256 debtReserveId, uint256 debtToCover, uint256 exitBtcFee, uint256 exitBtcFairnessPayment, bytes32 vaultId, uint256 amountCollateralToSeize)`.
+   The bot computes `wbtcPayment` as `exitBtcFee + exitBtcFairnessPayment`
+   in direct mode and as `exitBtcFairnessPayment` alone in LLP mode. It
+   inflates `debtToCover` and `wbtcPayment` by 1%, rounding up, to
+   absorb interest accrual between the read and the broadcast.
+   `wbtcPayment` is pulled from `msg.sender` by the adapter during
+   liquidation and is also passed as `maxExitBtcPayment`, so the bot
+   needs sufficient WBTC balance and approval, and a payment that
+   drifts past the buffer reverts with `ExcessiveExitBtcPayment`.
 3. **Simulate** — every candidate is simulated against the adapter; any
    that revert are dropped.
 4. **Execute** — based on `IS_DIRECT_REDEMPTION` config, the bot calls
-   either `liquidate(borrower, debtReserveIds, debtToCoverAmounts, 0, maxWbtcPayment, BTC_REDEEM_KEY)`
-   or `liquidateWithLLP(borrower, LLP_ADDRESS, debtReserveIds, debtToCoverAmounts, maxWbtcPayment, [])`.
-   The bot passes `0` for `minVaultBtcOut` (simulation catches bad
-   liquidations) and the buffered estimate as `maxWbtcPayment`. The
-   empty `requestedTokens` array on the LLP path means the liquidator
-   does not constrain the payout token.
+   either `liquidate(borrower, debtReserveId, debtToCover, wbtcPayment, BTC_REDEEM_KEY)`
+   or `liquidateWithLLP(borrower, LLP_ADDRESS, debtReserveId, debtToCover, wbtcPayment, [])`.
+   The empty `requestedTokens` array on the LLP path means the
+   liquidator does not constrain the payout token.
 
 ### Redemption Modes
 
@@ -138,22 +143,27 @@ Liquidator      LiquidationPreview          AaveAdapter              Spoke / LLP
 
 ### Funding Modes
 
-Set by `LIQUIDATION_FUNDING`. This is a separate axis from the redemption
-mode above — funding decides where the repayment money comes from,
-redemption decides what the liquidator gets back. All four combinations
-are valid.
+Set by `LIQUIDATION_FUNDING`. Funding decides where the repayment money
+comes from, redemption decides what the liquidator gets back. Inventory
+funding works with both redemption modes. Flash funding always redeems
+through the LLP, because `LiquidationRouter` calls `liquidateWithLLP`;
+boot fails if `IS_DIRECT_REDEMPTION=true` under flash.
 
 | Mode | Contract called | Repayment source | Signer must hold |
 |------|-----------------|------------------|------------------|
 | `inventory` (default) | `AaveAdapter` | The signer's own token balances | Debt tokens + WBTC + gas |
-| `flash` | `LiquidationRouter` | Borrowed per debt token, repaid from the seized collateral in the same tx | Gas only |
+| `flash` | `LiquidationRouter` | Borrowed, repaid from the seized collateral in the same tx | Gas only |
 
-Under `flash`, the router borrows each debt token from the venue named in
-`FLASH_SWAP_POOLS`, liquidates, and repays that venue out of what it
-seized — all within one transaction, so nothing is owed after it lands.
-The WBTC fairness payment is covered by a separate flash *loan*
-(`WBTC_FLASH_LOAN_ADDRESS`), repaid in WBTC. Profit is swept to the
-router's `owner`, which must be the bot's signer.
+Under `flash`, the router reads the Lens, borrows the position's one
+debt token from the venue named in `FLASH_SWAP_POOLS`, liquidates, and
+repays that venue out of what it seized — all within one transaction,
+so nothing is owed after it lands. The router calls `liquidateWithLLP`
+with the fairness payment as the cap. When there is a fairness
+payment, a separate flash *loan* (`WBTC_FLASH_LOAN_ADDRESS`) covers it,
+repaid in WBTC. When WBTC is itself the debt token, the router borrows
+the debt and the fairness payment together through that one WBTC
+venue. Profit is swept to the router's `owner`, which must be the
+bot's signer.
 
 Two consequences worth knowing before switching:
 
@@ -201,22 +211,22 @@ The bot automates monitoring and execution.
 ### Bot Operation
 
 1. **Discover reserves** — at boot, enumerates the Spoke's reserves in id
-   order. A repay amount is charged to the token of the reserve id it is paired
-   with; those a borrower can owe (borrowable, or still carrying debt) are what
+   order. The repay amount is charged to the token of the reserve id the Lens
+   returns with it; those a borrower can owe (borrowable, or still carrying debt) are what
    the signer holds and approves.
 2. **Approve** — under `inventory` funding, ensures `MAX_UINT256`
-   allowance on every debt token and on WBTC for the AaveAdapter. WBTC
-   approval is required because the adapter pulls the fairness payment
-   and, in direct-redemption mode, the redemption fee directly from
-   `msg.sender`. In `AUTO` mode the bot signs the approval; in `MANUAL`
+   allowance on every token a borrower can owe and on WBTC for the
+   AaveAdapter. WBTC approval is required because the adapter pulls the
+   fairness payment and, in direct-redemption mode, the liquidation fee
+   directly from `msg.sender`. In `AUTO` mode the bot signs the approval; in `MANUAL`
    mode it proposes the approval for the operator to sign.
    Under `flash` funding this step does nothing: the bot never moves its
    own tokens, so it grants no allowances.
 3. **Poll** — fetches `/liquidatable-positions` from Ponder every
    `POLLING_INTERVAL_MS`.
 4. **Estimate** — calls
-   `AaveAdapterLiquidationPreview.estimateLiquidation(proxy, isDirectRedemption)`
-   per candidate; bumps each amount and the WBTC payment by 1%.
+   `AaveAdapterLiquidationPreview.estimateLiquidation(proxy)` per
+   candidate; bumps the debt amount and the WBTC payment by 1%.
 5. **Vet** — under `inventory` funding, simulates every candidate
    against the Adapter and drops reverts. Under `flash` funding this is
    a *probe* of `LiquidationRouter` instead, which both proves the
@@ -246,7 +256,7 @@ The bot automates monitoring and execution.
 | `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | — |
 | `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
 | `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the quote before the chain reverts; derives `minWbtcProfit` | No | `2000` |
-| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP` | No | `false` |
+| `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP`. Inventory funding only; boot fails if `true` under flash | No | `false` |
 | `BTC_REDEEM_KEY` | BTC key for direct mode (must be non-zero) | direct mode | `bytes32(0)` |
 | `LLP_ADDRESS` | LLP (BTCVaultSwap) address for LLP mode (must be non-zero) | LLP mode | `address(0)` |
 | `EXECUTION_MODE` | `AUTO` signs and broadcasts; `MANUAL` persists proposals | No | `AUTO` |
@@ -283,9 +293,10 @@ The bot automates monitoring and execution.
 
 - **Debt Tokens** — under `LIQUIDATION_FUNDING=inventory`, sufficient
   balance to repay positions. Under `flash`, none: `LiquidationRouter`
-  borrows each debt token and repays it from the seized collateral in
+  borrows the debt token and repays it from the seized collateral in
   the same transaction.
-- **WBTC** — under `inventory`, to cover the LLP fairness payment.
+- **WBTC** — under `inventory`, to cover the fairness payment and, in
+  direct mode, the liquidation fee.
   Under `flash` it is borrowed too.
 - **ETH** — for transaction gas. The only requirement in `flash` mode.
 - **Infrastructure** — reliable RPC access.
@@ -297,38 +308,21 @@ The bot automates monitoring and execution.
 ```solidity
 // Estimate liquidation for a position. Reverts with PositionNotLiquidatable()
 // when the position is healthy.
-// `debtToCoverAmounts[i]` is the debt to cover on reserve `debtReserveIds[i]`;
-// reserves covering nothing are left out entirely.
-// `wbtcPayment` is the WBTC the adapter pulls from msg.sender for the
-// fairness top-up and (direct mode) the redemption fee — pass it as
-// `maxWbtcPayment`.
+// The Core Spoke allows one debt reserve per position: `debtToCover` is the
+// debt to cover on reserve `debtReserveId`.
+// `exitBtcFee` is the liquidation fee and `exitBtcFairnessPayment` the
+// fairness payment, both in exitBTC. Pass their sum as `maxExitBtcPayment`
+// to `liquidate()`, and `exitBtcFairnessPayment` alone to `liquidateWithLLP()`.
 // `vaultId` is the head vault the liquidation will seize, holding
 // `amountCollateralToSeize` satoshis.
-function estimateLiquidation(address borrowerProxy, bool isDirectRedemption)
+function estimateLiquidation(address borrowerProxy)
     external
     view
     returns (
-        uint256[] memory debtReserveIds,
-        uint256[] memory debtToCoverAmounts,
-        uint256 wbtcPayment,
-        bytes32 vaultId,
-        uint256 amountCollateralToSeize
-    );
-
-// Estimate with custom reserve priority ordering. The head vault's BTC caps
-// the seizure, so the order decides which debts get repaid once that cap is
-// consumed. Every entry must be a listed, unique reserve id.
-function estimateLiquidationWithPriority(
-    address borrowerProxy,
-    uint256[] memory priorityLoanTokenIds,
-    bool isDirectRedemption
-)
-    external
-    view
-    returns (
-        uint256[] memory debtReserveIds,
-        uint256[] memory debtToCoverAmounts,
-        uint256 wbtcPayment,
+        uint256 debtReserveId,
+        uint256 debtToCover,
+        uint256 exitBtcFee,
+        uint256 exitBtcFairnessPayment,
         bytes32 vaultId,
         uint256 amountCollateralToSeize
     );
@@ -339,28 +333,28 @@ function estimateLiquidationWithPriority(
 ```solidity
 // Direct-redemption path. Requires directBtcRedeemKey != bytes32(0).
 // Seizes the head vault of the borrower's ordered list.
-// `debtReserveIds` must be non-empty, unique and in range; each
-// `debtToCoverAmounts` entry must be non-zero.
-// `minVaultBtcOut` bounds the minimum BTC in the seized vault (use 0 to
-// disable). `maxWbtcPayment` caps the WBTC charged for the fairness payment
-// plus the redemption fee; reverts with ExcessiveWbtcPayment if exceeded.
+// `debtToCover` must be non-zero; the adapter pulls all of it and refunds
+// what the Spoke does not consume.
+// `maxExitBtcPayment` caps the exitBTC charged for the fairness payment
+// plus the liquidation fee; reverts with ExcessiveExitBtcPayment if exceeded.
 function liquidate(
     address borrower,
-    uint256[] calldata debtReserveIds,
-    uint256[] calldata debtToCoverAmounts,
-    uint256 minVaultBtcOut,
-    uint256 maxWbtcPayment,
+    uint256 debtReserveId,
+    uint256 debtToCover,
+    uint256 maxExitBtcPayment,
     bytes32 directBtcRedeemKey
 ) external returns (bytes32 vaultIdLiquidated, uint256 amountCollateralLiquidated);
 
 // LLP-mediated path. Requires llp != address(0). Applies no minimum on the
-// seized vault's BTC amount.
+// seized vault's BTC amount. The LLP pays the liquidation fee, so
+// `maxExitBtcPayment` caps the fairness payment alone; reverts with
+// ExcessiveExitBtcPayment if exceeded.
 function liquidateWithLLP(
     address borrower,
     address llp,
-    uint256[] calldata debtReserveIds,
-    uint256[] calldata debtToCoverAmounts,
-    uint256 maxWbtcPayment,
+    uint256 debtReserveId,
+    uint256 debtToCover,
+    uint256 maxExitBtcPayment,
     TokenAmount[] memory requestedTokens
 )
     external
@@ -410,11 +404,11 @@ event LiquidationCall(
 
 | Actor | Action | Result |
 |-------|--------|--------|
-| **Liquidator** | Calls `Lens.estimateLiquidation()` | Gets the debt reserve ids, amounts and head vault for the target |
+| **Liquidator** | Calls `Lens.estimateLiquidation()` | Gets the debt reserve id, debt amount, WBTC payments and head vault for the target |
 | **Liquidator** | Calls `liquidate(...)` (direct mode) | Position liquidated, vault redeemed to liquidator's BTC key |
 | **Liquidator** | Calls `liquidateWithLLP(...)` (LLP mode) | Position liquidated, vault escrowed, liquidator paid WBTC at sell discount |
-| **Arbitrageur** | Pays WBTC to LLP via `swapWbtcForVault` | Vault released and redeemed to arbitrageur; Hub draw restored |
+| **Arbitrageur** | Pays WBTC to LLP via `swapExitBtcForVault` | Vault released and redeemed to arbitrageur; Hub debt repaid, any shortfall reported as a deficit |
 
 Liquidation is permissionless. Operators without keeper status use the
 LLP path and receive WBTC instantly; the arbitrageur completes the
-redemption later, restoring the Hub draw.
+redemption later and closes the Hub debt.

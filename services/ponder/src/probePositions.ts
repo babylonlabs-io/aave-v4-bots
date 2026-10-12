@@ -8,15 +8,14 @@
 
 import { FaultTally, isHealthyPositionRevert } from "./probeFaults";
 
-/** Calldata of one `estimateLiquidation(address,bool)`: a selector and two words. */
-const ESTIMATE_CALLDATA_BYTES = 68;
+/** Calldata of one `estimateLiquidation(address)`: a selector and one word. */
+const ESTIMATE_CALLDATA_BYTES = 36;
 
 /**
  * Probes per `eth_call`; this sets one call's gas. The route passes it to viem's `multicall` as
  * `batchSize`, because viem splits by calldata bytes (1024 by default).
  *
- * Measured: a healthy position costs ~177k gas to probe (`estimateLiquidation` loads every reserve
- * before it reverts), and batching does not amortize it. 15 is ~2.7M gas, inside both geth's 50M
+ * Measured: a healthy position costs ~177k gas to probe, and batching does not amortize it. 15 is ~2.7M gas, inside both geth's 50M
  * default cap and the 10M some providers enforce. The margin covers growth: each extra spoke
  * reserve adds ~21k, each vault ~3k, and a liquidatable position costs ~247k.
  */

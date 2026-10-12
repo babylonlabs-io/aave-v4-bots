@@ -48,16 +48,18 @@ let metrics: ReturnType<typeof createMetrics>;
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
-const mockReserveIds = [0n] as const;
-const mockAmounts = [1000000n] as const;
+const mockReserveId = 0n;
+const mockDebtToCover = 1000000n;
+/** The liquidation fee the preview quotes. The caller pays it only on direct redemption. */
+const mockLiquidationFee = 3000n;
 /** The fairness payment the preview quotes; buffered like the debt before it becomes the cap. */
-const mockWbtcPayment = 5000n;
+const mockFairnessPayment = 5000n;
 
 const mockPosition: LiquidatablePosition = {
   proxyAddress: "0x1234567890123456789012345678901234567890",
   borrower: "0x000000000000000000000000000000000000b0b1",
-  debtReserveIds: ["0"],
-  debtToCoverAmounts: ["1000000"],
+  debtReserveId: "0",
+  debtToCover: "1000000",
   vaultId: "0xvault1",
   suppliedShares: "1000000000",
 };
@@ -129,25 +131,25 @@ function createMockClients() {
         .fn()
         .mockImplementation(
           ({ functionName, args }: { functionName: string; args?: unknown[] }) => {
-            // One borrowable reserve, matching `mockAmounts` — the engine refuses to attribute a spend
-            // when the Lens vector and the Spoke's reserve list disagree in length. The Lens reports
+            // One borrowable reserve, the one `mockReserveId` names — the engine refuses to attribute
+            // a spend to a reserve id the Spoke does not list. The Lens reports
             // the adapter and Spoke it was built for; `prepare()` refuses a pair that disagrees.
             if (functionName === "adapter") return Promise.resolve("0xadapter");
             if (functionName === "spoke") return Promise.resolve("0xspoke");
             if (functionName === "BTC_VAULT_CORE_SPOKE") return Promise.resolve("0xspoke");
-            if (functionName === "getReserveCount")
-              return Promise.resolve(BigInt(mockAmounts.length));
+            if (functionName === "getReserveCount") return Promise.resolve(1n);
             if (functionName === "getReserve") {
               return Promise.resolve({ flags: 0x04, underlying: "0xdebt" });
             }
             if (functionName === "estimateLiquidation") {
-              // [debtReserveIds, debtToCoverAmounts, wbtcPayment, vaultId, amountCollateralToSeize] —
-              // wbtcPayment is the WBTC the adapter pulls from msg.sender for fairness + redemption
-              // fee, and doubles as the `maxWbtcPayment` cap on the call.
+              // [debtReserveId, debtToCover, exitBtcFee, exitBtcFairnessPayment, vaultId,
+              // amountCollateralToSeize]. The engine sums what the adapter pulls from msg.sender
+              // and sends it as the `maxExitBtcPayment` cap on the call.
               return Promise.resolve([
-                mockReserveIds,
-                mockAmounts,
-                mockWbtcPayment,
+                mockReserveId,
+                mockDebtToCover,
+                mockLiquidationFee,
+                mockFairnessPayment,
                 "0xvault1",
                 0n,
               ]);
@@ -726,10 +728,20 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
+      // The LLP pays the liquidation fee, so the cap covers the fairness payment alone.
+      const buffer = (amt: bigint) => (amt * 10100n) / 10000n;
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
           nonce: 42,
           functionName: "liquidateWithLLP",
+          args: [
+            mockPosition.borrower,
+            "0xllpaddress000000000000000000000000000000",
+            mockReserveId,
+            buffer(mockDebtToCover),
+            buffer(mockFairnessPayment),
+            [],
+          ],
         }),
         expect.any(Function),
         expect.any(Function)
@@ -763,14 +775,14 @@ describe("LiquidationEngine", () => {
         expect.objectContaining({
           nonce: 7,
           functionName: "liquidate",
-          // minVaultBtcOut=0n disables BTC-out slippage protection; the reserve ids are passed
-          // through unbuffered, since they name reserves rather than amounts.
+          // The reserve id is passed through unbuffered, since it names a reserve rather than an
+          // amount. The caller pays the liquidation fee on direct redemption, so the cap covers the
+          // fee and the fairness payment.
           args: [
             mockPosition.borrower,
-            [...mockReserveIds],
-            mockAmounts.map(buffer),
-            0n,
-            buffer(mockWbtcPayment),
+            mockReserveId,
+            buffer(mockDebtToCover),
+            buffer(mockLiquidationFee + mockFairnessPayment),
             nonZeroRedeemKey,
           ],
         }),
@@ -1063,7 +1075,7 @@ describe("LiquidationEngine", () => {
       const bot = createBot(clients, { nonces: passthroughNonces() });
 
       // WBTC approval is unconditional — the adapter pulls WBTC from msg.sender
-      // for fairness + direct-redemption fee, independent of whether WBTC is a
+      // for fairness + direct-redemption liquidation fee, independent of whether WBTC is a
       // borrowable debt token on the Spoke.
       await bot.prepare();
       await bot.run();

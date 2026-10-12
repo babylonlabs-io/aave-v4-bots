@@ -91,7 +91,7 @@ describe("@repo/abis matches the compiled contracts", () => {
       // this is one-directional: everything we declare must exist, not the reverse.
       //
       // Errors are excluded because every ABI now spreads in `protocolErrorsAbi`, whose entries
-      // belong to the whole call graph rather than to this one contract — `swapWbtcForVault`
+      // belong to the whole call graph rather than to this one contract — `swapExitBtcForVault`
       // reverting with an ApplicationRegistry error is the normal case, not drift. They are pinned
       // to their own artifacts in `protocolErrors.test.ts` instead.
       const missing = abi

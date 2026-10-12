@@ -4,7 +4,6 @@ pragma solidity 0.8.28;
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {BaseE2E} from "test-e2e-base/BaseE2E.sol";
-import {BtcHelpers} from "test-utils/BtcHelpers.sol";
 import {PopHelpers} from "test-utils/PopHelpers.sol";
 import {TestKeys} from "test-utils/TestKeys.sol";
 import {AaveAdapterLiquidationPreview} from "vault-contracts/applications/aave/AaveAdapterLiquidationPreview.sol";
@@ -27,9 +26,7 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
     function _deployLens() internal returns (AaveAdapterLiquidationPreview lens) {
         uint256 adminPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         vm.startBroadcast(adminPrivateKey);
-        lens = new AaveAdapterLiquidationPreview(
-            address(btcVaultRegistry), address(aaveAdapter), address(aaveSpoke), vaultBtcId
-        );
+        lens = new AaveAdapterLiquidationPreview(address(aaveAdapter));
         vm.stopBroadcast();
         console.log("Lens deployed at:", address(lens));
     }
@@ -94,15 +91,14 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         require(_isLiquidatable(lens, borrowerProxy), "Position should be unhealthy after price drop");
         console.log("Position is unhealthy (liquidatable)");
 
-        // What the liquidation will actually cost, read before any bot can act on it. `wbtcPayment`
-        // is the LLP fairness payment — the value left over once the seized vault has cleared the
-        // debt — and it is the only thing that draws on the WBTC flash-loan venue.
-        (uint256[] memory debtReserveIds, uint256[] memory debtToCoverAmounts, uint256 wbtcPayment,,) =
-            lens.estimateLiquidation(borrowerProxy, false);
-        for (uint256 i = 0; i < debtReserveIds.length; i++) {
-            console.log("  reserve", debtReserveIds[i], "repay:", debtToCoverAmounts[i]);
-        }
-        console.log("  fairness payment (sats):", wbtcPayment);
+        // What the liquidation will actually cost, read before any bot can act on it. The fairness
+        // payment is the value left over once the seized vault has cleared the debt, and it is the
+        // only thing that draws on the WBTC flash-loan venue. The LLP pays the liquidation fee.
+        (uint256 debtReserveId, uint256 debtToCover, uint256 exitBtcFee, uint256 fairnessPayment,,) =
+            lens.estimateLiquidation(borrowerProxy);
+        console.log("  reserve", debtReserveId, "repay:", debtToCover);
+        console.log("  liquidation fee (sats):", exitBtcFee);
+        console.log("  fairness payment (sats):", fairnessPayment);
     }
 
     /// @notice Start a background bot/indexer process, sourcing `envFile`, and
@@ -126,7 +122,7 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
             " 2>&1 & echo $!; }"
         );
         bytes memory result = vm.ffi(inputs);
-        string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
+        string memory pid = vm.toString(_ffiDigitsToUint(result));
         console.log(string.concat(pnpmScript, " started with PID:"), pid);
         return pid;
     }
@@ -162,7 +158,7 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
             " 2>&1 & echo $!; }"
         );
         bytes memory result = vm.ffi(inputs);
-        string memory pid = vm.toString(BtcHelpers.convertToUint256(result));
+        string memory pid = vm.toString(_ffiDigitsToUint(result));
         console.log(string.concat(pnpmScript, " started (awaiting pinned code) with PID:"), pid);
         return pid;
     }
@@ -267,12 +263,18 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
         usdc.approve(address(aaveSpoke), usdcAmountToSupply);
         aaveSpoke.supply(usdcId, usdcAmountToSupply, admin);
 
-        // Add WBTC liquidity to Hub for VaultSwap
+        // Add WBTC liquidity to Hub for VaultSwap. `wbtcId` is a Spoke reserve id; the Hub keys
+        // liquidity by its own asset id, which the reserve records.
         uint256 wbtcLiquidity = 1000e8; // 1000 WBTC
         wbtc.mint(address(hub), wbtcLiquidity);
-        hub.add(wbtcId, wbtcLiquidity);
+        hub.add(_hubAssetId(wbtcId), wbtcLiquidity);
 
         vm.stopBroadcast();
+    }
+
+    /// @notice The Hub asset id behind Spoke reserve `reserveId`.
+    function _hubAssetId(uint256 reserveId) internal view returns (uint256) {
+        return aaveSpoke.getReserve(reserveId).assetId;
     }
 
     function _saveVaultId(bytes32 vaultId) internal {
@@ -282,12 +284,20 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
     /// @notice Check if a position is liquidatable via the liquidation preview contract.
     /// @dev `estimateLiquidation` reverts when the position is healthy, succeeds when liquidatable.
     function _isLiquidatable(AaveAdapterLiquidationPreview lens, address borrowerProxy) internal view returns (bool) {
-        try lens.estimateLiquidation(borrowerProxy, false) returns (
-            uint256[] memory, uint256[] memory, uint256, bytes32, uint256
-        ) {
+        try lens.estimateLiquidation(borrowerProxy) returns (uint256, uint256, uint256, uint256, bytes32, uint256) {
             return true;
         } catch {
             return false;
+        }
+    }
+
+    /// @notice Parse a decimal number printed by an FFI command.
+    /// @dev Forge hex-decodes FFI output that is all hex digits, so `1234` arrives as the bytes
+    ///      `0x12 0x34`. Each nibble is one decimal digit.
+    function _ffiDigitsToUint(bytes memory data) internal pure returns (uint256 value) {
+        for (uint256 i = 0; i < data.length; i++) {
+            uint8 b = uint8(data[i]);
+            value = value * 100 + (b >> 4) * 10 + (b & 0x0F);
         }
     }
 

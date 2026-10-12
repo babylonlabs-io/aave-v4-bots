@@ -20,8 +20,8 @@ abstract contract TestSuites {
     ///      foundry serves every suite from a single `~/.foundry/cache/rpc` entry.
     uint256 internal constant SEPOLIA_FORK_BLOCK = 11141103;
 
-    /// @dev The positions the liquidation suites build. Both borrow evenly across USDC and USDT, so
-    ///      each exercises two flash venues, and between them they cover the fairness payment in both
+    /// @dev The positions the liquidation suites build. Both borrow USDC, the one debt reserve the Core
+    ///      Spoke allows per position, and between them they cover the fairness payment in both
     ///      directions — which is what decides whether the WBTC venue is drawn on at all.
     ///
     ///      The ratios are what separate them. `80 / 60` is borrowed near the 80% collateral factor,

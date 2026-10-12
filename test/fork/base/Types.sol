@@ -12,7 +12,7 @@ library Types {
     /// @param network Foundry RPC alias to fork.
     /// @param blockNumber Block to pin the fork at. Chosen for venue liquidity, nothing else.
     /// @param collateralValueUsd Vault collateral to create, in whole USD at the pre-drop BTC price.
-    /// @param borrowValueUsd Debt to take against it, in whole USD, split evenly across USDC and USDT.
+    /// @param borrowValueUsd Debt to take against it, in whole USD, all in USDC.
     /// @param dropPercent Percentage the vaultBTC price drops afterwards, pushing health under 1.
     /// @param hasFairnessPayment Whether seizing the vault is expected to leave excess collateral
     ///        value, which the LLP pays out as a WBTC fairness payment. Asserted, not assumed: it is

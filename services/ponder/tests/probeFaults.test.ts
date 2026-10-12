@@ -49,7 +49,7 @@ const asThrown = (revert: ContractFunctionRevertedError) =>
   new ContractFunctionExecutionError(revert, {
     abi: lensAbi,
     functionName: "estimateLiquidation",
-    args: ["0x1234567890123456789012345678901234567890", false],
+    args: ["0x1234567890123456789012345678901234567890"],
   });
 
 describe("isHealthyPositionRevert", () => {
@@ -103,7 +103,7 @@ describe("isVaultGoneRevert", () => {
   });
 
   it("does not accept an unrelated protocol error", () => {
-    assert.equal(isVaultGoneRevert(asThrown(customRevert(vaultSwapAbi, "AmountMismatch"))), false);
+    assert.equal(isVaultGoneRevert(asThrown(customRevert(vaultSwapAbi, "ZeroAmount"))), false);
     assert.equal(isVaultGoneRevert(asThrown(emptyRevert())), false);
   });
 });
