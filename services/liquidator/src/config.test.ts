@@ -383,7 +383,9 @@ describe("flash funding config", () => {
     // The router always settles through the LLP, so the flag would be ignored on-chain.
     process.env = { ...originalEnv, ...flashEnv, IS_DIRECT_REDEMPTION: "true" };
     const { loadConfig } = await import("./config");
-    expect(() => loadConfig()).toThrow(/LIQUIDATION_FUNDING=flash cannot run with IS_DIRECT_REDEMPTION=true/);
+    expect(() => loadConfig()).toThrow(
+      /LIQUIDATION_FUNDING=flash cannot run with IS_DIRECT_REDEMPTION=true/
+    );
   });
 
   it("still accepts a plain inventory setup with no flash variables", async () => {
