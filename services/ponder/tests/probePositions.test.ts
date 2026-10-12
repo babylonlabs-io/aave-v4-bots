@@ -273,7 +273,7 @@ describe("selectProbeCandidates", () => {
 // viem splits a multicall by calldata bytes, so `MULTICALL_BATCH_BYTES` sets one call's size. It
 // must land exactly on the probe count: viem starts a new call when the size exceeds the limit.
 describe("MULTICALL_BATCH_BYTES", () => {
-  const CALLDATA_BYTES = 68; // estimateLiquidation(address,bool): selector + two words
+  const CALLDATA_BYTES = 36; // estimateLiquidation(address): selector + one word
 
   it("admits exactly PROBES_PER_CALL probes per eth_call", () => {
     assert.equal(MULTICALL_BATCH_BYTES, PROBES_PER_CALL * CALLDATA_BYTES);

@@ -84,8 +84,8 @@ const TOPOLOGY: SpokeReserves = {
 const candidate = (usdc: bigint) =>
   ({
     position: { borrower: ROUTER, proxyAddress: ROUTER },
-    debtReserveIds: [0n],
-    debtToCoverAmounts: [usdc],
+    debtReserveId: 0n,
+    debtToCover: usdc,
     vaultId: `0x${"0".repeat(64)}`,
     wbtcPayment: 1_000_000n,
   }) as unknown as LiquidationCandidate;

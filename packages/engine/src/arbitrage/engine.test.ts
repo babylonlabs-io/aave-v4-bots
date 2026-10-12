@@ -94,10 +94,10 @@ function createMockClients() {
                   amountVault: 100000000n,
                   amountDebt: 50000000n,
                   amountInterest: 0n,
-                  amountFee: 0n,
-                  amountWbtcEquivalent: 100000000n,
-                  amountWbtcToAcquire: 50000000n,
+                  amountExitBtcEquivalent: 100000000n,
+                  amountExitBtcToAcquire: 50000000n,
                   amountProfitEst: 50000000n,
+                  amountDeficitEst: 0n,
                 }))
               );
             }
@@ -205,7 +205,7 @@ describe("ArbitrageEngine", () => {
       expect(clients.sender.send).toHaveBeenCalledOnce();
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
-          functionName: "swapWbtcForVault",
+          functionName: "swapExitBtcForVault",
           args: [mockVault.vaultId, 50500000n], // 0.5 WBTC debt + 1% slippage
         }),
         expect.any(Function),
@@ -239,13 +239,15 @@ describe("ArbitrageEngine", () => {
             return Promise.resolve(
               vaultIds.map((vaultId) => ({
                 vaultId,
+                // A zero minimum profit threshold and debt equal to `amountExitBtcEquivalent`: the
+                // LLP charges that whole value, so nothing is left over.
                 amountVault: 100000000n,
                 amountDebt: 100000n,
                 amountInterest: 1000n,
-                amountFee: 10n,
-                amountWbtcEquivalent: 100000n,
-                amountWbtcToAcquire: 100010n,
+                amountExitBtcEquivalent: 100000n,
+                amountExitBtcToAcquire: 100000n,
                 amountProfitEst: 0n,
+                amountDeficitEst: 0n,
               }))
             );
           }
@@ -305,10 +307,10 @@ describe("ArbitrageEngine", () => {
                 amountVault: 100000000n,
                 amountDebt: 50000000n,
                 amountInterest: 0n,
-                amountFee: 0n,
-                amountWbtcEquivalent: 100000000n,
-                amountWbtcToAcquire: 50000000n,
+                amountExitBtcEquivalent: 100000000n,
+                amountExitBtcToAcquire: 50000000n,
                 amountProfitEst: 50000000n,
+                amountDeficitEst: 0n,
               }))
             );
           }
@@ -348,10 +350,10 @@ describe("ArbitrageEngine", () => {
                 amountVault: 100000000n,
                 amountDebt: 50000000n,
                 amountInterest: 0n,
-                amountFee: 0n,
-                amountWbtcEquivalent: 100000000n,
-                amountWbtcToAcquire: 50000000n,
+                amountExitBtcEquivalent: 100000000n,
+                amountExitBtcToAcquire: 50000000n,
                 amountProfitEst: 50000000n,
+                amountDeficitEst: 0n,
               }))
             );
           }
@@ -391,10 +393,10 @@ describe("ArbitrageEngine", () => {
                 amountVault: 100000000n,
                 amountDebt: 1n,
                 amountInterest: 0n,
-                amountFee: 0n,
-                amountWbtcEquivalent: 100000000n,
-                amountWbtcToAcquire: 1n,
+                amountExitBtcEquivalent: 100000000n,
+                amountExitBtcToAcquire: 1n,
                 amountProfitEst: 50000000n,
+                amountDeficitEst: 0n,
               }))
             );
           }
@@ -408,7 +410,7 @@ describe("ArbitrageEngine", () => {
       expect(result).toBe("acquired");
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
-          functionName: "swapWbtcForVault",
+          functionName: "swapExitBtcForVault",
           args: [mockVault.vaultId, 1n],
         }),
         expect.any(Function),
@@ -440,7 +442,7 @@ describe("ArbitrageEngine", () => {
     // 0.5 WBTC debt + 1% slippage — the same ceiling the direct-path tests assert.
     const MAX_WBTC_IN = 50500000n;
 
-    it("uses swapWbtcForVault when no keeper is configured (the payer IS the keeper)", async () => {
+    it("uses swapExitBtcForVault when no keeper is configured (the payer IS the keeper)", async () => {
       const clients = createMockClients();
       const bot = createBot(clients);
 
@@ -448,7 +450,7 @@ describe("ArbitrageEngine", () => {
 
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
-          functionName: "swapWbtcForVault",
+          functionName: "swapExitBtcForVault",
           args: [mockVault.vaultId, MAX_WBTC_IN],
         }),
         expect.any(Function),
@@ -456,7 +458,7 @@ describe("ArbitrageEngine", () => {
       );
     });
 
-    it("uses swapWbtcForVaultOnBehalf when a keeper is configured", async () => {
+    it("uses swapExitBtcForVaultOnBehalf when a keeper is configured", async () => {
       const clients = createMockClients();
       const bot = createBot(clients, { vaultKeeperAddress: KEEPER });
 
@@ -465,7 +467,7 @@ describe("ArbitrageEngine", () => {
       expect(result).toBe("acquired");
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
-          functionName: "swapWbtcForVaultOnBehalf",
+          functionName: "swapExitBtcForVaultOnBehalf",
           args: [mockVault.vaultId, MAX_WBTC_IN, KEEPER],
         }),
         expect.any(Function),
@@ -484,10 +486,58 @@ describe("ArbitrageEngine", () => {
 
       expect(clients.publicClient.estimateContractGas).toHaveBeenCalledWith(
         expect.objectContaining({
-          functionName: "swapWbtcForVaultOnBehalf",
+          functionName: "swapExitBtcForVaultOnBehalf",
           args: [mockVault.vaultId, MAX_WBTC_IN, KEEPER],
         })
       );
+    });
+  });
+
+  describe("capped acquisition price", () => {
+    // Debt above the vault's value: the LLP charges `amountExitBtcEquivalent - minProfitThreshold`
+    // (1.00 - 0.02 BTC) and reports the remaining 0.22 BTC of debt as a Hub deficit.
+    const CAPPED_PREVIEW = {
+      amountVault: 100_000_000n,
+      amountDebt: 120_000_000n,
+      amountInterest: 0n,
+      amountExitBtcEquivalent: 100_000_000n,
+      amountExitBtcToAcquire: 98_000_000n,
+      amountProfitEst: 2_000_000n,
+      amountDeficitEst: 22_000_000n,
+    };
+    // The capped price + 1% slippage. Priced off the debt instead, it would be 121_200_000.
+    const MAX_WBTC_IN = 98_980_000n;
+
+    it("prices and budgets the acquisition from the capped cost, not the full debt", async () => {
+      const clients = createMockClients();
+      const base = clients.publicClient.readContract.getMockImplementation();
+      clients.publicClient.readContract.mockImplementation(
+        (call: { functionName: string; args: readonly unknown[] }) => {
+          if (call.functionName === "previewEscrowedVaults") {
+            const vaultIds = call.args[0] as readonly `0x${string}`[];
+            return Promise.resolve(vaultIds.map((vaultId) => ({ vaultId, ...CAPPED_PREVIEW })));
+          }
+          return base?.(call);
+        }
+      );
+      const risk = createRiskGate();
+      const openSlot = vi.spyOn(risk, "openSlot");
+      const bot = createBot(clients, { risk });
+
+      const result = await bot.acquireVault(mockVault);
+
+      expect(result).toBe("acquired");
+      expect(clients.sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          functionName: "swapExitBtcForVault",
+          args: [mockVault.vaultId, MAX_WBTC_IN],
+        }),
+        expect.any(Function),
+        expect.any(Function)
+      );
+      const action = openSlot.mock.calls[0]?.[0];
+      expect(action?.spend).toEqual([expect.objectContaining({ amount: MAX_WBTC_IN })]);
+      expect(action?.expectedProfit).toBe(CAPPED_PREVIEW.amountVault - MAX_WBTC_IN);
     });
   });
 
@@ -1189,10 +1239,10 @@ describe("ArbitrageEngine", () => {
                 amountVault: 100000000n,
                 amountDebt: 50000000n,
                 amountInterest: 0n,
-                amountFee: 0n,
-                amountWbtcEquivalent: 100000000n,
-                amountWbtcToAcquire: 50000000n,
+                amountExitBtcEquivalent: 100000000n,
+                amountExitBtcToAcquire: 50000000n,
                 amountProfitEst: 50000000n,
+                amountDeficitEst: 0n,
               }))
             );
           }
@@ -1261,7 +1311,7 @@ describe("ArbitrageEngine", () => {
     });
 
     // The floor bounds the WORST case the tx authorizes, not the optimistic preview:
-    // amountVault 100_000_000 − maxWbtcIn (amountWbtcToAcquire 50_000_000 + 1% slippage
+    // amountVault 100_000_000 − maxWbtcIn (amountExitBtcToAcquire 50_000_000 + 1% slippage
     // = 50_500_000) ⇒ expectedProfit = 49_500_000 sats.
     const EXPECTED_PROFIT = 49_500_000n;
 
@@ -1307,13 +1357,14 @@ describe("ArbitrageEngine", () => {
       expect(metrics.recordError).toHaveBeenCalledWith("vault_skipped");
     });
 
-    // Regression: the floor must bound the worst case the tx authorizes. `swapWbtcForVault`
-    // charges the debt+fee prevailing at execution and only reverts above `maxWbtcIn`, so a
+    // Regression: the floor must bound the worst case the tx authorizes. `swapExitBtcForVault`
+    // charges the debt prevailing at execution (capped by the LLP's minimum profit threshold) and
+    // only reverts above `maxWbtcIn`, so a
     // vault whose *optimistic* (preview) profit clears the floor can still realize less after
     // interest accrual. Flooring on the un-slipped preview cost would wrongly allow this.
     it("floors on the slippage-adjusted worst case, not the optimistic preview", async () => {
       const clients = createMockClients();
-      const OPTIMISTIC_PROFIT = 50_000_000n; // amountVault − amountWbtcToAcquire (no slippage)
+      const OPTIMISTIC_PROFIT = 50_000_000n; // amountVault − amountExitBtcToAcquire (no slippage)
       const risk = createRiskGate({ minProfit: OPTIMISTIC_PROFIT });
       const bot = createBot(clients, { risk });
 
@@ -1363,7 +1414,7 @@ describe("ArbitrageEngine", () => {
 
       expect(ok).toBe("acquired");
       expect(clients.sender.send).toHaveBeenCalledWith(
-        expect.objectContaining({ functionName: "swapWbtcForVault", nonce: 5 }),
+        expect.objectContaining({ functionName: "swapExitBtcForVault", nonce: 5 }),
         expect.any(Function),
         expect.any(Function)
       );
@@ -1613,7 +1664,7 @@ describe("ArbitrageEngine + router funding", () => {
       readContract: vi.fn(
         ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
           if (functionName in immutables) return Promise.resolve(immutables[functionName]);
-          if (functionName === "WBTC") return Promise.resolve(WBTC);
+          if (functionName === "EXIT_BTC") return Promise.resolve(WBTC);
           if (functionName === "balanceOf" || functionName === "allowance") {
             return Promise.resolve(capacity);
           }
@@ -1625,10 +1676,10 @@ describe("ArbitrageEngine + router funding", () => {
                 amountVault: 100_000_000n,
                 amountDebt: 50_000_000n,
                 amountInterest: 0n,
-                amountFee: 0n,
-                amountWbtcEquivalent: 100_000_000n,
-                amountWbtcToAcquire: 50_000_000n,
+                amountExitBtcEquivalent: 100_000_000n,
+                amountExitBtcToAcquire: 50_000_000n,
                 amountProfitEst: 50_000_000n,
+                amountDeficitEst: 0n,
               }))
             );
           }

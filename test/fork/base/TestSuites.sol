@@ -24,8 +24,8 @@ abstract contract TestSuites {
     address internal constant MAINNET_WBTC = address(0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599);
     address internal constant MAINNET_USDC = address(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
 
-    /// @dev The positions the liquidation suites build. Both borrow evenly across USDC and USDT, so
-    ///      each exercises two flash venues, and between them they cover the fairness payment in both
+    /// @dev The positions the liquidation suites build. Both borrow USDC, the one debt reserve the Core
+    ///      Spoke allows per position, and between them they cover the fairness payment in both
     ///      directions — which is what decides whether the WBTC venue is drawn on at all.
     ///
     ///      The ratios are what separate them. `80 / 60` is borrowed near the 80% collateral factor,

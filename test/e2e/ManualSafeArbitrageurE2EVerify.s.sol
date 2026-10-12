@@ -12,7 +12,7 @@ import {E2EConstants} from "./E2EConstants.sol";
 ///         borrower's position was cleared (liquidation leg) and the escrowed vault left escrow
 ///         (acquisition leg) — with the **Safe** paying throughout.
 /// @dev Balances are the Safe's, read from the address `ManualSafeArbitrageurE2ESetup` wrote to
-///      `.e2e-safe-address`. The acquisition went through `swapWbtcForVaultOnBehalf`, so the vault
+///      `.e2e-safe-address`. The acquisition went through `swapExitBtcForVaultOnBehalf`, so the vault
 ///      is redeemed to ARBITRAGEUR's BTC key while the WBTC leaves the SAFE — asserting the Safe's
 ///      WBTC fell is what proves the payer/beneficiary split actually worked.
 contract ManualSafeArbitrageurE2EVerify is Script, BaseBot {
@@ -45,8 +45,9 @@ contract ManualSafeArbitrageurE2EVerify is Script, BaseBot {
         console.log("[PASS] Vault acquired (redeemed / left escrow)");
 
         // The Safe is the payer on BOTH legs. It receives WBTC from the LLP payout when it
-        // liquidates and spends WBTC when it acquires; the acquisition costs the vault's full debt
-        // plus fee, which is far larger than the liquidation payout, so the net must be negative.
+        // liquidates and spends WBTC when it acquires; the acquisition costs the vault's Hub debt,
+        // which the LLP drew to fund the liquidation payout plus the liquidation fee, so the net
+        // must be negative.
         // A Safe whose WBTC did NOT fall would mean something else paid — exactly the failure the
         // payer/beneficiary split could hide.
         uint256 nowWbtc = _getWbtcBalance(safe);

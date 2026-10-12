@@ -23,7 +23,7 @@ All WBTC amounts are in satoshis.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `arbitrageur_vaults_acquired_total` | Counter | - | Vaults acquired, counted in AUTO receipt processing only. Executions confirmed later by reconcile, and every MANUAL execution, are not counted. For a complete total, read the chain or the persisted intents |
-| `arbitrageur_wbtc_spent_total` | Counter | - | Sum of the pre-send preview cost (`amountWbtcToAcquire`) of those same acquisitions. Without the slippage buffer, and not the executed `amountWbtcIn` |
+| `arbitrageur_wbtc_spent_total` | Counter | - | Sum of the pre-send preview cost (`amountExitBtcToAcquire`) of those same acquisitions. Without the slippage buffer, and not the executed `exitBtcPaid` |
 | `arbitrageur_funding_wbtc_balance` | Gauge | `owner` | WBTC held by the account that pays: the signer under `inventory`, the treasury under `router` |
 | `arbitrageur_funding_wbtc_allowance` | Gauge | `owner` | WBTC the treasury has approved the router to spend. `router` only; the inventory approval to BTCVaultSwap is not exported |
 | `arbitrageur_funding_wbtc_authorized` | Gauge | `owner` | WBTC held back for signed relay batches that are settled but still executable. `router` only. Capacity is `min(balance, allowance) - authorized`. A figure that stays high means acquisitions are abandoned after signing |

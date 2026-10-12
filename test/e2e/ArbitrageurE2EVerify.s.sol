@@ -9,7 +9,7 @@ import {E2EConstants} from "./E2EConstants.sol";
 /// @title ArbitrageurE2EVerify
 /// @notice E2E script to verify the arbitrageur bot acquired vaults from VaultSwap
 /// @dev Part 3: Checks that the arbitrageur bot atomically acquired + redeemed the vault.
-///      With the new atomic flow, swapWbtcForVault redeems internally, so the vault status
+///      With the new atomic flow, swapExitBtcForVault redeems internally, so the vault status
 ///      becomes Redeemed and the vault is no longer escrowed. We verify by comparing WBTC
 ///      balances against the known initial funding amounts from the setup script.
 ///      Run this AFTER LiquidationE2EVerify.s.sol.

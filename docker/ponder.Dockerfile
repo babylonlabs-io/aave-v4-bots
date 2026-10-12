@@ -79,6 +79,6 @@ EXPOSE 42069
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider "http://localhost:${PONDER_PORT:-42069}/" || exit 1
 
-# Default command: start production mode. Run ponder directly (no pnpm at
-# runtime); sh applies the PONDER_PORT env default and exec keeps ponder as PID 1.
-CMD ["/bin/sh", "-c", "exec node_modules/.bin/ponder start --port ${PONDER_PORT:-42069}"]
+# Default command: start production mode through start.sh (no pnpm at runtime). The script
+# derives DATABASE_SCHEMA when it is unset, and exec keeps ponder as PID 1.
+CMD ["/bin/sh", "start.sh"]

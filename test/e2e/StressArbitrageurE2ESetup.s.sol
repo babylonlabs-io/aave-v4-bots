@@ -45,9 +45,8 @@ contract StressArbitrageurE2ESetup is ArbitrageurE2ESetup {
     bool internal immutable RACING = vm.envOr("STRESS_RACING", false);
 
     /// When set, acquisitions are funded by a treasury through an {ArbitrageRouter} rather than out
-    /// of the bot's own WBTC. That makes each acquisition a *signed, replayable* batch — which is
-    /// what the drive script's front-run phase copies, and the only mode in which a reverted
-    /// acquisition can have spent our money anyway.
+    /// of the bot's own WBTC. That makes each acquisition a signed batch, which the drive script's
+    /// front-run phase copies and submits from another account; the router must refuse it.
     bool internal immutable ROUTER_FUNDED = vm.envOr("STRESS_ROUTER", false);
 
     ArbitrageRouter internal router;

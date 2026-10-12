@@ -54,8 +54,8 @@ const SHARED_USDC: SpokeReserves = {
 const candidate = (proxy: string, over: Partial<LiquidationCandidate> = {}) =>
   ({
     position: { borrower: OWNER, proxyAddress: proxy },
-    debtReserveIds: [0n],
-    debtToCoverAmounts: [1_000n],
+    debtReserveId: 0n,
+    debtToCover: 1_000n,
     vaultId: `0x${"0".repeat(64)}`,
     wbtcPayment: 50n,
     ...over,
@@ -281,23 +281,9 @@ describe("FlashFunding with venue ranking", () => {
   it("funds a candidate owing a shared token on the later reserve", async () => {
     const { funding, probes } = setup({ topology: SHARED_USDC });
 
-    await expect(funding.vet([candidate(PROXY_A, { debtReserveIds: [3n] })])).resolves.toHaveLength(
-      1
-    );
+    await expect(funding.vet([candidate(PROXY_A, { debtReserveId: 3n })])).resolves.toHaveLength(1);
 
     expect(probes()).toHaveLength(1);
-  });
-
-  it("quotes a shared token once, at the size summed over its reserves", async () => {
-    const { funding, quotes } = setup({ topology: SHARED_USDC });
-
-    await funding.vet([
-      candidate(PROXY_A, { debtReserveIds: [0n, 3n], debtToCoverAmounts: [1_000n, 500n] }),
-    ]);
-
-    // The two USDC pools, each asked for the whole amount the router borrows in one go.
-    const sizes = quotes().map((c) => (c.args[0] as { exactAmount: bigint }).exactAmount);
-    expect(sizes).toEqual([1_500n, 1_500n]);
   });
 
   it("flags a venue the probe owes more than its quote, and still funds the candidate", async () => {

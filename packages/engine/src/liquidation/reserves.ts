@@ -7,12 +7,12 @@ import { isBorrowableReserve } from "./domain";
  * One Spoke reserve, at the id the protocol knows it by.
  *
  * The id is the whole point of this type. `AaveAdapterLiquidationPreview.estimateLiquidation`
- * returns repay amounts paired with the reserve ids they belong to, and the adapter pulls each in
- * that reserve's underlying. A list of *tokens* cannot express that mapping, which is why nothing
- * that has to name the token behind an amount may work from a filtered list.
+ * names the debt by its reserve id, and the adapter pulls the amount in that reserve's underlying.
+ * A list of *tokens* cannot express that mapping, which is why nothing that has to name the token
+ * behind an amount may work from a filtered list.
  */
 export interface SpokeReserve {
-  /** Reserve id — what `estimateLiquidation` pairs each of its amounts with. */
+  /** Reserve id — what `estimateLiquidation` names the debt by. */
   id: number;
   /** The ERC-20 the adapter pulls for this reserve. */
   token: Address;

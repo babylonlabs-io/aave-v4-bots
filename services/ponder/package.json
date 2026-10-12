@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "ponder dev --port ${PONDER_PORT:-42069}",
-    "start": "ponder start --port ${PONDER_PORT:-42069}",
+    "start": "sh start.sh",
     "codegen": "ponder codegen",
     "test": "node --import tsx --test tests/*.test.ts"
   },

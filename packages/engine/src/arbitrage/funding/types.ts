@@ -15,7 +15,7 @@ import type { ArbitrageMetrics } from "../engine";
 /** The `previewEscrowedVaults` entry an acquisition is priced from. */
 export interface EscrowedVaultPreview {
   amountVault: bigint;
-  amountWbtcToAcquire: bigint;
+  amountExitBtcToAcquire: bigint;
   amountProfitEst: bigint;
 }
 

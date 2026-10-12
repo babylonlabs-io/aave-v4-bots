@@ -64,9 +64,7 @@ contract StressCohortCheck is Script, BaseBot {
     function _liquidatable(AaveAdapterLiquidationPreview lens, address borrower) internal view returns (bool) {
         address proxy = aaveAdapter.getPosition(borrower).proxyContract;
         if (proxy == address(0)) return false;
-        try lens.estimateLiquidation(proxy, false) returns (
-            uint256[] memory, uint256[] memory, uint256, bytes32, uint256
-        ) {
+        try lens.estimateLiquidation(proxy) returns (uint256, uint256, uint256, uint256, bytes32, uint256) {
             return true;
         } catch {
             return false;

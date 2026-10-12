@@ -149,7 +149,7 @@ abstract contract BaseBot is BaseE2E {
     }
 
     /// @notice Poll until the vault is acquired, up to `timeoutSeconds`. Redeemed **or** no longer
-    ///         acquirable both count: `swapWbtcForVault*` redeems atomically, so a vault that left
+    ///         acquirable both count: `swapExitBtcForVault*` redeems atomically, so a vault that left
     ///         escrow was bought even if a status read races the redemption.
     function _waitForAcquisition(bytes32 vaultId, uint256 timeoutSeconds) internal returns (bool acquired) {
         for (uint256 elapsed = 0;; elapsed += 5) {

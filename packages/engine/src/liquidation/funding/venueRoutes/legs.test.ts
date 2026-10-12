@@ -18,28 +18,20 @@ const topology = (...tokens: Address[]): SpokeReserves => ({
 });
 
 describe("sizeOwedLegs", () => {
-  it("resolves each amount through its reserve id, non-WBTC tokens first in id order, WBTC last", () => {
-    // The preview lists amounts in the order it costed them, not by id; the legs come out by id.
+  it("resolves the debt through its reserve id", () => {
     const legs = sizeOwedLegs(
-      { debtReserveIds: [2n, 0n, 1n], debtToCoverAmounts: [300n, 100n, 200n], wbtcPayment: 0n },
+      { debtReserveId: 2n, debtToCover: 300n, wbtcPayment: 0n },
       topology(USDT, WBTC, USDC),
       WBTC
     );
 
-    expect(legs).toEqual({
-      kind: "sized",
-      legs: [
-        { token: USDT, amount: 100n },
-        { token: USDC, amount: 300n },
-        { token: WBTC, amount: 200n },
-      ],
-    });
+    expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 300n }] });
   });
 
   it("maps by id when a non-borrowable reserve sorts before a borrowable one", () => {
     // A position-based mapping over the borrowable reserves would name USDT's token for USDC's id.
     const legs = sizeOwedLegs(
-      { debtReserveIds: [1n], debtToCoverAmounts: [500n], wbtcPayment: 0n },
+      { debtReserveId: 1n, debtToCover: 500n, wbtcPayment: 0n },
       topology(VBTC, USDC, USDT),
       WBTC
     );
@@ -47,19 +39,19 @@ describe("sizeOwedLegs", () => {
     expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 500n }] });
   });
 
-  it("adds the fairness payment to the WBTC leg", () => {
+  it("adds the fairness payment to a WBTC debt in one leg", () => {
     const legs = sizeOwedLegs(
-      { debtReserveIds: [0n, 1n], debtToCoverAmounts: [100n, 40n], wbtcPayment: 7n },
+      { debtReserveId: 1n, debtToCover: 40n, wbtcPayment: 7n },
       topology(USDC, WBTC),
       WBTC
     );
 
-    expect(legs.kind === "sized" && legs.legs.at(-1)).toEqual({ token: WBTC, amount: 47n });
+    expect(legs).toEqual({ kind: "sized", legs: [{ token: WBTC, amount: 47n }] });
   });
 
-  it("owes a WBTC leg for a fairness payment alone", () => {
+  it("puts the debt leg first and the fairness payment's WBTC leg last", () => {
     const legs = sizeOwedLegs(
-      { debtReserveIds: [0n], debtToCoverAmounts: [100n], wbtcPayment: 9n },
+      { debtReserveId: 0n, debtToCover: 100n, wbtcPayment: 9n },
       topology(USDC, WBTC),
       WBTC
     );
@@ -73,19 +65,19 @@ describe("sizeOwedLegs", () => {
     });
   });
 
-  it("leaves out zero amounts", () => {
+  it("owes a WBTC leg for a fairness payment alone", () => {
     const legs = sizeOwedLegs(
-      { debtReserveIds: [0n, 1n], debtToCoverAmounts: [0n, 100n], wbtcPayment: 0n },
-      topology(USDC, USDT),
+      { debtReserveId: 0n, debtToCover: 0n, wbtcPayment: 9n },
+      topology(USDC, WBTC),
       WBTC
     );
 
-    expect(legs).toEqual({ kind: "sized", legs: [{ token: USDT, amount: 100n }] });
+    expect(legs).toEqual({ kind: "sized", legs: [{ token: WBTC, amount: 9n }] });
   });
 
   it("compares the WBTC address case-insensitively", () => {
     const legs = sizeOwedLegs(
-      { debtReserveIds: [0n], debtToCoverAmounts: [100n], wbtcPayment: 0n },
+      { debtReserveId: 0n, debtToCover: 100n, wbtcPayment: 0n },
       topology(WBTC),
       WBTC.toLowerCase() as Address
     );
@@ -93,86 +85,19 @@ describe("sizeOwedLegs", () => {
     expect(legs).toEqual({ kind: "sized", legs: [{ token: WBTC, amount: 100n }] });
   });
 
-  describe("a token listed under two reserve ids", () => {
-    // The router borrows once per token for the debt summed over its reserves, and approves the
-    // adapter once for that same sum, so one leg carries the whole size.
+  it("sizes a token listed under two reserve ids from the later id", () => {
+    const legs = sizeOwedLegs(
+      { debtReserveId: 2n, debtToCover: 50n, wbtcPayment: 0n },
+      topology(USDC, WBTC, USDC),
+      WBTC
+    );
 
-    it("sums the amounts owed on both ids into one leg", () => {
-      const legs = sizeOwedLegs(
-        { debtReserveIds: [0n, 2n], debtToCoverAmounts: [100n, 50n], wbtcPayment: 0n },
-        topology(USDC, WBTC, USDC),
-        WBTC
-      );
-
-      expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 150n }] });
-    });
-
-    it("places the summed leg at its first owed reserve", () => {
-      const legs = sizeOwedLegs(
-        { debtReserveIds: [0n, 1n, 3n], debtToCoverAmounts: [100n, 40n, 50n], wbtcPayment: 0n },
-        topology(USDC, USDT, WBTC, USDC),
-        WBTC
-      );
-
-      expect(legs).toEqual({
-        kind: "sized",
-        legs: [
-          { token: USDC, amount: 150n },
-          { token: USDT, amount: 40n },
-        ],
-      });
-    });
-
-    it("sizes a candidate owing it only on the later id", () => {
-      const legs = sizeOwedLegs(
-        { debtReserveIds: [2n], debtToCoverAmounts: [50n], wbtcPayment: 0n },
-        topology(USDC, WBTC, USDC),
-        WBTC
-      );
-
-      expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 50n }] });
-    });
-
-    it("sums WBTC owed on both reserves with the fairness payment", () => {
-      const legs = sizeOwedLegs(
-        { debtReserveIds: [0n, 2n], debtToCoverAmounts: [100n, 50n], wbtcPayment: 5n },
-        topology(WBTC, USDC, WBTC),
-        WBTC
-      );
-
-      expect(legs).toEqual({ kind: "sized", legs: [{ token: WBTC, amount: 155n }] });
-    });
-
-    it("adds the fairness payment once when two reserves share WBTC", () => {
-      const legs = sizeOwedLegs(
-        { debtReserveIds: [1n], debtToCoverAmounts: [100n], wbtcPayment: 5n },
-        topology(WBTC, USDC, WBTC),
-        WBTC
-      );
-
-      expect(legs).toEqual({
-        kind: "sized",
-        legs: [
-          { token: USDC, amount: 100n },
-          { token: WBTC, amount: 5n },
-        ],
-      });
-    });
-
-    it("leaves out a shared token that owes nothing", () => {
-      const legs = sizeOwedLegs(
-        { debtReserveIds: [1n, 2n], debtToCoverAmounts: [40n, 0n], wbtcPayment: 0n },
-        topology(USDC, WBTC, USDC),
-        WBTC
-      );
-
-      expect(legs).toEqual({ kind: "sized", legs: [{ token: WBTC, amount: 40n }] });
-    });
+    expect(legs).toEqual({ kind: "sized", legs: [{ token: USDC, amount: 50n }] });
   });
 
   it("skips a candidate with nothing to borrow", () => {
     const legs = sizeOwedLegs(
-      { debtReserveIds: [0n], debtToCoverAmounts: [0n], wbtcPayment: 0n },
+      { debtReserveId: 0n, debtToCover: 0n, wbtcPayment: 0n },
       topology(USDC),
       WBTC
     );
@@ -184,49 +109,16 @@ describe("sizeOwedLegs", () => {
     // The candidate and the topology were read against different Spokes; nothing sized from them
     // is trustworthy, so this is a malfunction rather than a skip.
     expect(() =>
-      sizeOwedLegs(
-        { debtReserveIds: [5n], debtToCoverAmounts: [1n], wbtcPayment: 0n },
-        topology(USDC),
-        WBTC
-      )
+      sizeOwedLegs({ debtReserveId: 5n, debtToCover: 1n, wbtcPayment: 0n }, topology(USDC), WBTC)
     ).toThrow(/reserve id 5/);
-  });
-
-  it("throws when ids and amounts do not pair up", () => {
-    expect(() =>
-      sizeOwedLegs(
-        { debtReserveIds: [0n, 1n], debtToCoverAmounts: [1n], wbtcPayment: 0n },
-        topology(USDC, USDT),
-        WBTC
-      )
-    ).toThrow(/pairs 2 reserve ids with 1 amounts/);
-  });
-
-  it("throws on a reserve id listed twice, rather than summing a borrow the router never makes", () => {
-    // The router writes each pair into one slot per reserve, so a repeated id keeps one amount.
-    expect(() =>
-      sizeOwedLegs(
-        { debtReserveIds: [0n, 0n], debtToCoverAmounts: [1n, 2n], wbtcPayment: 0n },
-        topology(USDC),
-        WBTC
-      )
-    ).toThrow(/appears twice/);
   });
 
   it("throws on a negative amount or fairness payment instead of dropping it", () => {
     expect(() =>
-      sizeOwedLegs(
-        { debtReserveIds: [0n], debtToCoverAmounts: [-1n], wbtcPayment: 0n },
-        topology(USDC),
-        WBTC
-      )
+      sizeOwedLegs({ debtReserveId: 0n, debtToCover: -1n, wbtcPayment: 0n }, topology(USDC), WBTC)
     ).toThrow(/must not be negative/);
     expect(() =>
-      sizeOwedLegs(
-        { debtReserveIds: [0n], debtToCoverAmounts: [1n], wbtcPayment: -1n },
-        topology(USDC),
-        WBTC
-      )
+      sizeOwedLegs({ debtReserveId: 0n, debtToCover: 1n, wbtcPayment: -1n }, topology(USDC), WBTC)
     ).toThrow(/must not be negative/);
   });
 });
