@@ -23,12 +23,14 @@ const VAULT = `0x${"11".repeat(32)}` as const;
 const candidate = (
   debtReserveId: bigint,
   debtToCover: bigint,
-  wbtcPayment = 0n
+  wbtcPayment = 0n,
+  fairnessPayment = wbtcPayment
 ): LiquidationCandidate => ({
   position,
   debtReserveId,
   debtToCover,
   wbtcPayment,
+  fairnessPayment,
   vaultId: VAULT,
 });
 
@@ -47,7 +49,10 @@ const reserve = (
 
 type Revoke = (input: { token: Address; spender: Address; label?: string }) => Promise<unknown>;
 
-function build(reserves: SpokeReserve[], opts: { balance?: bigint; revoke?: Revoke } = {}) {
+function build(
+  reserves: SpokeReserve[],
+  opts: { balance?: bigint; revoke?: Revoke; direct?: boolean } = {}
+) {
   const risk = createRiskGate();
   const topology: SpokeReserves = { spoke: "0xspoke" as Address, reserves };
   const revokeAllowance = vi.fn(opts.revoke ?? (async () => ({ kind: "satisfied" as const })));
@@ -79,7 +84,7 @@ function build(reserves: SpokeReserve[], opts: { balance?: bigint; revoke?: Revo
     wbtcAddress: WBTC,
     btcRedeemKey: `0x${"0".repeat(64)}`,
     llpAddress: "0xllp",
-    isDirectRedemption: false,
+    isDirectRedemption: opts.direct ?? false,
   } as unknown as ConstructorParameters<typeof InventoryFunding>[0]);
   return { funding, risk, revokeAllowance, ensureAllowance, readReserves };
 }
@@ -265,5 +270,79 @@ describe("InventoryFunding revokeApprovals", () => {
 
     // One failure does not stop the other revocations.
     expect(revokeAllowance.mock.calls.map((c) => c[0].token)).toEqual([USDC, USDT, WBTC]);
+  });
+});
+
+describe("InventoryFunding WBTC payment", () => {
+  // fee 40 + fairness 10: the adapter charges both to the liquidator on either path.
+  const FEE_PLUS_FAIRNESS = 50n;
+  const FAIRNESS = 10n;
+
+  it("caps the LLP call at fee plus fairness payment, not fairness alone", async () => {
+    const { funding } = build([reserve(0, USDC)]);
+    await funding.refreshInventory();
+
+    const [vetted] = await funding.vet([candidate(0n, 500n, FEE_PLUS_FAIRNESS, FAIRNESS)]);
+
+    expect(vetted.call).toMatchObject({
+      functionName: "liquidateWithLLP",
+      args: ["0xborrower", "0xllp", 0n, 500n, FEE_PLUS_FAIRNESS, []],
+    });
+  });
+
+  it("caps the direct call at fee plus fairness payment", async () => {
+    const { funding } = build([reserve(0, USDC)], { direct: true });
+    await funding.refreshInventory();
+
+    const [vetted] = await funding.vet([candidate(0n, 500n, FEE_PLUS_FAIRNESS, FAIRNESS)]);
+
+    expect(vetted.call).toMatchObject({
+      functionName: "liquidate",
+      args: ["0xborrower", 0n, 500n, FEE_PLUS_FAIRNESS, `0x${"0".repeat(64)}`],
+    });
+  });
+
+  it("declares only the fairness payment on the LLP path, the fee being paid from the payout", async () => {
+    const { funding } = build([reserve(0, USDC), reserve(1, WBTC)]);
+    await funding.refreshInventory();
+
+    const [vetted] = await funding.vet([candidate(0n, 500n, FEE_PLUS_FAIRNESS, FAIRNESS)]);
+
+    expect(vetted.risk.spend).toEqual([
+      { owner: SIGNER, token: USDC, amount: 500n },
+      { owner: SIGNER, token: WBTC, amount: FAIRNESS },
+    ]);
+  });
+
+  it("declares fee plus fairness payment in direct mode, where no payout funds the fee", async () => {
+    const { funding } = build([reserve(0, USDC), reserve(1, WBTC)], { direct: true });
+    await funding.refreshInventory();
+
+    const [vetted] = await funding.vet([candidate(0n, 500n, FEE_PLUS_FAIRNESS, FAIRNESS)]);
+
+    expect(vetted.risk.spend).toEqual([
+      { owner: SIGNER, token: USDC, amount: 500n },
+      { owner: SIGNER, token: WBTC, amount: FEE_PLUS_FAIRNESS },
+    ]);
+  });
+
+  it("caps at the fee and declares no WBTC spend when there is no fairness payment", async () => {
+    const { funding } = build([reserve(0, USDC), reserve(1, WBTC)]);
+    await funding.refreshInventory();
+
+    const [vetted] = await funding.vet([candidate(0n, 500n, 40n, 0n)]);
+
+    expect(vetted.call).toMatchObject({ args: ["0xborrower", "0xllp", 0n, 500n, 40n, []] });
+    expect(vetted.risk.spend).toEqual([{ owner: SIGNER, token: USDC, amount: 500n }]);
+  });
+
+  it("approves the adapter for WBTC so it can pull the fee from the LLP payout", async () => {
+    const { funding, ensureAllowance } = build([reserve(0, USDC)]);
+
+    await funding.refreshInventory();
+
+    expect(ensureAllowance).toHaveBeenCalledWith(
+      expect.objectContaining({ token: WBTC, spender: ADAPTER })
+    );
   });
 });

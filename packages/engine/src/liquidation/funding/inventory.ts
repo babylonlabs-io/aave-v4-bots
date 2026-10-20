@@ -227,8 +227,9 @@ export class InventoryFunding implements LiquidationFunding {
 
   /**
    * Everything this tx can pull from the signer: the buffered repay amount, in the debt reserve's
-   * token, plus the adapter's WBTC payment. Declared so the arbitrage engine
-   * sharing this signer cannot commit the same balance to a vault.
+   * token, plus the adapter's WBTC payment: fee and fairness in direct mode, fairness alone on the
+   * LLP path, where the payout received in the same tx funds the fee. Declared so the arbitrage
+   * engine sharing this signer cannot commit the same balance to a vault.
    *
    * No `expectedProfit`: liquidation profit is not derivable off-chain on this path. The preview
    * returns debt amounts and the seized vault's BTC amount, and `liquidate`/`liquidateWithLLP`
@@ -297,9 +298,13 @@ export class InventoryFunding implements LiquidationFunding {
     }
     add(reserve.token, candidate.debtToCover);
 
-    // The adapter's fairness payment (plus the liquidation fee in direct mode) is a separate pull
-    // in the adapter's own WBTC, on top of whatever the WBTC reserve is repaid.
-    add(wbtcAddress, candidate.wbtcPayment);
+    // The adapter's WBTC pull is separate from the debt repayment. Direct mode owes the fee and
+    // the fairness payment from inventory; the LLP path pays the fee out of the payout it just
+    // received, so only the fairness payment must already be held.
+    add(
+      wbtcAddress,
+      this.deps.isDirectRedemption ? candidate.wbtcPayment : candidate.fairnessPayment
+    );
     return [...byToken.values()];
   }
 }

@@ -230,6 +230,38 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
         vm.assertEq(IERC20(wbtc).balanceOf(address(router)), 0, "the router must end empty");
     }
 
+    /// @notice A non-zero liquidation fee is charged to the router, paid out of the LLP payout, and
+    ///         comes off the profit one for one.
+    /// @dev The fixture deploys the adapter with a zero fee, so every other test here would still pass
+    ///      if the router stopped approving or capping for the fee.
+    function test_UNISWAPV4_LIQUIDATION_NONZERO_FEE() external {
+        Types.LiquidationScenario memory scenario = LIQUIDATION_SCENARIOS[0];
+        (address who, address wbtc, PoolKey[] memory poolKeys) = _prepare(scenario);
+
+        (LiquidationRouter router, UniswapV4SwapVenue venue) = _setUpRouter();
+        LiquidationTypes.FlashData[] memory flashDatas = _debtFlashDatas(venue, poolKeys);
+
+        uint256 profitNoFee = _probeAchievableProfit(router, who, flashDatas, wbtc);
+
+        adapter.setLiquidationFeeBps(50);
+        (,, uint256 fee,,,) = preview.estimateLiquidation(adapter.getPosition(who).proxyContract);
+        vm.assertGt(fee, 0, "the scenario must owe a liquidation fee");
+
+        address recipient = adapter.applicationRecipient();
+        uint256 recipientBefore = IERC20(wbtc).balanceOf(recipient);
+
+        vm.prank(ADMIN);
+        uint256 profit = router.liquidate(
+            LiquidationTypes.LiquidationData({borrower: who, minWbtcProfit: 0}),
+            flashDatas,
+            new LiquidationTypes.SwapData[](0)
+        );
+
+        vm.assertEq(IERC20(wbtc).balanceOf(recipient) - recipientBefore, fee, "recipient must receive the fee");
+        vm.assertEq(profit, profitNoFee - fee, "the fee must come off the router profit");
+        vm.assertEq(IERC20(wbtc).balanceOf(address(router)), 0, "the router must end empty");
+    }
+
     /// @notice The `BelovedError` probe: realised WBTC minus everything owed back to the venues.
     /// @dev Mirrors the off-chain `probeLiquidation` + `quoteProfit` pair. `multicall(.., false)`
     ///      captures the revert payload instead of letting it bubble.
@@ -272,4 +304,3 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
         venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(router));
     }
 }
-

@@ -15,8 +15,8 @@ export const adapterAbi = [
   // list — and cover the debt of the one reserve the borrower owes. `maxExitBtcPayment` caps the
   // WBTC the adapter pulls from the caller on top of that debt, so an estimate that went stale
   // between the read and the send is refused on-chain instead of charged. It covers the fee and
-  // the fairness payment on `liquidate`, and the fairness payment alone on `liquidateWithLLP`,
-  // where the LLP pays the fee.
+  // the fairness payment on both entry points. On `liquidateWithLLP` the fee is pulled after the
+  // LLP pays out, so the payout can fund it.
   {
     type: "function",
     name: "liquidate",

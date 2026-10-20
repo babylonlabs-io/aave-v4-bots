@@ -88,7 +88,7 @@ export class FlashFunding implements LiquidationFunding {
         // amounts array is indexed by. The router skips whatever owes nothing.
         const flashDatas = buildFlashDatas(
           allFundableTokens(venues),
-          candidate.wbtcPayment,
+          candidate.fairnessPayment,
           venues
         );
 

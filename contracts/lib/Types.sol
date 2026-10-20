@@ -68,6 +68,8 @@ library Types {
     /// @param debtReserveId The spoke reserve the borrower owes; the Core Spoke allows one debt reserve per position.
     /// @param debtToCover The amount of `debtToken` the liquidation repays.
     /// @param wbtcPayment The WBTC fairness payment the adapter pulls from the router for the borrower.
+    /// @param exitBtcFee The WBTC liquidation fee the adapter pulls from the router after the LLP pays out. It is
+    ///        funded from that payout, so it is approved and capped but never flash-borrowed.
     /// @param debtToken The underlying of the `debtReserveId` reserve.
     struct LiquidationIteration {
         LiquidationPhase phase;
@@ -80,6 +82,7 @@ library Types {
         uint256 debtReserveId;
         uint256 debtToCover;
         uint256 wbtcPayment;
+        uint256 exitBtcFee;
 
         address debtToken;
     }

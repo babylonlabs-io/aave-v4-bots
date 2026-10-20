@@ -20,8 +20,8 @@ against the AaveAdapter contract.
 2. **Approve** — under `LIQUIDATION_FUNDING=inventory` (the default), once at
    boot, sets `MAX_UINT256` allowance on every token a borrower can owe and on
    WBTC for the AaveAdapter contract. WBTC approval is required because the
-   adapter pulls the fairness payment and, in direct-redemption mode, the
-   liquidation fee directly from `msg.sender` during liquidation. Under `flash` funding this step is a no-op — the bot
+   adapter pulls the fairness payment and the liquidation fee directly from
+   `msg.sender` during liquidation (on the LLP path, after the LLP has paid out). Under `flash` funding this step is a no-op — the bot
    moves none of its own tokens, so it grants no allowances.
 3. **Poll** — fetches `/liquidatable-positions` from the indexer every
    `POLLING_INTERVAL_MS`.
@@ -31,14 +31,15 @@ against the AaveAdapter contract.
    uint256 exitBtcFairnessPayment, bytes32 vaultId, uint256 amountCollateralToSeize)`.
    The Core Spoke allows one debt reserve per position, so there is one
    `debtReserveId`. The bot sets `wbtcPayment` to
-   `exitBtcFee + exitBtcFairnessPayment` in direct mode and to
-   `exitBtcFairnessPayment` alone in LLP mode, because the LLP pays the
-   liquidation fee. `debtToCover` and `wbtcPayment` are bumped by 1%, rounding
+   `exitBtcFee + exitBtcFairnessPayment` in both modes: the adapter charges the
+   liquidator the fee on the LLP path too. `debtToCover` and `wbtcPayment` are bumped by 1%, rounding
    up, to absorb interest accrued between estimate and broadcast.
-   `wbtcPayment` is both what the adapter pulls from `msg.sender` and the
-   `maxExitBtcPayment` cap the call carries, so the bot needs sufficient WBTC
-   balance and approval, and a payment that drifts past the buffer reverts
-   on-chain with `ExcessiveExitBtcPayment` rather than being charged.
+   `wbtcPayment` is the `maxExitBtcPayment` cap the call carries. The adapter
+   pulls fee and fairness payment from the bot on both paths, so the WBTC
+   approval covers both. The bot must hold WBTC for the fairness payment, and
+   for the fee in direct mode; on the LLP path the payout funds the fee. A
+   payment that drifts past the buffer reverts on-chain with
+   `ExcessiveExitBtcPayment` rather than being charged.
 5. **Vet** — under `inventory` funding, simulates every candidate against the
    adapter and drops any that revert. Under `flash` funding this is a probe of
    `LiquidationRouter` that also returns the WBTC profit the candidate yields.
@@ -57,7 +58,7 @@ against the AaveAdapter contract.
 
 Under `LIQUIDATION_FUNDING=flash` step 6 targets `LiquidationRouter.liquidate`
 instead of the adapter. The router reads the Lens, borrows the position's debt
-token, calls `liquidateWithLLP` on the bot's behalf with the fairness payment
+token, calls `liquidateWithLLP` on the bot's behalf with the fairness payment plus fee
 as the cap, repays the venues from the seized collateral and sweeps the
 remaining WBTC to its `owner` — which must be this bot's signer. It draws WBTC
 only when there is a fairness payment; when WBTC is itself the debt token, it

@@ -7,8 +7,8 @@ export const lensAbi = [
     type: "function",
     name: "estimateLiquidation",
     inputs: [{ name: "borrowerProxy", type: "address" }],
-    // One debt reserve: the Core Spoke allows one per position. The caller pays `exitBtcFee` only
-    // on `liquidate`; on `liquidateWithLLP` the LLP pays it.
+    // One debt reserve: the Core Spoke allows one per position. The caller pays `exitBtcFee` and
+    // `exitBtcFairnessPayment` on both `liquidate` and `liquidateWithLLP`.
     outputs: [
       { name: "debtReserveId", type: "uint256" },
       { name: "debtToCover", type: "uint256" },
