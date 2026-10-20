@@ -728,7 +728,8 @@ describe("LiquidationEngine", () => {
 
       await bot.run();
 
-      // The LLP pays the liquidation fee, so the cap covers the fairness payment alone.
+      // The adapter pulls the liquidation fee from the caller through the LLP too, so the cap
+      // covers the fee and the fairness payment.
       const buffer = (amt: bigint) => (amt * 10100n) / 10000n;
       expect(clients.sender.send).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -739,7 +740,7 @@ describe("LiquidationEngine", () => {
             "0xllpaddress000000000000000000000000000000",
             mockReserveId,
             buffer(mockDebtToCover),
-            buffer(mockFairnessPayment),
+            buffer(mockLiquidationFee + mockFairnessPayment),
             [],
           ],
         }),

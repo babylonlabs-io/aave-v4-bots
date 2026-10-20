@@ -76,8 +76,8 @@ contract LiquidationE2EVerify is Script, BaseBot {
         console.log("Now (sats):    ", nowWbtc);
         console.log("Gained (sats): ", nowWbtc > initialWbtc ? nowWbtc - initialWbtc : 0);
 
-        // The LLP fairness payment is the ONLY thing that exercises the WBTC flash-loan leg, and it
-        // lands here: the adapter pulls it from the liquidator (the router) and forwards it to the
+        // The WBTC flash-loan leg funds the liquidation fee and the LLP fairness payment. The fee goes
+        // to the application recipient. The fairness payment lands here: the adapter pulls it from the liquidator (the router) and forwards it to the
         // borrower. The borrower holds no WBTC otherwise — they pegged in BTC and borrowed USDC — so
         // any balance at all is the payment, and in flash mode the router held none of its own.
         uint256 borrowerWbtc = _getWbtcBalance(borrower);

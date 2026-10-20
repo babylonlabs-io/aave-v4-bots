@@ -297,7 +297,7 @@ export class InventoryFunding implements LiquidationFunding {
     }
     add(reserve.token, candidate.debtToCover);
 
-    // The adapter's fairness payment (plus the liquidation fee in direct mode) is a separate pull
+    // The adapter's liquidation fee and fairness payment are a separate pull
     // in the adapter's own WBTC, on top of whatever the WBTC reserve is repaid.
     add(wbtcAddress, candidate.wbtcPayment);
     return [...byToken.values()];

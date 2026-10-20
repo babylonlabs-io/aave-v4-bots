@@ -21,8 +21,8 @@
 #   E2E_PRICE_DROP_PCT=30 ...             # liquidator suite: how far the BTC price falls. Sets the
 #                                         # debt-to-collateral ratio at liquidation, and so whether
 #                                         # the seized vault leaves excess -> an LLP fairness
-#                                         # payment. Too deep and there is none, and the WBTC
-#                                         # flash-loan leg goes untested.
+#                                         # payment. Too deep and there is none, and the
+#                                         # fairness path goes untested.
 #   E2E_RPC_URL=http://...:8545 ...       # override anvil RPC URL
 #
 # Sign the arbitrageur bot's txs with AWS KMS instead of a local key (SUITE=arbitrageur):

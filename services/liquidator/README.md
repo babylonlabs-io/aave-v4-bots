@@ -31,9 +31,8 @@ against the AaveAdapter contract.
    uint256 exitBtcFairnessPayment, bytes32 vaultId, uint256 amountCollateralToSeize)`.
    The Core Spoke allows one debt reserve per position, so there is one
    `debtReserveId`. The bot sets `wbtcPayment` to
-   `exitBtcFee + exitBtcFairnessPayment` in direct mode and to
-   `exitBtcFairnessPayment` alone in LLP mode, because the LLP pays the
-   liquidation fee. `debtToCover` and `wbtcPayment` are bumped by 1%, rounding
+   `exitBtcFee + exitBtcFairnessPayment` in both redemption modes, because
+   the adapter pulls both from the caller. `debtToCover` and `wbtcPayment` are bumped by 1%, rounding
    up, to absorb interest accrued between estimate and broadcast.
    `wbtcPayment` is both what the adapter pulls from `msg.sender` and the
    `maxExitBtcPayment` cap the call carries, so the bot needs sufficient WBTC
@@ -57,8 +56,8 @@ against the AaveAdapter contract.
 
 Under `LIQUIDATION_FUNDING=flash` step 6 targets `LiquidationRouter.liquidate`
 instead of the adapter. The router reads the Lens, borrows the position's debt
-token, calls `liquidateWithLLP` on the bot's behalf with the fairness payment
-as the cap, repays the venues from the seized collateral and sweeps the
+token, calls `liquidateWithLLP` on the bot's behalf with the liquidation fee
+plus the fairness payment as the cap, repays the venues from the seized collateral and sweeps the
 remaining WBTC to its `owner` — which must be this bot's signer. It draws WBTC
 only when there is a fairness payment; when WBTC is itself the debt token, it
 borrows the debt and the fairness payment together through the one WBTC venue.

@@ -67,7 +67,7 @@ library Types {
     /// @param swapDatas The dex-aggregator calls to run after liquidating.
     /// @param debtReserveId The spoke reserve the borrower owes; the Core Spoke allows one debt reserve per position.
     /// @param debtToCover The amount of `debtToken` the liquidation repays.
-    /// @param wbtcPayment The WBTC fairness payment the adapter pulls from the router for the borrower.
+    /// @param wbtcPayment The WBTC the adapter pulls from the router: the liquidation fee plus the fairness payment.
     /// @param debtToken The underlying of the `debtReserveId` reserve.
     struct LiquidationIteration {
         LiquidationPhase phase;

@@ -29,8 +29,8 @@ import {BTCVaultSwap} from "vault-contracts/applications/aave/llps/BTCVaultSwap/
 ///         Whatever WBTC is left once every venue is repaid is the profit, and all reserve balances are swept to
 ///         `owner`.
 ///
-///         WBTC here is the token the LLP calls exitBTC: the token liquidators are paid in and fairness payments are
-///         made in.
+///         WBTC here is the token the LLP calls exitBTC: the token liquidators are paid in and the liquidation fee and
+///         fairness payments are made in.
 contract LiquidationRouter is VenueManager {
     using SafeERC20 for IERC20;
 
@@ -42,7 +42,7 @@ contract LiquidationRouter is VenueManager {
 
     /// @notice The only address allowed to run a liquidation; also the recipient of all proceeds.
     address public immutable owner;
-    /// @notice `AaveAdapterLiquidationPreview` used to estimate the debt to cover and the fairness payment.
+    /// @notice `AaveAdapterLiquidationPreview` used to estimate the debt to cover, the liquidation fee and the fairness payment.
     address public immutable lens;
     /// @notice Aave v4 adapter through which the liquidation is executed.
     address public immutable aaveAdapter;
@@ -235,8 +235,8 @@ contract LiquidationRouter is VenueManager {
 
         // `wbtcPayment` doubles as the cap: it is what the preview quoted and exactly what the approval above
         // grants, so a payment that grew between the estimate and this frame is refused by the adapter rather
-        // than paid out of whatever else the router is holding mid-liquidation. The LLP pays the liquidation fee,
-        // so the cap covers the fairness payment alone.
+        // than paid out of whatever else the router is holding mid-liquidation. The cap covers the liquidation fee
+        // and the fairness payment, which the adapter both pulls from this router.
         AaveAdapter(aaveAdapter)
             .liquidateWithLLP(
                 iteration.liquidationData.borrower,
@@ -280,19 +280,22 @@ contract LiquidationRouter is VenueManager {
     // ---------------------- ESTIMATE LIQUIDATION PAYMENT ----------------------
 
     /// @notice Asks the preview what it costs to liquidate `borrower`.
-    /// @dev The preview also quotes the liquidation fee. On `liquidateWithLLP` the LLP pays that fee, so the router
-    ///      does not fund it.
+    /// @dev The adapter pulls the liquidation fee from the caller on `liquidateWithLLP` too, so the router funds it
+    ///      with the fairness payment.
     /// @param borrower The account being liquidated.
     /// @return debtReserveId The spoke reserve the borrower owes.
     /// @return debtToCover The amount of that reserve's token the liquidation repays.
-    /// @return wbtcPayment The WBTC fairness payment owed to the borrower.
+    /// @return wbtcPayment The WBTC liquidation fee plus the WBTC fairness payment owed to the borrower.
     function _estLiquidationPayment(address borrower)
         internal
         view
         returns (uint256 debtReserveId, uint256 debtToCover, uint256 wbtcPayment)
     {
-        (debtReserveId, debtToCover,, wbtcPayment,,) = AaveAdapterLiquidationPreview(lens)
+        uint256 liquidationFee;
+        uint256 fairnessPayment;
+        (debtReserveId, debtToCover, liquidationFee, fairnessPayment,,) = AaveAdapterLiquidationPreview(lens)
             .estimateLiquidation(AaveAdapter(aaveAdapter).getPosition(borrower).proxyContract);
+        wbtcPayment = liquidationFee + fairnessPayment;
     }
 
     // ---------------------- ERC20 Handlers ----------------------
@@ -313,7 +316,7 @@ contract LiquidationRouter is VenueManager {
         }
     }
 
-    /// @notice Approves the Aave adapter to pull exactly the debt repayment and the WBTC fairness payment.
+    /// @notice Approves the Aave adapter to pull exactly the debt repayment and the WBTC payment.
     /// @dev The debt token can be WBTC itself, and an approval replaces an allowance rather than adding to it, so a
     ///      shared token is approved once, for the sum.
     function _approveForAdapter(Types.LiquidationIteration memory iteration, address debtToken) internal {
@@ -358,7 +361,7 @@ contract LiquidationRouter is VenueManager {
     // ---------------------- MISC ----------------------
 
     /// @notice How much of `token` the liquidation pays: the debt to cover when `token` is the debt token, plus the
-    ///         fairness payment when `token` is WBTC. Both apply when the borrower owes WBTC.
+    ///         WBTC payment when `token` is WBTC. Both apply when the borrower owes WBTC.
     function _paymentIn(Types.LiquidationIteration memory iteration, address token) internal view returns (uint256) {
         return (token == iteration.debtToken ? iteration.debtToCover : 0) + (token == wbtc ? iteration.wbtcPayment : 0);
     }

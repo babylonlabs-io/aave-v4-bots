@@ -22,7 +22,7 @@ abstract contract TestSuites {
 
     /// @dev The positions the liquidation suites build. Both borrow USDC, the one debt reserve the Core
     ///      Spoke allows per position, and between them they cover the fairness payment in both
-    ///      directions — which is what decides whether the WBTC venue is drawn on at all.
+    ///      directions.
     ///
     ///      The ratios are what separate them. `80 / 60` is borrowed near the 80% collateral factor,
     ///      so once the price falls far enough to make it liquidatable the debt consumes essentially
@@ -33,9 +33,9 @@ abstract contract TestSuites {
     ///      That second drop sits inside a band with an edge on either side, which is why it is 53
     ///      and not a round number. Below 50% the position is still healthy and nothing can liquidate
     ///      it; above ~56% the debt plus the 10% liquidation bonus consumes the whole vault and the
-    ///      excess — and with it the fairness payment, and with it the only draw on the WBTC flash
-    ///      venue — disappears. `TESTALL` asserts the payment in both directions, so a scenario that
-    ///      drifted out of the band fails loudly rather than silently testing one venue less.
+    ///      excess — and with it the fairness payment — disappears. `TESTALL` asserts the payment in
+    ///      both directions, so a scenario that drifted out of the band fails loudly rather than
+    ///      silently testing one path less.
     Types.LiquidationScenario[] internal LIQUIDATION_SCENARIOS = [
         Types.LiquidationScenario({
             network: "sepolia",

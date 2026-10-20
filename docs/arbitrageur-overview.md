@@ -36,9 +36,9 @@ When a liquidator calls
 2. The vault is transferred to BTCVaultSwap.
 3. BTCVaultSwap **draws WBTC from the Aave Hub at a sell discount**
    (`sellDiscountBps`) and pays it to the liquidator immediately. The
-   draw also covers the Adapter's liquidation fee.
+   Adapter then pulls its liquidation fee from the liquidator.
 4. The vault sits in escrow with a debt to the Hub equal to the WBTC
-   drawn: the liquidator payout plus the liquidation fee.
+   drawn: the liquidator payout.
 
 The arbitrageur is the second half of the system: a registered keeper
 who later acquires the escrowed vault by paying the Hub debt, and
@@ -71,14 +71,15 @@ WBTC-equivalent of the vault BTC. The spread depends on two parameters:
 
 The arbitrageur pays `min(Hub debt, amountExitBtcEquivalent -
 minProfitThreshold)`. There is no fee on acquisition. The example uses
-`sellDiscountBps = 300`, `minimumProfitThresholdBps = 200` and a zero
-liquidation fee.
+`sellDiscountBps = 300` and `minimumProfitThresholdBps = 200`. The
+liquidation fee does not change the Hub debt, because the liquidator
+pays it.
 
 | Component | Example (1 BTC vault) |
 |-----------|----------------------|
 | Vault BTC value | 1.00 BTC (oracle: 1.00 WBTC) |
 | Liquidator received (paid by Hub at sell discount) | ~0.97 WBTC |
-| Hub debt at escrow (payout + liquidation fee) | ~0.97 WBTC |
+| Hub debt at escrow (the liquidator payout) | ~0.97 WBTC |
 | `minProfitThreshold` (2% of 1.00 WBTC) | 0.02 WBTC |
 | Arbitrageur pays `min(0.97, 1.00 - 0.02)` | ~0.97 WBTC |
 | Arbitrageur receives | 1.00 BTC (after BTC settlement) |

@@ -59,7 +59,7 @@ contract LiquidationE2ESetup is BaseE2ESetup, FlashVenueSetup {
 
         // A gentler drop than the arbitrageur suite's 40%. Deep underwater leaves nothing over after
         // the debt is cleared, and it is exactly that leftover the LLP pays the borrower as the
-        // fairness payment — the one thing that draws on the WBTC flash-loan venue.
+        // fairness payment, which the WBTC flash-loan venue funds with the liquidation fee.
         (address borrower,) = _setupLiquidatablePosition(lens, _envDropPercent());
 
         console.log("\n=== Setup Complete - run LiquidationE2EVerify.s.sol ===");
@@ -159,7 +159,7 @@ contract LiquidationE2ESetup is BaseE2ESetup, FlashVenueSetup {
             "\n",
             // WBTC itself cannot come from a flash swap — that would hand back a debt in the pool's
             // other token — so it is borrowed from the real Morpho, seeded above. This is the leg
-            // that funds the LLP fairness payment the adapter pulls during the liquidation.
+            // that funds the liquidation fee and the LLP fairness payment the adapter pulls.
             "WBTC_FLASH_LOAN_ADDRESS=",
             vm.toString(MORPHO_BLUE),
             "\n",

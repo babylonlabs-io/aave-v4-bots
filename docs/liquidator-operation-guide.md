@@ -275,7 +275,7 @@ For a native run, use `http://localhost:42069` and `localhost:5432` (§5.1). Und
 | `LIQUIDATION_ROUTER_ADDRESS` | LiquidationRouter. Its `owner` must be this signer | flash | |
 | `FLASH_SWAP_VENUE_ADDRESS` | The `UniswapV4SwapVenue` bound to that router. One venue serves every pool | flash | |
 | `FLASH_SWAP_POOLS` | One `token:currency0:currency1:fee:tickSpacing[:hooks]` per debt token, comma-separated. Each pool must be WBTC/`<token>`; currencies in Uniswap order | flash | |
-| `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | |
+| `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the liquidation fee and the LLP fairness payment | flash | |
 | `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
 | `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the probe's quote before the transaction reverts. Enforced on-chain; the only slippage bound in flash mode. `10000` removes it | No | `2000` |
 | `IS_DIRECT_REDEMPTION` | `true` calls `liquidate` and redeems to `BTC_REDEEM_KEY`; `false` calls `liquidateWithLLP`. Inventory funding only; boot fails if `true` under flash | No | `false` |

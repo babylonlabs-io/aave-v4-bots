@@ -22,8 +22,8 @@ import {Types} from "./Types.sol";
 ///      freshly deployed protocol.
 ///
 ///      Deploying fresh also buys control the pinned fixtures never had. Whether a liquidation leaves
-///      excess collateral value — and therefore whether the LLP charges a fairness payment, which is
-///      what draws on the WBTC flash venue — is a property of the borrow-to-collateral ratio at
+///      excess collateral value — and therefore whether the liquidation charges a fairness payment —
+///      is a property of the borrow-to-collateral ratio at
 ///      liquidation time. Here that is a scenario parameter rather than a borrower who happened to be
 ///      in the right state at some block.
 abstract contract TBVForkFixture is AaveAdapterMultiCollateralLoanBase {

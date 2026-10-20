@@ -45,8 +45,8 @@ contract ManualSafeArbitrageurE2EVerify is Script, BaseBot {
         console.log("[PASS] Vault acquired (redeemed / left escrow)");
 
         // The Safe is the payer on BOTH legs. It receives WBTC from the LLP payout when it
-        // liquidates and spends WBTC when it acquires; the acquisition costs the vault's Hub debt,
-        // which the LLP drew to fund the liquidation payout plus the liquidation fee, so the net
+        // liquidates and spends WBTC on the liquidation fee and the acquisition. The acquisition
+        // costs the vault's Hub debt, which the LLP drew to fund the liquidation payout, so the net
         // must be negative.
         // A Safe whose WBTC did NOT fall would mean something else paid — exactly the failure the
         // payer/beneficiary split could hide.

@@ -305,7 +305,7 @@ deployments instead of mocks — the pools are seeded, and Morpho funded, with t
 It refuses to start without `E2E_FORK_URL` rather than failing later inside a pool call. The
 protocol itself is still deployed fresh, so the suite keeps admin over the price feed and tokens;
 its position is tuned to leave excess after the debt clears, which produces a real LLP fairness
-payment and so exercises the WBTC flash-loan leg too. The fork block is pinned, so foundry serves it
+payment. The WBTC flash-loan leg funds that payment and the liquidation fee. The fork block is pinned, so foundry serves it
 from `~/.foundry/cache/rpc` after the first run and the RPC is not called again.
 
 ### Stress suite

@@ -100,9 +100,8 @@ export interface LiquidationCandidate {
    */
   vaultId: Hex;
   /**
-   * The WBTC the adapter pulls from the caller, buffered the same way the debt is: the fairness
-   * payment, plus the liquidation fee in direct-redemption mode. On `liquidateWithLLP` the LLP pays
-   * the fee, so it is not part of this figure.
+   * The WBTC the adapter pulls from the caller, buffered the same way the debt is: the liquidation
+   * fee plus the fairness payment. The adapter pulls both on `liquidate` and on `liquidateWithLLP`.
    *
    * Buffered because it is also the `maxExitBtcPayment` cap sent on-chain: the adapter recomputes
    * the payment at execution and reverts with `ExcessiveExitBtcPayment` if it exceeds the cap, so

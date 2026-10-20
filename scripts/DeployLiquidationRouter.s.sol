@@ -18,7 +18,7 @@ import {LiquidationRouter} from "../contracts/LiquidationRouter.sol";
 ///          --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
 ///
 ///      The router still needs its venues before it can fund anything — a `UniswapV4SwapVenue` (or
-///      equivalent) per debt token, plus the WBTC flash-loan venue for the LLP fairness payment.
+///      equivalent) per debt token, plus the WBTC flash-loan venue for the liquidation fee and the fairness payment.
 ///      Those go in the bot's env as `FLASH_SWAP_POOLS` / `WBTC_FLASH_LOAN_ADDRESS`; see
 ///      `env.liquidator.example`.
 contract DeployLiquidationRouter is Script {

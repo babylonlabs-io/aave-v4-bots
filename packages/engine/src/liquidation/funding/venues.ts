@@ -40,9 +40,8 @@ export interface VenueRegistry {
   /**
    * Required, not optional. Vaults are indivisible, so a liquidation seizes whole vaults and the
    * value left over once the debt is cleared is owed back to the borrower as the LLP fairness
-   * payment — which the adapter pulls from the router in WBTC. Only a position deep enough
-   * underwater to consume its vault entirely avoids one, and that is the exception rather than the
-   * rule, so a flash setup without this venue would decline most of the work it was configured for.
+   * payment — which the adapter pulls from the router in WBTC with the liquidation fee. A flash
+   * setup without this venue would decline every liquidation that owes either one.
    */
   wbtcFlashLoan: WbtcFlashLoanVenue;
 }
@@ -104,7 +103,8 @@ export function assertRegistryValid(registry: VenueRegistry): void {
  * @param owedTokens Tokens with a non-zero debt. The router recomputes the amounts itself, so only
  *        the identity of each token matters here — but an entry for a token owing nothing is
  *        skipped on-chain, and an entry for a token owing something that we omit is unfunded.
- * @param wbtcPayment The LLP fairness payment, which the router adds to the WBTC borrow.
+ * @param wbtcPayment The liquidation fee plus the LLP fairness payment, which the router adds to the
+ *        WBTC borrow.
  * @throws VenueSelectionError if the request cannot be funded with empty `swapDatas`.
  */
 export function buildFlashDatas(

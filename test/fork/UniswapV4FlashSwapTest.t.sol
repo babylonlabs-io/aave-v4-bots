@@ -61,9 +61,9 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
 
             (LiquidationRouter router, UniswapV4SwapVenue venue) = _setUpRouter();
 
-            // The debt venues by flash swap, and WBTC by flash loan for the fairness payment. The
-            // WBTC entry is passed either way — the router skips a venue whose token is owed nothing,
-            // so the no-fairness scenario simply never draws on it.
+            // The debt venues by flash swap, and WBTC by flash loan for the liquidation fee and the
+            // fairness payment. The WBTC entry is passed either way — the router skips a venue whose
+            // token is owed nothing.
             LiquidationTypes.FlashData[] memory debtDatas = _debtFlashDatas(venue, poolKeys);
             LiquidationTypes.FlashData[] memory flashDatas = new LiquidationTypes.FlashData[](debtDatas.length + 1);
             for (uint256 j = 0; j < debtDatas.length; j++) {
@@ -85,9 +85,9 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
                 new LiquidationTypes.SwapData[](0)
             );
 
-            // Asserted in both directions. The fairness payment is the only thing that draws on the
-            // WBTC venue, so a scenario that quietly stopped producing one — or started producing one
-            // where none was intended — would leave that venue untested while still passing.
+            // Asserted in both directions. A scenario that quietly stopped producing a fairness payment
+            // — or started producing one where none was intended — would leave that path untested
+            // while still passing.
             uint256 balanceWbtcAfter = IERC20(wbtc).balanceOf(who);
             if (scenario.hasFairnessPayment) {
                 vm.assertGt(balanceWbtcAfter, balanceWbtcBefore, "expected a fairness payment to the borrower");
