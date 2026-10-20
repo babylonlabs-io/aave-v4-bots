@@ -222,8 +222,8 @@ The bot automates monitoring and execution.
 2. **Approve** — under `inventory` funding, ensures `MAX_UINT256`
    allowance on every token a borrower can owe and on WBTC for the
    AaveAdapter. WBTC approval is required because the adapter pulls the
-   fairness payment and, in direct-redemption mode, the liquidation fee
-   directly from `msg.sender`. In `AUTO` mode the bot signs the approval; in `MANUAL`
+   liquidation fee and the fairness payment directly from `msg.sender`
+   in both redemption modes. In `AUTO` mode the bot signs the approval; in `MANUAL`
    mode it proposes the approval for the operator to sign.
    Under `flash` funding this step does nothing: the bot never moves its
    own tokens, so it grants no allowances.
@@ -300,8 +300,9 @@ The bot automates monitoring and execution.
   balance to repay positions. Under `flash`, none: `LiquidationRouter`
   borrows the debt token and repays it from the seized collateral in
   the same transaction.
-- **WBTC** — under `inventory`, to cover the fairness payment and, in
-  direct mode, the liquidation fee.
+- **WBTC** — under `inventory`, to cover the liquidation fee and the
+  fairness payment. In LLP mode the payout covers them up to the payout
+  floor, so the bot needs WBTC only for the part above it.
   Under `flash` it is borrowed too.
 - **ETH** — for transaction gas. The only requirement in `flash` mode.
 - **Infrastructure** — reliable RPC access.

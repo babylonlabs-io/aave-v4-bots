@@ -50,7 +50,7 @@ const ZERO_BYTES32 =
 
 const mockReserveId = 0n;
 const mockDebtToCover = 1000000n;
-/** The liquidation fee the preview quotes. The caller pays it only on direct redemption. */
+/** The liquidation fee the preview quotes. The caller pays it on both redemption paths. */
 const mockLiquidationFee = 3000n;
 /** The fairness payment the preview quotes; buffered like the debt before it becomes the cap. */
 const mockFairnessPayment = 5000n;
@@ -777,8 +777,8 @@ describe("LiquidationEngine", () => {
           nonce: 7,
           functionName: "liquidate",
           // The reserve id is passed through unbuffered, since it names a reserve rather than an
-          // amount. The caller pays the liquidation fee on direct redemption, so the cap covers the
-          // fee and the fairness payment.
+          // amount. The caller pays the liquidation fee, so the cap covers the fee and the fairness
+          // payment.
           args: [
             mockPosition.borrower,
             mockReserveId,
@@ -1076,7 +1076,7 @@ describe("LiquidationEngine", () => {
       const bot = createBot(clients, { nonces: passthroughNonces() });
 
       // WBTC approval is unconditional — the adapter pulls WBTC from msg.sender
-      // for fairness + direct-redemption liquidation fee, independent of whether WBTC is a
+      // for the liquidation fee and the fairness payment, independent of whether WBTC is a
       // borrowable debt token on the Spoke.
       await bot.prepare();
       await bot.run();

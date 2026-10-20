@@ -62,8 +62,9 @@ instead of the adapter. The router reads the Lens, borrows the position's debt
 token, calls `liquidateWithLLP` on the bot's behalf with the liquidation fee
 plus the fairness payment as the cap, repays the venues from the seized collateral and sweeps the
 remaining WBTC to its `owner` — which must be this bot's signer. It draws WBTC
-only when there is a fairness payment; when WBTC is itself the debt token, it
-borrows the debt and the fairness payment together through the one WBTC venue.
+when there is a liquidation fee or a fairness payment; when WBTC is itself the
+debt token, it borrows the debt and that WBTC payment together through the one
+WBTC venue.
 
 ## Liquidation Flow
 
