@@ -105,6 +105,7 @@ export const protocolErrorsAbi = [
   },
   { type: "error", name: "InsufficientBorrowAllowance", inputs: [] },
   { type: "error", name: "InsufficientExitBtcForFee", inputs: [] },
+  { type: "error", name: "InsufficientGasForActivation", inputs: [] },
   { type: "error", name: "InsufficientSettlementAmount", inputs: [] },
   {
     type: "error",
