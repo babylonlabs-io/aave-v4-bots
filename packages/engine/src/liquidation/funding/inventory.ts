@@ -10,6 +10,7 @@ import {
   maxUint256,
 } from "viem";
 import { settledOutflows } from "../../shared/outflows";
+import { floorAmount } from "../domain";
 import { type SpokeReserves, repayableTokens, reserveTokens } from "../reserves";
 import type {
   FundedCandidate,
@@ -27,6 +28,12 @@ import type {
  * engine — it was engine state only for as long as this was the only way to fund a liquidation.
  */
 /** Named so the compiler enforces that inventory funding touches only what it needs. */
+/** One `TokenAmount` entry of `liquidateWithLLP`'s `requestedTokens` and `payouts`. */
+interface TokenAmount {
+  token: Address;
+  amount: bigint;
+}
+
 export type InventoryFundingDeps = Pick<
   FundingContext,
   | "publicClient"
@@ -178,7 +185,12 @@ export class InventoryFunding implements LiquidationFunding {
       const result = simulations[i];
       const candidate = candidates[i];
       if (result.status === "fulfilled") {
-        viable.push({ ...candidate, call: this.call(candidate), risk: this.risk(candidate) });
+        const payoutFloor = this.payoutFloor(result.value.result);
+        viable.push({
+          ...candidate,
+          call: this.call(candidate, payoutFloor),
+          risk: this.risk(candidate, payoutFloor),
+        });
       } else {
         metrics.recordSimulationFailed();
         const reason = result.reason;
@@ -201,8 +213,36 @@ export class InventoryFunding implements LiquidationFunding {
     return viable;
   }
 
-  /** The adapter call — the same description simulated above and committed later. */
-  private call(candidate: LiquidationCandidate): ContractCall {
+  /**
+   * The minimum WBTC payout to request from the LLP: the simulated payout less the 1% buffer.
+   *
+   * `liquidateWithLLP` returns `(vaultId, amountCollateral, payouts)`. The LLP pays the payout
+   * before the adapter pulls the liquidation fee and the fairness payment, so the signer can fund
+   * both from it. The call sends this figure as `requestedTokens`, and the LLP reverts with
+   * `InsufficientSettlementAmount` if the payout falls below it. That on-chain bound is what lets
+   * `spendFor` subtract it from the WBTC the gate reserves.
+   *
+   * Undefined on direct redemption, and for any result that is not one payout in WBTC: a request
+   * in another token reverts with `UnsupportedSettlementToken`, so the call then requests nothing
+   * and the gate reserves the full WBTC payment.
+   */
+  private payoutFloor(result: unknown): TokenAmount | undefined {
+    if (this.deps.isDirectRedemption || !Array.isArray(result)) return undefined;
+    const payouts: unknown = result[2];
+    if (!Array.isArray(payouts) || payouts.length !== 1) return undefined;
+    const { token, amount } = (payouts[0] ?? {}) as Partial<TokenAmount>;
+    if (typeof token !== "string" || typeof amount !== "bigint") return undefined;
+    if (token.toLowerCase() !== this.deps.wbtcAddress.toLowerCase()) return undefined;
+    const floor = floorAmount(amount);
+    return floor > 0n ? { token, amount: floor } : undefined;
+  }
+
+  /**
+   * The adapter call. `vet` simulates it without `payoutFloor` to learn the payout, then commits
+   * it with the floor. The floor adds one revert condition, a payout below the floor, and changes
+   * nothing else.
+   */
+  private call(candidate: LiquidationCandidate, payoutFloor?: TokenAmount): ContractCall {
     const { position, debtReserveId, debtToCover, wbtcPayment } = candidate;
     const { adapterAddress, btcRedeemKey, llpAddress, isDirectRedemption } = this.deps;
 
@@ -221,13 +261,20 @@ export class InventoryFunding implements LiquidationFunding {
           address: adapterAddress,
           abi: adapterAbi,
           functionName: "liquidateWithLLP",
-          args: [position.borrower, llpAddress, debtReserveId, debtToCover, wbtcPayment, []],
+          args: [
+            position.borrower,
+            llpAddress,
+            debtReserveId,
+            debtToCover,
+            wbtcPayment,
+            payoutFloor ? [payoutFloor] : [],
+          ],
         };
   }
 
   /**
    * Everything this tx can pull from the signer: the buffered repay amount, in the debt reserve's
-   * token, plus the adapter's WBTC payment. Declared so the arbitrage engine
+   * token, plus the adapter's WBTC payment less the LLP payout floor. Declared so the arbitrage engine
    * sharing this signer cannot commit the same balance to a vault.
    *
    * No `expectedProfit`: liquidation profit is not derivable off-chain on this path. The preview
@@ -236,8 +283,11 @@ export class InventoryFunding implements LiquidationFunding {
    * when it is undefined — which is why a profit floor is rejected outright for an
    * inventory-funded engine.
    */
-  private risk(candidate: LiquidationCandidate): FundedCandidate["risk"] {
-    return { spend: this.spendFor(candidate) };
+  private risk(
+    candidate: LiquidationCandidate,
+    payoutFloor?: TokenAmount
+  ): FundedCandidate["risk"] {
+    return { spend: this.spendFor(candidate, payoutFloor) };
   }
 
   /**
@@ -254,7 +304,7 @@ export class InventoryFunding implements LiquidationFunding {
    * settled outflow becomes a hold the gate keeps until the chain settles it, a wrong one now
    * outlives the cycle that made it.
    */
-  private spendFor(candidate: LiquidationCandidate): TokenSpend[] {
+  private spendFor(candidate: LiquidationCandidate, payoutFloor?: TokenAmount): TokenSpend[] {
     const { wbtcAddress, executor } = this.deps;
     const reserves = this.topology?.reserves;
     if (!reserves) {
@@ -269,7 +319,7 @@ export class InventoryFunding implements LiquidationFunding {
     // entry per token is what the signer actually owes.
     const byToken = new Map<string, TokenSpend>();
     const add = (token: Address, amount: bigint) => {
-      // Zero is the normal case for the WBTC payment — most liquidations owe no fairness payment.
+      // Zero is the normal case for the WBTC payment on the LLP path, where the payout covers it.
       // Declaring one would be worse than noise: the gate checks that it knows a balance *before*
       // it looks at the amount, so a zero entry for a token we hold no balance of blocks every
       // liquidation this bot could otherwise fund.
@@ -297,9 +347,12 @@ export class InventoryFunding implements LiquidationFunding {
     }
     add(reserve.token, candidate.debtToCover);
 
-    // The adapter's liquidation fee and fairness payment are a separate pull
-    // in the adapter's own WBTC, on top of whatever the WBTC reserve is repaid.
-    add(wbtcAddress, candidate.wbtcPayment);
+    // The adapter's liquidation fee and fairness payment are a separate pull in the adapter's own
+    // WBTC, on top of whatever the WBTC reserve is repaid. On the LLP path the payout lands first
+    // and covers them up to `payoutFloor`, which the LLP enforces on-chain. It never covers the
+    // debt: the adapter pulls the debt before the LLP pays.
+    const covered = payoutFloor?.amount ?? 0n;
+    add(wbtcAddress, candidate.wbtcPayment > covered ? candidate.wbtcPayment - covered : 0n);
     return [...byToken.values()];
   }
 }

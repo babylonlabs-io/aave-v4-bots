@@ -35,9 +35,10 @@ against the AaveAdapter contract.
    the adapter pulls both from the caller. `debtToCover` and `wbtcPayment` are bumped by 1%, rounding
    up, to absorb interest accrued between estimate and broadcast.
    `wbtcPayment` is both what the adapter pulls from `msg.sender` and the
-   `maxExitBtcPayment` cap the call carries, so the bot needs sufficient WBTC
-   balance and approval, and a payment that drifts past the buffer reverts
-   on-chain with `ExcessiveExitBtcPayment` rather than being charged.
+   `maxExitBtcPayment` cap the call carries, so the bot needs a WBTC approval,
+   and a payment that drifts past the buffer reverts on-chain with
+   `ExcessiveExitBtcPayment` rather than being charged. The WBTC balance it
+   needs depends on the redemption mode (see step 6).
 5. **Vet** — under `inventory` funding, simulates every candidate against the
    adapter and drops any that revert. Under `flash` funding this is a probe of
    `LiquidationRouter` that also returns the WBTC profit the candidate yields.
@@ -49,10 +50,12 @@ against the AaveAdapter contract.
      The seized vault is redeemed directly to `BTC_REDEEM_KEY`. The bot passes
      the buffered `wbtcPayment` as `maxExitBtcPayment`.
    - default (`false`) →
-     `AaveAdapter.liquidateWithLLP(borrower, LLP_ADDRESS, debtReserveId, debtToCover, maxExitBtcPayment, [])`.
+     `AaveAdapter.liquidateWithLLP(borrower, LLP_ADDRESS, debtReserveId, debtToCover, maxExitBtcPayment, [payoutFloor])`.
      The seized vault is escrowed in the LLP (BTCVaultSwap) for an arbitrageur
-     to acquire later. The empty `requestedTokens` array puts no token or
-     minimum-amount constraint on the LLP, which pays the liquidator WBTC.
+     to acquire later. The LLP pays the liquidator WBTC before the adapter
+     pulls `wbtcPayment`. `payoutFloor` is 99% of the simulated payout, and the
+     LLP reverts with `InsufficientSettlementAmount` below it. The risk gate
+     reserves WBTC only for the part of `wbtcPayment` above the floor.
 
 Under `LIQUIDATION_FUNDING=flash` step 6 targets `LiquidationRouter.liquidate`
 instead of the adapter. The router reads the Lens, borrows the position's debt

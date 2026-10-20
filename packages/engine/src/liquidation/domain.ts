@@ -20,6 +20,18 @@ export function bufferAmount(amount: bigint, bufferBps = 100): bigint {
 }
 
 /**
+ * Deflate one simulated amount by `bufferBps` (default 1%), rounding down.
+ *
+ * The mirror of `bufferAmount` for a figure the bot receives rather than pays: the LLP payout. The
+ * bot sends the result as a minimum the LLP enforces, so ordinary drift between the simulation and
+ * execution passes while a larger drop reverts. Rounded down so the minimum never exceeds the
+ * simulated figure.
+ */
+export function floorAmount(amount: bigint, bufferBps = 100): bigint {
+  return (amount * BigInt(10_000 - bufferBps)) / 10_000n;
+}
+
+/**
  * Aave Spoke `ReserveFlags` bitmap.
  * See lib/tbv-contracts/lib/aave-v4/src/spoke/libraries/ReserveFlagsMap.sol.
  */

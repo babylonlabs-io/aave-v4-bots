@@ -118,15 +118,21 @@ Liquidator      LiquidationPreview          AaveAdapter              Spoke / LLP
    absorb interest accrual between the read and the broadcast.
    `wbtcPayment` is pulled from `msg.sender` by the adapter during
    liquidation and is also passed as `maxExitBtcPayment`, so the bot
-   needs sufficient WBTC balance and approval, and a payment that
-   drifts past the buffer reverts with `ExcessiveExitBtcPayment`.
+   needs a WBTC approval, and a payment that drifts past the buffer
+   reverts with `ExcessiveExitBtcPayment`. In direct mode the bot needs
+   a WBTC balance for all of `wbtcPayment`. In LLP mode the LLP payout
+   lands first, so the bot needs a balance only for the part of
+   `wbtcPayment` above the payout floor (see step 4).
 3. **Simulate** — every candidate is simulated against the adapter; any
    that revert are dropped.
 4. **Execute** — based on `IS_DIRECT_REDEMPTION` config, the bot calls
    either `liquidate(borrower, debtReserveId, debtToCover, wbtcPayment, BTC_REDEEM_KEY)`
-   or `liquidateWithLLP(borrower, LLP_ADDRESS, debtReserveId, debtToCover, wbtcPayment, [])`.
-   The empty `requestedTokens` array on the LLP path means the
-   liquidator does not constrain the payout token.
+   or `liquidateWithLLP(borrower, LLP_ADDRESS, debtReserveId, debtToCover, wbtcPayment, [payoutFloor])`.
+   On the LLP path the simulation returns the WBTC payout. The bot
+   requests 99% of it as `payoutFloor`, and the LLP reverts with
+   `InsufficientSettlementAmount` if the payout falls below that. The
+   risk gate reserves WBTC only for the part of `wbtcPayment` above the
+   floor.
 
 ### Redemption Modes
 

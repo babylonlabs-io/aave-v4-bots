@@ -47,7 +47,15 @@ const reserve = (
 
 type Revoke = (input: { token: Address; spender: Address; label?: string }) => Promise<unknown>;
 
-function build(reserves: SpokeReserve[], opts: { balance?: bigint; revoke?: Revoke } = {}) {
+function build(
+  reserves: SpokeReserve[],
+  opts: {
+    balance?: bigint;
+    revoke?: Revoke;
+    simulated?: unknown;
+    isDirectRedemption?: boolean;
+  } = {}
+) {
   const risk = createRiskGate();
   const topology: SpokeReserves = { spoke: "0xspoke" as Address, reserves };
   const revokeAllowance = vi.fn(opts.revoke ?? (async () => ({ kind: "satisfied" as const })));
@@ -62,7 +70,7 @@ function build(reserves: SpokeReserve[], opts: { balance?: bigint; revoke?: Revo
         throw new Error("not found");
       }),
       readContract: vi.fn(async () => opts.balance ?? 1_000_000_000n),
-      simulateContract: vi.fn(async () => ({ result: true })),
+      simulateContract: vi.fn(async () => ({ result: opts.simulated ?? true })),
     } as unknown as PublicClient,
     risk,
     logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -79,7 +87,7 @@ function build(reserves: SpokeReserve[], opts: { balance?: bigint; revoke?: Revo
     wbtcAddress: WBTC,
     btcRedeemKey: `0x${"0".repeat(64)}`,
     llpAddress: "0xllp",
-    isDirectRedemption: false,
+    isDirectRedemption: opts.isDirectRedemption ?? false,
   } as unknown as ConstructorParameters<typeof InventoryFunding>[0]);
   return { funding, risk, revokeAllowance, ensureAllowance, readReserves };
 }
@@ -206,6 +214,77 @@ describe("InventoryFunding spend attribution", () => {
 });
 
 // A code-hash halt revokes the adapter's allowances; the engine's halted cycle calls this.
+/** What `liquidateWithLLP` returns: `(vaultId, amountCollateral, payouts)`. */
+const llpResult = (payout: bigint, token: Address = WBTC) => [
+  VAULT,
+  1n,
+  [{ token, amount: payout }],
+];
+
+// The LLP pays the liquidator before the adapter pulls the liquidation fee and the fairness
+// payment, so the payout funds them. The bot requests 99% of the simulated payout as a minimum the
+// LLP enforces, and reserves only the WBTC payment above that minimum.
+describe("InventoryFunding LLP payout floor", () => {
+  it("reserves no WBTC when the payout floor covers the WBTC payment", async () => {
+    const { funding, risk } = build([reserve(0, USDC)], { simulated: llpResult(1_000n) });
+
+    const reserved = await reservedFor(funding, risk, candidate(0n, 500n, 40n), [USDC, WBTC]);
+
+    expect(reserved).toEqual({ [USDC]: 500n, [WBTC]: 0n });
+  });
+
+  it("requests the payout floor from the LLP", async () => {
+    const { funding } = build([reserve(0, USDC)], { simulated: llpResult(1_000n) });
+    await funding.refreshInventory();
+
+    const [vetted] = await funding.vet([candidate(0n, 500n, 40n)]);
+
+    expect(vetted.call.args?.[5]).toEqual([{ token: WBTC, amount: 990n }]);
+  });
+
+  it("reserves the WBTC payment above the payout floor", async () => {
+    const { funding, risk } = build([reserve(0, USDC)], { simulated: llpResult(100n) });
+
+    const reserved = await reservedFor(funding, risk, candidate(0n, 500n, 150n), [USDC, WBTC]);
+
+    // Floor 99 of a 150 payment.
+    expect(reserved).toEqual({ [USDC]: 500n, [WBTC]: 51n });
+  });
+
+  // The adapter pulls the debt before the LLP pays, so the payout cannot fund a WBTC repayment.
+  it("does not offset a WBTC repayment with the payout", async () => {
+    const { funding, risk } = build([reserve(0, WBTC)], { simulated: llpResult(1_000n) });
+
+    const reserved = await reservedFor(funding, risk, candidate(0n, 300n, 50n), [WBTC]);
+
+    expect(reserved).toEqual({ [WBTC]: 300n });
+  });
+
+  // A request in a token other than the LLP's exitBTC reverts, so none is sent.
+  it("requests nothing and reserves the full payment for a payout not in WBTC", async () => {
+    const { funding, risk } = build([reserve(0, USDC)], {
+      simulated: llpResult(1_000n, USDT),
+    });
+
+    const reserved = await reservedFor(funding, risk, candidate(0n, 500n, 40n), [USDC, WBTC]);
+    const [vetted] = await funding.vet([candidate(0n, 500n, 40n)]);
+
+    expect(reserved).toEqual({ [USDC]: 500n, [WBTC]: 40n });
+    expect(vetted.call.args?.[5]).toEqual([]);
+  });
+
+  it("ignores the payout on direct redemption", async () => {
+    const { funding, risk } = build([reserve(0, USDC)], {
+      simulated: llpResult(1_000n),
+      isDirectRedemption: true,
+    });
+
+    const reserved = await reservedFor(funding, risk, candidate(0n, 500n, 40n), [USDC, WBTC]);
+
+    expect(reserved).toEqual({ [USDC]: 500n, [WBTC]: 40n });
+  });
+});
+
 describe("InventoryFunding revokeApprovals", () => {
   const revoked = (calls: { token: Address; spender: Address }[]) =>
     calls.map((c) => [c.token, c.spender]);
