@@ -19,6 +19,13 @@ export {
   arbitrageRouterDomain,
 } from "./arbitrageRouter";
 export { type PoolKey, encodePoolKey, poolKeyAbiParameters } from "./uniswapV4";
+export {
+  aaveV3PoolAbi,
+  poolIdOf,
+  uniswapV4SwapVenueAbi,
+  v4QuoterAbi,
+  v4StateViewAbi,
+} from "./flashVenues";
 export { spokeAbi } from "./spoke";
 export { erc20Abi } from "./erc20";
 export { safeAbi, safeExecutionEvents } from "./safe";

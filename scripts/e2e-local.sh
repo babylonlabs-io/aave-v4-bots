@@ -3,7 +3,7 @@
 # Boots dependencies, runs the three forge scripts, tears everything down on exit.
 #
 # Usage:
-#   E2E_FORK_URL=https://sepolia.gateway.tenderly.co scripts/e2e-local.sh   # SUITE=liquidator (needs a fork)
+#   E2E_FORK_URL=https://mainnet.gateway.tenderly.co scripts/e2e-local.sh   # SUITE=liquidator (needs a fork)
 #   SUITE=arbitrageur scripts/e2e-local.sh # run the arbitrageur suite (one bot, both engines)
 #   SUITE=router-arbitrageur scripts/e2e-local.sh # acquisitions funded by a treasury, not the key
 #
@@ -80,7 +80,7 @@ SUITE="${SUITE:-liquidator}"
 if [[ "$SUITE" == "liquidator" && -z "${E2E_FORK_URL:-}" ]]; then
   log_err "SUITE=liquidator needs E2E_FORK_URL: it flash-funds through the real UniswapV4 and"
   log_err "Morpho deployments, which exist only on a fork. For example:"
-  log_err "  E2E_FORK_URL=https://sepolia.gateway.tenderly.co SUITE=liquidator scripts/e2e-local.sh"
+  log_err "  E2E_FORK_URL=https://mainnet.gateway.tenderly.co SUITE=liquidator scripts/e2e-local.sh"
   log_err "The inventory-funded path is covered by SUITE=arbitrageur, which needs no fork."
   exit 1
 fi
@@ -391,7 +391,7 @@ else
     # measured at 45s cold vs 1.6s warm on the fork suite. An unpinned fork resolves to `latest`,
     # which differs every run, so the cache never hits and CI pays the full fetch each time.
     # Shared with the fork tests (test/fork/base/TestSuites.sol) so both warm the same cache entry.
-    : "${E2E_FORK_BLOCK:=11141103}"
+    : "${E2E_FORK_BLOCK:=25982687}"
     ANVIL_FORK_ARGS=(--fork-url "$E2E_FORK_URL" --chain-id 31337 --fork-block-number "$E2E_FORK_BLOCK")
     log_warn "fork mode: $E2E_FORK_URL @ $E2E_FORK_BLOCK (chain id pinned to 31337)"
   fi
