@@ -93,7 +93,8 @@ abstract contract BaseE2ESetup is Script, BaseE2E {
 
         // What the liquidation will actually cost, read before any bot can act on it. The fairness
         // payment is the value left over once the seized vault has cleared the debt, and it is the
-        // only thing that draws on the WBTC flash-loan venue. The LLP pays the liquidation fee.
+        // only thing that draws on the WBTC flash-loan venue. The liquidator pays the liquidation fee
+        // out of the LLP payout.
         (uint256 debtReserveId, uint256 debtToCover, uint256 exitBtcFee, uint256 fairnessPayment,,) =
             lens.estimateLiquidation(borrowerProxy);
         console.log("  reserve", debtReserveId, "repay:", debtToCover);

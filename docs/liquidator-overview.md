@@ -37,8 +37,10 @@ stale is refused rather than charged.
   Liquidity Provider (in this integration: BTCVaultSwap). The LLP draws
   WBTC from the Aave Hub at a sell discount and pays it to the
   liquidator immediately, leaving the vault escrowed for an arbitrageur
-  to acquire later. The LLP pays the liquidation fee out of its Hub
-  draw; the caller pays only the fairness payment.
+  to acquire later. The caller pays the liquidation fee and the
+  fairness payment, as on the direct path; the adapter pulls the fee
+  after the LLP has paid out, so the caller can fund it from that
+  payout.
 
 This dual path is what makes liquidation permissionless even though
 redeeming a BTC vault is not. Liquidators who are not registered BTC
@@ -73,8 +75,8 @@ The LLP and the adapter call the WBTC token exitBTC.
   exitBtcFairnessPayment, vaultId, amountCollateralToSeize)` inputs
   needed for a liquidation call. `exitBtcFee` is the liquidation fee
   and `exitBtcFairnessPayment` is the fairness top-up, both in WBTC. A
-  caller of `liquidate` passes their sum as `maxExitBtcPayment`; a
-  caller of `liquidateWithLLP` passes `exitBtcFairnessPayment` alone.
+  caller of `liquidate` or `liquidateWithLLP` passes their sum as
+  `maxExitBtcPayment`.
 - **BTCVaultSwap** — the LLP. Pays the liquidator WBTC at a sell
   discount when called by the adapter, holds the vault in escrow, and
   later accepts WBTC from a registered arbitrageur to release the
@@ -114,7 +116,7 @@ Liquidator      LiquidationPreview          AaveAdapter              Spoke / LLP
 2. **Estimate Inputs** — the Lens returns
    `(uint256 debtReserveId, uint256 debtToCover, uint256 exitBtcFee, uint256 exitBtcFairnessPayment, bytes32 vaultId, uint256 amountCollateralToSeize)`.
    The bot computes `wbtcPayment` as `exitBtcFee + exitBtcFairnessPayment`
-   in direct mode and as `exitBtcFairnessPayment` alone in LLP mode. It
+   in both modes. It
    inflates `debtToCover` and `wbtcPayment` by 1%, rounding up, to
    absorb interest accrual between the read and the broadcast.
    `wbtcPayment` is pulled from `msg.sender` by the adapter during
@@ -217,8 +219,8 @@ The bot automates monitoring and execution.
 2. **Approve** — under `inventory` funding, ensures `MAX_UINT256`
    allowance on every token a borrower can owe and on WBTC for the
    AaveAdapter. WBTC approval is required because the adapter pulls the
-   fairness payment and, in direct-redemption mode, the liquidation fee
-   directly from `msg.sender`. In `AUTO` mode the bot signs the approval; in `MANUAL`
+   fairness payment and the liquidation fee directly from `msg.sender`
+   (on the LLP path, after settlement, so the LLP payout can fund the fee). In `AUTO` mode the bot signs the approval; in `MANUAL`
    mode it proposes the approval for the operator to sign.
    Under `flash` funding this step does nothing: the bot never moves its
    own tokens, so it grants no allowances.
@@ -296,7 +298,8 @@ The bot automates monitoring and execution.
   borrows the debt token and repays it from the seized collateral in
   the same transaction.
 - **WBTC** — under `inventory`, to cover the fairness payment and, in
-  direct mode, the liquidation fee.
+  direct mode, the liquidation fee. On the LLP path the fee is paid from
+  the LLP payout received in the same transaction.
   Under `flash` it is borrowed too.
 - **ETH** — for transaction gas. The only requirement in `flash` mode.
 - **Infrastructure** — reliable RPC access.
@@ -312,7 +315,7 @@ The bot automates monitoring and execution.
 // debt to cover on reserve `debtReserveId`.
 // `exitBtcFee` is the liquidation fee and `exitBtcFairnessPayment` the
 // fairness payment, both in exitBTC. Pass their sum as `maxExitBtcPayment`
-// to `liquidate()`, and `exitBtcFairnessPayment` alone to `liquidateWithLLP()`.
+// to `liquidate()` and `liquidateWithLLP()`.
 // `vaultId` is the head vault the liquidation will seize, holding
 // `amountCollateralToSeize` satoshis.
 function estimateLiquidation(address borrowerProxy)
@@ -346,9 +349,9 @@ function liquidate(
 ) external returns (bytes32 vaultIdLiquidated, uint256 amountCollateralLiquidated);
 
 // LLP-mediated path. Requires llp != address(0). Applies no minimum on the
-// seized vault's BTC amount. The LLP pays the liquidation fee, so
-// `maxExitBtcPayment` caps the fairness payment alone; reverts with
-// ExcessiveExitBtcPayment if exceeded.
+// seized vault's BTC amount. The adapter pulls the liquidation fee from the
+// caller after LLP settlement, so `maxExitBtcPayment` caps the fairness
+// payment plus the fee; reverts with ExcessiveExitBtcPayment if exceeded.
 function liquidateWithLLP(
     address borrower,
     address llp,
