@@ -80,6 +80,7 @@ library Types {
         uint256 debtReserveId;
         uint256 debtToCover;
         uint256 wbtcPayment;
+        uint256 exitBtcFee;
 
         address debtToken;
     }

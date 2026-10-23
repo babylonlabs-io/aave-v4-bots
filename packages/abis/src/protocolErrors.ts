@@ -104,7 +104,6 @@ export const protocolErrorsAbi = [
     ],
   },
   { type: "error", name: "InsufficientBorrowAllowance", inputs: [] },
-  { type: "error", name: "InsufficientExitBtcForFee", inputs: [] },
   { type: "error", name: "InsufficientGasForActivation", inputs: [] },
   { type: "error", name: "InsufficientSettlementAmount", inputs: [] },
   {
@@ -246,7 +245,6 @@ export const protocolErrorsAbi = [
   { type: "error", name: "TBV_Unauthorized", inputs: [] },
   { type: "error", name: "Unauthorized", inputs: [] },
   { type: "error", name: "UnauthorizedVaultKeeper", inputs: [] },
-  { type: "error", name: "UnsupportedFeeToken", inputs: [] },
   { type: "error", name: "UnsupportedSettlementToken", inputs: [] },
   { type: "error", name: "UUPSUnauthorizedCallContext", inputs: [] },
   {

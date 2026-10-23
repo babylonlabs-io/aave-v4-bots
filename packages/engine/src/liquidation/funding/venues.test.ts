@@ -51,7 +51,7 @@ describe("buildFlashDatas", () => {
   });
 
   it("appends a WBTC flash loan when a fairness payment is owed", () => {
-    // The router adds `wbtcPayment` to the WBTC borrow, so the fairness payment rides this entry
+    // The router adds `fairnessPayment` to the WBTC borrow, so the fairness payment rides this entry
     // rather than needing one of its own.
     const flashDatas = buildFlashDatas([USDC], 500n, registry());
 

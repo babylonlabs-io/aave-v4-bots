@@ -58,7 +58,7 @@ contract LiquidationE2ESetup is BaseE2ESetup, FlashVenueSetup {
         _saveInitialBalances();
 
         // A gentler drop than the arbitrageur suite's 40%. Deep underwater leaves nothing over after
-        // the debt is cleared, and it is exactly that leftover the LLP pays the borrower as the
+        // the debt is cleared, and it is exactly that leftover the liquidator pays the borrower as the
         // fairness payment — the one thing that draws on the WBTC flash-loan venue.
         (address borrower,) = _setupLiquidatablePosition(lens, _envDropPercent());
 

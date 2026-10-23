@@ -15,9 +15,9 @@ library Types {
     /// @param borrowValueUsd Debt to take against it, in whole USD, all in USDC.
     /// @param dropPercent Percentage the vaultBTC price drops afterwards, pushing health under 1.
     /// @param hasFairnessPayment Whether seizing the vault is expected to leave excess collateral
-    ///        value, which the LLP pays out as a WBTC fairness payment. Asserted, not assumed: it is
-    ///        the only thing that draws on the WBTC flash venue, so a scenario that quietly stopped
-    ///        producing one would leave that venue untested while still passing.
+    ///        value, which the liquidator pays the borrower as a WBTC fairness payment. Asserted, not
+    ///        assumed: it is the only thing that draws on the WBTC flash venue, so a scenario that
+    ///        quietly stopped producing one would leave that venue untested while still passing.
     struct LiquidationScenario {
         string network;
         uint256 blockNumber;
