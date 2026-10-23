@@ -5,7 +5,7 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {LiquidationRouter, Types} from "../../contracts/LiquidationRouter.sol";
+import {LiquidationRouter, Types, TokenAmountLib} from "../../contracts/LiquidationRouter.sol";
 
 contract TestToken is ERC20 {
     constructor() ERC20("Test", "TST") {}
@@ -29,6 +29,16 @@ contract VaultSwapStub {
 
     constructor(address _exitBtc) {
         EXIT_BTC = _exitBtc;
+    }
+}
+
+contract AdapterStub {
+    function liquidateWithLLP(address, address, uint256, uint256, uint256, TokenAmountLib.TokenAmount[] calldata)
+        external
+        pure
+        returns (bytes32, uint256, TokenAmountLib.TokenAmount[] memory)
+    {
+        return (bytes32(0), 0, new TokenAmountLib.TokenAmount[](0));
     }
 }
 
@@ -70,6 +80,10 @@ contract LiquidationRouterHarness is LiquidationRouter {
         _approveForAdapter(iteration, iteration.debtToken);
     }
 
+    function runLiquidationPhase(Types.LiquidationIteration memory iteration) external {
+        _executeLiquidationPhase(iteration);
+    }
+
     function revokeApprovalForAdapter(Types.LiquidationIteration memory iteration) external {
         _revokeApprovalForAdapter(iteration.debtToken);
     }
@@ -99,6 +113,15 @@ contract LiquidationRouterTest is Test {
         iteration.debtToken = debtToken;
         iteration.debtToCover = debtToCover;
         iteration.wbtcPayment = wbtcPayment;
+    }
+
+    function _iterationWithFee(address debtToken, uint256 debtToCover, uint256 wbtcPayment, uint256 exitBtcFee)
+        internal
+        pure
+        returns (Types.LiquidationIteration memory iteration)
+    {
+        iteration = _iteration(debtToken, debtToCover, wbtcPayment);
+        iteration.exitBtcFee = exitBtcFee;
     }
 
     /// @dev A Setup-phase iteration over two UniswapV4 venues, the first for `token`.
@@ -168,6 +191,63 @@ contract LiquidationRouterTest is Test {
         assertEq(wbtc.allowance(address(router), adapter), 23);
 
         router.revokeApprovalForAdapter(iteration);
+        assertEq(wbtc.allowance(address(router), adapter), 0);
+    }
+
+    function test_paymentIn_excludesTheLiquidationFee() public view {
+        Types.LiquidationIteration memory iteration = _iterationWithFee(address(wbtc), 20, 3, 5);
+        assertEq(router.paymentIn(iteration, address(wbtc)), 23);
+    }
+
+    function test_approveForAdapter_approvesWbtcForFairnessPaymentPlusFee() public {
+        Types.LiquidationIteration memory iteration = _iterationWithFee(address(usdc), 20, 3, 5);
+
+        vm.expectCall(address(usdc), abi.encodeCall(IERC20.approve, (adapter, 20)), 1);
+        vm.expectCall(address(wbtc), abi.encodeCall(IERC20.approve, (adapter, 8)), 1);
+        router.approveForAdapter(iteration);
+
+        assertEq(usdc.allowance(address(router), adapter), 20);
+        assertEq(wbtc.allowance(address(router), adapter), 8);
+
+        router.revokeApprovalForAdapter(iteration);
+        assertEq(wbtc.allowance(address(router), adapter), 0);
+    }
+
+    function test_approveForAdapter_approvesWbtcForFeeAloneWhenThereIsNoFairnessPayment() public {
+        Types.LiquidationIteration memory iteration = _iterationWithFee(address(usdc), 20, 0, 5);
+
+        router.approveForAdapter(iteration);
+
+        assertEq(wbtc.allowance(address(router), adapter), 5);
+    }
+
+    function test_approveForAdapter_approvesWbtcOnceForDebtFairnessAndFeeWhenTheDebtIsWbtc() public {
+        Types.LiquidationIteration memory iteration = _iterationWithFee(address(wbtc), 20, 3, 5);
+
+        vm.expectCall(address(wbtc), abi.encodeCall(IERC20.approve, (adapter, 28)), 1);
+        router.approveForAdapter(iteration);
+
+        assertEq(wbtc.allowance(address(router), adapter), 28);
+    }
+
+    function test_liquidationPhase_capsLiquidateWithLLPAtFairnessPlusFee() public {
+        vm.etch(adapter, address(new AdapterStub()).code);
+        address borrower = address(0xB0B);
+        address llp = address(router.btcVaultSwap());
+        Types.LiquidationIteration memory iteration = _iterationWithFee(address(usdc), 20, 3, 5);
+        iteration.liquidationData.borrower = borrower;
+        iteration.debtReserveId = 1;
+
+        vm.expectCall(
+            adapter,
+            abi.encodeCall(
+                AdapterStub.liquidateWithLLP, (borrower, llp, 1, 20, 8, new TokenAmountLib.TokenAmount[](0))
+            ),
+            1
+        );
+        router.runLiquidationPhase(iteration);
+
+        assertEq(usdc.allowance(address(router), adapter), 0);
         assertEq(wbtc.allowance(address(router), adapter), 0);
     }
 }

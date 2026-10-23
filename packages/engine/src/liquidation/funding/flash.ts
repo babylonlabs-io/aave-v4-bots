@@ -225,7 +225,7 @@ export class FlashFunding implements LiquidationFunding {
     // From the venue registry, never from the Lens indexing: the two disagree about what the
     // amounts array is indexed by. The router skips whatever owes nothing.
     return {
-      flashDatas: buildFlashDatas(allFundableTokens(venues), candidate.wbtcPayment, venues),
+      flashDatas: buildFlashDatas(allFundableTokens(venues), candidate.fairnessPayment, venues),
       legs: [],
     };
   }

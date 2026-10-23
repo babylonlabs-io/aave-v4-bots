@@ -104,12 +104,12 @@ export function assertRegistryValid(registry: VenueRegistry): void {
  * @param owedTokens Tokens with a non-zero debt. The router recomputes the amounts itself, so only
  *        the identity of each token matters here — but an entry for a token owing nothing is
  *        skipped on-chain, and an entry for a token owing something that we omit is unfunded.
- * @param wbtcPayment The LLP fairness payment, which the router adds to the WBTC borrow.
+ * @param fairnessPayment The fairness payment, which the router adds to the WBTC borrow.
  * @throws VenueSelectionError if the request cannot be funded with empty `swapDatas`.
  */
 export function buildFlashDatas(
   owedTokens: readonly Address[],
-  wbtcPayment: bigint,
+  fairnessPayment: bigint,
   registry: VenueRegistry
 ): FlashData[] {
   const { wbtc } = registry;
@@ -126,7 +126,7 @@ export function buildFlashDatas(
     seen.add(key);
   }
 
-  const needsWbtc = wbtcPayment > 0n || owedTokens.some((t) => eq(t, wbtc));
+  const needsWbtc = fairnessPayment > 0n || owedTokens.some((t) => eq(t, wbtc));
 
   const flashDatas: FlashData[] = [];
 

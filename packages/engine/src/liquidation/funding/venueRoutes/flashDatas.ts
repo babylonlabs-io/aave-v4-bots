@@ -66,8 +66,9 @@ export function buildRankedFlashDatas(
     chosen.set(key, leg.source);
   }
 
-  // I4 — the router approves the adapter for the fairness payment whether or not a WBTC venue is
-  // present, so a route without one does not revert: it spends whatever WBTC the router holds.
+  // I4 — the router approves the adapter for the fairness payment and the liquidation fee whether
+  // or not a WBTC venue is present, so a route without one does not revert: it spends whatever WBTC
+  // the router holds.
   const wbtcSource = chosen.get(wbtcKey);
   if (wbtcSource === undefined) {
     throw new VenueSelectionError("I4", "no WBTC flash-loan venue configured");

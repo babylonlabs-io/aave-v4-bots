@@ -432,7 +432,7 @@ Set `DATABASE_SCHEMA` only if you manage schemas yourself. Then give each upgrad
 |-------|---------|
 | ETH | Gas |
 | Debt tokens | Repay borrower debt. A position larger than the balance is skipped |
-| WBTC | Fairness payment, and the liquidation fee in direct mode |
+| WBTC | Fairness payment, and the liquidation fee in direct mode. Through the LLP the fee is paid from the payout |
 
 **`flash`**
 

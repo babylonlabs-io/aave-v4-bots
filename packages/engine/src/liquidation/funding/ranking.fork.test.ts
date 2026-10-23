@@ -88,6 +88,7 @@ const candidate = (usdc: bigint) =>
     debtToCover: usdc,
     vaultId: `0x${"0".repeat(64)}`,
     wbtcPayment: 1_000_000n,
+    fairnessPayment: 1_000_000n,
   }) as unknown as LiquidationCandidate;
 
 function freePort(): Promise<number> {

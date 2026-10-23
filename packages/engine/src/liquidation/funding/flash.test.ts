@@ -58,6 +58,7 @@ const candidate = (proxy: string, over: Partial<LiquidationCandidate> = {}) =>
     debtToCover: 1_000n,
     vaultId: `0x${"0".repeat(64)}`,
     wbtcPayment: 50n,
+    fairnessPayment: 50n,
     ...over,
   }) as LiquidationCandidate;
 

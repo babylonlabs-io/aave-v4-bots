@@ -20,7 +20,7 @@ const topology = (...tokens: Address[]): SpokeReserves => ({
 describe("sizeOwedLegs", () => {
   it("resolves the debt through its reserve id", () => {
     const legs = sizeOwedLegs(
-      { debtReserveId: 2n, debtToCover: 300n, wbtcPayment: 0n },
+      { debtReserveId: 2n, debtToCover: 300n, fairnessPayment: 0n },
       topology(USDT, WBTC, USDC),
       WBTC
     );
@@ -31,7 +31,7 @@ describe("sizeOwedLegs", () => {
   it("maps by id when a non-borrowable reserve sorts before a borrowable one", () => {
     // A position-based mapping over the borrowable reserves would name USDT's token for USDC's id.
     const legs = sizeOwedLegs(
-      { debtReserveId: 1n, debtToCover: 500n, wbtcPayment: 0n },
+      { debtReserveId: 1n, debtToCover: 500n, fairnessPayment: 0n },
       topology(VBTC, USDC, USDT),
       WBTC
     );
@@ -41,7 +41,7 @@ describe("sizeOwedLegs", () => {
 
   it("adds the fairness payment to a WBTC debt in one leg", () => {
     const legs = sizeOwedLegs(
-      { debtReserveId: 1n, debtToCover: 40n, wbtcPayment: 7n },
+      { debtReserveId: 1n, debtToCover: 40n, fairnessPayment: 7n },
       topology(USDC, WBTC),
       WBTC
     );
@@ -51,7 +51,7 @@ describe("sizeOwedLegs", () => {
 
   it("puts the debt leg first and the fairness payment's WBTC leg last", () => {
     const legs = sizeOwedLegs(
-      { debtReserveId: 0n, debtToCover: 100n, wbtcPayment: 9n },
+      { debtReserveId: 0n, debtToCover: 100n, fairnessPayment: 9n },
       topology(USDC, WBTC),
       WBTC
     );
@@ -67,7 +67,7 @@ describe("sizeOwedLegs", () => {
 
   it("owes a WBTC leg for a fairness payment alone", () => {
     const legs = sizeOwedLegs(
-      { debtReserveId: 0n, debtToCover: 0n, wbtcPayment: 9n },
+      { debtReserveId: 0n, debtToCover: 0n, fairnessPayment: 9n },
       topology(USDC, WBTC),
       WBTC
     );
@@ -77,7 +77,7 @@ describe("sizeOwedLegs", () => {
 
   it("compares the WBTC address case-insensitively", () => {
     const legs = sizeOwedLegs(
-      { debtReserveId: 0n, debtToCover: 100n, wbtcPayment: 0n },
+      { debtReserveId: 0n, debtToCover: 100n, fairnessPayment: 0n },
       topology(WBTC),
       WBTC.toLowerCase() as Address
     );
@@ -87,7 +87,7 @@ describe("sizeOwedLegs", () => {
 
   it("sizes a token listed under two reserve ids from the later id", () => {
     const legs = sizeOwedLegs(
-      { debtReserveId: 2n, debtToCover: 50n, wbtcPayment: 0n },
+      { debtReserveId: 2n, debtToCover: 50n, fairnessPayment: 0n },
       topology(USDC, WBTC, USDC),
       WBTC
     );
@@ -97,7 +97,7 @@ describe("sizeOwedLegs", () => {
 
   it("skips a candidate with nothing to borrow", () => {
     const legs = sizeOwedLegs(
-      { debtReserveId: 0n, debtToCover: 0n, wbtcPayment: 0n },
+      { debtReserveId: 0n, debtToCover: 0n, fairnessPayment: 0n },
       topology(USDC),
       WBTC
     );
@@ -109,16 +109,28 @@ describe("sizeOwedLegs", () => {
     // The candidate and the topology were read against different Spokes; nothing sized from them
     // is trustworthy, so this is a malfunction rather than a skip.
     expect(() =>
-      sizeOwedLegs({ debtReserveId: 5n, debtToCover: 1n, wbtcPayment: 0n }, topology(USDC), WBTC)
+      sizeOwedLegs(
+        { debtReserveId: 5n, debtToCover: 1n, fairnessPayment: 0n },
+        topology(USDC),
+        WBTC
+      )
     ).toThrow(/reserve id 5/);
   });
 
   it("throws on a negative amount or fairness payment instead of dropping it", () => {
     expect(() =>
-      sizeOwedLegs({ debtReserveId: 0n, debtToCover: -1n, wbtcPayment: 0n }, topology(USDC), WBTC)
+      sizeOwedLegs(
+        { debtReserveId: 0n, debtToCover: -1n, fairnessPayment: 0n },
+        topology(USDC),
+        WBTC
+      )
     ).toThrow(/must not be negative/);
     expect(() =>
-      sizeOwedLegs({ debtReserveId: 0n, debtToCover: 1n, wbtcPayment: -1n }, topology(USDC), WBTC)
+      sizeOwedLegs(
+        { debtReserveId: 0n, debtToCover: 1n, fairnessPayment: -1n },
+        topology(USDC),
+        WBTC
+      )
     ).toThrow(/must not be negative/);
   });
 });

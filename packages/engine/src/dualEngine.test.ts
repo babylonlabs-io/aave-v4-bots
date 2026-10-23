@@ -323,8 +323,8 @@ describe("dual-engine shared risk gate", () => {
     const liquidation = declared.find((a) => a.kind === "liquidation");
     const acquisition = declared.find((a) => a.kind === "vault-acquisition");
 
-    // Every debt repayment plus the adapter's WBTC pull, both at the 1% buffered figure the call
-    // actually carries — the debt as `debtToCover`, the payment as `maxExitBtcPayment`.
+    // Every debt repayment plus the adapter's WBTC pull, at the 1% buffered figure the call
+    // carries. The fixture's liquidation fee is zero, so the LLP-path spend is the fairness payment.
     // Asserted exactly: a length check cannot tell a missing WBTC entry from a present one, and
     // that entry is what stops this liquidation and the acquisition below double-spending WBTC.
     expect(liquidation?.spend).toEqual([

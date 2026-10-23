@@ -86,7 +86,6 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
   /** The Spoke's reserves in id order. Undefined until `prepare()` reads them. */
   private reserveTopology?: SpokeReserves;
   private wbtcAddress: Address;
-  private isDirectRedemption: boolean;
   private txReceiptTimeoutMs: number;
   /** How repayment is funded — the seam that decides the call, the risk declaration and the setup. */
   private funding: LiquidationFunding;
@@ -98,7 +97,6 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
     this.adapterAddress = config.adapterAddress;
     this.lensAddress = config.lensAddress;
     this.wbtcAddress = config.wbtcAddress;
-    this.isDirectRedemption = config.isDirectRedemption;
     this.txReceiptTimeoutMs = config.txReceiptTimeoutMs;
     // The config already carries every collaborator a strategy needs, so it is spread in rather
     // than re-listed field by field. Only these two cannot come from it: the debt-token list is
@@ -342,22 +340,18 @@ export class LiquidationEngine extends BaseEngine<LiquidationMetrics> {
 
       if (result.status === "fulfilled") {
         const [debtReserveId, debtToCover, liquidationFee, fairnessPayment, vaultId] = result.value;
-        // The caller pays the liquidation fee only on direct redemption; through the LLP, the LLP
-        // pays it out of the vault's value.
-        const wbtcPayment = this.isDirectRedemption
-          ? liquidationFee + fairnessPayment
-          : fairnessPayment;
+        // The caller pays the liquidation fee on both paths.
+        const wbtcPayment = liquidationFee + fairnessPayment;
         // Buffer every figure (default 1%) to cover interest accrual between the Lens read and
         // execution. `wbtcPayment` is pulled from msg.sender by the adapter on top of the debt,
         // and it is also the `maxExitBtcPayment` cap the call carries — so it is buffered on the
-        // same grounds as the debt rather than left bare, and declared at the buffered figure to
-        // the risk gate, which reserves it against the WBTC the arbitrage engine is spending from
-        // the same signer.
+        // same grounds as the debt rather than left bare.
         candidates.push({
           position: pos,
           debtReserveId,
           debtToCover: bufferAmount(debtToCover),
           wbtcPayment: bufferAmount(wbtcPayment),
+          fairnessPayment: bufferAmount(fairnessPayment),
           vaultId,
         });
       } else {

@@ -118,8 +118,8 @@ export function createVenueSources(
     parsedEntries.push(parsed);
   }
 
-  // I4 — the router approves the adapter for the fairness payment whether or not a WBTC venue is
-  // present, so a route without one spends whatever WBTC the router holds.
+  // I4 — the router approves the adapter for the fairness payment and the liquidation fee whether
+  // or not a WBTC venue is present, so a route without one spends whatever WBTC the router holds.
   if (!byToken.has(wbtc)) {
     throw new VenueSelectionError("I4", "FLASH_VENUES configures no WBTC flash-loan venue");
   }

@@ -25,13 +25,13 @@ export type OwedLegs = { kind: "sized"; legs: OwedLeg[] } | { kind: "skip"; reas
  *         figure: a real preview produces none, so it means the candidate was built wrong.
  */
 export function sizeOwedLegs(
-  candidate: Pick<LiquidationCandidate, "debtReserveId" | "debtToCover" | "wbtcPayment">,
+  candidate: Pick<LiquidationCandidate, "debtReserveId" | "debtToCover" | "fairnessPayment">,
   topology: SpokeReserves,
   wbtc: Address
 ): OwedLegs {
-  const { debtReserveId: id, debtToCover, wbtcPayment } = candidate;
-  if (wbtcPayment < 0n) {
-    throw new Error(`fairness payment must not be negative, got ${wbtcPayment}`);
+  const { debtReserveId: id, debtToCover, fairnessPayment } = candidate;
+  if (fairnessPayment < 0n) {
+    throw new Error(`fairness payment must not be negative, got ${fairnessPayment}`);
   }
   if (debtToCover < 0n) {
     throw new Error(`amount for reserve id ${id} must not be negative, got ${debtToCover}`);
@@ -47,7 +47,7 @@ export function sizeOwedLegs(
   const token = getAddress(reserve.token);
 
   const legs: OwedLeg[] = [];
-  let wbtcAmount = wbtcPayment;
+  let wbtcAmount = fairnessPayment;
   if (token === wbtcKey) wbtcAmount += debtToCover;
   else if (debtToCover > 0n) legs.push({ token, amount: debtToCover });
   if (wbtcAmount > 0n) legs.push({ token: wbtcKey, amount: wbtcAmount });
