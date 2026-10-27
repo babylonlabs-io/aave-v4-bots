@@ -50,7 +50,7 @@
     "tsx": "catalog:"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.15"
   },
   "packageManager": "pnpm@10.34.9",
   "pnpm": {

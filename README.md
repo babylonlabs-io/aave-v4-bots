@@ -382,7 +382,7 @@ Assertions and timings are written to `.e2e-stress-report.json`; bot logs land i
 
 ## Requirements
 
-- Node.js >= 20
+- Node.js >= 22.15
 - pnpm 10.34.9+
 - Docker (for containerized deployment)
 
