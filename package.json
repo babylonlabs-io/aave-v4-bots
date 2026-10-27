@@ -72,7 +72,8 @@
       "source-map-js": "^1.2.2",
       "kysely": "0.28.18",
       "drizzle-orm": "0.45.4",
-      "@graphql-tools/utils": "12.1.0"
+      "@graphql-tools/utils": "12.1.0",
+      "zod": "^4.6.7"
     }
   }
 }
