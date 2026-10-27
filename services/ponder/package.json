@@ -16,10 +16,10 @@
     "@repo/secrets": "workspace:*",
     "hono": "^4.13.14",
     "ponder": "^0.13.6",
-    "viem": "^2.37.0"
+    "viem": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^22.13.14",
-    "typescript": "^5.7.3"
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
   }
 }
