@@ -69,7 +69,7 @@ Ethereum RPC ──┬──▶ Ponder Indexer ──▶ /liquidatable-positions
 ### 4.1. Prerequisites
 
 - Node.js 20 or 22 (the Docker images use 22)
-- pnpm 9.13.2
+- pnpm 10.34.9
 - PostgreSQL 17
 - Foundry, only to deploy the router (flash funding)
 

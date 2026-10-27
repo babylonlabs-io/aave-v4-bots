@@ -52,8 +52,9 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@9.13.2",
+  "packageManager": "pnpm@10.34.9",
   "pnpm": {
+    "onlyBuiltDependencies": ["@biomejs/biome", "esbuild"],
     "overrides": {
       "esbuild": "0.28.2",
       "ws": "^8.21.0",

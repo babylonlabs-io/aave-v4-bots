@@ -31,7 +31,7 @@
 #   export E2E_ARB_ADDRESS=0x…             # the KMS key's derived address (gets funded)
 #   SUITE=arbitrageur scripts/e2e-local.sh
 #
-# Requires: foundry, node 20, pnpm 9, docker, postgresql-client (psql), python3.
+# Requires: foundry, node 22, pnpm 10, docker, postgresql-client (psql), python3.
 # Python `base58` and `coincurve` are installed automatically in a venv at
 # .venv-e2e/. Run once-per-clone:
 #     git submodule update --init --recursive

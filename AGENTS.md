@@ -4,7 +4,7 @@ This file provides guidance any agent when working with code in this repository.
 
 ## Commands
 
-pnpm workspace (pnpm 9.13.2). `packages/*` + `services/*`.
+pnpm workspace (pnpm 10.34.9). `packages/*` + `services/*`.
 
 ```bash
 pnpm install
