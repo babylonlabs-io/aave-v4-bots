@@ -4,7 +4,9 @@ This file provides guidance any agent when working with code in this repository.
 
 ## Commands
 
-pnpm workspace (pnpm 10.34.9). `packages/*` + `services/*`.
+pnpm workspace (pnpm 10.34.9). `packages/*` + `services/*`. A dependency used by more than one
+package takes its version from the `catalog:` in `pnpm-workspace.yaml` (`"viem": "catalog:"`); bump
+it there.
 
 ```bash
 pnpm install

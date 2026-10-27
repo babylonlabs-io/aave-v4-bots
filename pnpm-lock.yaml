@@ -4,6 +4,36 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@types/node':
+      specifier: ^22.13.14
+      version: 22.19.2
+    '@types/pg':
+      specifier: ^8.15.0
+      version: 8.20.0
+    dotenv:
+      specifier: ^16.5.0
+      version: 16.6.1
+    pg:
+      specifier: ^8.16.0
+      version: 8.16.3
+    prom-client:
+      specifier: ^15.1.3
+      version: 15.1.3
+    tsx:
+      specifier: ^4.19.3
+      version: 4.21.0
+    typescript:
+      specifier: ^5.7.3
+      version: 5.9.3
+    viem:
+      specifier: ^2.37.0
+      version: 2.41.2
+    vitest:
+      specifier: ^4.1.12
+      version: 4.1.12
+
 overrides:
   esbuild: 0.28.2
   ws: ^8.21.0
@@ -33,29 +63,29 @@ importers:
         specifier: ^1.9.0
         version: 1.9.4
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       tsx:
-        specifier: ^4.19.3
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/abis:
     dependencies:
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/chain:
@@ -67,17 +97,17 @@ importers:
         specifier: workspace:*
         version: link:../logger
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/config:
@@ -102,13 +132,13 @@ importers:
         specifier: workspace:*
         version: link:../secrets
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/engine:
@@ -135,23 +165,23 @@ importers:
         specifier: workspace:*
         version: link:../risk
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       '@types/pg':
-        specifier: ^8.15.0
+        specifier: 'catalog:'
         version: 8.20.0
       pg:
-        specifier: ^8.16.0
+        specifier: 'catalog:'
         version: 8.16.3
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/execution:
@@ -163,29 +193,29 @@ importers:
         specifier: workspace:*
         version: link:../logger
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/logger:
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/notifications:
@@ -195,13 +225,13 @@ importers:
         version: link:../logger
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/observability:
@@ -210,60 +240,60 @@ importers:
         specifier: workspace:*
         version: link:../logger
       prom-client:
-        specifier: ^15.1.3
+        specifier: 'catalog:'
         version: 15.1.3
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@repo/engine':
         specifier: workspace:*
         version: link:../engine
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/persistence:
     dependencies:
       pg:
-        specifier: ^8.16.0
+        specifier: 'catalog:'
         version: 8.16.3
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@repo/execution':
         specifier: workspace:*
         version: link:../execution
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       '@types/pg':
-        specifier: ^8.15.0
+        specifier: 'catalog:'
         version: 8.20.0
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/risk:
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/runtime:
@@ -305,14 +335,14 @@ importers:
         specifier: workspace:*
         version: link:../signer
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
 
   packages/secrets:
@@ -322,13 +352,13 @@ importers:
         version: 3.1079.0
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   packages/signer:
@@ -340,17 +370,17 @@ importers:
         specifier: ^1.9.1
         version: 1.9.1
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   services/arbitrageur:
@@ -395,29 +425,29 @@ importers:
         specifier: workspace:*
         version: link:../../packages/signer
       dotenv:
-        specifier: ^16.5.0
+        specifier: 'catalog:'
         version: 16.6.1
       prom-client:
-        specifier: ^15.1.3
+        specifier: 'catalog:'
         version: 15.1.3
       tsx:
-        specifier: ^4.19.3
+        specifier: 'catalog:'
         version: 4.21.0
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   services/liquidator:
@@ -462,29 +492,29 @@ importers:
         specifier: workspace:*
         version: link:../../packages/signer
       dotenv:
-        specifier: ^16.5.0
+        specifier: 'catalog:'
         version: 16.6.1
       prom-client:
-        specifier: ^15.1.3
+        specifier: 'catalog:'
         version: 15.1.3
       tsx:
-        specifier: ^4.19.3
+        specifier: 'catalog:'
         version: 4.21.0
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   services/operator-cli:
@@ -514,26 +544,26 @@ importers:
         specifier: workspace:*
         version: link:../../packages/secrets
       dotenv:
-        specifier: ^16.5.0
+        specifier: 'catalog:'
         version: 16.6.1
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       tsx:
-        specifier: ^4.19.3
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
       vitest:
-        specifier: ^4.1.12
+        specifier: 'catalog:'
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(vite@6.4.5(@types/node@22.19.2)(tsx@4.21.0))
 
   services/ponder:
@@ -557,14 +587,14 @@ importers:
         specifier: ^0.13.6
         version: 0.13.16(@opentelemetry/api@1.9.0)(@types/node@22.19.2)(@types/pg@8.20.0)(hono@4.13.14)(tsx@4.21.0)(typescript@5.9.3)(viem@2.41.2(typescript@5.9.3)(zod@4.6.7))(zod@4.6.7)
       viem:
-        specifier: ^2.37.0
+        specifier: 'catalog:'
         version: 2.41.2(typescript@5.9.3)(zod@4.6.7)
     devDependencies:
       '@types/node':
-        specifier: ^22.13.14
+        specifier: 'catalog:'
         version: 22.19.2
       typescript:
-        specifier: ^5.7.3
+        specifier: 'catalog:'
         version: 5.9.3
 
 packages:
@@ -706,24 +736,28 @@ packages:
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@biomejs/cli-linux-arm64@1.9.4':
     resolution: {integrity: sha512-fJIW0+LYujdjUgJJuwesP4EjIBl/N/TcOX3IvIHJQNsAqvV2CHIogsmA94BPG6jZATS4Hi+xv4SkBBQSt1N4/g==}
     engines: {node: '>=14.21.3'}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@biomejs/cli-linux-x64-musl@1.9.4':
     resolution: {integrity: sha512-gEhi/jSBhZ2m6wjV530Yy8+fNqG8PAinM3oV7CyO+6c3CEh16Eizm21uHVsyVBEB6RIM8JHIl6AGYCv6Q6Q9Tg==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@biomejs/cli-linux-x64@1.9.4':
     resolution: {integrity: sha512-lRCJv/Vi3Vlwmbd6K+oQ0KhLHMAysN8lXoCI7XeHlxaajk06u7G+UsFSO01NAs5iYuWKmVZjmiOzJ0OJmGsMwg==}
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@biomejs/cli-win32-arm64@1.9.4':
     resolution: {integrity: sha512-tlbhLk+WXZmgwoIKwHIHEBZUwxml7bRJgk0X2sPyNR3S93cdRq6XulAZRQJ17FYGGzWne0fgrXBKpl7l4M87Hg==}
@@ -990,6 +1024,7 @@ packages:
     engines: {node: ^22.20 || ^24.12 || >=25}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@noble/ciphers@1.3.0':
     resolution: {integrity: sha512-2I0gnIVPtfnMw9ee9h1dJG7tp81+8Ob3OJb3Mv37rx5L40/b0i7djjCVvGOVqc9AEIQyvyu1i6ypKdFw8R8gQw==}
@@ -1057,66 +1092,79 @@ packages:
     resolution: {integrity: sha512-81wiiX3v7aqy+T+bT61TJ78yJjRquqFFTTbAPt08imfQQzkPIW8t6aJbkTagtCCrXMNc9D66+geqlK7ydLPNqA==}
     cpu: [arm]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm-musleabihf@4.62.4':
     resolution: {integrity: sha512-9kmDIvNZqdoHOBZgNtpTBeLWYO/LVipM3H/j62P8848/l/VPEQL6N3uxU9pvP1oZAsXyC2MEnFP3ovRjo7WYNQ==}
     cpu: [arm]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-arm64-gnu@4.62.4':
     resolution: {integrity: sha512-CcnXHWnXg69g+DX5VWL3FHts3qMRN2uVEHX+BZvGLdd07/gXkn3ePjYtO1LDJvxkGKVHMclKBRa1QUTH+6toYQ==}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.62.4':
     resolution: {integrity: sha512-iFOibiHnTRuhrWLlRsOQFdZJJIa7S8OwkneJr4ocALP16u5yk6lWLINFwhHaEqBFMsKDUZofLkGos7+CPzGB3g==}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-loong64-gnu@4.62.4':
     resolution: {integrity: sha512-XnWYMI7euHlb5a871xPja+Gm7DRCFU+FGRrtS2sMq9N8FvqtpagUy6gD4YOemC5MRk9xbh8+jYMEJbigFQwsgA==}
     cpu: [loong64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-loong64-musl@4.62.4':
     resolution: {integrity: sha512-qGDAlO0U8xedCcsdRm9oaoQY8DAx/QT7uIxJWhCdx0ceIWX783UC9QSYkdpzAe29wNiVfp24+bZdQmn49o45SQ==}
     cpu: [loong64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-ppc64-gnu@4.62.4':
     resolution: {integrity: sha512-ru4H6ezD7ysA5EiEK6qkkaEb4modH8CTej6kUy/gQi20u3kB3G7Zn8snXXkeJSCOFKG/rbPPtM/+9Wgas1961w==}
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-ppc64-musl@4.62.4':
     resolution: {integrity: sha512-2W4MO5WQVJnbJaZdvDb9rhBDuFU1nKIepPFpJUBsTh2k1YY2g+ODViaWuyOAjQ5cOP7NvrvLzt3wvHOoiAvc7w==}
     cpu: [ppc64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-riscv64-gnu@4.62.4':
     resolution: {integrity: sha512-+fxjfuoAmVMCYV5QyjoIpu0cp5DOiOTeqYFk1AVaxGr+/ravWLX89XfQmptsoWcaVy/TGf2hexzbUOrCQIL1CQ==}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-musl@4.62.4':
     resolution: {integrity: sha512-jTn8JfHGL4djjFxPuM06LmNUJDsst2jeVlsd9OmIH6zc5sC9K6rIuO4YajXatLUpBmBKl6b35ro1QZocLi+tcA==}
     cpu: [riscv64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-s390x-gnu@4.62.4':
     resolution: {integrity: sha512-oCJCJL4pXsoDcP2QZ+JVlPTIRc6266zsIaeJJsWImmF7HO0W8nb6HuSgZlMWxJwaPf8ehbSw8yo0EUw925hKsA==}
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-gnu@4.62.4':
     resolution: {integrity: sha512-W69hukhZ3KKNRCaMIEzKvcFye42hh0FE1+YoYaf5+Ikacuftoco6yO/xouz0hc5d5W/s3yBro5jRiuEE/Q5vUw==}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.62.4':
     resolution: {integrity: sha512-qiXbGG2jkjXhzXpsFZSR2Xpb8DN/UaxYsbb/STbuR/6fpaDgRmmaq1B/LmtF2wQFOFOSsK2jdE0RZ3a0zHn4QA==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-openbsd-x64@4.62.4':
     resolution: {integrity: sha512-nWeM//hxv8mIo6jD7Hu4o48DVmV9pbV6gsKaWU+4NFyqHoPKwrkRiZGLKUhOBk8qNmDmpwFtPKg80Bo/Tn4xiQ==}
@@ -1870,6 +1918,7 @@ packages:
   prom-client@15.1.3:
     resolution: {integrity: sha512-6ZiOBfCywsD4k1BN9IX0uZhF+tJkV8q8llP64G5Hajs4JOeVLPCwpPVcpXy3BwYiUGgyJzsJJQeOIv7+hDSq8g==}
     engines: {node: ^16 || ^18 || >=20}
+    deprecated: prom-client has been replaced by @prometheus-io/client
 
   quick-format-unescaped@4.0.4:
     resolution: {integrity: sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg==}
