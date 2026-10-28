@@ -141,7 +141,7 @@ export function parseEnv<T extends z.ZodTypeAny>(
   if (!result.success) {
     logger.error("Configuration validation failed:");
     logger.error("");
-    for (const error of result.error.errors) {
+    for (const error of result.error.issues) {
       logger.error(`  ✗ ${error.path.join(".")}: ${error.message}`);
     }
     logger.error("");

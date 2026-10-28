@@ -45,27 +45,36 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
-    "@types/node": "^22.13.14",
-    "typescript": "^5.7.3",
-    "tsx": "^4.19.3"
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "tsx": "catalog:"
   },
   "engines": {
-    "node": ">=18.14"
+    "node": ">=22.15"
   },
-  "packageManager": "pnpm@9.13.2",
+  "packageManager": "pnpm@10.34.9",
   "pnpm": {
+    "onlyBuiltDependencies": ["@biomejs/biome", "esbuild"],
     "overrides": {
-      "esbuild": "0.28.0",
+      "esbuild": "0.28.2",
       "ws": "^8.21.0",
-      "@hono/node-server": "1.19.10",
-      "brace-expansion": "^2.1.4",
-      "fast-uri": "^3.1.5",
+      "@hono/node-server": "1.19.17",
+      "brace-expansion": "^2.1.7",
+      "fast-uri": "^3.1.9",
       "glob": "^10.5.0",
-      "hono": "4.12.25",
+      "hono": "4.13.14",
       "minimatch": "^9.0.7",
       "postcss": "^8.5.23",
       "rollup": "^4.59.0",
-      "vite": "5.4.21"
+      "vite": "6.4.5",
+      "ajv": "^8.18.0",
+      "@fastify/busboy": "^3.2.4",
+      "nanoid": "^3.3.18",
+      "source-map-js": "^1.2.2",
+      "kysely": "0.28.18",
+      "drizzle-orm": "0.45.4",
+      "@graphql-tools/utils": "12.1.0",
+      "zod": "catalog:"
     }
   }
 }

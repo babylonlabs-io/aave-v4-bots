@@ -74,8 +74,8 @@ position side too: set `SPOKE_ADDRESS`, `ADAPTER_ADDRESS` and `LENS_ADDRESS` in 
 
 ### 4.1. Prerequisites
 
-- Node.js 20 or 22 (the Docker images use 22)
-- pnpm 9.13.2
+- Node.js 22.15 or newer
+- pnpm 10.34.9
 - PostgreSQL 17
 - A registered vault keeper (see §1)
 - Foundry, only to deploy the router (router funding)
