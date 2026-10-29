@@ -100,6 +100,10 @@ jobs:
       # contracts repo's `TestKeys`, used by no other role here.
       COUNCIL_QUORUM: "1"
       SECURITY_COUNCIL_KEY: "0x5ab4689e400a4a160cf01cd44730845a54768df8547dcdf073d964f109f18c30"
+      # Prover info for circuit version 1. ProtocolParams requires nonzero values; these are
+      # synthetic, as in the contracts repo's CI, because no bot reads them.
+      INITIAL_PEGOUT_CIRCUIT_VK_HASH: "0x0000000000000000000000000000000000000000000000000000000000000001"
+      INITIAL_TRUSTED_CHECKPOINT: "0x0000000000000000000000000000000000000000000000000000000000000002"
       # Aave Application
       APPLICATION_NAME: "Aave v4"
       NUM_APP_OPERATORS: "2"
