@@ -38,6 +38,7 @@ export const protocolErrorsAbi = [
     name: "AccessManagedUnauthorized",
     inputs: [{ name: "caller", type: "address" }],
   },
+  { type: "error", name: "ActivationCapExceeded", inputs: [] },
   { type: "error", name: "ActivationDeadlineExpired", inputs: [] },
   { type: "error", name: "ActivationDelayNotElapsed", inputs: [] },
   { type: "error", name: "AddressEmptyCode", inputs: [{ name: "target", type: "address" }] },
@@ -104,7 +105,6 @@ export const protocolErrorsAbi = [
     ],
   },
   { type: "error", name: "InsufficientBorrowAllowance", inputs: [] },
-  { type: "error", name: "InsufficientGasForActivation", inputs: [] },
   { type: "error", name: "InsufficientSettlementAmount", inputs: [] },
   {
     type: "error",
