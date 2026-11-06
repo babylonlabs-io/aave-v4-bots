@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,8 @@ import {
   lensAbi,
   liquidationRouterAbi,
   spokeAbi,
+  uniswapV4SwapVenueAbi,
+  v4QuoterAbi,
   vaultSwapAbi,
 } from "./index";
 
@@ -44,6 +46,7 @@ const signature = (e: AbiEntry) =>
   `${e.type} ${e.name}(${(e.inputs ?? []).map(paramType).join(",")})`;
 
 function findArtifact(contract: string): string | undefined {
+  const matches: string[] = [];
   const stack = [OUT_DIR];
   while (stack.length > 0) {
     const dir = stack.pop();
@@ -51,26 +54,44 @@ function findArtifact(contract: string): string | undefined {
     for (const entry of readdirSync(dir)) {
       const path = join(dir, entry);
       if (statSync(path).isDirectory()) stack.push(path);
-      else if (entry === `${contract}.json`) return path;
+      else if (entry === `${contract}.json`) matches.push(path);
     }
   }
-  return undefined;
+  // Two artifacts under one name — the same contract vendored by two dependencies, say — would make
+  // the pin depend on the order the directory walk happens to visit them in.
+  if (matches.length > 1) {
+    throw new Error(`${contract}.json is ambiguous under out/: ${matches.join(", ")}`);
+  }
+  return matches[0];
 }
 
-function artifactSignatures(contract: string): Set<string> | undefined {
-  const path = findArtifact(contract);
-  if (path === undefined) return undefined;
+function artifactSignatures(contract: string, artifactPath?: string): Set<string> | undefined {
+  const path = artifactPath === undefined ? findArtifact(contract) : join(OUT_DIR, artifactPath);
+  if (path === undefined || !existsSync(path)) return undefined;
   const abi = JSON.parse(readFileSync(path, "utf8")).abi as AbiEntry[];
   return new Set(abi.map(signature));
 }
 
-const CASES: ReadonlyArray<[string, readonly AbiEntry[], string]> = [
+/** `[export, abi, contract, artifact path under out/ — when a name alone is not specific enough]`. */
+const CASES: ReadonlyArray<[string, readonly AbiEntry[], string, string?]> = [
   ["vaultSwapAbi", vaultSwapAbi, "BTCVaultSwap"],
   ["adapterAbi", adapterAbi, "AaveAdapter"],
   ["lensAbi", lensAbi, "AaveAdapterLiquidationPreview"],
   ["spokeAbi", spokeAbi, "Spoke"],
   ["liquidationRouterAbi", liquidationRouterAbi, "LiquidationRouter"],
   ["arbitrageRouterAbi", arbitrageRouterAbi, "ArbitrageRouter"],
+  // The interface, not `V4Quoter`: forge builds only what this repo imports, and the fork tests
+  // import the interface. It inherits `poolManager`, so the one artifact covers every function.
+  // Located by path, because v4-periphery is vendored twice (once more inside universal-router)
+  // and a name could resolve to either copy. Its errors are pinned to the Solidity source in
+  // `flashVenues.test.ts`, since this test compares functions only.
+  ["v4QuoterAbi", v4QuoterAbi, "IV4Quoter", "IV4Quoter.sol/IV4Quoter.json"],
+  [
+    "uniswapV4SwapVenueAbi",
+    uniswapV4SwapVenueAbi,
+    "UniswapV4SwapVenue",
+    "UniswapV4SwapVenue.sol/UniswapV4SwapVenue.json",
+  ],
 ];
 
 describe("@repo/abis matches the compiled contracts", () => {
@@ -82,9 +103,9 @@ describe("@repo/abis matches the compiled contracts", () => {
     }
   })();
 
-  for (const [exportName, abi, contract] of CASES) {
+  for (const [exportName, abi, contract, artifactPath] of CASES) {
     it.skipIf(!haveArtifacts)(`${exportName} -> ${contract}`, () => {
-      const real = artifactSignatures(contract);
+      const real = artifactSignatures(contract, artifactPath);
       expect(real, `no compiled artifact for ${contract}`).toBeDefined();
 
       // Constructors are not part of what we call, and we deliberately carry only a subset — so

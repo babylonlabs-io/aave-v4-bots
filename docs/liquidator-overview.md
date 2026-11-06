@@ -160,12 +160,20 @@ Under `flash`, the router reads the Lens, borrows the position's one
 debt token from the venue named in `FLASH_SWAP_POOLS`, liquidates, and
 repays that venue out of what it seized — all within one transaction,
 so nothing is owed after it lands. The router calls `liquidateWithLLP`
-with the fairness payment as the cap. When there is a fairness
+with the fairness payment plus the liquidation fee as the cap, and pays
+the fee out of the LLP payout. When there is a fairness
 payment, a separate flash *loan* (`WBTC_FLASH_LOAN_ADDRESS`) covers it,
 repaid in WBTC. When WBTC is itself the debt token, the router borrows
 the debt and the fairness payment together through that one WBTC
 venue. Profit is swept to the router's `owner`, which must be the
 bot's signer.
+
+With `FLASH_VENUE_RANKING=true`, venues come from `FLASH_VENUES`
+instead, which can list several per token: Morpho and Aave v3 WBTC
+flash loans, and UniswapV4 pools. For each liquidation the bot quotes
+them and uses, per token, the venue that takes back the least WBTC for
+the size. The quote only picks the venue. The probe still prices the
+liquidation, and `minWbtcProfit` still bounds it on-chain.
 
 Two consequences worth knowing before switching:
 
@@ -253,11 +261,15 @@ The bot automates monitoring and execution.
 | `WBTC_ADDRESS` | WBTC token address | Yes | — |
 | `LIQUIDATION_FUNDING` | `inventory` (repay from own balances) or `flash` (repay via `LiquidationRouter`). The only thing that selects the mode — the flash variables below are never inferred from | No | `inventory` |
 | `LIQUIDATION_ROUTER_ADDRESS` | LiquidationRouter; its `owner` must be this bot's signer | flash | — |
-| `FLASH_SWAP_VENUE_ADDRESS` | UniswapV4SwapVenue bound to that router | flash | — |
-| `FLASH_SWAP_POOLS` | `token:currency0:currency1:fee:tickSpacing[:hooks]`; each must be WBTC/`<token>` | flash | — |
-| `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash | — |
-| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3` | No | `morpho` |
-| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the quote before the chain reverts; derives `minWbtcProfit` | No | `2000` |
+| `FLASH_SWAP_VENUE_ADDRESS` | UniswapV4SwapVenue bound to that router | flash, ranking off | — |
+| `FLASH_SWAP_POOLS` | `token:currency0:currency1:fee:tickSpacing[:hooks]`; each must be WBTC/`<token>` | flash, ranking off | — |
+| `WBTC_FLASH_LOAN_ADDRESS` | Venue WBTC is flash-loaned from for the LLP fairness payment | flash, ranking off | — |
+| `WBTC_FLASH_LOAN_VENUE` | `morpho` or `aavev3`, the protocol at `WBTC_FLASH_LOAN_ADDRESS`; must be unset with ranking on | flash, ranking off | — |
+| `FLASH_VENUE_RANKING` | `true` quotes several venues per token and uses the cheapest; venues then come from `FLASH_VENUES` | No | off |
+| `FLASH_VENUES` | `morpho:<morpho>`, `aavev3:<pool>`, `univ4:<venueAddress>:<token>:<currency0>:<currency1>:<fee>:<tickSpacing>[:hooks]`, comma-separated | ranking on | — |
+| `UNISWAP_V4_QUOTER_ADDRESS` | UniswapV4 V4Quoter | ranking on, `univ4` entry | — |
+| `UNISWAP_V4_STATE_VIEW_ADDRESS` | UniswapV4 StateView | ranking on, `univ4` entry | — |
+| `FLASH_MAX_SLIPPAGE_BPS` | How far realised profit may fall below the quote before the chain reverts; derives `minWbtcProfit` | flash | — |
 | `IS_DIRECT_REDEMPTION` | `true` calls `liquidate`; otherwise calls `liquidateWithLLP`. Inventory funding only; boot fails if `true` under flash | No | `false` |
 | `BTC_REDEEM_KEY` | BTC key for direct mode (must be non-zero) | direct mode | `bytes32(0)` |
 | `LLP_ADDRESS` | LLP (BTCVaultSwap) address for LLP mode (must be non-zero) | LLP mode | `address(0)` |
