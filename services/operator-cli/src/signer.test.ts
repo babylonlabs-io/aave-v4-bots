@@ -1,8 +1,19 @@
 import { computeSafeTxHash, defaultSafeTxParams } from "@repo/execution";
-import type { Address, Chain, Hex, PublicClient, Transport } from "viem";
+import {
+  type Address,
+  type Chain,
+  type Hex,
+  type PublicClient,
+  type Transport,
+  custom,
+  keccak256,
+  parseTransaction,
+  toHex,
+} from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 
-import { createSafeOperatorSigner } from "./signer";
+import { createEoaOperatorSigner, createSafeOperatorSigner } from "./signer";
 
 // The claim path is where a SafeTx hash is minted, and the recorded hash is what every later "did
 // this already execute?" scan looks for. If the Safe hashes the same transaction differently — a
@@ -107,5 +118,104 @@ describe("createSafeOperatorSigner — buildEnvelope", () => {
     await expect(
       signer({ hash: new Error("execution reverted") }).buildEnvelope(inner)
     ).rejects.toThrow(/execution reverted/);
+  });
+});
+
+// `broadcast` sends through viem with a local key: viem estimates, signs and sends
+// `eth_sendRawTransaction`. The node below answers those calls, and the test decodes the raw
+// transaction to read the gas limit it was signed with.
+describe("operator signers — gas-limit margin", () => {
+  const KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as Hex;
+  const ESTIMATE = 100_000n;
+
+  function node() {
+    const raw: Hex[] = [];
+    const estimateCalls = vi.fn();
+    const transport = custom({
+      async request({ method, params }: { method: string; params?: unknown[] }) {
+        switch (method) {
+          case "eth_chainId":
+            return toHex(CHAIN_ID);
+          case "eth_getTransactionCount":
+            return "0x0";
+          case "eth_estimateGas":
+            estimateCalls(params);
+            return toHex(ESTIMATE);
+          case "eth_maxPriorityFeePerGas":
+            return "0x1";
+          case "eth_getBlockByNumber":
+            return { baseFeePerGas: "0x1", number: "0x1" };
+          case "eth_sendRawTransaction":
+            raw.push((params as Hex[])[0]);
+            return keccak256((params as Hex[])[0]);
+          default:
+            throw new Error(`unexpected rpc: ${method}`);
+        }
+      },
+    });
+    const signedGas = () => parseTransaction(raw[0]).gas;
+    return { transport, raw, estimateCalls, signedGas };
+  }
+  const chain = {
+    id: CHAIN_ID,
+    name: "test",
+    nativeCurrency: { name: "E", symbol: "E", decimals: 18 },
+    rpcUrls: { default: { http: ["http://x"] } },
+  } as Chain;
+
+  it("EOA: sends at the scaled estimate", async () => {
+    const n = node();
+    const eoa = createEoaOperatorSigner({
+      account: privateKeyToAccount(KEY),
+      chain,
+      transport: n.transport,
+      gasLimitMultiplierBps: 12_000,
+    });
+
+    await eoa.send(inner, undefined);
+
+    expect(n.signedGas()).toBe(120_000n);
+    // The estimate is of the call the operator sends, from the operator's account.
+    expect(n.estimateCalls.mock.calls[0][0][0]).toMatchObject({
+      from: privateKeyToAccount(KEY).address,
+      to: inner.to,
+      data: inner.data,
+    });
+  });
+
+  it("EOA: sends at the node's estimate when no margin is configured", async () => {
+    const n = node();
+    const eoa = createEoaOperatorSigner({
+      account: privateKeyToAccount(KEY),
+      chain,
+      transport: n.transport,
+    });
+
+    await eoa.send(inner, undefined);
+
+    expect(n.signedGas()).toBe(ESTIMATE);
+    expect(n.estimateCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it("Safe: the relayer's execTransaction goes out at the scaled estimate", async () => {
+    const n = node();
+    const owner = privateKeyToAccount(KEY);
+    const base = signer();
+    const envelope = await built(base);
+    const safe = createSafeOperatorSigner({
+      safe: SAFE,
+      owners: [owner],
+      relayer: owner,
+      publicClient: {} as PublicClient,
+      chain,
+      transport: n.transport,
+      chainId: CHAIN_ID,
+      gasLimitMultiplierBps: 15_000,
+    });
+
+    await safe.send(inner, envelope);
+
+    expect(n.signedGas()).toBe(150_000n);
+    expect(parseTransaction(n.raw[0]).to?.toLowerCase()).toBe(SAFE.toLowerCase());
   });
 });

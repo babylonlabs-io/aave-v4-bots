@@ -2,10 +2,12 @@ import { type Hex, RpcRequestError, TransactionRejectedRpcError, keccak256, pars
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ContractCall,
+  GAS_LIMIT_MULTIPLIER_BPS_NONE,
   PreBroadcastError,
   type ProposedTx,
   type SignedTx,
   SubmitRejectedError,
+  applyGasMargin,
   createNonceAllocator,
   createNonceLease,
   createTxSender,
@@ -57,6 +59,7 @@ function txClients(
     prepareTransactionRequest: vi.fn(async (req: { nonce?: number }) => ({
       ...req,
       nonce: req.nonce ?? 42, // viem fills it from the chain when the caller left it out
+      gas: 100_000n, // viem fills it from `eth_estimateGas`
       ...(over.fees ?? { maxFeePerGas: 101n, maxPriorityFeePerGas: 1n }),
     })),
     signTransaction: vi.fn().mockResolvedValue(SERIALIZED),
@@ -334,6 +337,92 @@ describe("@repo/execution", () => {
       await expect(sender.send(CALL)).rejects.toThrow(PreBroadcastError);
       expect(walletClient.signTransaction).not.toHaveBeenCalled();
       expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("applyGasMargin", () => {
+    it("leaves the estimate as it is at 10000 bps", () => {
+      expect(applyGasMargin(123_457n, GAS_LIMIT_MULTIPLIER_BPS_NONE)).toBe(123_457n);
+    });
+
+    it("scales the estimate", () => {
+      expect(applyGasMargin(100_000n, 12_000)).toBe(120_000n);
+      expect(applyGasMargin(100_000n, 30_000)).toBe(300_000n);
+    });
+
+    // Rounding down would give back part of the margin the operator asked for.
+    it("rounds up", () => {
+      expect(applyGasMargin(3n, 12_000)).toBe(4n); // 3.6
+      expect(applyGasMargin(100_001n, 12_000)).toBe(120_002n); // 120,001.2
+    });
+  });
+
+  describe("gas-limit margin", () => {
+    /** Clients whose signed bytes encode the signed gas, so a hash proves which gas it covers. */
+    function marginClients() {
+      const clients = txClients();
+      clients.walletClient.signTransaction.mockImplementation(
+        async (req: { gas?: bigint }) => `0x${(req.gas ?? 0n).toString(16).padStart(8, "0")}` as Hex
+      );
+      return clients;
+    }
+    const signedGas = (walletClient: { signTransaction: { mock: { calls: unknown[][] } } }) =>
+      (walletClient.signTransaction.mock.calls[0][0] as { gas?: bigint }).gas;
+
+    it("does not touch the node's estimate when no margin is configured", async () => {
+      const { walletClient, publicClient } = marginClients();
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg
+      );
+
+      await sender.send(CALL);
+
+      expect(signedGas(walletClient)).toBe(100_000n);
+    });
+
+    it("signs the scaled gas, and records and broadcasts the bytes that carry it", async () => {
+      const { walletClient, publicClient } = marginClients();
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg,
+        undefined,
+        { gasLimitMultiplierBps: 12_000 }
+      );
+      const onSigned = vi.fn(async (_: SignedTx) => {});
+
+      const hash = await sender.send(CALL, onSigned);
+
+      const bytes = `0x${120_000n.toString(16).padStart(8, "0")}` as Hex;
+      expect(signedGas(walletClient)).toBe(120_000n);
+      expect(onSigned).toHaveBeenCalledWith(
+        expect.objectContaining({ hash: keccak256(bytes), serialized: bytes })
+      );
+      expect(publicClient.sendRawTransaction).toHaveBeenCalledWith({
+        serializedTransaction: bytes,
+      });
+      expect(hash).toBe(keccak256(bytes));
+    });
+
+    it("hands the scaled bytes to a relay route too", async () => {
+      const { walletClient, publicClient } = marginClients();
+      const submit = vi.fn(async (_: Hex) => SIGNED_HASH);
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg,
+        submit,
+        { gasLimitMultiplierBps: 12_000, minPriorityFeeWei: 5n }
+      );
+
+      await sender.send(CALL);
+
+      expect(submit).toHaveBeenCalledWith(`0x${120_000n.toString(16).padStart(8, "0")}`);
+      expect(publicClient.sendRawTransaction).not.toHaveBeenCalled();
+      // The fee floor still applies next to the margin.
+      expect(walletClient.signTransaction.mock.calls[0][0]).toMatchObject({
+        maxPriorityFeePerGas: 5n,
+        maxFeePerGas: 105n,
+      });
     });
   });
 

@@ -1039,6 +1039,7 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
     prepareTransactionRequest: vi.fn(async (r: { nonce?: number }) => ({
       ...r,
       nonce: r.nonce ?? 1,
+      gas: 100_000n,
       maxFeePerGas: 101n,
       maxPriorityFeePerGas: 1n,
     })),
@@ -1121,6 +1122,24 @@ describe("createAutoExecutorFromWallet — submission routing", () => {
     expect(wallet.signTransaction).toHaveBeenCalledWith(
       expect.objectContaining({ maxPriorityFeePerGas: 5n, maxFeePerGas: 105n })
     );
+  });
+
+  // Wired through only here. If this drops the field, every transaction is signed at the raw
+  // estimate, and nothing else shows that the operator's margin is not in force.
+  it("signs at the configured gas-limit margin", async () => {
+    const { publicClient } = clients();
+    const exec = createAutoExecutorFromWallet({
+      nonces: allocator(),
+      publicClient,
+      walletClient: wallet,
+      txReceiptTimeoutMs: 1000,
+      logger: silentLogger,
+      gasLimitMultiplierBps: 12_000,
+    });
+
+    await exec.commit(CALL, { target: TARGET, action: "liquidation", subject: "p" });
+
+    expect(wallet.signTransaction).toHaveBeenCalledWith(expect.objectContaining({ gas: 120_000n }));
   });
 
   it("leaves the node's price alone in the public mempool", async () => {

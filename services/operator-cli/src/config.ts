@@ -1,4 +1,4 @@
-import { addressSchema, parseEnv, urlSchema } from "@repo/config";
+import { addressSchema, gasLimitMultiplierBpsSchema, parseEnv, urlSchema } from "@repo/config";
 import type { PersistenceConfig } from "@repo/persistence";
 import type { SecretsConfig } from "@repo/secrets";
 import type { Address } from "viem";
@@ -22,6 +22,8 @@ export interface Config {
   /** `eoa`: the operator key's secret ref. `safe`: the owner keys' secret refs (>= threshold). */
   operatorKeyRef?: string;
   safeOwnerKeyRefs: string[];
+  /** Gas limit of each `broadcast`, as basis points of the node's estimate; 10000 = the estimate. */
+  gasLimitMultiplierBps: number;
   /** Safe contract version for the EIP-712 domain (v1.3.0+). */
 }
 
@@ -39,6 +41,9 @@ const envSchema = z.object({
   OPERATOR_KEY_REF: z.string().min(1).optional(),
   // safe custody — the owner key refs (comma-separated), used by the automatable `broadcast` path.
   SAFE_OWNER_KEY_REFS: z.string().optional(),
+
+  // Gas limit of the transactions `broadcast` sends (EOA, or the Safe relayer's `execTransaction`).
+  GAS_LIMIT_MULTIPLIER_BPS: gasLimitMultiplierBpsSchema,
 });
 
 /** Split a comma-separated secret-ref list, trimming blanks. */
@@ -67,5 +72,6 @@ export function loadConfig(): Config {
     executorKind: kind,
     operatorKeyRef: env.OPERATOR_KEY_REF,
     safeOwnerKeyRefs: refList(env.SAFE_OWNER_KEY_REFS),
+    gasLimitMultiplierBps: Number.parseInt(env.GAS_LIMIT_MULTIPLIER_BPS, 10),
   };
 }
