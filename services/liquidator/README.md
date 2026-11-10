@@ -154,6 +154,11 @@ WBTC_ADDRESS=0x...
 # Receipt wait timeout (default: 120000 ms)
 # TX_RECEIPT_TIMEOUT_MS=120000
 
+# Gas limit as basis points of the node's estimate (default: 10000, the
+# estimate itself; range 10000-30000). Recommended: 12000. See
+# env.liquidator.example.
+# GAS_LIMIT_MULTIPLIER_BPS=12000
+
 # Metrics port (default: 9090)
 # METRICS_PORT=9090
 ```

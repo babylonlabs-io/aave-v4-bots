@@ -131,6 +131,7 @@ describe("submission is an AUTO-only decision", () => {
       PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
       PRIVATE_SUBMIT_TIMEOUT_MS: "8000",
       PRIVATE_STATUS_TIMEOUT_MS: "2000",
+      GAS_LIMIT_MULTIPLIER_BPS: "10000",
       ...overrides,
     }) as Parameters<typeof buildExecutionConfig>[0];
 
@@ -277,5 +278,59 @@ describe("private-submission fence bounds", () => {
     expect(
       buildSubmitterConfig(privateEnv({ PRIVATE_MIN_PRIORITY_FEE_WEI: "20000000000000000000" }))
     ).toMatchObject({ minPriorityFeeWei: 20_000_000_000_000_000_000n });
+  });
+});
+
+describe("GAS_LIMIT_MULTIPLIER_BPS", () => {
+  const parse = (env: Record<string, string>) => z.object(runtimeEnvFields).safeParse(env);
+  const execEnv = (overrides: Record<string, string | undefined> = {}) =>
+    ({
+      EXECUTION_MODE: "AUTO",
+      MANUAL_INTENT_TTL_MS: "10800000",
+      MANUAL_INTENT_STUCK_MS: "3600000",
+      SIGNER_SOURCE: "local",
+      SUBMITTER: "public",
+      FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
+      PRIVATE_RELAY_HORIZON_BLOCKS: "25",
+      PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
+      PRIVATE_SUBMIT_TIMEOUT_MS: "8000",
+      PRIVATE_STATUS_TIMEOUT_MS: "2000",
+      GAS_LIMIT_MULTIPLIER_BPS: "10000",
+      ...overrides,
+    }) as Parameters<typeof buildExecutionConfig>[0];
+
+  it("defaults to 10000, the node's estimate as it is", () => {
+    const parsed = parse({});
+    expect(parsed.success && parsed.data.GAS_LIMIT_MULTIPLIER_BPS).toBe("10000");
+  });
+
+  it.each(["10000", "12000", "30000"])("accepts %s", (value) => {
+    expect(parse({ GAS_LIMIT_MULTIPLIER_BPS: value }).success).toBe(true);
+  });
+
+  // Below 10000 the limit is under the estimate, so the transaction runs out of gas by design.
+  it.each(["9999", "0", "30001", "1.2", "12000bps", "-12000"])("rejects %s", (value) => {
+    expect(parse({ GAS_LIMIT_MULTIPLIER_BPS: value }).success).toBe(false);
+  });
+
+  it("carries the value on the AUTO arm", () => {
+    expect(buildExecutionConfig(execEnv({ GAS_LIMIT_MULTIPLIER_BPS: "12000" }))).toMatchObject({
+      mode: "AUTO",
+      gasLimitMultiplierBps: 12_000,
+    });
+  });
+
+  // MANUAL signs nothing, so a margin there sizes nothing. The operator sets it in operator-cli.
+  it("refuses a margin under MANUAL, and accepts the default there", () => {
+    const manual = {
+      EXECUTION_MODE: "MANUAL",
+      MANUAL_EXECUTOR_ADDRESS: "0x1234567890123456789012345678901234567890",
+      MANUAL_EXECUTOR_KIND: "eoa",
+      DATABASE_URL: "postgres://x",
+    };
+    expect(() =>
+      buildExecutionConfig(execEnv({ ...manual, GAS_LIMIT_MULTIPLIER_BPS: "12000" }))
+    ).toThrow(/does not broadcast.*GAS_LIMIT_MULTIPLIER_BPS=12000/);
+    expect(buildExecutionConfig(execEnv(manual))).toMatchObject({ mode: "MANUAL" });
   });
 });
