@@ -273,6 +273,7 @@ For a native run, use `http://localhost:42070` and `localhost:5433` (§5.1). Und
 | `POLLING_INTERVAL_MS` | Poll interval | No | `30000` |
 | `VAULT_PROCESSING_DELAY_MS` | Throttle between broadcasts, for rate-limited RPCs. `0` is off | No | `0` |
 | `TX_RECEIPT_TIMEOUT_MS` | Receipt wait per transaction | No | `120000` |
+| `GAS_LIMIT_MULTIPLIER_BPS` | Gas limit as basis points of the node's estimate, range 10000-30000. AUTO only; a value other than 10000 under MANUAL fails at boot. Recommended `12000`, see `env.arbitrageur.example` | No | `10000` |
 | `RETRY_MAX_ATTEMPTS` | Attempts per read, indexer and RPC | No | `3` |
 | `RETRY_INITIAL_DELAY_MS` | First retry delay | No | `1000` |
 | `RETRY_MAX_DELAY_MS` | Retry delay ceiling. Bounds indexer reads only; viem runs its own RPC schedule | No | `30000` |
@@ -480,6 +481,9 @@ empty treasury, and only the treasury can raise it.
 
 An inventory-funded liquidation engine in the same process still spends the signer's debt tokens
 and WBTC.
+
+The signer must hold gas limit x `maxFeePerGas` in ETH before each send. `GAS_LIMIT_MULTIPLIER_BPS`
+raises the gas limit, so it raises this balance requirement too.
 
 Monitoring:
 

@@ -35,6 +35,7 @@ export {
   buildPersistenceConfig,
   buildSecretsConfig,
   buildSubmitterConfig,
+  gasLimitMultiplierBpsSchema,
   runtimeEnvFields,
 } from "./runtime";
 export {

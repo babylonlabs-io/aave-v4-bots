@@ -94,6 +94,7 @@ Secrets Manager id.
 | `MANUAL_EXECUTOR_KIND` | yes | `eoa` or `safe` (must match the bot) |
 | `OPERATOR_KEY_REF` | for `broadcast` | ref to the EOA / Safe-owner key; omit for the keyless `confirm` flow |
 | `SAFE_OWNER_KEY_REFS` | `safe` broadcast | comma-separated owner key refs |
+| `GAS_LIMIT_MULTIPLIER_BPS` | no | gas limit of each `broadcast`, as basis points of the node's estimate: `10000` (default) to `30000`. Recommended `12000` |
 
 | `SECRETS_PROVIDER` | no | `env` (default) or `aws` |
 | `AWS_REGION` | no | region for AWS Secrets Manager |

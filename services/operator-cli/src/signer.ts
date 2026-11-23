@@ -1,6 +1,8 @@
 import { safeAbi } from "@repo/abis";
 import type { ProposedTx } from "@repo/execution";
 import {
+  GAS_LIMIT_MULTIPLIER_BPS_NONE,
+  applyGasMargin,
   buildSafeExecution,
   encodeExecTransaction,
   encodeSafeSignatures,
@@ -14,8 +16,10 @@ import {
   type LocalAccount,
   type PublicClient,
   type Transport,
+  type WalletClient,
   createWalletClient,
 } from "viem";
+import { estimateGas } from "viem/actions";
 
 // The operator's signing seam — the one place EOA and Safe custody differ. Everything upstream
 // (verify, claim, markBroadcast) is identical; only building the envelope and turning a proposal into
@@ -35,11 +39,29 @@ export interface OperatorSigner {
   send(inner: ProposedTx, envelope: SafeEnvelope | undefined): Promise<Hex>;
 }
 
+/**
+ * Send `request` from `wallet`, with its gas limit at `multiplierBps` of the node's estimate.
+ * At 10000, viem estimates and sends as it does with no gas given. Above it, this estimates first
+ * and sends with the scaled limit. See `applyGasMargin` in `@repo/execution`.
+ */
+async function sendWithGasMargin(
+  wallet: WalletClient<Transport, Chain, LocalAccount>,
+  request: { to: Address; data: Hex; value: bigint },
+  multiplierBps: number
+): Promise<Hex> {
+  const base = { account: wallet.account, chain: wallet.chain, ...request };
+  if (multiplierBps === GAS_LIMIT_MULTIPLIER_BPS_NONE) return wallet.sendTransaction(base);
+  const estimate = await estimateGas(wallet, base);
+  return wallet.sendTransaction({ ...base, gas: applyGasMargin(estimate, multiplierBps) });
+}
+
 /** EOA custody: the operator's account signs + sends the inner call directly. */
 export function createEoaOperatorSigner(deps: {
   account: LocalAccount;
   chain: Chain;
   transport: Transport;
+  /** Gas limit as basis points of the node's estimate. Omitted ⇒ the estimate itself. */
+  gasLimitMultiplierBps?: number;
 }): OperatorSigner {
   const wallet = createWalletClient({
     account: deps.account,
@@ -52,13 +74,11 @@ export function createEoaOperatorSigner(deps: {
       return undefined; // EOA has no SafeTx wrapper.
     },
     async send(inner) {
-      return wallet.sendTransaction({
-        account: deps.account,
-        chain: deps.chain,
-        to: inner.to,
-        data: inner.data,
-        value: BigInt(inner.value),
-      });
+      return sendWithGasMargin(
+        wallet,
+        { to: inner.to, data: inner.data, value: BigInt(inner.value) },
+        deps.gasLimitMultiplierBps ?? GAS_LIMIT_MULTIPLIER_BPS_NONE
+      );
     },
   };
 }
@@ -79,6 +99,8 @@ export function createSafeOperatorSigner(deps: {
   chain: Chain;
   transport: Transport;
   chainId: number;
+  /** Gas limit of `execTransaction`, as basis points of the node's estimate. Omitted ⇒ the estimate. */
+  gasLimitMultiplierBps?: number;
 }): OperatorSigner {
   return {
     address: deps.safe,
@@ -176,13 +198,11 @@ export function createSafeOperatorSigner(deps: {
         )
       );
       const data = encodeExecTransaction({ inner, params: envelope, signatures });
-      return wallet.sendTransaction({
-        account: relayer,
-        chain: deps.chain,
-        to: deps.safe,
-        data,
-        value: 0n,
-      });
+      return sendWithGasMargin(
+        wallet,
+        { to: deps.safe, data, value: 0n },
+        deps.gasLimitMultiplierBps ?? GAS_LIMIT_MULTIPLIER_BPS_NONE
+      );
     },
   };
 }

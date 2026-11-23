@@ -389,12 +389,16 @@ async function buildExecutor(
     logger,
     deps.metrics
   );
+  logger.info(
+    `Gas limit: ${config.execution.gasLimitMultiplierBps / 100}% of the node's estimate (GAS_LIMIT_MULTIPLIER_BPS)`
+  );
   const executor = createAutoExecutorFromWallet({
     store,
     nonces,
     publicClient,
     walletClient,
     submission,
+    gasLimitMultiplierBps: config.execution.gasLimitMultiplierBps,
     txReceiptTimeoutMs: config.txReceiptTimeoutMs,
     assertCanBroadcast,
     logger,

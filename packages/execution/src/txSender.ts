@@ -187,19 +187,41 @@ function applyPriorityFeeFloor(
   request.maxPriorityFeePerGas = floor;
 }
 
+/** `GAS_LIMIT_MULTIPLIER_BPS` at this value leaves the node's gas estimate as it is. */
+export const GAS_LIMIT_MULTIPLIER_BPS_NONE = 10_000;
+
+/**
+ * Scale a gas estimate by `multiplierBps` (10000 = 1x), rounded up.
+ *
+ * `eth_estimateGas` finds the gas the call needs against the state at the time of the estimate.
+ * The state at inclusion can differ: a transfer can write a balance slot that was zero, or a swap
+ * can cross more ticks. The margin covers that gap. The estimate itself follows the node's gas
+ * rules, so the margin works the same under any gas schedule.
+ *
+ * There is no upper clamp. The node enforces the chain's per-transaction gas limit: it refuses an
+ * estimate or a signed transaction above it.
+ */
+export function applyGasMargin(gas: bigint, multiplierBps: number): bigint {
+  const bps = BigInt(multiplierBps);
+  const denominator = BigInt(GAS_LIMIT_MULTIPLIER_BPS_NONE);
+  return (gas * bps + denominator - 1n) / denominator;
+}
+
 /**
  * Sign `call` without broadcasting it. The hash is derived from the signed payload (keccak256
  * of the serialized tx) — the same hash the node will report — so it is durable-recordable
  * before the tx exists on chain.
  *
- * `minPriorityFeeWei` is the floor the tip is raised to when the node prices it lower; see
+ * `options.minPriorityFeeWei` is the floor the tip is raised to when the node prices it lower; see
  * `applyPriorityFeeFloor`. Omitted ⇒ the node's estimate stands, which is right for the public
- * mempool.
+ * mempool. `options.gasLimitMultiplierBps` scales the node's gas estimate; see `applyGasMargin`.
+ * Omitted ⇒ the estimate stands. Both apply before signing, so the signed bytes, and the hash
+ * `onSigned` records, carry them.
  */
 export async function signContractCall(
   walletClient: WalletClient<Transport, Chain, Account>,
   call: ContractCall,
-  minPriorityFeeWei?: bigint
+  options: TxSenderOptions = {}
 ): Promise<SignedTx> {
   const request = await walletClient.prepareTransactionRequest({
     to: call.address,
@@ -212,7 +234,13 @@ export async function signContractCall(
     account: walletClient.account,
     chain: walletClient.chain,
   });
-  if (minPriorityFeeWei !== undefined) applyPriorityFeeFloor(request, minPriorityFeeWei);
+  if (options.minPriorityFeeWei !== undefined) {
+    applyPriorityFeeFloor(request, options.minPriorityFeeWei);
+  }
+  const multiplierBps = options.gasLimitMultiplierBps ?? GAS_LIMIT_MULTIPLIER_BPS_NONE;
+  if (multiplierBps !== GAS_LIMIT_MULTIPLIER_BPS_NONE) {
+    request.gas = applyGasMargin(request.gas, multiplierBps);
+  }
   const serialized = await walletClient.signTransaction(
     request as Parameters<typeof walletClient.signTransaction>[0]
   );
@@ -250,7 +278,7 @@ function isInsufficientFunds(error: unknown): boolean {
   );
 }
 
-/** Policy that applies to how a transaction is *priced*, as opposed to where it is sent. */
+/** Policy that applies to how a transaction is *priced and sized*, as opposed to where it is sent. */
 export interface TxSenderOptions {
   /**
    * Raise the tip to at least this many wei when the node prices it lower. Belongs with `submit`:
@@ -258,6 +286,11 @@ export interface TxSenderOptions {
    * transactions the relay accepts and no builder has a reason to include.
    */
   minPriorityFeeWei?: bigint;
+  /**
+   * Scale the node's gas estimate by this many basis points (10000 = 1x). It applies on every
+   * route. Omitted ⇒ the estimate stands. See `applyGasMargin`.
+   */
+  gasLimitMultiplierBps?: number;
 }
 
 /**
@@ -280,7 +313,7 @@ export function createTxSender(
     async send(call, onSigned, beforeBroadcast) {
       let signed: SignedTx;
       try {
-        signed = await signContractCall(walletClient, call, options.minPriorityFeeWei);
+        signed = await signContractCall(walletClient, call, options);
         // Durable BEFORE the tx can exist on chain.
         await onSigned?.(signed);
         // Nothing is awaited between this check and the broadcast.

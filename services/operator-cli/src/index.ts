@@ -79,6 +79,7 @@ async function buildSigner(
       account: await account(config.operatorKeyRef, "OPERATOR_KEY_REF"),
       chain,
       transport,
+      gasLimitMultiplierBps: config.gasLimitMultiplierBps,
     });
   }
 
@@ -94,6 +95,7 @@ async function buildSigner(
     chain,
     transport,
     chainId,
+    gasLimitMultiplierBps: config.gasLimitMultiplierBps,
   });
 }
 
