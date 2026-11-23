@@ -59,7 +59,8 @@ Under `LIQUIDATION_FUNDING=flash` step 6 targets `LiquidationRouter.liquidate`
 instead of the adapter. The router reads the Lens, borrows the position's debt
 token, calls `liquidateWithLLP` on the bot's behalf with the fairness payment
 plus the liquidation fee as the cap, pays the fee out of the LLP payout, repays the venues from the seized collateral and sweeps the
-remaining WBTC to its `owner` — which must be this bot's signer. It draws WBTC
+remaining WBTC to its `owner`. Only its immutable `executor`, which must be this
+bot's signer, can call it. It draws WBTC
 only when there is a fairness payment; when WBTC is itself the debt token, it
 borrows the debt and the fairness payment together through the one WBTC venue.
 

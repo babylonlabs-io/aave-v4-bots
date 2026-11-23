@@ -11,7 +11,8 @@ import {LiquidationRouter} from "../contracts/LiquidationRouter.sol";
 ///         the bot's key never has to hold the debt tokens.
 /// @dev Usage:
 ///
-///        LIQUIDATION_ROUTER_OWNER=0x…  # the bot's key. The only address the router will act for
+///        LIQUIDATION_ROUTER_OWNER=0x…     # receives all swept proceeds
+///        LIQUIDATION_ROUTER_EXECUTOR=0x…  # the bot's signer; the only permitted caller
 ///        LENS_ADDRESS=0x…             # AaveAdapterLiquidationPreview; the router reads the adapter/spoke from it
 ///        VAULT_SWAP_ADDRESS=0x…       # the BTCVaultSwap (LLP) the seized vault is sold to
 ///        forge script scripts/DeployLiquidationRouter.s.sol:DeployLiquidationRouter \
@@ -24,11 +25,12 @@ import {LiquidationRouter} from "../contracts/LiquidationRouter.sol";
 contract DeployLiquidationRouter is Script {
     function run() external returns (LiquidationRouter router) {
         address owner = vm.envAddress("LIQUIDATION_ROUTER_OWNER");
+        address executor = vm.envAddress("LIQUIDATION_ROUTER_EXECUTOR");
         address lens = vm.envAddress("LENS_ADDRESS");
         address vaultSwap = vm.envAddress("VAULT_SWAP_ADDRESS");
 
         vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
-        router = deploy(owner, lens, vaultSwap);
+        router = deploy(owner, executor, lens, vaultSwap);
         vm.stopBroadcast();
 
         console.log("Set LIQUIDATION_FUNDING=flash and LIQUIDATION_ROUTER_ADDRESS in the bot's env.");
@@ -37,10 +39,14 @@ contract DeployLiquidationRouter is Script {
     /// @notice Deploy without managing the broadcast, for callers already inside one.
     /// @dev The e2e setup uses this so the suite deploys through the same path an operator does,
     ///      rather than a copy that can drift from it.
-    function deploy(address owner, address lens, address vaultSwap) public returns (LiquidationRouter router) {
-        router = new LiquidationRouter(owner, lens, vaultSwap);
+    function deploy(address owner, address executor, address lens, address vaultSwap)
+        public
+        returns (LiquidationRouter router)
+    {
+        router = new LiquidationRouter(owner, executor, lens, vaultSwap);
         console.log("LiquidationRouter:", address(router));
-        console.log("  owner (the only address it acts for):", owner);
+        console.log("  owner (receives proceeds):           ", owner);
+        console.log("  executor (the only permitted caller):", executor);
         console.log("  lens:                                ", lens);
         console.log("  vaultSwap:                           ", vaultSwap);
     }

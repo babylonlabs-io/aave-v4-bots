@@ -46,11 +46,18 @@ export const liquidationRouterAbi = [
     outputs: [{ name: "wbtcProfit", type: "uint256" }],
     stateMutability: "nonpayable",
   },
-  // Only permitted caller, and the recipient of every swept reserve balance. Immutable on-chain, so
-  // a router is bound to one executing identity for life.
+  // Recipient of every swept reserve balance.
   {
     type: "function",
     name: "owner",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+    stateMutability: "view",
+  },
+  // Only permitted caller, immutable for the life of the router.
+  {
+    type: "function",
+    name: "executor",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
     stateMutability: "view",

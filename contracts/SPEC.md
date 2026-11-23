@@ -52,7 +52,7 @@ After all phases have completed, `LiquidationRouter`:
 - Revokes the approvals *it* granted: `aaveAdapter`, and each `dexAggRouter`. An approval created by
   swap calldata — the router calling `approve` on a token because the calldata told it to — is not
   one of these and survives the transaction, as does any balance that calldata moved.
-- Transfers any remaining token profit to the `auth` address.
+- Transfers any remaining token profit to the `owner`. Only the immutable `executor` may initiate a liquidation.
 
 ## Engineering notes
 

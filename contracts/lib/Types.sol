@@ -38,7 +38,7 @@ library Types {
 
     /// @notice One dex-aggregator call, used to sell the seized WBTC back into a borrowed token.
     /// @dev Built off-chain (that is what the `BelovedError` simulation path exists for) and executed verbatim, so the
-    ///      router trusts whatever the owner passes here.
+    ///      router trusts whatever the executor passes here.
     /// @param dexAggRouter The aggregator to call. It is approved to pull WBTC for the duration of the call only.
     /// @param callData The swap calldata to send it.
     struct SwapData {

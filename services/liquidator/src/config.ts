@@ -130,7 +130,7 @@ const envSchema = z.object({
   // LiquidationRouter, which borrows the debt token from a venue and repays itself out of the
   // seized collateral — the signer then needs no debt-token inventory at all, only gas.
   LIQUIDATION_FUNDING: z.enum(["inventory", "flash"]).optional().default("inventory"),
-  /** LiquidationRouter deployment. Its immutable `owner` must be this bot's signer. */
+  /** LiquidationRouter deployment. Its immutable `executor` must be this bot's signer. */
   LIQUIDATION_ROUTER_ADDRESS: addressSchema.optional(),
   /** The `UniswapV4SwapVenue` bound to that router. */
   FLASH_SWAP_VENUE_ADDRESS: addressSchema.optional(),

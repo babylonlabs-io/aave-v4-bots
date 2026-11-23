@@ -13,7 +13,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {BTCVaultSwap} from "vault-contracts/applications/aave/llps/BTCVaultSwap/BTCVaultSwap.sol";
 
-/// @notice Owner-operated bot that liquidates an Aave v4 position, funding the debt repayment with flash
+/// @notice Executor-operated bot that liquidates an Aave v4 position, funding the debt repayment with flash
 ///         liquidity and selling the seized WBTC collateral back into the borrowed assets.
 /// @dev    The liquidation runs as a state machine (`Types.LiquidationIteration`) rather than a flat sequence,
 ///         because every flash venue hands control back through a callback. Each phase re-enters the router via
@@ -40,8 +40,10 @@ contract LiquidationRouter is VenueManager {
     ///      `swapDatas` dex-aggregator calls for the real transaction. Never use it on-chain.
     uint256 private constant MIN_PROFIT_REVERT_TAG = type(uint256).max;
 
-    /// @notice The only address allowed to run a liquidation; also the recipient of all proceeds.
+    /// @notice Recipient of all proceeds.
     address public immutable owner;
+    /// @notice The only address allowed to run a liquidation.
+    address public immutable executor;
     /// @notice `AaveAdapterLiquidationPreview` used to estimate the debt to cover and the fairness payment.
     address public immutable lens;
     /// @notice Aave v4 adapter through which the liquidation is executed.
@@ -61,18 +63,21 @@ contract LiquidationRouter is VenueManager {
     /// @param debts Every outstanding flash-venue debt (token, venue, amount) that the swaps must cover.
     error BelovedError(uint256 netWbtcBeforePayment, Types.VenueDebt[] debts);
 
-    /// @notice Restricts a function to `owner`.
+    /// @notice Restricts a function to `executor`.
     modifier auth() {
-        require(msg.sender == owner, "LiquidationRouter: Unauthorized");
+        require(msg.sender == executor, "LiquidationRouter: Unauthorized");
         _;
     }
 
-    /// @param _owner The address allowed to liquidate and receive the proceeds.
+    /// @param _owner The address that receives the proceeds.
+    /// @param _executor The address allowed to liquidate.
     /// @param _lens The `AaveAdapterLiquidationPreview`; the adapter, spoke and BTC reserve id are read from it.
     /// @param _btcVaultSwap The LLP used to realise seized BTC vault collateral as WBTC.
-    constructor(address _owner, address _lens, address _btcVaultSwap) {
+    constructor(address _owner, address _executor, address _lens, address _btcVaultSwap) {
         require(_owner != address(0), "LiquidationRouter: Invalid owner address");
+        require(_executor != address(0), "LiquidationRouter: Invalid executor address");
         owner = _owner;
+        executor = _executor;
         lens = _lens;
         aaveAdapter = AaveAdapterLiquidationPreview(_lens).adapter();
         spoke = AaveAdapterLiquidationPreview(_lens).spoke();

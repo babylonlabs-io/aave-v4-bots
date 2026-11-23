@@ -56,12 +56,12 @@ export class ProbeError extends Error {
 export async function probeLiquidation(args: {
   publicClient: PublicClient;
   router: Address;
-  /** Must be the router's `owner`; `liquidate` is `auth`-gated and would revert for anyone else. */
-  owner: Address;
+  /** Must be the router's `executor`; `liquidate` is `auth`-gated. */
+  executor: Address;
   borrower: Address;
   flashDatas: readonly FlashData[];
 }): Promise<ProbeResult> {
-  const { publicClient, router, owner, borrower, flashDatas } = args;
+  const { publicClient, router, executor, borrower, flashDatas } = args;
 
   try {
     await publicClient.simulateContract({
@@ -69,7 +69,7 @@ export async function probeLiquidation(args: {
       abi: liquidationRouterAbi,
       functionName: "liquidate",
       args: probeArgs(borrower, flashDatas),
-      account: owner,
+      account: executor,
     });
   } catch (error) {
     const revert =
