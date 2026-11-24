@@ -29,12 +29,14 @@ COPY packages/runtime/package.json ./packages/runtime/
 COPY packages/secrets/package.json ./packages/secrets/
 COPY packages/signer/package.json ./packages/signer/
 COPY services/arbitrageur/package.json ./services/arbitrageur/
+COPY services/operator-cli/package.json ./services/operator-cli/
 
 # Install production dependencies only (workspace-aware).
 # --prod omits devDependencies (vitest and its vite/rollup/postcss toolchain),
 # so build/test tooling never ships in the runtime image. The app runs via tsx,
 # which is declared as a runtime dependency for this reason.
-RUN pnpm install --frozen-lockfile --prod --filter @services/arbitrageur...
+# operator-cli ships too, for MANUAL operators to run inside the bot pod (same env and IAM role).
+RUN pnpm install --frozen-lockfile --prod --filter @services/arbitrageur... --filter @services/operator-cli...
 
 # Copy source code
 COPY packages/abis/ ./packages/abis/
@@ -52,6 +54,7 @@ COPY packages/runtime/ ./packages/runtime/
 COPY packages/secrets/ ./packages/secrets/
 COPY packages/signer/ ./packages/signer/
 COPY services/arbitrageur/ ./services/arbitrageur/
+COPY services/operator-cli/ ./services/operator-cli/
 
 # ============================================
 # Stage 2: Production runtime
@@ -82,8 +85,13 @@ COPY --from=builder /app/pnpm-lock.yaml ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/services/arbitrageur ./services/arbitrageur
+COPY --from=builder /app/services/operator-cli ./services/operator-cli
 # RDS CA bundle for DB_AUTH=iam: DATABASE_URL sets sslrootcert=/app/certs/rds-global-bundle.pem.
 COPY services/ponder/certs/rds-global-bundle.pem ./certs/rds-global-bundle.pem
+
+# `operator-cli <command>` on PATH. It runs on the bot's tsx (a dev dependency of operator-cli).
+RUN printf '#!/bin/sh\nexec /app/services/arbitrageur/node_modules/.bin/tsx /app/services/operator-cli/src/index.ts "$@"\n' \
+      > /usr/local/bin/operator-cli && chmod 0755 /usr/local/bin/operator-cli
 
 # Set ownership
 RUN chown -R arbitrageur:nodejs /app
