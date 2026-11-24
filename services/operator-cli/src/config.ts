@@ -31,6 +31,7 @@ const envSchema = z.object({
   CLIENT_RPC_URL: urlSchema,
   DATABASE_URL: z.string().min(1),
   PERSISTENCE_SCHEMA: z.string().min(1).optional(),
+  DB_AUTH: z.enum(["password", "iam"]).optional().default("password"),
   SECRETS_PROVIDER: z.enum(["env", "aws"]).optional().default("env"),
   AWS_REGION: z.string().min(1).optional(),
 
@@ -66,7 +67,11 @@ export function loadConfig(): Config {
     rpcUrl: env.CLIENT_RPC_URL,
     // DATABASE_URL is required above; these two builders are trivial shapes, inlined to avoid coupling
     // the CLI's minimal env to `@repo/config`'s full `RuntimeEnv` (notifier/signer fields it lacks).
-    persistence: { connectionString: env.DATABASE_URL, schema: env.PERSISTENCE_SCHEMA },
+    persistence: {
+      connectionString: env.DATABASE_URL,
+      schema: env.PERSISTENCE_SCHEMA,
+      auth: env.DB_AUTH,
+    },
     secrets: { source: env.SECRETS_PROVIDER, region: env.AWS_REGION },
     executorAddress: env.MANUAL_EXECUTOR_ADDRESS as Address,
     executorKind: kind,

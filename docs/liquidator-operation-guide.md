@@ -187,7 +187,7 @@ Keep `ADAPTER_ADDRESS`, `LENS_ADDRESS` and the database in step between the two 
 | `LENS_ADDRESS` | AaveAdapterLiquidationPreview. The API previews positions through it | Yes | |
 | `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. The example names the Compose service, `liquidator-postgres:5432`. A native run uses `localhost:5432` | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. Leave it unset to derive one for each build. See [5.8](#58-indexer-schema) | No | derived |
-| `DB_AUTH` | How the indexer authenticates to Postgres: `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
+| `DB_AUTH` | How the indexer authenticates to Postgres (the bot reads it too, see below): `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
 | `CHAIN_ID` | Network chain ID | No | `1` |
 | `START_BLOCK` | First block to index. Must be at or before the AaveAdapter deployment block, or earlier borrowers are never probed. A rising `unmapped` count is the sign | No | `0` |
 | `PONDER_POLLING_INTERVAL` | Block poll interval (ms) | No | `4000` |
@@ -216,7 +216,7 @@ Boot fails, rather than falling back to a password, when:
 
 - `DATABASE_URL` is unset. Ponder would start on its embedded database instead of the shared one.
 - The URL carries a password, or `PGPASSWORD` is set. Either overrides the token.
-- The URL has no user, or no host.
+- The URL has no user, no host, or no database name.
 - `sslmode` is not `verify-full`, `sslrootcert` is unset, or that file is not on disk.
 - `NODE_TLS_REJECT_UNAUTHORIZED=0` is set. It cancels the check `verify-full` asks for.
 - The URL has no port while `PGPORT` is set. The driver would take the port from `PGPORT`, and the
@@ -226,8 +226,21 @@ Boot fails, rather than falling back to a password, when:
 - AWS resolves no credentials or no region. One token is minted at boot, so this fails the start
   rather than the first query.
 
-`DB_AUTH` covers the indexer only. The bot's own `DATABASE_URL`, which holds the StateStore,
-connects with a password.
+The bot reads `DB_AUTH` too, for its own StateStore `DATABASE_URL`, with the same checks.
+`operator-cli` reads it as well. The bot image carries the RDS CA bundle at
+`/app/certs/rds-global-bundle.pem`:
+
+```bash
+DB_AUTH=iam
+DATABASE_URL=postgresql://liquidation_bot@<host>:5432/liquidation_bot?sslmode=verify-full&sslrootcert=/app/certs/rds-global-bundle.pem
+AWS_REGION=us-east-1
+```
+
+The bot opens its first connection at boot, when it binds its execution identity, so a missing
+role or credential fails the start.
+
+In `iam` mode the bot accepts only these `DATABASE_URL` query parameters: `sslmode`, `sslrootcert`,
+`sslcert`, `sslkey` and `application_name`. Boot fails on any other, because the bot would drop it.
 
 ### 5.3. Liquidation Client Configuration
 
@@ -299,6 +312,7 @@ For a native run, use `http://localhost:42069` and `localhost:5432` (§5.1). Und
 | `MANUAL_INTENT_TTL_MS` | Expire un-actioned proposals after this. `0` disables | No | `10800000` |
 | `MANUAL_INTENT_STUCK_MS` | Alert on `claimed` or `submitted` intents older than this. `0` disables | No | `3600000` |
 | `DATABASE_URL` | Enables the Postgres StateStore: intent idempotency, nonce lease, reconcile on boot | MANUAL, private submission | |
+| `DB_AUTH` | How the StateStore authenticates to `DATABASE_URL`: `password` or `iam`. See §5.2 | No | `password` |
 | `PERSISTENCE_SCHEMA` | Schema for the StateStore. One schema per signer: the first execution identity to use it claims it. Two services on one database need two values | No | `bot` |
 | `NOTIFIER` | `none` or `slack` | No | `none` |
 | `SLACK_WEBHOOK_REF` | Secret reference for the webhook URL | slack | |
@@ -644,7 +658,7 @@ the bot then skips a cycle when the indexer `/status` is not available or too fa
 | Bot container never reports healthy | `METRICS_PORT` is not `9090`, so the healthcheck and the mapping reach nothing | Set `METRICS_PORT=9090` in `.env.liquidator`. Recreate the bot: `docker compose up -d --no-deps --force-recreate liquidator-bot` |
 | Bot reports `ponderReachable: false` under Docker | `PONDER_URL` names `localhost`, which is the bot's own container | Point it at `http://liquidator-ponder:42069` in `.env.liquidator`. Recreate the bot: `docker compose up -d --no-deps --force-recreate liquidator-bot` |
 | `DB_AUTH must be ...` | `DB_AUTH` is neither `password` nor `iam` | Correct the value. The check is case-sensitive |
-| `DB_AUTH=iam: ...` at indexer start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
+| `DB_AUTH=iam: ...` at indexer or bot start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
 | `LIQUIDATION_FUNDING=flash requires ...` or `... is set but LIQUIDATION_FUNDING is "inventory"` | Half-configured funding | Set all four flash variables, or none |
 | `IS_DIRECT_REDEMPTION=true cannot be used with LIQUIDATION_FUNDING=flash` | The router always settles through the LLP | Unset `IS_DIRECT_REDEMPTION`, or use inventory funding |
 | `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |

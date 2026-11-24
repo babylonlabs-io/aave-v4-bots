@@ -1,6 +1,8 @@
+import type { SignerFactory } from "@repo/db-auth";
 import type { ProposedTx } from "@repo/execution";
 import pg from "pg";
 import type { Address, Hex } from "viem";
+import { buildPoolConfig } from "./poolConfig";
 import {
   AWAITING_OPERATOR,
   IN_FLIGHT_ON_CHAIN,
@@ -36,6 +38,8 @@ export interface PgClientLike {
 export interface PostgresStoreConfig extends PersistenceConfig {
   /** Injectable client — for tests or custom pool config. Defaults to a `pg.Pool`. */
   client?: PgClientLike;
+  /** Replaces the RDS IAM token signer under `auth: "iam"` (tests). */
+  signerFactory?: SignerFactory;
 }
 
 /**
@@ -130,7 +134,7 @@ export function createPostgresStateStore(config: PostgresStoreConfig): StateStor
   const client: PgClientLike =
     config.client ??
     (new pg.Pool({
-      connectionString: config.connectionString,
+      ...buildPoolConfig(config, { signerFactory: config.signerFactory }),
       ...DEFAULT_POOL_TIMEOUTS,
     }) as PgClientLike);
 
