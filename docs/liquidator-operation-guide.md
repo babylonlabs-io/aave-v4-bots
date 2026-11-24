@@ -547,6 +547,17 @@ $CLI release <id>                # undo a claim. Check the chain first: see the 
 $CLI fail <id> --reason <r>      # give up on an intent
 ```
 
+The unified bot image (`aave-bots-svc`) also ships the CLI as `operator-cli`. Inside the bot pod it
+already has the bot's settings and IAM role, so no `.env` or database access from your machine is
+needed:
+
+```bash
+kubectl exec -n NAMESPACE deploy/unified-aave-client -- operator-cli list
+```
+
+Replace `NAMESPACE` with the bot's namespace. The pod holds no operator keys, so `broadcast` is not
+available there; use `claim`, sign the printed hash in the Safe, then `confirm`.
+
 ### 8.4. Kill switch
 
 Served on `RISK_CONTROL_HOST:RISK_CONTROL_PORT` when `RISK_CONTROL_TOKEN_REF` is set. Never on
