@@ -17,6 +17,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml tsconfig.json ./
 COPY packages/abis/package.json ./packages/abis/
 COPY packages/chain/package.json ./packages/chain/
 COPY packages/config/package.json ./packages/config/
+COPY packages/db-auth/package.json ./packages/db-auth/
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/execution/package.json ./packages/execution/
 COPY packages/logger/package.json ./packages/logger/
@@ -39,6 +40,7 @@ RUN pnpm install --frozen-lockfile --prod --filter @services/arbitrageur...
 COPY packages/abis/ ./packages/abis/
 COPY packages/chain/ ./packages/chain/
 COPY packages/config/ ./packages/config/
+COPY packages/db-auth/ ./packages/db-auth/
 COPY packages/engine/ ./packages/engine/
 COPY packages/execution/ ./packages/execution/
 COPY packages/logger/ ./packages/logger/
@@ -80,6 +82,8 @@ COPY --from=builder /app/pnpm-lock.yaml ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/services/arbitrageur ./services/arbitrageur
+# RDS CA bundle for DB_AUTH=iam: DATABASE_URL sets sslrootcert=/app/certs/rds-global-bundle.pem.
+COPY services/ponder/certs/rds-global-bundle.pem ./certs/rds-global-bundle.pem
 
 # Set ownership
 RUN chown -R arbitrageur:nodejs /app

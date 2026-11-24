@@ -1,3 +1,4 @@
+import type { DbAuthMode } from "@repo/db-auth";
 import type { ProposedTx, SafeExecution } from "@repo/execution";
 import type { Address, Hex } from "viem";
 
@@ -356,4 +357,6 @@ export interface PersistenceConfig {
   connectionString: string;
   /** Schema the bot tables live in (isolated from the indexer's tables). Default `bot`. */
   schema?: string;
+  /** `iam` connects with RDS IAM tokens instead of a password in the URL. Default `password`. */
+  auth?: DbAuthMode;
 }

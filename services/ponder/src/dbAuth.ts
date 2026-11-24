@@ -24,125 +24,28 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import {
+  type DbAuthMode,
+  type SignerFactory,
+  assertIamEnvironment,
+  awsRegionFromEnv,
+  createIamTokenSource,
+  iamTargetFromUrl,
+  parseDbAuthMode,
+} from "@repo/db-auth";
 
-export type DbAuthMode = "password" | "iam";
-
-export interface IamTarget {
-  hostname: string;
-  port: number;
-  username: string;
-  region?: string;
-}
-
-export interface TokenSigner {
-  getAuthToken(): Promise<string>;
-}
-
-export type SignerFactory = (target: IamTarget) => TokenSigner | Promise<TokenSigner>;
+export {
+  type DbAuthMode,
+  type IamTarget,
+  type SignerFactory,
+  type TokenSigner,
+  iamTargetFromUrl,
+  parseDbAuthMode,
+} from "@repo/db-auth";
 
 /** The subset of a `pg` module instance the hook touches. */
 export interface PgLike {
   defaults: { password?: unknown };
-}
-
-/**
- * Query parameters that pg-connection-string lets replace the URL's own
- * authority (user, password, host, port) or its TLS switch (ssl). In iam
- * mode each would let a URL that passes the checks below reach the driver as
- * something else, so they are refused.
- */
-const OVERRIDING_QUERY_KEYS = new Set(["user", "password", "host", "port", "ssl"]);
-
-export function parseDbAuthMode(raw: string | undefined): DbAuthMode {
-  if (raw === undefined || raw === "" || raw === "password") return "password";
-  if (raw === "iam") return "iam";
-  throw new Error(`DB_AUTH must be "password" or "iam", got "${raw}"`);
-}
-
-/**
- * The connection target for the token signer, taken from DATABASE_URL, with the shape checks that
- * make the token path safe: no password (it would override the token), a user (the token is bound
- * to it), a port the environment cannot move (the token is signed for one), TLS with server
- * verification (the token is a bearer credential) against a CA file that exists in this container.
- */
-export function iamTargetFromUrl(
-  databaseUrl: string,
-  env: Record<string, string | undefined> = process.env
-): IamTarget {
-  let url: URL;
-  try {
-    url = new URL(databaseUrl);
-  } catch {
-    throw new Error("DB_AUTH=iam: DATABASE_URL is not a valid URL");
-  }
-  if (url.protocol !== "postgresql:" && url.protocol !== "postgres:") {
-    throw new Error("DB_AUTH=iam: DATABASE_URL must use the postgresql:// scheme");
-  }
-  if (url.password !== "") {
-    throw new Error(
-      "DB_AUTH=iam: DATABASE_URL carries a password; a password in the URL overrides the IAM token, remove it"
-    );
-  }
-  if (!url.username) {
-    throw new Error(
-      "DB_AUTH=iam: DATABASE_URL has no user; the token is issued for one database user"
-    );
-  }
-  if (!url.hostname) {
-    throw new Error("DB_AUTH=iam: DATABASE_URL has no host");
-  }
-  // node-postgres hands the URL to pg-connection-string, which copies every
-  // query parameter into the pool config in order (the last duplicate wins)
-  // and lets user, password, host and port from the query replace the URL's
-  // own. URLSearchParams.get() below returns the first value, so a repeated
-  // key could pass this check with one value and reach the driver with
-  // another (`...&sslmode=verify-full&sslmode=no-verify`), and a query
-  // password would pass the URL check above and override the token. Refuse
-  // both shapes outright.
-  const seenKeys = new Set<string>();
-  for (const key of url.searchParams.keys()) {
-    if (seenKeys.has(key)) {
-      throw new Error(
-        `DB_AUTH=iam: DATABASE_URL repeats the query parameter "${key}"; the driver keeps the last value, remove the duplicate`
-      );
-    }
-    seenKeys.add(key);
-    if (OVERRIDING_QUERY_KEYS.has(key)) {
-      throw new Error(
-        `DB_AUTH=iam: DATABASE_URL must not carry "${key}" as a query parameter; the driver would let it replace the URL's own value`
-      );
-    }
-  }
-  const sslmode = url.searchParams.get("sslmode");
-  if (sslmode !== "verify-full") {
-    throw new Error(
-      `DB_AUTH=iam: DATABASE_URL must set sslmode=verify-full (got ${sslmode ?? "none"}); an IAM token is a bearer credential and must only reach the verified server`
-    );
-  }
-  const sslrootcert = url.searchParams.get("sslrootcert");
-  if (!sslrootcert) {
-    throw new Error(
-      "DB_AUTH=iam: DATABASE_URL must set sslrootcert=<RDS CA bundle>; Node's default trust store does not contain the RDS certificate authority"
-    );
-  }
-  if (!fs.existsSync(sslrootcert)) {
-    throw new Error(`DB_AUTH=iam: sslrootcert file not found: ${sslrootcert}`);
-  }
-  // A URL without a port parses to port = "", and node-postgres resolves the
-  // port as `config.port || PGPORT || 5432`, so PGPORT would move the
-  // connection away from the port the token is signed for. The host and the
-  // user cannot drift the same way: both are non-empty here, so they win over
-  // PGHOST and PGUSER.
-  if (!url.port && env.PGPORT !== undefined) {
-    throw new Error(
-      "DB_AUTH=iam: DATABASE_URL has no port and PGPORT is set; the driver would connect to the PGPORT port while the token is signed for another, put the port in the URL"
-    );
-  }
-  return {
-    hostname: url.hostname,
-    port: url.port ? Number(url.port) : 5432,
-    username: decodeURIComponent(url.username),
-  };
 }
 
 /**
@@ -168,17 +71,6 @@ export function installPasswordHook(modules: PgLike[], getToken: () => Promise<s
     mod.defaults.password = getToken;
   }
   return seen.size;
-}
-
-async function defaultSignerFactory(target: IamTarget): Promise<TokenSigner> {
-  // Loaded lazily so the signer never enters the process in password mode.
-  const { Signer } = await import("@aws-sdk/rds-signer");
-  return new Signer({
-    hostname: target.hostname,
-    port: target.port,
-    username: target.username,
-    region: target.region,
-  });
 }
 
 export interface InstallOptions {
@@ -211,19 +103,10 @@ export async function installDatabaseAuth(
     );
   }
 
-  if (env.PGPASSWORD !== undefined) {
-    throw new Error("DB_AUTH=iam: PGPASSWORD is set; it would override the IAM token, unset it");
-  }
-  if (env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
-    throw new Error(
-      "DB_AUTH=iam: NODE_TLS_REJECT_UNAUTHORIZED=0 is set; it turns off the certificate check that sslmode=verify-full asks for and would send the IAM token to an unverified server, unset it"
-    );
-  }
-  const target = iamTargetFromUrl(databaseUrl, env);
-  target.region = env.AWS_REGION ?? env.AWS_DEFAULT_REGION;
+  assertIamEnvironment(env);
+  const target = { ...iamTargetFromUrl(databaseUrl, env), region: awsRegionFromEnv(env) };
 
-  const signer = await (options.signerFactory ?? defaultSignerFactory)(target);
-  const getToken = () => signer.getAuthToken();
+  const getToken = createIamTokenSource(target, options.signerFactory);
   await getToken();
 
   let modules = options.pgModules;

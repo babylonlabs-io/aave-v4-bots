@@ -138,6 +138,8 @@ export const runtimeEnvFields = {
   DATABASE_URL: z.string().min(1).optional(),
   /** Isolates the bot's tables from the indexer's. */
   PERSISTENCE_SCHEMA: z.string().min(1).optional(),
+  /** How the StateStore authenticates to `DATABASE_URL`: a password in the URL, or RDS IAM tokens. */
+  DB_AUTH: z.enum(["password", "iam"]).optional().default("password"),
 
   /** Outbound alerts. `none` (default) logs only; `slack` also posts to a webhook. */
   NOTIFIER: z.enum(["none", "slack"]).optional().default("none"),
@@ -186,6 +188,7 @@ export interface RuntimeEnv {
   AWS_REGION?: string;
   DATABASE_URL?: string;
   PERSISTENCE_SCHEMA?: string;
+  DB_AUTH?: "password" | "iam";
   NOTIFIER: "none" | "slack";
   SLACK_WEBHOOK_REF?: string;
 }
@@ -406,8 +409,16 @@ export function buildSecretsConfig(env: RuntimeEnv): SecretsConfig {
 
 /** Crash-safety persistence, present iff `DATABASE_URL` is set. */
 export function buildPersistenceConfig(env: RuntimeEnv): PersistenceConfig | undefined {
-  if (!env.DATABASE_URL) return undefined;
-  return { connectionString: env.DATABASE_URL, schema: env.PERSISTENCE_SCHEMA };
+  if (!env.DATABASE_URL) {
+    // Fail rather than boot with no StateStore the operator asked to secure.
+    if (env.DB_AUTH === "iam") {
+      throw new Error(
+        "DB_AUTH=iam requires DATABASE_URL: without it the bot runs with no StateStore"
+      );
+    }
+    return undefined;
+  }
+  return { connectionString: env.DATABASE_URL, schema: env.PERSISTENCE_SCHEMA, auth: env.DB_AUTH };
 }
 
 /**

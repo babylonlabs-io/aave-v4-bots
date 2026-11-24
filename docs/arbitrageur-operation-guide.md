@@ -198,7 +198,7 @@ Keep `VAULT_SWAP_ADDRESS` and the database in step between the two files.
 | `VAULT_SWAP_ADDRESS` | BTCVaultSwap | Yes | |
 | `DATABASE_URL` | PostgreSQL connection string. Ponder falls back to an embedded PGlite database when it is unset, which these guides do not use. The example names the Compose service, `arbitrageur-postgres:5432`. A native run uses `localhost:5433` | Yes | |
 | `DATABASE_SCHEMA` | Schema for Ponder's tables. Leave it unset to derive one for each build. See [5.8](#58-indexer-schema) | No | derived |
-| `DB_AUTH` | How the indexer authenticates to Postgres: `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
+| `DB_AUTH` | How the indexer authenticates to Postgres (the bot reads it too, see below): `password` (the password is in `DATABASE_URL`) or `iam` (Amazon RDS IAM database authentication). See below | No | `password` |
 | `SPOKE_ADDRESS`, `ADAPTER_ADDRESS`, `LENS_ADDRESS` | Position indexing for the optional liquidation engine. Set all or none | liquidation | |
 | `POSITION_PROBE_CHUNK_SIZE` | See the liquidator guide | No | `25` |
 | `CHAIN_ID` | Network chain ID | No | `1` |
@@ -228,7 +228,7 @@ Boot fails, rather than falling back to a password, when:
 
 - `DATABASE_URL` is unset. Ponder would start on its embedded database instead of the shared one.
 - The URL carries a password, or `PGPASSWORD` is set. Either overrides the token.
-- The URL has no user, or no host.
+- The URL has no user, no host, or no database name.
 - `sslmode` is not `verify-full`, `sslrootcert` is unset, or that file is not on disk.
 - `NODE_TLS_REJECT_UNAUTHORIZED=0` is set. It cancels the check `verify-full` asks for.
 - The URL has no port while `PGPORT` is set. The driver would take the port from `PGPORT`, and the
@@ -238,8 +238,21 @@ Boot fails, rather than falling back to a password, when:
 - AWS resolves no credentials or no region. One token is minted at boot, so this fails the start
   rather than the first query.
 
-`DB_AUTH` covers the indexer only. The bot's own `DATABASE_URL`, which holds the StateStore,
-connects with a password.
+The bot reads `DB_AUTH` too, for its own StateStore `DATABASE_URL`, with the same checks.
+`operator-cli` reads it as well. The bot image carries the RDS CA bundle at
+`/app/certs/rds-global-bundle.pem`:
+
+```bash
+DB_AUTH=iam
+DATABASE_URL=postgresql://arbitrageur_bot@<host>:5432/arbitrageur_bot?sslmode=verify-full&sslrootcert=/app/certs/rds-global-bundle.pem
+AWS_REGION=us-east-1
+```
+
+The bot opens its first connection at boot, when it binds its execution identity, so a missing
+role or credential fails the start.
+
+In `iam` mode the bot accepts only these `DATABASE_URL` query parameters: `sslmode`, `sslrootcert`,
+`sslcert`, `sslkey` and `application_name`. Boot fails on any other, because the bot would drop it.
 
 ### 5.3. Arbitrageur Client Configuration
 
@@ -728,7 +741,7 @@ compromised too. Its `owner` is this signer, and it sweeps proceeds there.
 | Bot container never reports healthy | `METRICS_PORT` is not `9091`, so the healthcheck and the mapping reach nothing | Set `METRICS_PORT=9091` in `.env.arbitrageur`. Recreate the bot: `docker compose up -d --no-deps --force-recreate arbitrageur-bot` |
 | Bot reports `ponderReachable: false` under Docker | `PONDER_URL` names `localhost`, which is the bot's own container | Point it at `http://arbitrageur-ponder:42070` in `.env.arbitrageur`. Recreate the bot: `docker compose up -d --no-deps --force-recreate arbitrageur-bot` |
 | `DB_AUTH must be ...` | `DB_AUTH` is neither `password` nor `iam` | Correct the value. The check is case-sensitive |
-| `DB_AUTH=iam: ...` at indexer start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
+| `DB_AUTH=iam: ...` at indexer or bot start | The IAM preconditions are not met | The message names the one that failed. See §5.2 |
 | `ARBITRAGE_FUNDING=router requires ...` or `... is set but ARBITRAGE_FUNDING is "inventory"` | Half-configured funding | Set `ARBITRAGE_FUNDING=router` with `ARBITRAGE_ROUTER_ADDRESS` and `VAULT_KEEPER_ADDRESS`, or none |
 | `payer ... has not approved ArbitrageRouter` | Missing treasury allowance | The treasury approves the router (§4.4) |
 | `EXECUTION_MODE=MANUAL requires DATABASE_URL` | Proposals need a store | Set `DATABASE_URL` |

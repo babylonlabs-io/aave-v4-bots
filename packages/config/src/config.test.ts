@@ -6,6 +6,7 @@ import {
   bpsSchema,
   buildExecutionConfig,
   buildNotifierConfig,
+  buildPersistenceConfig,
   bytes32Schema,
   nonNegativeBigIntSchema,
   nonNegativeIntSchema,
@@ -199,6 +200,26 @@ describe("buildNotifierConfig", () => {
 
   it("rejects `slack` with no webhook reference at config time, not at first alert", () => {
     expect(() => buildNotifierConfig({ ...base, NOTIFIER: "slack" })).toThrow(/SLACK_WEBHOOK_REF/);
+  });
+});
+
+describe("buildPersistenceConfig", () => {
+  const base = { SECRETS_PROVIDER: "env", NOTIFIER: "none" } as const;
+
+  it("is absent without DATABASE_URL", () => {
+    expect(buildPersistenceConfig(base)).toBeUndefined();
+  });
+
+  it("refuses DB_AUTH=iam without DATABASE_URL instead of running with no store", () => {
+    expect(() => buildPersistenceConfig({ ...base, DB_AUTH: "iam" })).toThrow(
+      /requires DATABASE_URL/
+    );
+  });
+
+  it("carries DB_AUTH through to the store", () => {
+    expect(
+      buildPersistenceConfig({ ...base, DATABASE_URL: "postgres://h/db", DB_AUTH: "iam" })
+    ).toEqual({ connectionString: "postgres://h/db", schema: undefined, auth: "iam" });
   });
 });
 

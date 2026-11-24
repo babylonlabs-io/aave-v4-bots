@@ -12,7 +12,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@repo/db-auth": "workspace:*",
     "pg": "catalog:",
+    "pg-connection-string": "^2.9.1",
     "viem": "catalog:"
   },
   "devDependencies": {
