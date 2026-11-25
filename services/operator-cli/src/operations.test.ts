@@ -1,5 +1,6 @@
 import type { ProposedTx } from "@repo/execution";
 import {
+  MULTI_SEND_CALL_ONLY,
   buildSafeExecution,
   computeSafeTxHash,
   encodeExecTransaction,
@@ -450,6 +451,74 @@ describe("confirmProposal (external report-back)", () => {
     await expect(ops.confirmProposal(c, idempotencyKey(input()), SENT_TX)).rejects.toThrow(
       /gas\/refund/
     );
+  });
+
+  // A MultiSend batch is the one SafeTx that DELEGATECALLs; everything else must CALL.
+  describe("operation", () => {
+    const claimed = async (p: ProposedTx) => {
+      const c = ctx({ signer: safeSigner(), executorAddress: SAFE, executorKind: "safe" });
+      await c.store.propose(input(), p, hashPayload(p));
+      await ops.claimProposal(c, idempotencyKey(input()));
+      const envelope = (await c.store.getIntent(idempotencyKey(input())))?.safeEnvelope;
+      if (!envelope) throw new Error("expected an envelope");
+      return { c, envelope };
+    };
+
+    it("fixes, shows, and confirms DELEGATECALL for a MultiSendCallOnly batch", async () => {
+      const p = payload({ to: MULTI_SEND_CALL_ONLY });
+      const { c, envelope } = await claimed(p);
+      expect(envelope.operation).toBe(1);
+      c.publicClient = fakeClient({ safeNonce: BigInt(envelope.safeNonce) });
+      expect((await ops.showProposal(c, idempotencyKey(input()))).safeOperation).toBe(1);
+
+      const execData = encodeExecTransaction({ inner: p, params: envelope, signatures: "0x" });
+      c.publicClient = fakeClient({ tx: { to: SAFE, input: execData } });
+      await ops.confirmProposal(c, idempotencyKey(input()), SENT_TX);
+      expect((await c.store.getIntent(idempotencyKey(input())))?.status).toBe("submitted");
+    });
+
+    it("rejects an executed DELEGATECALL to any other target", async () => {
+      const p = payload();
+      const { c, envelope } = await claimed(p);
+      expect(envelope.operation).toBe(0);
+      const tampered = encodeExecTransaction({
+        inner: p,
+        params: { ...envelope, operation: 1 },
+        signatures: "0x",
+      });
+      c.publicClient = fakeClient({ tx: { to: SAFE, input: tampered } });
+      await expect(ops.confirmProposal(c, idempotencyKey(input()), SENT_TX)).rejects.toThrow(
+        /operation 1 .*must be CALL/
+      );
+    });
+
+    it("rejects an executed CALL to MultiSendCallOnly, which would batch from the wrong sender", async () => {
+      const p = payload({ to: MULTI_SEND_CALL_ONLY });
+      const { c, envelope } = await claimed(p);
+      const tampered = encodeExecTransaction({
+        inner: p,
+        params: { ...envelope, operation: 0 },
+        signatures: "0x",
+      });
+      c.publicClient = fakeClient({ tx: { to: SAFE, input: tampered } });
+      await expect(ops.confirmProposal(c, idempotencyKey(input()), SENT_TX)).rejects.toThrow(
+        /must be DELEGATECALL to MultiSendCallOnly/
+      );
+    });
+
+    it("refuses a persisted envelope whose operation was rewritten", async () => {
+      const p = payload();
+      const { c, envelope } = await claimed(p);
+      const id = idempotencyKey(input());
+      const row = await c.store.getIntent(id);
+      if (!row) throw new Error("expected a row");
+      // Rewritten consistently: params and hash agree, so only the policy can catch it.
+      const params = { ...envelope, operation: 1 as const };
+      const safeTxHash = computeSafeTxHash({ inner: p, params, safe: SAFE, chainId: CHAIN });
+      const tampered = { ...row, safeEnvelope: { ...params, safeTxHash } };
+      const tamperedCtx = { ...c, store: { ...c.store, getIntent: async () => tampered } };
+      await expect(ops.showProposal(tamperedCtx, id)).rejects.toThrow(/operation 1 .*must be CALL/);
+    });
   });
 });
 

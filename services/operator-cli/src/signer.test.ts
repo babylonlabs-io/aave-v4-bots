@@ -1,4 +1,4 @@
-import { computeSafeTxHash, defaultSafeTxParams } from "@repo/execution";
+import { MULTI_SEND_CALL_ONLY, computeSafeTxHash, defaultSafeTxParams } from "@repo/execution";
 import {
   type Address,
   type Chain,
@@ -38,9 +38,10 @@ const agreeing = computeSafeTxHash({
   chainId: CHAIN_ID,
 });
 
-const signer = (over: { hash?: Hex | Error; version?: string | Error } = {}) => {
+const signer = (over: { hash?: Hex | Error; version?: string | Error; code?: Hex } = {}) => {
   const publicClient = {
     getBlockNumber: vi.fn(async () => 500n),
+    getCode: vi.fn(async () => over.code ?? "0x"),
     readContract: vi.fn(async ({ functionName }: { functionName: string }) => {
       if (functionName === "nonce") return BigInt(SAFE_NONCE);
       if (functionName === "VERSION") {
@@ -73,6 +74,16 @@ const built = async (s: ReturnType<typeof signer>) => {
 };
 
 describe("createSafeOperatorSigner — buildEnvelope", () => {
+  // A DELEGATECALL runs the target's code as the Safe, so the code is checked, not the address.
+  it("refuses a MultiSend batch when the pinned address holds other code", async () => {
+    const batch = { ...inner, to: MULTI_SEND_CALL_ONLY };
+    for (const code of ["0x", "0x6001"] as Hex[]) {
+      await expect(signer({ code }).buildEnvelope(batch)).rejects.toThrow(
+        /not Safe's MultiSendCallOnly/
+      );
+    }
+  });
+
   it("records the envelope when the Safe hashes it the same way", async () => {
     const envelope = await built(signer());
 

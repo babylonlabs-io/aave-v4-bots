@@ -5,6 +5,7 @@ import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
 import {BaseBot} from "./abstract/BaseBot.sol";
 import {E2EConstants} from "./E2EConstants.sol";
+import {ArrayHelper} from "./lib/ArrayHelper.sol";
 
 /// @title ManualSafeArbitrageurE2EVerify
 /// @notice Asserts the MANUAL Safe arbitrageur flow really executed **both** engines: the operator
@@ -55,6 +56,16 @@ contract ManualSafeArbitrageurE2EVerify is Script, BaseBot {
         console.log("Now:    ", nowWbtc);
         require(nowWbtc < initialWbtc, "Safe did not pay for the acquisition");
         console.log("[PASS] Safe paid for the acquisition");
+
+        // The Safe buys in one batch: approve the ceiling, swap, approve zero. Any allowance left
+        // to BTCVaultSwap means the reset did not run, or an approval went out on its own.
+        bytes memory allowance = ffi_castCall(
+            address(wbtc),
+            "allowance(address,address)",
+            ArrayHelper.create(vm.toString(safe), vm.toString(address(vaultSwap)))
+        );
+        require(abi.decode(allowance, (uint256)) == 0, "Safe kept a WBTC allowance to BTCVaultSwap");
+        console.log("[PASS] Safe holds no WBTC allowance to BTCVaultSwap");
 
         // The other half of the split: the keeper received the vault (to its BTC key, off-chain)
         // without spending anything on-chain. "Vault left escrow" alone would also be satisfied if

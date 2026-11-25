@@ -193,11 +193,21 @@ describe("InventoryFunding", () => {
       expect(ensureAllowance).not.toHaveBeenCalled();
     });
 
-    it("refuses when the pinned address holds other code", async () => {
-      const { funding } = safeBuild("0x6001");
-      await expect(
-        funding.buildAcquisition({ vaultId: VAULT, maxWbtcIn: 98_981n })
-      ).rejects.toThrow(/not Safe's MultiSendCallOnly/);
+    it("refuses to boot when the pinned address holds other code", async () => {
+      await expect(safeBuild("0x6001").funding.prepare()).rejects.toThrow(
+        /not Safe's MultiSendCallOnly/
+      );
+      await expect(safeBuild("0x").funding.prepare()).rejects.toThrow(/code hash none/);
+    });
+
+    it("reads the code once, at boot", async () => {
+      const { funding, context } = safeBuild(MULTI_SEND_CALL_ONLY_CODE);
+      const getCode = (context.publicClient as unknown as { getCode: ReturnType<typeof vi.fn> })
+        .getCode;
+      await funding.prepare();
+      await funding.buildAcquisition({ vaultId: VAULT, maxWbtcIn: 1n });
+      await funding.buildAcquisition({ vaultId: VAULT, maxWbtcIn: 2n });
+      expect(getCode).toHaveBeenCalledTimes(1);
     });
 
     it("builds the exact three-call batch", async () => {
@@ -220,10 +230,11 @@ describe("InventoryFunding", () => {
 
       expect(built.call.address).toBe(MULTI_SEND_CALL_ONLY);
       expect(built.call).toEqual(expected);
-      // The estimate runs MultiSendCallOnly's code at the Safe's address, as a DELEGATECALL would.
-      expect(built.estimateStateOverride).toEqual([
-        { address: SAFE, code: MULTI_SEND_CALL_ONLY_CODE },
-      ]);
+      // Estimated as sent to the Safe with MultiSendCallOnly's code there, as a DELEGATECALL runs.
+      expect(built.estimate).toEqual({
+        address: SAFE,
+        stateOverride: [{ address: SAFE, code: MULTI_SEND_CALL_ONLY_CODE }],
+      });
     });
   });
 });

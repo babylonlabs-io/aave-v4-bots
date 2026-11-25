@@ -493,6 +493,33 @@ describe("ArbitrageEngine", () => {
     });
   });
 
+  describe("an acquisition the mode estimates elsewhere", () => {
+    // A Safe batch is DELEGATECALLed, so it runs as the Safe. Estimated as sent (to MultiSend), the
+    // inner calls would come from the MultiSend contract, revert, and the vault would be skipped.
+    it("estimates the same calldata against the address and state the mode names", async () => {
+      const clients = createMockClients();
+      const bot = createBot(clients);
+      const funding = (bot as unknown as { funding: Record<string, unknown> }).funding;
+      const SAFE = "0x5730F27a396C6BA75125B3FDaF98577A4C8CE3b9";
+      const stateOverride = [{ address: SAFE, code: "0xc0de" }];
+      funding.buildAcquisition = async () => ({
+        call: { address: "0xmultisend", abi: [], functionName: "multiSend", args: ["0xbatch"] },
+        estimate: { address: SAFE, stateOverride },
+      });
+
+      await bot.acquireVault(mockVault);
+
+      expect(clients.publicClient.estimateContractGas).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: SAFE,
+          stateOverride,
+          functionName: "multiSend",
+          args: ["0xbatch"],
+        })
+      );
+    });
+  });
+
   describe("capped acquisition price", () => {
     // Debt above the vault's value: the LLP charges `amountExitBtcEquivalent - minProfitThreshold`
     // (1.00 - 0.02 BTC) and reports the remaining 0.22 BTC of debt as a Hub deficit.

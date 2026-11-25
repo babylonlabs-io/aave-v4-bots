@@ -2,7 +2,7 @@ import { erc20Abi, vaultSwapAbi } from "@repo/abis";
 import { readBalance } from "@repo/chain";
 import { type ContractCall, buildMultiSendCall, readMultiSendCallOnlyCode } from "@repo/execution";
 import type { TokenSpend } from "@repo/risk";
-import type { Hex } from "viem";
+import type { Address, Hex } from "viem";
 import type { AllowanceResult } from "../../shared/executor";
 import { settledOutflows } from "../../shared/outflows";
 import type { AcquisitionCall, ArbitrageFunding, FundingContext } from "./types";
@@ -28,6 +28,9 @@ type Deps = Pick<
 export class InventoryFunding implements ArbitrageFunding {
   readonly mode = "inventory" as const;
 
+  /** MultiSendCallOnly's runtime code, checked against the pinned hash once at boot. */
+  private multiSendCode: Hex | undefined;
+
   constructor(private deps: Deps) {}
 
   spend(maxWbtcIn: bigint): TokenSpend {
@@ -38,8 +41,16 @@ export class InventoryFunding implements ArbitrageFunding {
     };
   }
 
-  /** Nothing to verify: the account that pays is the one this process already signs with. */
-  async prepare(): Promise<void> {}
+  /**
+   * A MANUAL Safe batches through MultiSendCallOnly, so its code must be on this chain: check it
+   * at boot rather than let every acquisition fail later. Nothing else to verify: the account
+   * that pays is the one this process acts for.
+   */
+  async prepare(): Promise<void> {
+    if (this.batchesApproval()) {
+      this.multiSendCode = await readMultiSendCallOnlyCode(this.deps.publicClient);
+    }
+  }
 
   async refreshInventory(): Promise<void> {
     const { publicClient, risk, metrics, wbtcAddress, executor } = this.deps;
@@ -133,11 +144,13 @@ export class InventoryFunding implements ArbitrageFunding {
       functionName: "approve",
       args: [vaultSwapAddress, amount],
     });
-    const code = await readMultiSendCallOnlyCode(publicClient);
+    this.multiSendCode ??= await readMultiSendCallOnlyCode(publicClient);
+    const safe: Address = executor.identity.from;
     return {
       call: buildMultiSendCall([approve(maxWbtcIn), swap, approve(0n)]),
-      // Run the batch as the Safe would: MultiSendCallOnly's code at the Safe's address.
-      estimateStateOverride: [{ address: executor.identity.from, code }],
+      // Run the batch as the Safe would: the same calldata sent to the Safe, with
+      // MultiSendCallOnly's code at the Safe's address, so every inner call comes from the Safe.
+      estimate: { address: safe, stateOverride: [{ address: safe, code: this.multiSendCode }] },
     };
   }
 }

@@ -358,6 +358,12 @@ calls from the Safe:
 
 The Safe keeps no allowance after the batch. `operator-cli` accepts operation `1` only for that
 address, and checks the code there against the canonical hash before it fixes an envelope.
+The bot checks that code at boot and refuses to start without it.
+
+Switching a running Safe deployment to this version: settle every live arbitrage `approval` and
+`vault-acquisition` proposal first. Have the owners reject any queued SafeTx at its nonce, then
+`operator-cli fail` the row. A batch is keyed on the MultiSendCallOnly address, so it neither
+replaces nor deduplicates against an older proposal for the same vault.
 
 ### 5.5. Private submission
 

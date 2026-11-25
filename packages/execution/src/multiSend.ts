@@ -11,8 +11,9 @@ import {
 import { type ContractCall, encodeCall } from "./txSender";
 
 // Safe's MultiSendCallOnly v1.5.0, the one contract a SafeTx may DELEGATECALL. It runs several
-// calls from the Safe in one transaction and reverts on any nested DELEGATECALL, so the Safe's own
-// storage stays out of reach. Canonical address and runtime code hash from safe-global/safe-deployments.
+// CALLs from the Safe in one transaction and reverts on any nested DELEGATECALL. A packed CALL to
+// the Safe itself still passes Safe's self-authorization, so the batch content needs review too.
+// Canonical address and runtime code hash from safe-global/safe-deployments.
 export const MULTI_SEND_CALL_ONLY: Address = "0xA83c336B20401Af773B6219BA5027174338D1836";
 export const MULTI_SEND_CALL_ONLY_CODE_HASH: Hex =
   "0xcdbdcec38d2f1c7d961b0029ff8416b7e86e9974d6f0e9c9580c7d17fcfb6663";

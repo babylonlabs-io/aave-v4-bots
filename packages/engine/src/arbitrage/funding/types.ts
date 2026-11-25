@@ -129,10 +129,11 @@ export interface AcquisitionCall {
   call: ContractCall;
   authorizationId?: Hex;
   /**
-   * State to override when estimating `call`. A Safe batch runs MultiSendCallOnly's code as the
-   * Safe, which a plain `eth_estimateGas` from the Safe cannot reproduce without it.
+   * How to estimate `call` when it cannot be estimated as sent. A Safe batch is DELEGATECALLed,
+   * so it runs as the Safe: estimate the same calldata against `address` (the Safe) with
+   * MultiSendCallOnly's code placed there by `stateOverride`.
    */
-  estimateStateOverride?: StateOverride;
+  estimate?: { address: Address; stateOverride: StateOverride };
 }
 
 /**
