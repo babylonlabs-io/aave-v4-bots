@@ -130,7 +130,8 @@ liquidation engine with the same executor and risk gate.
    bot trusts the on-chain answer, not the indexer's cached one.
 3. **Acquire** — if `amountProfitEst` exceeds
    `BTC_REDEMPTION_COST_SATS`, the bot:
-   - Ensures WBTC approval for BTCVaultSwap.
+   - Ensures WBTC approval for BTCVaultSwap. A MANUAL Safe instead approves `maxWbtcIn`, swaps,
+     and resets the approval to zero in one batched SafeTx.
    - Calls `swapExitBtcForVault(vaultId, maxWbtcIn)` where
      `maxWbtcIn = amountExitBtcToAcquire + amountExitBtcToAcquire * MAX_SLIPPAGE_BPS / 10000`.
 4. **Batch** — every affordable vault is broadcast first, then all receipts are awaited

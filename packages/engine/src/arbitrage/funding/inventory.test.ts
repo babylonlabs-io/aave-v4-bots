@@ -1,5 +1,12 @@
+import { erc20Abi, vaultSwapAbi } from "@repo/abis";
+import {
+  type ContractCall,
+  MULTI_SEND_CALL_ONLY,
+  MULTI_SEND_CALL_ONLY_CODE_HASH,
+  buildMultiSendCall,
+} from "@repo/execution";
 import { createRiskGate } from "@repo/risk";
-import { TransactionReceiptNotFoundError } from "viem";
+import { type Hex, TransactionReceiptNotFoundError, keccak256 } from "viem";
 import { describe, expect, it, vi } from "vitest";
 import type { Executor } from "../../shared/executor";
 import { InventoryFunding } from "./inventory";
@@ -145,5 +152,78 @@ describe("InventoryFunding", () => {
 
     expect(call.functionName).toBe("swapExitBtcForVaultOnBehalf");
     expect(call.args).toEqual([VAULT_ID, 99n, KEEPER]);
+  });
+
+  // A MANUAL Safe signs one SafeTx per vault: approve the ceiling, buy, reset to zero.
+  describe("a MANUAL Safe", () => {
+    const SAFE = "0x5730F27a396C6BA75125B3FDaF98577A4C8CE3b9" as const;
+    const REAL_WBTC = "0x549A9C66B3d310A0cb706B8Efacf46bb13Abf210" as const;
+    const REAL_SWAP = "0xA5f877cEfEAA7534460f19d7fc8b76CdE820a92A" as const;
+    const REAL_KEEPER = "0x209a705D8A3e64AABCe37Ee2334f52C72777Cc59" as const;
+    const VAULT = `0x${"66".repeat(32)}` as Hex;
+    // Ethereum mainnet runtime code of MultiSendCallOnly v1.5.0; its keccak is the pinned hash.
+    const MULTI_SEND_CALL_ONLY_CODE =
+      "0x60806040526004361061001e5760003560e01c80638d80ff0a14610023575b600080fd5b6100dc6004803603602081101561003957600080fd5b810190808035906020019064010000000081111561005657600080fd5b82018360208201111561006857600080fd5b8035906020019184600183028401116401000000008311171561008a57600080fd5b91908080601f016020809104026020016040519081016040528093929190818152602001838380828437600081840152601f19601f8201169050808301925050505050505091929192905050506100de565b005b805160205b8181101561016a578083015160f81c6001820184015160601c3081150281179050601583018501516035840186015160558501870160008560008114610130576001811461014057610145565b6000808585888a5af19150610145565b600080fd5b5080610157576040513d6000823e3d81fd5b82605501870196505050505050506100e3565b50505056fea26469706673582212201ad552da02f0e66afd7f2ad29a305f1d4c737610d3b9e7ce8c994444949e57d664736f6c63430007060033" as Hex;
+
+    it("pins the fixture to the canonical code hash", () => {
+      expect(keccak256(MULTI_SEND_CALL_ONLY_CODE)).toBe(MULTI_SEND_CALL_ONLY_CODE_HASH);
+    });
+
+    const safeBuild = (code: Hex) => {
+      const ensureAllowance = vi.fn();
+      const getCode = vi.fn(async () => code);
+      const built = build({
+        publicClient: { getCode } as unknown as FundingContext["publicClient"],
+        executor: {
+          mode: "MANUAL",
+          executorKind: "safe",
+          identity: { from: SAFE, chainId: 1 },
+          ensureAllowance,
+        } as unknown as Executor,
+        wbtcAddress: REAL_WBTC,
+        vaultSwapAddress: REAL_SWAP,
+        vaultKeeperAddress: REAL_KEEPER,
+      });
+      return { ...built, ensureAllowance };
+    };
+
+    it("needs no separate approval", async () => {
+      const { funding, ensureAllowance } = safeBuild("0x");
+      expect(await funding.ensureFunded(1_234n)).toEqual({ kind: "satisfied" });
+      expect(ensureAllowance).not.toHaveBeenCalled();
+    });
+
+    it("refuses when the pinned address holds other code", async () => {
+      const { funding } = safeBuild("0x6001");
+      await expect(
+        funding.buildAcquisition({ vaultId: VAULT, maxWbtcIn: 98_981n })
+      ).rejects.toThrow(/not Safe's MultiSendCallOnly/);
+    });
+
+    it("builds the exact three-call batch", async () => {
+      const approve = (amount: bigint): ContractCall => ({
+        address: REAL_WBTC,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [REAL_SWAP, amount],
+      });
+      const swap: ContractCall = {
+        address: REAL_SWAP,
+        abi: vaultSwapAbi,
+        functionName: "swapExitBtcForVaultOnBehalf",
+        args: [VAULT, 98_981n, REAL_KEEPER],
+      };
+      const expected = buildMultiSendCall([approve(98_981n), swap, approve(0n)]);
+
+      const { funding } = safeBuild(MULTI_SEND_CALL_ONLY_CODE);
+      const built = await funding.buildAcquisition({ vaultId: VAULT, maxWbtcIn: 98_981n });
+
+      expect(built.call.address).toBe(MULTI_SEND_CALL_ONLY);
+      expect(built.call).toEqual(expected);
+      // The estimate runs MultiSendCallOnly's code at the Safe's address, as a DELEGATECALL would.
+      expect(built.estimateStateOverride).toEqual([
+        { address: SAFE, code: MULTI_SEND_CALL_ONLY_CODE },
+      ]);
+    });
   });
 });

@@ -1,5 +1,6 @@
-import { vaultSwapAbi } from "@repo/abis";
+import { erc20Abi, vaultSwapAbi } from "@repo/abis";
 import { readBalance } from "@repo/chain";
+import { type ContractCall, buildMultiSendCall, readMultiSendCallOnlyCode } from "@repo/execution";
 import type { TokenSpend } from "@repo/risk";
 import type { Hex } from "viem";
 import type { AllowanceResult } from "../../shared/executor";
@@ -70,13 +71,23 @@ export class InventoryFunding implements ArbitrageFunding {
   }
 
   /**
+   * A MANUAL Safe approves inside the acquisition's own SafeTx (see `buildAcquisition`), so it
+   * never holds a standing allowance and the owners sign one transaction per vault.
+   */
+  private batchesApproval(): boolean {
+    const { executor } = this.deps;
+    return executor.mode === "MANUAL" && executor.executorKind === "safe";
+  }
+
+  /**
    * The LLP pulls the WBTC from the signer, so the signer must have approved it.
    *
    * AUTO broadcasts the approval and waits, so it only ever returns `satisfied`. MANUAL proposes it
    * for an operator to sign and returns `proposed`/`duplicate` — the swap cannot go out until they
-   * do.
+   * do. A MANUAL Safe needs nothing first: the approval travels in the acquisition's batch.
    */
   ensureFunded(maxWbtcIn: bigint): Promise<AllowanceResult> {
+    if (this.batchesApproval()) return Promise.resolve({ kind: "satisfied" });
     return this.deps.executor.ensureAllowance({
       token: this.deps.wbtcAddress,
       spender: this.deps.vaultSwapAddress,
@@ -102,16 +113,31 @@ export class InventoryFunding implements ArbitrageFunding {
     vaultId,
     maxWbtcIn,
   }: { vaultId: Hex; maxWbtcIn: bigint }): Promise<AcquisitionCall> {
-    const target = { address: this.deps.vaultSwapAddress, abi: vaultSwapAbi };
+    const { publicClient, executor, wbtcAddress, vaultSwapAddress, vaultKeeperAddress } = this.deps;
+    const target = { address: vaultSwapAddress, abi: vaultSwapAbi };
+    const swap: ContractCall = vaultKeeperAddress
+      ? {
+          ...target,
+          functionName: "swapExitBtcForVaultOnBehalf",
+          args: [vaultId, maxWbtcIn, vaultKeeperAddress],
+        }
+      : { ...target, functionName: "swapExitBtcForVault", args: [vaultId, maxWbtcIn] };
     // No `authorizationId`: the signer pays with the transaction, so nothing outlives it.
+    if (!this.batchesApproval()) return { call: swap };
+
+    // Approve exactly the ceiling, buy, then reset to zero: the swap pulls at most `maxWbtcIn`, and
+    // the trailing approve leaves no allowance behind, whatever the vault actually cost.
+    const approve = (amount: bigint): ContractCall => ({
+      address: wbtcAddress,
+      abi: erc20Abi,
+      functionName: "approve",
+      args: [vaultSwapAddress, amount],
+    });
+    const code = await readMultiSendCallOnlyCode(publicClient);
     return {
-      call: this.deps.vaultKeeperAddress
-        ? {
-            ...target,
-            functionName: "swapExitBtcForVaultOnBehalf",
-            args: [vaultId, maxWbtcIn, this.deps.vaultKeeperAddress],
-          }
-        : { ...target, functionName: "swapExitBtcForVault", args: [vaultId, maxWbtcIn] },
+      call: buildMultiSendCall([approve(maxWbtcIn), swap, approve(0n)]),
+      // Run the batch as the Safe would: MultiSendCallOnly's code at the Safe's address.
+      estimateStateOverride: [{ address: executor.identity.from, code }],
     };
   }
 }

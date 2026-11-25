@@ -33,7 +33,7 @@ const inner = {
 /** The hash a Safe that agrees with us would return. */
 const agreeing = computeSafeTxHash({
   inner,
-  params: defaultSafeTxParams(SAFE_NONCE),
+  params: defaultSafeTxParams(SAFE_NONCE, inner.to),
   safe: SAFE,
   chainId: CHAIN_ID,
 });

@@ -89,7 +89,7 @@ function assertSafeEnvelopeIntact(
   // self-consistent — and the refund fields are not covered by `payloadHash` (the inner call only)
   // nor sent out-of-band, so an operator has nothing to compare the displayed hash against. This
   // is the check that does not depend on the record being honest.
-  assertZeroGasPolicy(envelope, `intent ${id}`);
+  assertZeroGasPolicy(envelope, payload.to, `intent ${id}`);
 
   const recomputed = computeSafeTxHash({
     inner: payload,
@@ -242,6 +242,8 @@ export interface ProposalView {
    * (`confirm` or `release`).
    */
   safeTxIsNext?: boolean;
+  /** For a `safe` row: the SafeTx operation to sign, `1` (DELEGATECALL) only for a MultiSend batch. */
+  safeOperation?: 0 | 1;
 }
 
 /** Verify + render one proposal (read-only). For a not-yet-claimed Safe proposal, previews the
@@ -253,6 +255,7 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
   let safeTxHash = row.safeEnvelope?.safeTxHash;
   let safeTxHashIsPreview = false;
   let safeNonce = row.safeEnvelope?.safeNonce;
+  let safeOperation = row.safeEnvelope?.operation;
   let safeTxIsNext: boolean | undefined;
   if (ctx.executorKind === "safe") {
     if (row.safeEnvelope) {
@@ -266,6 +269,7 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
       const preview = await ctx.signer.buildEnvelope(payload);
       safeTxHash = preview?.safeTxHash;
       safeNonce = preview?.safeNonce;
+      safeOperation = preview?.operation;
       safeTxHashIsPreview = true;
     }
   }
@@ -283,6 +287,7 @@ export async function showProposal(ctx: OperatorContext, id: string): Promise<Pr
     safeTxHashIsPreview: safeTxHash ? safeTxHashIsPreview : undefined,
     safeNonce,
     safeTxIsNext,
+    safeOperation,
   };
 }
 
@@ -419,6 +424,7 @@ function verifySafeTx(
   // so a tampered decoded field would not show up there.
   assertZeroGasPolicy(
     { ...decoded.params, safeNonce: envelope.safeNonce },
+    decoded.inner.to,
     `execTransaction for ${row.id}`
   );
   // Finally, the SafeTx must be the exact one we fixed at claim: recompute its hash from the persisted

@@ -10,6 +10,7 @@ import {
 } from "viem";
 import { describe, expect, it } from "vitest";
 import {
+  MULTI_SEND_CALL_ONLY,
   type ProposedTx,
   assertZeroGasPolicy,
   buildSafeExecution,
@@ -34,7 +35,7 @@ const inner: ProposedTx = {
 
 describe("defaultSafeTxParams (v1 zero-gas/refund policy)", () => {
   it("zeroes every gas + refund field and uses CALL", () => {
-    expect(defaultSafeTxParams(7)).toEqual({
+    expect(defaultSafeTxParams(7, TARGET)).toEqual({
       safeNonce: 7,
       operation: 0,
       safeTxGas: "0",
@@ -51,42 +52,54 @@ describe("defaultSafeTxParams (v1 zero-gas/refund policy)", () => {
 // one nonzero `refundReceiver` pays the Safe out on every execution while the inner call still
 // reads exactly as proposed.
 describe("assertZeroGasPolicy", () => {
-  const conforming = defaultSafeTxParams(7);
+  const conforming = defaultSafeTxParams(7, TARGET);
   const ATTACKER = "0x4444444444444444444444444444444444444444" as const;
 
   it("passes the params the bot itself builds", () => {
-    expect(() => assertZeroGasPolicy(conforming, "ctx")).not.toThrow();
+    expect(() => assertZeroGasPolicy(conforming, TARGET, "ctx")).not.toThrow();
   });
 
   it.each([
-    ["operation", { operation: 1 as const }, /operation 1 is not CALL/],
+    ["operation", { operation: 1 as const }, /operation 1 for 0x2222.*must be CALL/],
     ["safeTxGas", { safeTxGas: "1" }, /safeTxGas 1/],
     ["baseGas", { baseGas: "21000" }, /baseGas 21000/],
     ["gasPrice", { gasPrice: "1" }, /gasPrice 1/],
     ["gasToken", { gasToken: ATTACKER }, /gasToken 0x4444/],
     ["refundReceiver", { refundReceiver: ATTACKER }, /refundReceiver 0x4444/],
   ])("refuses a nonzero %s on its own", (_field, override, expected) => {
-    expect(() => assertZeroGasPolicy({ ...conforming, ...override }, "ctx")).toThrow(expected);
+    expect(() => assertZeroGasPolicy({ ...conforming, ...override }, TARGET, "ctx")).toThrow(
+      expected
+    );
   });
 
   // Echoed verbatim, in whatever form it was stored: the operator has to recognise the address to
   // judge it, and a normalised one reads like a different value than the record they are looking at.
+  it("allows DELEGATECALL only to the pinned MultiSendCallOnly", () => {
+    const batch = defaultSafeTxParams(7, MULTI_SEND_CALL_ONLY);
+    expect(batch.operation).toBe(1);
+    expect(() => assertZeroGasPolicy(batch, MULTI_SEND_CALL_ONLY, "ctx")).not.toThrow();
+    // A CALL to MultiSendCallOnly would batch from the contract itself, not from the Safe.
+    expect(() =>
+      assertZeroGasPolicy({ ...batch, operation: 0 }, MULTI_SEND_CALL_ONLY, "ctx")
+    ).toThrow(/must be DELEGATECALL to MultiSendCallOnly/);
+  });
+
   it("names the offending address exactly as stored", () => {
     const checksummed = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01" as const;
-    expect(() => assertZeroGasPolicy({ ...conforming, gasToken: checksummed }, "ctx")).toThrow(
-      checksummed
-    );
+    expect(() =>
+      assertZeroGasPolicy({ ...conforming, gasToken: checksummed }, TARGET, "ctx")
+    ).toThrow(checksummed);
   });
 
   it("names the context so an operator knows which intent it is", () => {
-    expect(() => assertZeroGasPolicy({ ...conforming, gasPrice: "1" }, "intent abc")).toThrow(
-      /^intent abc:/
-    );
+    expect(() =>
+      assertZeroGasPolicy({ ...conforming, gasPrice: "1" }, TARGET, "intent abc")
+    ).toThrow(/^intent abc:/);
   });
 });
 
 describe("computeSafeTxHash", () => {
-  const params = defaultSafeTxParams(5);
+  const params = defaultSafeTxParams(5, TARGET);
 
   // The authoritative offline check: recompute the Safe EIP-712 hash a SECOND, independent way — the
   // canonical `keccak256(0x19 01 ++ domainSeparator ++ safeTxStructHash)` — and require it to equal
@@ -147,19 +160,19 @@ describe("computeSafeTxHash", () => {
   it("is deterministic and changes with the nonce", () => {
     const h1 = computeSafeTxHash({
       inner,
-      params: defaultSafeTxParams(1),
+      params: defaultSafeTxParams(1, TARGET),
       safe: SAFE,
       chainId: 8453,
     });
     const h2 = computeSafeTxHash({
       inner,
-      params: defaultSafeTxParams(1),
+      params: defaultSafeTxParams(1, TARGET),
       safe: SAFE,
       chainId: 8453,
     });
     const h3 = computeSafeTxHash({
       inner,
-      params: defaultSafeTxParams(2),
+      params: defaultSafeTxParams(2, TARGET),
       safe: SAFE,
       chainId: 8453,
     });
@@ -198,7 +211,12 @@ describe("buildSafeExecution", () => {
       safeVersion: "1.4.1",
     });
     expect(exec.safeTxHash).toBe(
-      computeSafeTxHash({ inner, params: defaultSafeTxParams(9), safe: SAFE, chainId: 8453 })
+      computeSafeTxHash({
+        inner,
+        params: defaultSafeTxParams(9, TARGET),
+        safe: SAFE,
+        chainId: 8453,
+      })
     );
   });
 });
@@ -220,7 +238,7 @@ describe("encodeSafeSignatures", () => {
 
 describe("encodeExecTransaction / decodeExecTransaction round-trip", () => {
   it("decodes back the exact inner call and params (nonce is not in calldata)", () => {
-    const params = defaultSafeTxParams(3);
+    const params = defaultSafeTxParams(3, TARGET);
     const signatures = "0xabcd" as Hex;
     const data = encodeExecTransaction({ inner, params, signatures });
 

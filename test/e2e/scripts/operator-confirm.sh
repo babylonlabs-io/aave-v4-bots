@@ -45,8 +45,9 @@ cli() { node_modules/.bin/tsx services/operator-cli/src/index.ts "$@"; }
 # separate program from the CLI — it holds `SIGN_KEY`; operator-cli never sees a key here.
 sign() { node_modules/.bin/tsx services/operator-cli/scripts/e2e-external-sign.ts "$@"; }
 
-# Six proposals have to clear before this suite is done: an approval per debt token, the
-# liquidation, the arbitrage engine's own approval once a vault is escrowed, and the acquisition.
+# Up to six proposals have to clear before this suite is done: an approval per debt token, the
+# liquidation, the arbitrage engine's own approval once a vault is escrowed (EOA only: a Safe
+# approves inside the acquisition's batch), and the acquisition.
 # Each is a full claim/sign/confirm round-trip costing several process spawns, and the Safe variant
 # serialises them — one live claim at a time — so they cannot overlap.
 #
@@ -75,7 +76,8 @@ while ((SECONDS < deadline)); do
   to="$(jq -r .call.to <<<"$info")"
   data="$(jq -r .call.data <<<"$info")"
   safetxhash="$(jq -r '.safeTxHash // empty' <<<"$info")"
-  txhash="$(sign "$MANUAL_EXECUTOR_KIND" "$to" "$data" "$safetxhash")"
+  operation="$(jq -r '.safeOperation // 0' <<<"$info")"
+  txhash="$(sign "$MANUAL_EXECUTOR_KIND" "$to" "$data" "$safetxhash" "$operation")"
 
   # 3) report it back — operator-cli verifies the on-chain tx matches, then records it.
   cli confirm "$id" --tx "$txhash"

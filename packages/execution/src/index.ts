@@ -14,3 +14,4 @@ export * from "./receipt";
 export * from "./submission";
 export * from "./submission/flashbots";
 export * from "./safe";
+export * from "./multiSend";

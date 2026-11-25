@@ -129,7 +129,7 @@ async function dispatch(command: string, args: string[], ctx: ops.OperatorContex
       console.log(
         `claimed ${result.row.id}${
           envelope
-            ? ` — sign safeTxHash ${envelope.safeTxHash} at Safe nonce ${envelope.safeNonce}`
+            ? ` — sign safeTxHash ${envelope.safeTxHash} at Safe nonce ${envelope.safeNonce}, operation ${envelope.operation}${envelope.operation === 1 ? " (DELEGATECALL to MultiSendCallOnly)" : ""}`
             : ""
         }`
       );

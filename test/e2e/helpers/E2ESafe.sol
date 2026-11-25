@@ -95,14 +95,16 @@ contract E2ESafe {
         address refundReceiver,
         bytes calldata signatures
     ) external payable returns (bool success) {
-        require(operation == 0, "only CALL");
+        require(operation <= 1, "bad operation");
         bytes32 txHash = getTransactionHash(
             to, value, data, operation, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, nonce
         );
         _checkSignatures(txHash, signatures);
         nonce++;
 
-        (success,) = to.call{value: value}(data);
+        // A batch DELEGATECALLs MultiSendCallOnly, as the real Safe does for operation 1.
+        if (operation == 1) (success,) = to.delegatecall(data);
+        else (success,) = to.call{value: value}(data);
         // GS013: with no gas refund configured, a failed inner call reverts rather than emitting
         // ExecutionFailure — matching the real Safe under the operator-cli v1 zero-gas policy.
         require(success || safeTxGas != 0 || gasPrice != 0, "GS013");

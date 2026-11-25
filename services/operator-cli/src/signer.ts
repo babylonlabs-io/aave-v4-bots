@@ -6,6 +6,7 @@ import {
   buildSafeExecution,
   encodeExecTransaction,
   encodeSafeSignatures,
+  readMultiSendCallOnlyCode,
   safeTxTypedData,
 } from "@repo/execution";
 import type { SafeEnvelope } from "@repo/persistence";
@@ -126,6 +127,8 @@ export function createSafeOperatorSigner(deps: {
         safeNonce: Number(safeNonce),
         safeVersion,
       });
+      // A DELEGATECALL runs the target's code as the Safe, so check the code itself, not the address.
+      if (execution.operation === 1) await readMultiSendCallOnlyCode(deps.publicClient);
 
       // Ask the Safe for the hash we just computed for it.
       //

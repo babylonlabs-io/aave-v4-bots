@@ -1,7 +1,7 @@
 import type { ContractCall } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import type { RiskGate, TokenSpend } from "@repo/risk";
-import type { Address, Hex, PublicClient } from "viem";
+import type { Address, Hex, PublicClient, StateOverride } from "viem";
 import type { AllowanceResult, Executor } from "../../shared/executor";
 import type { ArbitrageMetrics } from "../engine";
 
@@ -128,6 +128,11 @@ export interface ArbitrageFunding {
 export interface AcquisitionCall {
   call: ContractCall;
   authorizationId?: Hex;
+  /**
+   * State to override when estimating `call`. A Safe batch runs MultiSendCallOnly's code as the
+   * Safe, which a plain `eth_estimateGas` from the Safe cannot reproduce without it.
+   */
+  estimateStateOverride?: StateOverride;
 }
 
 /**

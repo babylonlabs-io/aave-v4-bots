@@ -167,6 +167,8 @@ export interface AutoExecutor extends BaseExecutor {
 /** MANUAL — keyless. No nonce API exists at all: a MANUAL bot never sequences a signer's nonce. */
 export interface ManualExecutor extends BaseExecutor {
   readonly mode: "MANUAL";
+  /** The operator's custody. A `safe` can batch several calls into one SafeTx; an `eoa` cannot. */
+  readonly executorKind: "eoa" | "safe";
 }
 
 export type Executor = AutoExecutor | ManualExecutor;
@@ -577,6 +579,8 @@ export function createManualExecutor(deps: {
   notifier: Notifier;
   identity: ExecutionIdentity;
   logger: Logger;
+  /** The operator's custody (`MANUAL_EXECUTOR_KIND`). Defaults to `eoa`, which never batches. */
+  executorKind?: "eoa" | "safe";
   /**
    * Sweep an un-actioned proposal to `expired` after this many ms, each cycle, freeing its subject
    * to be re-proposed (and re-notified). `0` disables the sweep — the "`MANUAL_INTENT_TTL_MS=0`
@@ -679,6 +683,7 @@ export function createManualExecutor(deps: {
 
   return {
     mode: "MANUAL",
+    executorKind: deps.executorKind ?? "eoa",
     identity,
 
     // A keyless bot still reconciles: the operator broadcasts, records the hash (markBroadcast), and

@@ -7,7 +7,7 @@
 //
 // It lives under `services/operator-cli/scripts/` (not `test/e2e/`) only so it resolves `viem` from the
 // package; it is not part of the CLI. Run: `pnpm --filter @services/operator-cli exec tsx
-// scripts/e2e-external-sign.ts <eoa|safe> <to> <data> [safeTxHash]`.
+// scripts/e2e-external-sign.ts <eoa|safe> <to> <data> [safeTxHash] [operation]`.
 import {
   http,
   type Address,
@@ -18,7 +18,15 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-const [mode, to, data, safeTxHash] = process.argv.slice(2) as [string, Address, Hex, Hex];
+const [mode, to, data, safeTxHash, operationArg] = process.argv.slice(2) as [
+  string,
+  Address,
+  Hex,
+  Hex,
+  string | undefined,
+];
+// The operation `claim` fixed: 1 (DELEGATECALL) only for a MultiSendCallOnly batch.
+const operation = Number(operationArg ?? "0");
 const rpc = process.env.CLIENT_RPC_URL ?? "http://127.0.0.1:8545";
 const safe = process.env.MANUAL_EXECUTOR_ADDRESS as Address;
 const account = privateKeyToAccount(process.env.SIGN_KEY as Hex);
@@ -63,7 +71,7 @@ if (mode === "safe") {
   const calldata = encodeFunctionData({
     abi: execTransactionAbi,
     functionName: "execTransaction",
-    args: [to, 0n, data, 0, 0n, 0n, 0n, ZERO, ZERO, signature],
+    args: [to, 0n, data, operation, 0n, 0n, 0n, ZERO, ZERO, signature],
   });
   txHash = await wallet.sendTransaction({ to: safe, data: calldata, value: 0n });
 } else {

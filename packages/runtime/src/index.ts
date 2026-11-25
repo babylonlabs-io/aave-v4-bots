@@ -367,6 +367,7 @@ async function buildExecutor(
       notifier,
       identity,
       logger,
+      executorKind: config.execution.executorKind,
       intentTtlMs: config.execution.intentTtlMs,
       intentStuckMs: config.execution.intentStuckMs,
     });

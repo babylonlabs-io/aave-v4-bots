@@ -10,6 +10,7 @@ import {
   hashTypedData,
 } from "viem";
 import type { ProposedTx } from "./index";
+import { isMultiSendCallOnly } from "./multiSend";
 
 // The pure (chain-free) half of MANUAL `safe` custody: wrap a proposal's INNER call into a SafeTx,
 // compute the EIP-712 `safeTxHash` the owners sign, and encode/decode `execTransaction`. The
@@ -29,7 +30,7 @@ import type { ProposedTx } from "./index";
 export interface SafeTxParams {
   /** The Safe's on-chain nonce this SafeTx consumes (distinct per concurrent claim). */
   safeNonce: number;
-  /** `0` = CALL, `1` = DELEGATECALL. v1 policy: always CALL. */
+  /** `0` = CALL, `1` = DELEGATECALL. Policy: CALL, except DELEGATECALL to MultiSendCallOnly. */
   operation: 0 | 1;
   /** SafeTx gas + refund fields, decimal strings. v1 policy: all `"0"` / zero address — no Safe-level
    *  refund (a refund moves value out of the Safe on every exec). `confirm` rejects any deviation. */
@@ -51,14 +52,22 @@ export interface SafeExecution extends SafeTxParams {
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 
 /**
- * The v1 gas/refund policy: `operation = CALL`, and **no Safe-level refund** — every gas/refund field
- * zeroed. A nonzero `refundReceiver`/`gasPrice` moves value out of the Safe on each execution, so
- * `operator-cli`'s `confirm` rejects any deviation from this. Only the nonce varies per SafeTx.
+ * The operation a SafeTx to `to` must use: DELEGATECALL for the pinned MultiSendCallOnly (a batch
+ * runs as the Safe only that way), CALL for everything else.
  */
-export function defaultSafeTxParams(safeNonce: number): SafeTxParams {
+export function safeOperationFor(to: Address): 0 | 1 {
+  return isMultiSendCallOnly(to) ? 1 : 0;
+}
+
+/**
+ * The gas/refund policy: the operation `safeOperationFor` derives from `to`, and **no Safe-level
+ * refund** — every gas/refund field zeroed. A nonzero `refundReceiver`/`gasPrice` moves value out
+ * of the Safe on each execution, so `operator-cli`'s `confirm` rejects any deviation from this.
+ */
+export function defaultSafeTxParams(safeNonce: number, to: Address): SafeTxParams {
   return {
     safeNonce,
-    operation: 0,
+    operation: safeOperationFor(to),
     safeTxGas: "0",
     baseGas: "0",
     gasPrice: "0",
@@ -82,9 +91,13 @@ export function defaultSafeTxParams(safeNonce: number): SafeTxParams {
  * the inner call still reads exactly as proposed. A constant cannot be rewritten that way, which is
  * why this check holds where a hash comparison does not.
  */
-export function assertZeroGasPolicy(params: SafeTxParams, context: string): void {
+export function assertZeroGasPolicy(params: SafeTxParams, to: Address, context: string): void {
+  // DELEGATECALL runs the target's code as the Safe and can rewrite its owners. Only the pinned
+  // MultiSendCallOnly may receive it, and a CALL to it would batch from the wrong sender.
+  const expected = safeOperationFor(to);
   const offending = [
-    params.operation !== 0 && `operation ${params.operation} is not CALL`,
+    params.operation !== expected &&
+      `operation ${params.operation} for ${to} (must be ${expected === 1 ? "DELEGATECALL to MultiSendCallOnly" : "CALL"})`,
     params.safeTxGas !== "0" && `safeTxGas ${params.safeTxGas}`,
     params.baseGas !== "0" && `baseGas ${params.baseGas}`,
     params.gasPrice !== "0" && `gasPrice ${params.gasPrice}`,
@@ -95,7 +108,7 @@ export function assertZeroGasPolicy(params: SafeTxParams, context: string): void
 
   if (offending.length > 0) {
     throw new Error(
-      `${context}: SafeTx carries nonzero gas/refund fields (${offending.join(", ")}) — refusing. These pay the Safe's own tokens out on execution, and no hash covers them.`
+      `${context}: SafeTx breaks the operation or zero gas/refund policy (${offending.join(", ")}) — refusing. A wrong operation can hand the Safe to the target; refund fields pay the Safe's tokens out, and no hash covers them.`
     );
   }
 }
@@ -162,7 +175,7 @@ export function buildSafeExecution(args: {
   safeNonce: number;
   safeVersion: string;
 }): SafeExecution {
-  const params = defaultSafeTxParams(args.safeNonce);
+  const params = defaultSafeTxParams(args.safeNonce, args.inner.to);
   const safeTxHash = computeSafeTxHash({
     inner: args.inner,
     params,

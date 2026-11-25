@@ -593,6 +593,7 @@ export class ArbitrageEngine extends BaseEngine<ArbitrageMetrics> {
         await this.publicClient.estimateContractGas({
           ...call,
           account: this.identity.from,
+          ...(built.estimateStateOverride ? { stateOverride: built.estimateStateOverride } : {}),
         } as Parameters<typeof this.publicClient.estimateContractGas>[0]);
       } catch (gasError) {
         const errorMsg = gasError instanceof Error ? gasError.message : String(gasError);

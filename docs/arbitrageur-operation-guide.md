@@ -344,8 +344,20 @@ receipts.
 `KMS_KEY_ID`, `SIGNER_ADDRESS`, or a populated signing-key env var. It writes content-hashed
 proposals to the StateStore and notifies. The operator acts on them with `operator-cli`, see the
 [liquidator guide §8.3](./liquidator-operation-guide.md#83-manual-proposals). Filter with
-`list --action vault-acquisition`; inventory mode also emits `approval` proposals that must be
-signed first.
+`list --action vault-acquisition`. With `MANUAL_EXECUTOR_KIND=eoa`, inventory mode also emits
+`approval` proposals that must be signed first.
+
+With `MANUAL_EXECUTOR_KIND=safe`, inventory mode proposes one SafeTx per vault and no separate
+approval. The SafeTx calls Safe's MultiSendCallOnly v1.5.0
+(`0xA83c336B20401Af773B6219BA5027174338D1836`) with operation `1` (DELEGATECALL), and runs three
+calls from the Safe:
+
+1. `WBTC.approve(BTCVaultSwap, maxWbtcIn)`
+2. The acquisition, `swapExitBtcForVaultOnBehalf` or `swapExitBtcForVault`
+3. `WBTC.approve(BTCVaultSwap, 0)`
+
+The Safe keeps no allowance after the batch. `operator-cli` accepts operation `1` only for that
+address, and checks the code there against the canonical hash before it fixes an envelope.
 
 ### 5.5. Private submission
 
