@@ -20,11 +20,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Two images, matching the production architecture proposal: one bot service
-# (the arbitrageur composition root, which also runs the liquidation engine
-# when ADAPTER_ADDRESS+LENS_ADDRESS are set) and one mode-gated ponder
-# indexer. The standalone liquidator entrypoint stays in the repo for local
-# runs but is not published as an image.
+# Three images: one bot service (the arbitrageur composition root, which also
+# runs the liquidation engine when ADAPTER_ADDRESS+LENS_ADDRESS are set), the
+# standalone liquidator, and one mode-gated ponder indexer.
 jobs:
   docker_bots_indexer:
     uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@902082b8e5c0a1fed7be6980fa6a1b77fc005c06 # v0.23.0
@@ -45,6 +43,19 @@ jobs:
       publish: true
       dockerfile: ./docker/arbitrageur.Dockerfile
       repoName: aave-bots-svc
+      push_to_dockerhub: false
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+      packages: read
+
+  docker_bots_liquidator:
+    uses: babylonlabs-io/.github/.github/workflows/reusable_docker_pipeline.yml@902082b8e5c0a1fed7be6980fa6a1b77fc005c06 # v0.23.0
+    with:
+      publish: true
+      dockerfile: ./docker/liquidator.Dockerfile
+      repoName: aave-bots-liquidator
       push_to_dockerhub: false
     permissions:
       contents: read
