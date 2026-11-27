@@ -120,15 +120,14 @@ abstract contract FlashVenueSetup {
     }
 
     /// @notice Deploy the router the bot calls, and the venue it flash-swaps through.
-    /// @param owner Must be the bot's signer: `owner` is immutable on the router and is both the only
-    ///        permitted caller and the recipient of every swept balance.
+    /// @param owner The bot's signer, used here as both executor and recipient.
     function _deployFlashContracts(address owner, address lens, address btcVaultSwap)
         internal
         returns (LiquidationRouter router, UniswapV4SwapVenue venue)
     {
         // Through the operator's own deploy script, so the suite exercises the path a deployment
         // actually takes rather than a copy of it that can drift.
-        router = new DeployLiquidationRouter().deploy(owner, lens, btcVaultSwap);
+        router = new DeployLiquidationRouter().deploy(owner, owner, lens, btcVaultSwap);
         venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(router));
         console.log("  UniswapV4SwapVenue:", address(venue));
     }

@@ -12,7 +12,7 @@ import { ProbeError, minWbtcProfitFloor, probeLiquidation, quoteProfit } from ".
 const WBTC = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599" as Address;
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address;
 const ROUTER = "0x1111111111111111111111111111111111111111" as Address;
-const OWNER = "0x2222222222222222222222222222222222222222" as Address;
+const EXECUTOR = "0x2222222222222222222222222222222222222222" as Address;
 const BORROWER = "0x3333333333333333333333333333333333333333" as Address;
 const VENUE = "0x4444444444444444444444444444444444444444" as Address;
 
@@ -51,7 +51,7 @@ const probe = (publicClient: PublicClient) =>
   probeLiquidation({
     publicClient,
     router: ROUTER,
-    owner: OWNER,
+    executor: EXECUTOR,
     borrower: BORROWER,
     flashDatas: FLASH_DATAS,
   });
@@ -71,7 +71,7 @@ describe("probeLiquidation", () => {
     });
   });
 
-  it("sends the revert sentinel and empty swaps, from the owner", async () => {
+  it("sends the revert sentinel and empty swaps, from the executor", async () => {
     const client = clientRevertingWith(belovedData(1n, []));
     await probe(client);
 
@@ -81,7 +81,7 @@ describe("probeLiquidation", () => {
     };
     expect(call.args[0].minWbtcProfit).toBe(2n ** 256n - 1n);
     expect(call.args[2]).toEqual([]);
-    expect(call.account).toBe(OWNER); // `liquidate` is auth-gated; any other caller reverts early
+    expect(call.account).toBe(EXECUTOR); // `liquidate` is auth-gated; any other caller reverts early
   });
 
   it("reports a different revert as unavailable, not as an error", async () => {

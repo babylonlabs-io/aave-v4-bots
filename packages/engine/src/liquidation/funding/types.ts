@@ -130,7 +130,7 @@ export interface FundedCandidate extends LiquidationCandidate {
 /** `funding: "flash"` — everything the router path needs that the inventory path does not. */
 export interface FlashFundingParams {
   mode: "flash";
-  /** The `LiquidationRouter` deployment whose `owner` is our executor identity. */
+  /** The `LiquidationRouter` deployment whose `executor` is our executor identity. */
   routerAddress: Address;
   /** Where each token is flash-borrowed. Validated once at construction (`assertRegistryValid`). */
   venues: VenueRegistry;

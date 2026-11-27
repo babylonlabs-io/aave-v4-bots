@@ -95,7 +95,7 @@ export class FlashFunding implements LiquidationFunding {
         const result = await probeLiquidation({
           publicClient: this.deps.publicClient,
           router: routerAddress,
-          owner: this.deps.executor.identity.from,
+          executor: this.deps.executor.identity.from,
           borrower: candidate.position.borrower,
           flashDatas,
         });

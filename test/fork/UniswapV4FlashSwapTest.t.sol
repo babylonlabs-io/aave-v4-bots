@@ -163,7 +163,9 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
         Types.LiquidationScenario memory scenario = LIQUIDATION_SCENARIOS[0];
         (address who, address wbtc, PoolKey[] memory poolKeys) = _prepare(scenario);
 
-        (LiquidationRouter router, UniswapV4SwapVenue venue) = _setUpRouter();
+        address recipient = address(0xBEEF);
+        LiquidationRouter router = new LiquidationRouter(recipient, ADMIN, address(preview), address(vaultSwap));
+        UniswapV4SwapVenue venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(router));
         LiquidationTypes.FlashData[] memory flashDatas = _debtFlashDatas(venue, poolKeys);
 
         // Step 1 — probe, exactly as the bot does: run the liquidation with the sentinel and read
@@ -182,7 +184,8 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
             new LiquidationTypes.SwapData[](0)
         );
         vm.assertGe(profit, floor, "liquidation returned less than the floor it was given");
-        vm.assertEq(IERC20(wbtc).balanceOf(ADMIN), achievable, "profit should be swept to owner");
+        vm.assertEq(IERC20(wbtc).balanceOf(recipient), achievable, "profit should be swept to owner");
+        vm.assertEq(IERC20(wbtc).balanceOf(ADMIN), 0, "executor must not receive the profit");
 
         vm.revertToState(snapshot);
 
@@ -196,7 +199,7 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
             flashDatas,
             new LiquidationTypes.SwapData[](0)
         );
-        vm.assertEq(IERC20(wbtc).balanceOf(ADMIN), 0, "a rejected liquidation must move nothing");
+        vm.assertEq(IERC20(wbtc).balanceOf(recipient), 0, "a rejected liquidation must move nothing");
 
         // Step 4 — the same rejected liquidation, with WBTC already sitting in the router. Nothing
         // about what this liquidation earns has changed, so the verdict must not change either.
@@ -225,7 +228,7 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
         );
         vm.assertEq(donatedProfit, achievable, "reported profit must be the delta, not the closing balance");
         vm.assertEq(
-            IERC20(wbtc).balanceOf(ADMIN), achievable * 2, "the donation is swept to owner alongside the profit"
+            IERC20(wbtc).balanceOf(recipient), achievable * 2, "the donation is swept to owner alongside the profit"
         );
         vm.assertEq(IERC20(wbtc).balanceOf(address(router)), 0, "the router must end empty");
     }
@@ -296,7 +299,7 @@ contract UniswapV4FlashSwapTest is UniswapV4Base, TBVForkFixture, TBVHelper {
     }
 
     function _setUpRouter() internal returns (LiquidationRouter router, UniswapV4SwapVenue venue) {
-        router = new LiquidationRouter(ADMIN, address(preview), address(vaultSwap));
+        router = new LiquidationRouter(ADMIN, ADMIN, address(preview), address(vaultSwap));
         venue = new UniswapV4SwapVenue(UNISWAP_V4_POOL_MANAGER, address(router));
     }
 }

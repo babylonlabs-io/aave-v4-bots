@@ -164,8 +164,8 @@ with the fairness payment as the cap. When there is a fairness
 payment, a separate flash *loan* (`WBTC_FLASH_LOAN_ADDRESS`) covers it,
 repaid in WBTC. When WBTC is itself the debt token, the router borrows
 the debt and the fairness payment together through that one WBTC
-venue. Profit is swept to the router's `owner`, which must be the
-bot's signer.
+venue. Profit is swept to the router's `owner`; the router's immutable
+`executor` must be the bot's signer. The two addresses may be the same.
 
 Two consequences worth knowing before switching:
 

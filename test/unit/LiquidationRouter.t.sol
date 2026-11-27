@@ -5,10 +5,14 @@ pragma solidity 0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {LiquidationRouter, Types, TokenAmountLib} from "../../contracts/LiquidationRouter.sol";
+import {LiquidationRouter, Types, TokenAmountLib, ISpoke} from "../../contracts/LiquidationRouter.sol";
 
 contract TestToken is ERC20 {
     constructor() ERC20("Test", "TST") {}
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
 }
 
 /// @dev Answers the reads `LiquidationRouter`'s constructor makes of the lens.
@@ -60,7 +64,13 @@ contract LiquidationRouterHarness is LiquidationRouter {
     /// @dev The venue index the state machine moved to after the last step this harness ran.
     uint256 public advancedToIndex;
 
-    constructor(address lens, address vaultSwap) LiquidationRouter(msg.sender, lens, vaultSwap) {}
+    constructor(address owner, address executor, address lens, address vaultSwap)
+        LiquidationRouter(owner, executor, lens, vaultSwap)
+    {}
+
+    function sweepReserves() external {
+        _transferAllReservesOut();
+    }
 
     function runSetupStep(Types.LiquidationIteration memory iteration) external {
         _executeSingleSetupPhase(iteration);
@@ -102,7 +112,80 @@ contract LiquidationRouterTest is Test {
         usdc = new TestToken();
         wbtc = new TestToken();
         LensStub lens = new LensStub(adapter, address(0x5B0));
-        router = new LiquidationRouterHarness(address(lens), address(new VaultSwapStub(address(wbtc))));
+        router = new LiquidationRouterHarness(
+            address(this), address(this), address(lens), address(new VaultSwapStub(address(wbtc)))
+        );
+    }
+
+    function test_constructorRejectsZeroOwnerAndExecutor() public {
+        vm.expectRevert("LiquidationRouter: Invalid owner address");
+        new LiquidationRouter(address(0), address(1), address(0), address(0));
+        vm.expectRevert("LiquidationRouter: Invalid executor address");
+        new LiquidationRouter(address(1), address(0), address(0), address(0));
+    }
+
+    function test_onlyExecutorCanLiquidateEvenThroughMulticall() public {
+        address owner = address(0xA11CE);
+        address executor = address(0xB0B);
+        LensStub lens = new LensStub(adapter, address(0x5B0));
+        LiquidationRouter separated =
+            new LiquidationRouter(owner, executor, address(lens), address(new VaultSwapStub(address(wbtc))));
+        assertEq(separated.owner(), owner);
+        assertEq(separated.executor(), executor);
+
+        bytes memory callData = abi.encodeCall(
+            separated.liquidate,
+            (
+                Types.LiquidationData({borrower: address(0), minWbtcProfit: 0}),
+                new Types.FlashData[](0),
+                new Types.SwapData[](0)
+            )
+        );
+        bytes[] memory calls = new bytes[](1);
+        calls[0] = callData;
+
+        vm.prank(owner);
+        vm.expectRevert("LiquidationRouter: Unauthorized");
+        separated.liquidate(Types.LiquidationData(address(0), 0), new Types.FlashData[](0), new Types.SwapData[](0));
+
+        vm.prank(address(0xBAD));
+        (bool[] memory successes, bytes[] memory results) = separated.multicall(calls, false);
+        assertFalse(successes[0]);
+        assertEq(results[0], abi.encodeWithSignature("Error(string)", "LiquidationRouter: Unauthorized"));
+
+        vm.prank(executor);
+        vm.expectRevert("LiquidationRouter: Invalid borrower address");
+        separated.liquidate(Types.LiquidationData(address(0), 0), new Types.FlashData[](0), new Types.SwapData[](0));
+
+        vm.prank(executor);
+        (successes, results) = separated.multicall(calls, false);
+        assertFalse(successes[0]);
+        assertEq(results[0], abi.encodeWithSignature("Error(string)", "LiquidationRouter: Invalid borrower address"));
+    }
+
+    function test_reservesAreSweptToOwnerNotExecutor() public {
+        address owner = address(0xA11CE);
+        address executor = address(0xB0B);
+        address spoke = address(0x5B0);
+        LensStub lens = new LensStub(adapter, spoke);
+        LiquidationRouterHarness separated =
+            new LiquidationRouterHarness(owner, executor, address(lens), address(new VaultSwapStub(address(wbtc))));
+        ISpoke.Reserve memory reserve;
+        reserve.underlying = address(wbtc);
+        vm.mockCall(spoke, abi.encodeCall(ISpoke.getReserveCount, ()), abi.encode(2));
+        vm.mockCall(spoke, abi.encodeCall(ISpoke.getReserve, (0)), abi.encode(reserve));
+        reserve.underlying = address(usdc);
+        vm.mockCall(spoke, abi.encodeCall(ISpoke.getReserve, (1)), abi.encode(reserve));
+        wbtc.mint(address(separated), 7);
+        usdc.mint(address(separated), 11);
+
+        separated.sweepReserves();
+        assertEq(wbtc.balanceOf(owner), 7);
+        assertEq(usdc.balanceOf(owner), 11);
+        assertEq(wbtc.balanceOf(executor), 0);
+        assertEq(usdc.balanceOf(executor), 0);
+        assertEq(wbtc.balanceOf(address(separated)), 0);
+        assertEq(usdc.balanceOf(address(separated)), 0);
     }
 
     function _iteration(address debtToken, uint256 debtToCover, uint256 wbtcPayment)

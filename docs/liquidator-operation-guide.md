@@ -125,7 +125,8 @@ Flash funding repays the debt through a `LiquidationRouter`. Deploy it once:
 ```bash
 git submodule update --init --recursive
 
-export LIQUIDATION_ROUTER_OWNER=0x...   # this bot's signer: the only address the router acts for
+export LIQUIDATION_ROUTER_OWNER=0x...   # receives swept profits
+export LIQUIDATION_ROUTER_EXCUTOR=0x...  # this bot's signer: the only permitted caller
 export LENS_ADDRESS=0x...               # AaveAdapterLiquidationPreview
 export VAULT_SWAP_ADDRESS=0x...         # BTCVaultSwap (LLP)
 export DEPLOYER_PRIVATE_KEY=0x...
@@ -147,9 +148,11 @@ forge create contracts/WrappedVenue/UniswapV4SwapVenue.sol:UniswapV4SwapVenue \
 ```
 
 Put the two printed addresses in `LIQUIDATION_ROUTER_ADDRESS` and `FLASH_SWAP_VENUE_ADDRESS`. All
-constructor arguments are immutable. A router deployed for another signer must be redeployed.
+constructor arguments are immutable. A router deployed for another signer or recipient must be redeployed.
+The owner and executor may be the same address.
 
-The bot does not verify `owner` at boot. A wrong owner shows as every flash probe reverting.
+The bot does not verify `executor` at boot. A wrong executor shows as every flash probe reverting.
+Existing routers cannot be upgraded; redeploy the router and its bound venue to separate these roles.
 
 The router always calls `liquidateWithLLP` on the `vaultSwap` it was deployed with. Boot fails if
 `IS_DIRECT_REDEMPTION=true` under flash funding. `BTC_REDEEM_KEY` and `LLP_ADDRESS` are unused.

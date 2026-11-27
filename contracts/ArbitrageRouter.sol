@@ -17,15 +17,13 @@ import {IBTCVaultSwap} from "vault-contracts/applications/aave/interfaces/IBTCVa
 ///        off-chain arbitrage system, pays the gas for every acquisition, and never holds funds.
 ///      - `payer` supplies the WBTC. It grants this contract an ERC-20 allowance and is refunded any WBTC
 ///        left on the contract after each acquisition.
-///      - `onBehalfOf`, chosen per call, is the vault keeper whose BTC key receives the redeemed vault.
+///      - `allowedOnBehalfOf` is the vault keeper whose BTC key receives the redeemed vault.
 ///
 ///      See {SelfCallRelayer} for the rest of the trust model, including the absence of a nonce.
 ///
-///      `vaultSwap` is supplied per call rather than pinned at construction, so the router can follow new
-///      LLP deployments without a redeploy. It is therefore only as trustworthy as the signer that named
-///      it: the router grants it a WBTC allowance sized by the preview that same address returns. A signer
-///      key compromise is sufficient to move `payer`'s entire allowance into an arbitrary contract, so the
-///      operational response to a lost signer key is for `payer` to revoke its approval.
+///      The LLP and vault keeper are fixed at construction, so the signer cannot redirect a purchase to
+///      another contract or keeper. The LLP and its governance must still be trusted. Revoke the payer's
+///      approval promptly if the signer is compromised.
 ///
 ///      Profit is not realized on-chain. The router pays WBTC and the vault is redeemed to a Bitcoin key
 ///      off-chain, so `minProfit` bounds the estimate the LLP reports at execution time, not settlement.
@@ -58,14 +56,29 @@ contract ArbitrageRouter is SelfCallRelayer {
     /// @notice WBTC token used to acquire vaults.
     address public immutable wbtc;
 
+    /// @notice The only LLP the router may approve and call.
+    address public immutable allowedVaultSwap;
+
+    /// @notice The only vault keeper on whose behalf the router may acquire vaults.
+    address public immutable allowedOnBehalfOf;
+
     /// @param _signer Address whose signature authorizes relayed batches; must be non-zero
     /// @param _payer Address supplying the WBTC; must be non-zero and must approve this contract
     /// @param _wbtc WBTC token address; must be non-zero and must match the LLP's exitBTC
-    constructor(address _signer, address _payer, address _wbtc) EIP712(NAME, VERSION) SelfCallRelayer(_signer) {
+    /// @param _allowedVaultSwap Trusted LLP address; must be non-zero
+    /// @param _allowedOnBehalfOf Trusted vault keeper address; must be non-zero
+    constructor(address _signer, address _payer, address _wbtc, address _allowedVaultSwap, address _allowedOnBehalfOf)
+        EIP712(NAME, VERSION)
+        SelfCallRelayer(_signer)
+    {
         require(_payer != address(0), "ArbitrageRouter: invalid payer");
         require(_wbtc != address(0), "ArbitrageRouter: invalid wbtc");
+        require(_allowedVaultSwap != address(0), "ArbitrageRouter: invalid vaultSwap");
+        require(_allowedOnBehalfOf != address(0), "ArbitrageRouter: invalid onBehalfOf");
         payer = _payer;
         wbtc = _wbtc;
+        allowedVaultSwap = _allowedVaultSwap;
+        allowedOnBehalfOf = _allowedOnBehalfOf;
     }
 
     /// @notice Restricts submission of a relayed batch to `signer`.
@@ -101,6 +114,8 @@ contract ArbitrageRouter is SelfCallRelayer {
         uint256 minProfit,
         uint256 maxWbtcIn
     ) external onlySelf {
+        require(vaultSwap == allowedVaultSwap, "ArbitrageRouter: unauthorized vaultSwap");
+        require(onBehalfOf == allowedOnBehalfOf, "ArbitrageRouter: unauthorized onBehalfOf");
         IBTCVaultSwap.EscrowedVaultPreviewResult memory preview = _preview(vaultSwap, vaultId);
         require(preview.amountProfitEst >= minProfit, "ArbitrageRouter: insufficient profit");
         require(preview.amountExitBtcToAcquire <= maxWbtcIn, "ArbitrageRouter: exceeds maxWbtcIn");
