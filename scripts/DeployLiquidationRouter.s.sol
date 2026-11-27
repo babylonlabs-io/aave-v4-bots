@@ -11,12 +11,12 @@ import {LiquidationRouter} from "../contracts/LiquidationRouter.sol";
 ///         the bot's key never has to hold the debt tokens.
 /// @dev Usage:
 ///
-///        LIQUIDATION_ROUTER_OWNER=0x…     # receives all swept proceeds
+///        LIQUIDATION_ROUTER_OWNER=0x…    # receives all swept proceeds
 ///        LIQUIDATION_ROUTER_EXECUTOR=0x…  # the bot's signer; the only permitted caller
-///        LENS_ADDRESS=0x…             # AaveAdapterLiquidationPreview; the router reads the adapter/spoke from it
-///        VAULT_SWAP_ADDRESS=0x…       # the BTCVaultSwap (LLP) the seized vault is sold to
+///        LENS_ADDRESS=0x…                # AaveAdapterLiquidationPreview; the router reads the adapter/spoke from it
+///        VAULT_SWAP_ADDRESS=0x…          # the BTCVaultSwap (LLP) the seized vault is sold to
 ///        forge script scripts/DeployLiquidationRouter.s.sol:DeployLiquidationRouter \
-///          --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
+///          --rpc-url "$RPC_URL" --account "$DEPLOYER" --sender "$DEPLOYER_ADDRESS" --broadcast
 ///
 ///      The router still needs its venues before it can fund anything — a `UniswapV4SwapVenue` (or
 ///      equivalent) per debt token, plus the WBTC flash-loan venue for the LLP fairness payment.
@@ -29,7 +29,7 @@ contract DeployLiquidationRouter is Script {
         address lens = vm.envAddress("LENS_ADDRESS");
         address vaultSwap = vm.envAddress("VAULT_SWAP_ADDRESS");
 
-        vm.startBroadcast(vm.envUint("DEPLOYER_PRIVATE_KEY"));
+        vm.startBroadcast();
         router = deploy(owner, executor, lens, vaultSwap);
         vm.stopBroadcast();
 

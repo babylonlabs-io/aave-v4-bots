@@ -103,7 +103,7 @@ contract StressArbitrageurE2ESetup is ArbitrageurE2ESetup {
         address treasury = vm.addr(E2EConstants.TREASURY_PRIVATE_KEY);
 
         vm.startBroadcast(adminPrivateKey);
-        router = new DeployArbitrageRouter().deploy(arbAddr, treasury, address(wbtc));
+        router = new DeployArbitrageRouter().deploy(arbAddr, treasury, address(wbtc), address(vaultSwap), arbAddr);
         wbtc.mint(treasury, 50 * uint256(ONE_BTC));
         vm.stopBroadcast();
 

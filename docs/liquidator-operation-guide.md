@@ -126,7 +126,7 @@ Flash funding repays the debt through a `LiquidationRouter`. Deploy it once:
 git submodule update --init --recursive
 
 export LIQUIDATION_ROUTER_OWNER=0x...   # receives swept profits
-export LIQUIDATION_ROUTER_EXECUTOR=0x... # this bot's signer: the only permitted caller
+export LIQUIDATION_ROUTER_EXCUTOR=0x...  # this bot's signer: the only permitted caller
 export LENS_ADDRESS=0x...               # AaveAdapterLiquidationPreview
 export VAULT_SWAP_ADDRESS=0x...         # BTCVaultSwap (LLP)
 export DEPLOYER_PRIVATE_KEY=0x...

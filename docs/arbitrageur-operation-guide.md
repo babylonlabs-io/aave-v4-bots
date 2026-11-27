@@ -138,11 +138,14 @@ git submodule update --init --recursive
 export ARBITRAGE_ROUTER_SIGNER=0x...   # this bot's signer. Authorizes acquisitions, holds no funds
 export ARBITRAGE_ROUTER_PAYER=0x...    # the treasury
 export WBTC_ADDRESS=0x...              # must match the LLP's EXIT_BTC()
-export DEPLOYER_PRIVATE_KEY=0x...
+export VAULT_SWAP_ADDRESS=0x...        # trusted LLP
+export VAULT_KEEPER_ADDRESS=0x...      # trusted registered keeper
+export DEPLOYER=...                    # Foundry keystore account
+export DEPLOYER_ADDRESS=0x...
 export RPC_URL=https://...
 
 forge script scripts/DeployArbitrageRouter.s.sol:DeployArbitrageRouter \
-  --rpc-url "$RPC_URL" --broadcast --private-key "$DEPLOYER_PRIVATE_KEY"
+  --rpc-url "$RPC_URL" --account "$DEPLOYER" --sender "$DEPLOYER_ADDRESS" --broadcast
 ```
 
 The script prints the router address. The treasury then approves it. The bot cannot do this, and
@@ -156,13 +159,22 @@ cast send "$WBTC_ADDRESS" "approve(address,uint256)" "$ROUTER" "$AMOUNT" \
   --rpc-url "$RPC_URL" --private-key "$TREASURY_KEY"
 ```
 
-Approve working capital, not an unlimited amount. `vaultSwap` is an argument to each signed call,
-so a compromised signer can direct the whole allowance into a contract of its choosing. The
-approval is the blast radius.
+Approve working capital, not an unlimited amount. The router checks that each call uses the LLP and
+keeper fixed at deployment. Those addresses, the LLP's implementation and governance, and the
+keeper's BTC key must be trusted. A compromised signer can still execute purchases through the
+configured LLP, so revoke approval promptly if the signer is lost.
+
+Existing routers do not acquire these checks when the source changes. Revoke the old router's
+approval and deploy a new router with the trusted LLP and keeper before approving it. Verify the
+new router's `allowedVaultSwap` and `allowedOnBehalfOf` against `VAULT_SWAP_ADDRESS` and
+`VAULT_KEEPER_ADDRESS` before granting approval or starting the bot. Both are immutable; changing
+either requires a new deployment.
 
 At boot the bot reads `signer`, `payer` and `wbtc` from the router. It fails if `signer` is not
-its key, if `payer` is its key, if `wbtc` differs from `WBTC_ADDRESS`, or if the payer holds no
-WBTC or no allowance. All three are immutable: a mismatch is a redeploy.
+its key, if `payer` is its key, if `wbtc` differs from `WBTC_ADDRESS`, or if the payer has no
+allowance. An empty WBTC balance is a warning. The boot checks do not verify the two new address
+restrictions, so verify them explicitly before granting approval. All five are immutable: a
+mismatch is a redeploy.
 
 Router funding is rejected under `EXECUTION_MODE=MANUAL`. The authorization needs a key the bot
 holds.
@@ -686,10 +698,9 @@ Acquisition is first-come-first-served. The first successful transaction wins th
 
 ## 10. Incident: signing key compromised
 
-Applies to router funding. The router pulls only the preview cost and refunds the residue to the
-treasury, but `vaultSwap` is an argument to each signed call: whoever holds the key can point the
-router at a contract of their choosing and spend the entire allowance into it, including to an
-address they control.
+Applies to router funding. The current router restricts acquisitions to the configured LLP and
+keeper, but a compromised signer can still execute purchases through that LLP. Older deployments
+without these restrictions can also redirect the allowance to an attacker-controlled contract.
 
 1. **Revoke the approval first.** Do this before stopping the bot; a stopped bot does not stop
    the attacker. Signed batches stay valid until their deadline, and the router relays them for

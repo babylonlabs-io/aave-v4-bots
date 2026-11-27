@@ -31,7 +31,7 @@ contract RouterArbitrageurE2ESetup is ArbitrageurE2ESetup {
         // Through the operator's own deploy script, so a break in the documented deployment path
         // fails this suite rather than being discovered in production.
         address treasury = vm.addr(TREASURY_PRIVATE_KEY);
-        router = new DeployArbitrageRouter().deploy(arbAddr, treasury, address(wbtc));
+        router = new DeployArbitrageRouter().deploy(arbAddr, treasury, address(wbtc), address(vaultSwap), arbAddr);
         wbtc.mint(treasury, 10 * uint256(ONE_BTC));
         vm.stopBroadcast();
 
