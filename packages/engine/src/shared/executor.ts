@@ -523,6 +523,12 @@ export interface AutoExecutorDeps {
    * `createAutoExecutor` (or `./executorTestKit`).
    */
   submission?: Submission;
+  /**
+   * Gas limit of every transaction, as basis points of the node's estimate. Omitted ⇒ the estimate
+   * itself. It applies on every route, so it is not part of `submission`. See `applyGasMargin` in
+   * `@repo/execution`.
+   */
+  gasLimitMultiplierBps?: number;
 }
 
 export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecutor {
@@ -532,7 +538,7 @@ export function createAutoExecutorFromWallet(deps: AutoExecutorDeps): AutoExecut
     deps.publicClient,
     deps.walletClient,
     submitter?.send.bind(submitter),
-    { minPriorityFeeWei }
+    { minPriorityFeeWei, gasLimitMultiplierBps: deps.gasLimitMultiplierBps }
   );
   const crash = createCrashSafety({
     store: deps.store,

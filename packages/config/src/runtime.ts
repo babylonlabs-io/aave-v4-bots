@@ -53,6 +53,22 @@ const PROTECT_HORIZON_BLOCKS = 25;
  */
 const MAX_RELAY_TIMEOUT_MS = 120_000;
 
+/** `GAS_LIMIT_MULTIPLIER_BPS` at this value leaves the node's gas estimate as it is. */
+const GAS_LIMIT_MULTIPLIER_BPS_NONE = 10_000;
+
+/**
+ * `GAS_LIMIT_MULTIPLIER_BPS`: a gas limit as basis points of the node's `eth_estimateGas` (10000 =
+ * the estimate itself). The margin covers state that changes between the estimate and inclusion.
+ * 30000 is a policy bound, not a protocol limit. The bots and operator-cli share this schema.
+ */
+export const gasLimitMultiplierBpsSchema = intInRangeSchema(
+  GAS_LIMIT_MULTIPLIER_BPS_NONE,
+  30_000,
+  "basis points of the gas estimate, 10000 = 1x"
+)
+  .optional()
+  .default("10000");
+
 export const runtimeEnvFields = {
   // Signer + secrets source selection. Defaults preserve today's behavior: a local signer whose
   // key is read from the service's own `*_PRIVATE_KEY` env var.
@@ -110,6 +126,13 @@ export const runtimeEnvFields = {
     .default("8000"),
   /** How long a relay status probe may take before it is treated as a failed probe. */
   PRIVATE_STATUS_TIMEOUT_MS: intInRangeSchema(1, MAX_RELAY_TIMEOUT_MS).optional().default("2000"),
+
+  /**
+   * Gas limit of every AUTO transaction; see `gasLimitMultiplierBpsSchema`. AUTO only: MANUAL
+   * refuses a value other than 10000, because the bot signs nothing there. operator-cli reads its
+   * own value.
+   */
+  GAS_LIMIT_MULTIPLIER_BPS: gasLimitMultiplierBpsSchema,
 
   /** Enables the Postgres StateStore. Unset ⇒ no persistence (in-memory nonce sequencing). */
   DATABASE_URL: z.string().min(1).optional(),
@@ -174,6 +197,7 @@ export interface RuntimeEnv {
  */
 export interface ExecutionEnv extends SubmitterEnv {
   EXECUTION_MODE: "AUTO" | "MANUAL";
+  GAS_LIMIT_MULTIPLIER_BPS: string;
   // Address vars stay `string` here — the `addressSchema` regex validates the format but zod infers
   // `string`; `buildExecutionConfig` narrows to `Hex40` on the way out.
   MANUAL_EXECUTOR_ADDRESS?: string;
@@ -199,7 +223,12 @@ export interface ExecutionEnv extends SubmitterEnv {
  * anything, and leaves an operator believing they have MEV protection they do not have.
  */
 export type ExecutionSettings =
-  | { mode: "AUTO"; submitter: SubmitterSettings }
+  | {
+      mode: "AUTO";
+      submitter: SubmitterSettings;
+      /** Gas limit as basis points of the node's estimate; 10000 = the estimate itself. */
+      gasLimitMultiplierBps: number;
+    }
   | {
       mode: "MANUAL";
       /** The account whose balances/allowances the engine reads and whose `from` it simulates from —
@@ -398,7 +427,11 @@ export function buildExecutionConfig(
   opts: { signerKeyPresent?: boolean } = {}
 ): ExecutionSettings {
   if (env.EXECUTION_MODE === "AUTO") {
-    return { mode: "AUTO", submitter: buildSubmitterConfig(env) };
+    return {
+      mode: "AUTO",
+      submitter: buildSubmitterConfig(env),
+      gasLimitMultiplierBps: Number.parseInt(env.GAS_LIMIT_MULTIPLIER_BPS, 10),
+    };
   }
 
   // Relay variables under MANUAL are the same category of mistake as signer variables below: the
@@ -409,15 +442,21 @@ export function buildExecutionConfig(
   // `buildSubmitterConfig`, which is what rejects a stray relay variable everywhere else. Left to
   // that check alone, a relay URL and a fee floor beside `EXECUTION_MODE=MANUAL` would boot in
   // silence — the one arrangement where nothing downstream ever touches them again.
-  const strayRelay = [
+  //
+  // A gas-limit margin is the same case: this bot signs nothing, so the margin sizes nothing. The
+  // operator sets it for their own broadcasts in operator-cli's env.
+  const autoOnly = [
     env.SUBMITTER === "flashbots-protect" ? "SUBMITTER=flashbots-protect" : undefined,
     ...relayOnlyVars(env)
       .filter(([, v]) => v !== undefined)
       .map(([name]) => name),
+    Number.parseInt(env.GAS_LIMIT_MULTIPLIER_BPS, 10) !== GAS_LIMIT_MULTIPLIER_BPS_NONE
+      ? `GAS_LIMIT_MULTIPLIER_BPS=${env.GAS_LIMIT_MULTIPLIER_BPS}`
+      : undefined,
   ].filter((v): v is string => v !== undefined);
-  if (strayRelay.length > 0) {
+  if (autoOnly.length > 0) {
     throw new Error(
-      `EXECUTION_MODE=MANUAL does not broadcast — an operator signs and sends with their own wallet, so ${strayRelay.join(", ")} protects nothing and this bot cannot enforce it. Unset ${strayRelay.length === 1 ? "it" : "them"}, or run AUTO.`
+      `EXECUTION_MODE=MANUAL does not broadcast — an operator signs and sends with their own wallet, so this bot cannot apply ${autoOnly.join(", ")}. Unset ${autoOnly.length === 1 ? "it" : "them"}, or run AUTO.`
     );
   }
 

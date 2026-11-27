@@ -203,7 +203,8 @@ describe("buildNotifierConfig", () => {
 });
 
 describe("buildExecutionConfig", () => {
-  // Submission defaults, which every `ExecutionEnv` now carries: unset ⇒ the public mempool.
+  // Submission and gas-margin defaults, which every `ExecutionEnv` carries: unset ⇒ the public
+  // mempool at the node's own gas estimate.
   const submitterDefaults = {
     SUBMITTER: "public",
     FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
@@ -211,6 +212,7 @@ describe("buildExecutionConfig", () => {
     PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
     PRIVATE_SUBMIT_TIMEOUT_MS: "8000",
     PRIVATE_STATUS_TIMEOUT_MS: "2000",
+    GAS_LIMIT_MULTIPLIER_BPS: "10000",
   } as const;
 
   // A valid MANUAL setup: the broadcasting address + a store, and NO signer configured.
@@ -237,7 +239,7 @@ describe("buildExecutionConfig", () => {
         MANUAL_INTENT_TTL_MS: "10800000",
         MANUAL_INTENT_STUCK_MS: "3600000",
       })
-    ).toEqual({ mode: "AUTO", submitter: { mode: "public" } });
+    ).toEqual({ mode: "AUTO", submitter: { mode: "public" }, gasLimitMultiplierBps: 10_000 });
   });
 
   it("MANUAL carries the broadcasting address, custody kind + proposal TTL", () => {
